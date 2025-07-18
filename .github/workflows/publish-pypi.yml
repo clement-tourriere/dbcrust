@@ -1,0 +1,32 @@
+name: "Publish to PyPI"
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+
+jobs:
+  pypi-publish-dbcrust:
+    name: Upload dbcrust to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+    permissions:
+      id-token: write
+    steps:
+      - name: "Install uv"
+        uses: astral-sh/setup-uv@v6
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels_dbcrust-*
+          path: wheels_dbcrust
+          merge-multiple: true
+
+      - name: "List downloaded artifacts"
+        run: find wheels_dbcrust -type f -name "*.whl" | head -20
+
+      - name: "Publish to PyPI"
+        run: uv publish --verbose wheels_dbcrust/*

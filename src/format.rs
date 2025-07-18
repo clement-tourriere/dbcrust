@@ -1,0 +1,852 @@
+use crate::db::TableDetails;
+use prettytable::{Cell, Row, Table};
+use chrono;
+
+/// Safe formatting function to prevent "Formatting argument out of range" errors
+fn safe_format_with_width(text: &str, width: usize, left_align: bool) -> String {
+    if width == 0 {
+        return text.to_string();
+    }
+    
+    if text.len() >= width {
+        text.to_string()
+    } else {
+        let padding = width - text.len();
+        if left_align {
+            format!("{}{}", text, " ".repeat(padding))
+        } else {
+            format!("{}{}", " ".repeat(padding), text)
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn format_tables(data: &[(String, String)]) -> Table {
+    let mut table = Table::new();
+    table.add_row(Row::new(vec![Cell::new("Schema"), Cell::new("Table Name")]));
+    for (table_name, schema) in data {
+        table.add_row(Row::new(vec![Cell::new(schema), Cell::new(table_name)]));
+    }
+    table
+}
+
+#[allow(dead_code)]
+pub fn format_query_results(data: &[Vec<String>]) -> Table {
+    let mut table = Table::new();
+    if let Some(header) = data.first() {
+        table.add_row(Row::new(header.iter().map(|h| Cell::new(h)).collect()));
+        for row in data.iter().skip(1) {
+            table.add_row(Row::new(row.iter().map(|c| Cell::new(c)).collect()));
+        }
+    }
+    table
+}
+
+#[allow(dead_code)]
+pub fn format_query_results_expanded(data: &[Vec<String>]) -> Vec<Table> {
+    let mut tables = Vec::new();
+
+    if data.len() < 2 {
+        // If there's only a header row or empty data, return empty tables vector
+        return tables;
+    }
+
+    let header = &data[0]; // First row is header
+
+    // For each data row, create a separate vertical table
+    for (i, row) in data.iter().skip(1).enumerate() {
+        let mut table = Table::new();
+
+        // Add title row indicating record number
+        table.add_row(Row::new(vec![
+            Cell::new(&format!("Record {}", i + 1)),
+            Cell::new(""),
+        ]));
+
+        // Add each field with its column name and value
+        for (col_idx, col_name) in header.iter().enumerate() {
+            // Make sure we don't go out of bounds
+            if col_idx < row.len() {
+                table.add_row(Row::new(vec![
+                    Cell::new(col_name),
+                    Cell::new(&row[col_idx]),
+                ]));
+            }
+        }
+
+        tables.push(table);
+    }
+
+    tables
+}
+
+/// Safe wrapper around format_query_results_psql that catches panics and provides debugging
+#[allow(dead_code)]
+pub fn safe_format_query_results_psql(data: &[Vec<String>], query_context: Option<&str>) -> Result<String, String> {
+    // Pre-flight check for obvious issues
+    if data.is_empty() {
+        return Ok(String::new());
+    }
+    
+    let header = &data[0];
+    if header.is_empty() {
+        return Ok(String::new());
+    }
+    
+    // Check for data consistency issues
+    let expected_cols = header.len();
+    let mut has_issues = false;
+    for (row_idx, row) in data.iter().enumerate() {
+        if row.len() != expected_cols {
+            has_issues = true;
+            eprintln!("Data consistency issue detected in row {}: {} columns, expected {}", 
+                     row_idx, row.len(), expected_cols);
+        }
+    }
+    
+    if has_issues {
+        let context = query_context.unwrap_or("unknown query");
+        let analysis = analyze_format_crash(data, context);
+        let _ = std::fs::write("dbcrust_crash_analysis.txt", &analysis);
+        eprintln!("Inconsistent data detected. Analysis written to dbcrust_crash_analysis.txt");
+    }
+    
+    // Use panic catching to handle format! macro errors
+    let result = std::panic::catch_unwind(|| {
+        format_query_results_psql(data)
+    });
+    
+    match result {
+        Ok(formatted) => Ok(formatted),
+        Err(_) => {
+            let context = query_context.unwrap_or("unknown query");
+            let error_msg = format!("Formatting panic occurred for query: {}", context);
+            eprintln!("{}", error_msg);
+            
+            // Write detailed analysis
+            let analysis = analyze_format_crash(data, context);
+            let _ = std::fs::write("dbcrust_crash_analysis.txt", &analysis);
+            
+            // Return a fallback representation
+            Ok(format!("ERROR: Formatting failed. {} rows returned. Analysis written to dbcrust_crash_analysis.txt", data.len()))
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub fn format_query_results_psql(data: &[Vec<String>]) -> String {
+    // Use panic catching to handle any formatting errors gracefully
+    let result = std::panic::catch_unwind(|| {
+        format_query_results_psql_internal(data)
+    });
+    
+    match result {
+        Ok(formatted) => formatted,
+        Err(_panic_info) => {
+            eprintln!("PANIC caught in format_query_results_psql!");
+            
+            // Write detailed crash analysis
+            let analysis = analyze_format_crash(data, "query_results_formatting");
+            if let Err(e) = std::fs::write("dbcrust_format_crash.txt", &analysis) {
+                eprintln!("Failed to write crash analysis: {}", e);
+            } else {
+                eprintln!("Crash analysis written to dbcrust_format_crash.txt");
+            }
+            
+            // Return a safe fallback representation
+            if data.is_empty() {
+                return "No data to display".to_string();
+            }
+            
+            let mut fallback = String::new();
+            fallback.push_str("=== FORMATTING ERROR - SAFE FALLBACK ===\n");
+            fallback.push_str(&format!("Rows: {}\n", data.len()));
+            if !data.is_empty() {
+                fallback.push_str(&format!("Columns: {}\n", data[0].len()));
+                fallback.push_str("Header: ");
+                for (i, col) in data[0].iter().enumerate() {
+                    if i > 0 { fallback.push_str(", "); }
+                    fallback.push_str(&format!("\"{}\"", col));
+                }
+                fallback.push_str("\n");
+                fallback.push_str("First few rows (unformatted):\n");
+                for (row_idx, row) in data.iter().skip(1).take(3).enumerate() {
+                    fallback.push_str(&format!("Row {}: {:?}\n", row_idx + 1, row));
+                }
+            }
+            fallback.push_str("See dbcrust_format_crash.txt for detailed analysis\n");
+            fallback
+        }
+    }
+}
+
+fn format_query_results_psql_internal(data: &[Vec<String>]) -> String {
+    if data.is_empty() {
+        return String::new();
+    }
+
+    let header = &data[0];
+    
+    // Safety check: ensure header is not empty to prevent column width access errors
+    if header.is_empty() {
+        return String::new();
+    }
+
+    // Find the maximum number of columns across ALL rows (header + data)
+    let max_cols = data.iter().map(|row| row.len()).max().unwrap_or(0);
+    let header_cols = header.len();
+    
+    // Create an extended header if some rows have more columns than the original header
+    let mut extended_header = header.clone();
+    if max_cols > header_cols {
+        for i in header_cols..max_cols {
+            extended_header.push(format!("column_{}", i + 1));
+        }
+        eprintln!("Info: Some rows have more columns than header. Extended header from {} to {} columns.", 
+                 header_cols, max_cols);
+    }
+    
+    // Validate data consistency with the extended header
+    let mut has_inconsistencies = false;
+    for (row_idx, row) in data.iter().enumerate() {
+        if row.len() != max_cols && row.len() != header_cols {
+            has_inconsistencies = true;
+            eprintln!("Info: Row {} has {} columns, table has {} columns. Will pad/truncate as needed.", 
+                     row_idx, row.len(), max_cols);
+        }
+    }
+    
+    // If we detect inconsistencies, write analysis to a file (but don't treat as error)
+    if has_inconsistencies {
+        let analysis = analyze_format_crash(data, "data_consistency_info");
+        if let Err(e) = std::fs::write("dbcrust_data_analysis.txt", &analysis) {
+            eprintln!("Failed to write data analysis file: {}", e);
+        } else {
+            eprintln!("Data structure analysis written to dbcrust_data_analysis.txt");
+        }
+    }
+
+    // Find the maximum width needed for each column (using extended header)
+    let mut col_widths = vec![0; max_cols];
+
+    // Calculate widths for header columns (including extended ones)
+    for (i, col_name) in extended_header.iter().enumerate() {
+        col_widths[i] = col_name.len();
+    }
+
+    // Calculate widths for all data cells
+    for row in data.iter() {
+        for (i, cell) in row.iter().enumerate() {
+            if i < col_widths.len() {
+                col_widths[i] = col_widths[i].max(cell.len());
+            }
+            // Note: No warning here since we're handling dynamic column counts
+        }
+    }
+
+    let mut result = String::new();
+
+    // Add header row using extended header (left-aligned in psql)
+    for (i, h) in extended_header.iter().enumerate() {
+        if i > 0 {
+            result.push_str(" | ");
+        }
+        result.push_str(&safe_format_with_width(h, col_widths[i], true));
+    }
+    result.push('\n');
+
+    // Add separator line
+    for (i, width) in col_widths.iter().enumerate() {
+        if i > 0 {
+            result.push_str("-+-");
+        }
+        result.push_str(&"-".repeat(*width));
+    }
+    result.push('\n');
+
+    // Add data rows (skip header which is data[0])
+    for row in data.iter().skip(1) {
+        for i in 0..max_cols {
+            if i > 0 {
+                result.push_str(" | ");
+            }
+            
+            let cell_value = if i < row.len() {
+                &row[i]
+            } else {
+                "" // Empty string for missing columns
+            };
+            
+            // Try to right-align numeric values, left-align text
+            let is_numeric = !cell_value.is_empty() && cell_value
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+');
+            
+            if is_numeric && !cell_value.is_empty() {
+                result.push_str(&safe_format_with_width(cell_value, col_widths[i], false));
+            } else {
+                result.push_str(&safe_format_with_width(cell_value, col_widths[i], true));
+            }
+        }
+        result.push('\n');
+    }
+
+    // Add row count
+    let row_count = data.len() - 1;
+    result.push_str(&format!(
+        "({} {})\n",
+        row_count,
+        if row_count == 1 { "row" } else { "rows" }
+    ));
+
+    result
+}
+
+#[allow(dead_code)]
+pub fn debug_data_structure(data: &[Vec<String>], context: &str) {
+    if data.is_empty() {
+        eprintln!("DEBUG [{}]: Data is empty", context);
+        return;
+    }
+
+    let header = &data[0];
+    eprintln!("DEBUG [{}]: Header has {} columns: {:?}", context, header.len(), header);
+    
+    for (row_idx, row) in data.iter().enumerate().skip(1) {
+        if row.len() != header.len() {
+            eprintln!("DEBUG [{}]: Row {} has {} columns (expected {}): {:?}", 
+                     context, row_idx, row.len(), header.len(), row);
+        }
+    }
+    
+    // Check for any completely empty rows
+    let empty_rows: Vec<usize> = data.iter().enumerate()
+        .filter(|(_, row)| row.is_empty())
+        .map(|(idx, _)| idx)
+        .collect();
+    
+    if !empty_rows.is_empty() {
+        eprintln!("DEBUG [{}]: Found empty rows at indices: {:?}", context, empty_rows);
+    }
+    
+    eprintln!("DEBUG [{}]: Total rows: {}, Expected columns: {}", 
+             context, data.len(), header.len());
+}
+
+#[allow(dead_code)]
+pub fn analyze_format_crash(data: &[Vec<String>], query: &str) -> String {
+    let mut analysis = String::new();
+    
+    analysis.push_str("=== DBCRUST DATA STRUCTURE ANALYSIS ===\n");
+    analysis.push_str(&format!("Query: {}\n", query));
+    analysis.push_str(&format!("Timestamp: {}\n", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")));
+    analysis.push_str("=======================================\n\n");
+    
+    if data.is_empty() {
+        analysis.push_str("ISSUE: Data array is completely empty\n");
+        return analysis;
+    }
+    
+    let header = &data[0];
+    analysis.push_str(&format!("Header row: {} columns\n", header.len()));
+    analysis.push_str(&format!("Header contents: {:?}\n\n", header));
+    
+    if header.is_empty() {
+        analysis.push_str("ISSUE: Header row is empty\n");
+        return analysis;
+    }
+    
+    analysis.push_str("Data row analysis:\n");
+    for (row_idx, row) in data.iter().enumerate() {
+        if row_idx == 0 {
+            continue; // Skip header
+        }
+        
+        if row.len() != header.len() {
+            analysis.push_str(&format!("ROW {}: {} columns (MISMATCH! Expected {})\n", 
+                                     row_idx, row.len(), header.len()));
+            analysis.push_str(&format!("  Contents: {:?}\n", row));
+        } else if row_idx < 5 {
+            analysis.push_str(&format!("ROW {}: {} columns (OK)\n", row_idx, row.len()));
+        }
+    }
+    
+    let mismatched_rows: Vec<usize> = data.iter().enumerate()
+        .skip(1)
+        .filter(|(_, row)| row.len() != header.len())
+        .map(|(idx, _)| idx)
+        .collect();
+    
+    if !mismatched_rows.is_empty() {
+        analysis.push_str(&format!("\nFOUND {} MISMATCHED ROWS: {:?}\n", 
+                                 mismatched_rows.len(), mismatched_rows));
+    }
+    
+    // Check for any rows with suspiciously large column counts
+    let max_cols = data.iter().map(|row| row.len()).max().unwrap_or(0);
+    let min_cols = data.iter().map(|row| row.len()).min().unwrap_or(0);
+    
+    analysis.push_str(&format!("Column count range: {} to {}\n", min_cols, max_cols));
+    
+    if max_cols > header.len() {
+        analysis.push_str("INFO: Some rows have more columns than header!\n");
+        analysis.push_str(&format!("SOLUTION: Extended header from {} to {} columns with auto-generated names\n", 
+                                 header.len(), max_cols));
+    }
+    
+    if min_cols < header.len() {
+        analysis.push_str("INFO: Some rows have fewer columns than header!\n");
+        analysis.push_str("SOLUTION: Missing columns will be displayed as empty cells\n");
+    }
+    
+    analysis.push_str("\n=== DATA HANDLING STRATEGY ===\n");
+    analysis.push_str("1. Extended header to accommodate all columns\n");
+    analysis.push_str("2. Rows with missing columns: padded with empty cells\n");
+    analysis.push_str("3. Rows with extra columns: all values displayed\n");
+    analysis.push_str("4. Consistent formatting applied across all rows\n");
+    analysis.push_str("5. No data loss - all values are preserved and shown\n\n");
+    
+    if max_cols != header.len() {
+        analysis.push_str("RESULT: Table will display all data with consistent formatting.\n");
+        analysis.push_str("Extra columns will have auto-generated names (column_N).\n");
+    } else {
+        analysis.push_str("RESULT: Data structure is consistent, normal formatting applied.\n");
+    }
+    
+    analysis
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_with_inconsistent_columns() {
+        // Test case that reproduces the type of data inconsistency that could cause crashes
+        let mut test_data = Vec::new();
+        
+        // Header with 10 columns (like historical_scan_historicalscan table)
+        test_data.push(vec![
+            "id".to_string(),
+            "gg_created_at".to_string(),
+            "gg_updated_at".to_string(),
+            "type".to_string(),
+            "company_id".to_string(),
+            "status".to_string(),
+            "commit_search_query".to_string(),
+            "scan_informations".to_string(),
+            "platform_account_id".to_string(),
+            "recurrent".to_string(),
+        ]);
+        
+        // Normal row with correct number of columns
+        test_data.push(vec![
+            "1".to_string(),
+            "2023-01-01 00:00:00+00".to_string(),
+            "2023-01-01 00:00:00+00".to_string(),
+            "full".to_string(),
+            "123".to_string(),
+            "completed".to_string(),
+            "{}".to_string(),
+            "{}".to_string(),
+            "456".to_string(),
+            "true".to_string(),
+        ]);
+        
+        // Problematic row with fewer columns (could happen with corrupted data)
+        test_data.push(vec![
+            "2".to_string(),
+            "2023-01-02 00:00:00+00".to_string(),
+            "2023-01-02 00:00:00+00".to_string(),
+            "partial".to_string(),
+            "124".to_string(),
+            // Missing columns that could cause index out of bounds
+        ]);
+        
+        // Row with more columns than expected
+        test_data.push(vec![
+            "3".to_string(),
+            "2023-01-03 00:00:00+00".to_string(),
+            "2023-01-03 00:00:00+00".to_string(),
+            "full".to_string(),
+            "125".to_string(),
+            "completed".to_string(),
+            "{}".to_string(),
+            "{}".to_string(),
+            "789".to_string(),
+            "false".to_string(),
+            "extra_column".to_string(), // Extra column that shouldn't be there
+        ]);
+
+        // This should not panic, even with inconsistent data
+        let result = format_query_results_psql(&test_data);
+        
+        // Verify we get some result (even if it's a fallback)
+        assert!(!result.is_empty(), "Should return some formatted output");
+        assert!(result.contains("id"), "Should contain header information");
+        
+        // Verify that all actual data values are present in the output
+        assert!(result.contains("1"), "Should contain row 1 id");
+        assert!(result.contains("2"), "Should contain row 2 id");
+        assert!(result.contains("3"), "Should contain row 3 id");
+        assert!(result.contains("2023-01-01"), "Should contain row 1 timestamp");
+        assert!(result.contains("2023-01-02"), "Should contain row 2 timestamp");
+        assert!(result.contains("2023-01-03"), "Should contain row 3 timestamp");
+        assert!(result.contains("partial"), "Should contain row 2 type");
+        assert!(result.contains("extra_column"), "Should contain extra column value");
+        
+        // Verify that auto-generated column name appears for the extra column
+        assert!(result.contains("column_11"), "Should contain auto-generated column name");
+        
+        // Verify proper table structure with separators
+        assert!(result.contains(" | "), "Should contain column separators");
+        assert!(result.contains("---"), "Should contain header separator line");
+        
+        // Count the number of rows (should have 3 data rows plus header and separator)
+        let line_count = result.lines().count();
+        assert!(line_count >= 5, "Should have at least 5 lines (header, separator, 3 data rows)");
+        
+        println!("Enhanced test completed successfully. Output length: {}", result.len());
+        println!("Formatted output:\n{}", result);
+    }
+
+    #[test]
+    fn test_safe_formatting_functions() {
+        // Test our safe formatting function
+        assert_eq!(safe_format_with_width("test", 0, true), "test");
+        assert_eq!(safe_format_with_width("test", 10, true), "test      ");
+        assert_eq!(safe_format_with_width("test", 10, false), "      test");
+        assert_eq!(safe_format_with_width("toolongtext", 5, true), "toolongtext");
+    }
+
+    #[test]
+    fn test_empty_data_handling() {
+        let empty_data: Vec<Vec<String>> = Vec::new();
+        let result = format_query_results_psql(&empty_data);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_empty_header_handling() {
+        let data_with_empty_header = vec![vec![]];
+        let result = format_query_results_psql(&data_with_empty_header);
+        assert_eq!(result, "");
+    }
+}
+
+#[allow(dead_code)]
+pub fn format_table_details(details: &TableDetails) -> String {
+    let mut result = String::new();
+
+    // Table header
+    result.push_str(&format!("Table \"{}.{}\"\n", details.schema, details.name));
+
+    // Detect database type based on schema patterns
+    let is_sqlite = details.schema == "main";
+    let is_mysql = details.schema != "main" && details.schema != "public" && !details.columns.is_empty() && details.columns[0].collation.is_empty();
+    
+    if is_sqlite {
+        // SQLite-style format (3 columns: Column, Type, Modifiers)
+        let mut col_widths = vec![0; 3]; // For Column, Type, Modifiers
+        
+        // Calculate column widths
+        col_widths[0] = "Column".len().max(
+            details.columns.iter().map(|c| c.name.len()).max().unwrap_or(0)
+        );
+        col_widths[1] = "Type".len().max(
+            details.columns.iter().map(|c| c.data_type.len()).max().unwrap_or(0)
+        );
+        
+        // Modifiers column combines nullable and default
+        col_widths[2] = "Modifiers".len().max(
+            details.columns.iter().map(|c| {
+                let mut modifiers = Vec::new();
+                if !c.nullable {
+                    modifiers.push("NOT NULL".to_string());
+                }
+                if let Some(ref default) = c.default_value {
+                    if !default.is_empty() {
+                        modifiers.push(format!("DEFAULT {}", default));
+                    }
+                }
+                if modifiers.is_empty() {
+                    1 // For the dash
+                } else {
+                    modifiers.join(" ").len()
+                }
+            }).max().unwrap_or(1)
+        );
+        
+        // Add padding
+        for width in &mut col_widths {
+            *width += 2;
+        }
+        
+        // Header row
+        result.push_str(&format!(
+            "{:<width0$} | {:<width1$} | {:<width2$}\n",
+            "Column",
+            "Type", 
+            "Modifiers",
+            width0 = col_widths[0],
+            width1 = col_widths[1],
+            width2 = col_widths[2]
+        ));
+        
+        // Separator row
+        result.push_str(&format!(
+            "{}-+-{}-+-{}\n",
+            "-".repeat(col_widths[0]),
+            "-".repeat(col_widths[1]),
+            "-".repeat(col_widths[2])
+        ));
+        
+        // Data rows
+        for col in &details.columns {
+            let mut modifiers = Vec::new();
+            if !col.nullable {
+                modifiers.push("NOT NULL".to_string());
+            }
+            if let Some(ref default) = col.default_value {
+                if !default.is_empty() {
+                    modifiers.push(format!("DEFAULT {}", default));
+                }
+            }
+            let modifiers_str = if modifiers.is_empty() {
+                "-".to_string() // Use dash for empty modifiers for better visual consistency
+            } else {
+                modifiers.join(" ")
+            };
+            
+            result.push_str(&format!(
+                "{:<width0$} | {:<width1$} | {:<width2$}\n",
+                col.name,
+                col.data_type,
+                modifiers_str,
+                width0 = col_widths[0],
+                width1 = col_widths[1],
+                width2 = col_widths[2]
+            ));
+        }
+    } else if is_mysql {
+        // MySQL-style format (4 columns: Column, Type, Nullable, Default)
+        let mut col_widths = vec![0; 4]; // For Column, Type, Nullable, Default
+
+        // Start with header widths as minimums
+        col_widths[0] = "Column".len();
+        col_widths[1] = "Type".len();
+        col_widths[2] = "Nullable".len();
+        col_widths[3] = "Default".len();
+
+        // Find maximum width for each column
+        for col in &details.columns {
+            col_widths[0] = col_widths[0].max(col.name.len());
+            col_widths[1] = col_widths[1].max(col.data_type.len());
+            col_widths[2] = col_widths[2].max(if col.nullable {
+                "YES".len()
+            } else {
+                "NO".len()
+            });
+            col_widths[3] = col_widths[3].max(col.default_value.as_ref().map_or(4, |v| v.len())); // 4 for "NULL"
+        }
+
+        // Add some padding
+        for width in &mut col_widths {
+            *width += 2;
+        }
+
+        // Header row
+        result.push_str(&format!(
+            "{:<width0$} | {:<width1$} | {:<width2$} | {:<width3$}\n",
+            "Column",
+            "Type",
+            "Nullable",
+            "Default",
+            width0 = col_widths[0],
+            width1 = col_widths[1],
+            width2 = col_widths[2],
+            width3 = col_widths[3]
+        ));
+
+        // Separator row
+        let sep_line = format!(
+            "{}-+-{}-+-{}-+-{}\n",
+            "-".repeat(col_widths[0]),
+            "-".repeat(col_widths[1]),
+            "-".repeat(col_widths[2]),
+            "-".repeat(col_widths[3])
+        );
+        result.push_str(&sep_line);
+
+        // Data rows
+        for col in &details.columns {
+            result.push_str(&format!(
+                "{:<width0$} | {:<width1$} | {:<width2$} | {:<width3$}\n",
+                col.name,
+                col.data_type,
+                if col.nullable { "YES" } else { "NO" },
+                col.default_value.as_ref().unwrap_or(&"NULL".to_string()),
+                width0 = col_widths[0],
+                width1 = col_widths[1],
+                width2 = col_widths[2],
+                width3 = col_widths[3]
+            ));
+        }
+    } else {
+        // PostgreSQL-style format (5 columns with collation)
+        let mut col_widths = vec![0; 5]; // For Column, Type, Collation, Nullable, Default
+
+        // Start with header widths as minimums
+        col_widths[0] = "Column".len();
+        col_widths[1] = "Type".len();
+        col_widths[2] = "Collation".len();
+        col_widths[3] = "Nullable".len();
+        col_widths[4] = "Default".len();
+
+        // Find maximum width for each column
+        for col in &details.columns {
+            col_widths[0] = col_widths[0].max(col.name.len());
+            col_widths[1] = col_widths[1].max(col.data_type.len());
+            col_widths[2] = col_widths[2].max(col.collation.len());
+            col_widths[3] = col_widths[3].max(if col.nullable {
+                "yes".len()
+            } else {
+                "not null".len()
+            });
+            col_widths[4] = col_widths[4].max(col.default_value.as_ref().map_or(0, |v| v.len()));
+        }
+
+        // Add some padding
+        for width in &mut col_widths {
+            *width += 2;
+        }
+
+        // Header row
+        result.push_str(&format!(
+            "{:<width0$} | {:<width1$} | {:<width2$} | {:<width3$} | {:<width4$}\n",
+            "Column",
+            "Type",
+            "Collation",
+            "Nullable",
+            "Default",
+            width0 = col_widths[0],
+            width1 = col_widths[1],
+            width2 = col_widths[2],
+            width3 = col_widths[3],
+            width4 = col_widths[4]
+        ));
+
+        // Separator row
+        let sep_line = format!(
+            "{}-+-{}-+-{}-+-{}-+-{}\n",
+            "-".repeat(col_widths[0]),
+            "-".repeat(col_widths[1]),
+            "-".repeat(col_widths[2]),
+            "-".repeat(col_widths[3]),
+            "-".repeat(col_widths[4])
+        );
+        result.push_str(&sep_line);
+
+        // Data rows
+        for col in &details.columns {
+            result.push_str(&format!(
+                "{:<width0$} | {:<width1$} | {:<width2$} | {:<width3$} | {:<width4$}\n",
+                col.name,
+                col.data_type,
+                col.collation,
+                if col.nullable { "" } else { "not null" },
+                col.default_value.as_ref().unwrap_or(&String::new()),
+                width0 = col_widths[0],
+                width1 = col_widths[1],
+                width2 = col_widths[2],
+                width3 = col_widths[3],
+                width4 = col_widths[4]
+            ));
+        }
+    }
+
+    // Indexes
+    if !details.indexes.is_empty() {
+        result.push_str("Indexes:\n");
+
+        for idx in &details.indexes {
+            // Use the part of the definition after "USING" or the full definition if "USING" is not present.
+            // This part usually contains the method and columns, e.g., "btree (column_name)".
+            let def_part = idx
+                .definition
+                .split_once(" USING ")
+                .map_or(&*idx.definition, |(_create_kw, def)| def.trim());
+
+            let idx_type_display = if def_part
+                .to_lowercase()
+                .starts_with(&idx.index_type.to_lowercase())
+            {
+                // If def_part already starts with the index type (e.g. "btree (id)"), don't prepend idx.index_type
+                String::new()
+            } else {
+                // Otherwise, include idx.index_type (e.g. for GIN, GIST if not in def_part directly)
+                format!("{} ", idx.index_type)
+            };
+
+            let idx_desc = if idx.is_primary {
+                format!(
+                    "\"{}\" PRIMARY KEY, {}{}",
+                    idx.name,
+                    idx_type_display, // Potentially empty if type is in def_part
+                    def_part
+                )
+            } else if idx.is_unique {
+                format!(
+                    "\"{}\" UNIQUE CONSTRAINT, {}{}",
+                    idx.name, idx_type_display, def_part
+                )
+            } else {
+                format!("\"{}\" {}{}", idx.name, idx_type_display, def_part)
+            };
+
+            // Add predicate (WHERE clause) if present
+            let idx_line = if let Some(pred) = &idx.predicate {
+                format!("    {} WHERE {}", idx_desc, pred)
+            } else {
+                format!("    {}", idx_desc)
+            };
+
+            result.push_str(&format!("{}\n", idx_line));
+        }
+        result.push_str("\n"); // Add a blank line after the Indexes section if it's not empty
+    }
+
+    // Check constraints
+    if !details.check_constraints.is_empty() {
+        result.push_str("Check constraints:\n");
+        for cc in &details.check_constraints {
+            result.push_str(&format!("    \"{}\" {}\n", cc.name, cc.definition));
+        }
+        result.push_str("\n"); // Add a blank line after the Check constraints section if it's not empty
+    }
+
+    // Foreign keys
+    if !details.foreign_keys.is_empty() {
+        result.push_str("Foreign-key constraints:\n");
+
+        for fk in &details.foreign_keys {
+            result.push_str(&format!("    \"{}\" {}\n", fk.name, fk.definition));
+        }
+        result.push_str("\n"); // Add a blank line after the Foreign keys section if it's not empty
+    }
+
+    // Referenced by
+    if !details.referenced_by.is_empty() {
+        result.push_str("Referenced by:\n");
+
+        for rf in &details.referenced_by {
+            result.push_str(&format!(
+                "    TABLE \"{}\".\"{}\" CONSTRAINT \"{}\" {}\n",
+                rf.schema, rf.table, rf.constraint_name, rf.definition
+            ));
+        }
+        result.push_str("\n"); // Add a blank line after the Referenced by section if it's not empty
+    }
+
+    result
+}

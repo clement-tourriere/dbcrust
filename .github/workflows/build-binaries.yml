@@ -1,0 +1,317 @@
+name: "Build release binaries"
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - .github/workflows/build-binaries.yml
+      - Cargo.toml
+      - Cargo.lock
+      - pyproject.toml
+      - src/**
+      - python/**
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+env:
+  PACKAGE_NAME: dbcrust
+  MODULE_NAME: dbcrust
+
+jobs:
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Prep README for PyPI"
+        run: python scripts/transform_readme.py --target pypi
+
+      - name: "Build sdist"
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: >
+            --manifest-path Cargo.toml
+            --out dist
+
+      - name: "Test sdist"
+        run: |
+          pip install dist/$PACKAGE_NAME-*.tar.gz --force-reinstall
+          $PACKAGE_NAME --help
+
+      - name: "Upload sdist"
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels_sdist
+          path: dist
+
+  macos-x86_64:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Prep README for PyPI"
+        run: python scripts/transform_readme.py --target pypi
+
+      - name: "Build wheels - x86_64"
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: >
+            --release
+            --locked
+            --out dist
+            --features python
+
+      - name: "Test wheel"
+        run: |
+          pip install dist/$PACKAGE_NAME-*.whl --force-reinstall
+          $PACKAGE_NAME --help
+
+      - name: "Archive binary"
+        run: |
+          ARCHIVE_FILE=$PACKAGE_NAME-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz
+          tar czvf $ARCHIVE_FILE -C target/x86_64-apple-darwin/release $PACKAGE_NAME dbc
+          shasum -a 256 $ARCHIVE_FILE > $ARCHIVE_FILE.sha256
+
+      - name: "Upload wheels"
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels_${{ env.PACKAGE_NAME }}-macos-x86_64
+          path: dist
+
+      - name: "Upload binary"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-macos-x86_64
+          path: |
+            *.tar.gz
+            *.sha256
+
+  macos-aarch64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Prep README for PyPI"
+        run: python scripts/transform_readme.py --target pypi
+
+      - name: "Build wheels - aarch64"
+        uses: PyO3/maturin-action@v1
+        with:
+          target: aarch64
+          args: >
+            --release
+            --locked
+            --out dist
+            --features python
+
+      - name: "Test wheel"
+        run: |
+          pip install dist/$PACKAGE_NAME-*.whl --force-reinstall
+          $PACKAGE_NAME --help
+
+      - name: "Archive binary"
+        run: |
+          ARCHIVE_FILE=$PACKAGE_NAME-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
+          tar czvf $ARCHIVE_FILE -C target/aarch64-apple-darwin/release $PACKAGE_NAME dbc
+          shasum -a 256 $ARCHIVE_FILE > $ARCHIVE_FILE.sha256
+
+      - name: "Upload wheels"
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels_${{ env.PACKAGE_NAME }}-macos-aarch64
+          path: dist
+
+      - name: "Upload binary"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-macos-aarch64
+          path: |
+            *.tar.gz
+            *.sha256
+
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - i686-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Prep README for PyPI"
+        run: python scripts/transform_readme.py --target pypi
+
+      - name: "Build wheels"
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          args: >
+            --release
+            --locked
+            --out dist
+            --features python
+
+      - name: "Test wheel"
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          pip install dist/$PACKAGE_NAME-*.whl --force-reinstall
+          $PACKAGE_NAME --help
+
+      - name: "Archive binary"
+        run: |
+          ARCHIVE_FILE=$PACKAGE_NAME-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          tar czvf $ARCHIVE_FILE -C target/${{ matrix.target }}/release $PACKAGE_NAME dbc
+          sha256sum $ARCHIVE_FILE > $ARCHIVE_FILE.sha256
+
+      - name: "Upload wheels"
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels_${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: dist
+
+      - name: "Upload binary"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.sha256
+
+  linux-arm:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - aarch64-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Prep README for PyPI"
+        run: python scripts/transform_readme.py --target pypi
+
+      - name: "Build wheels"
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: auto
+          args: >
+            --release
+            --locked
+            --out dist
+            --features python
+
+      - name: "Archive binary"
+        run: |
+          ARCHIVE_FILE=$PACKAGE_NAME-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          tar czvf $ARCHIVE_FILE -C target/${{ matrix.target }}/release $PACKAGE_NAME dbc
+          sha256sum $ARCHIVE_FILE > $ARCHIVE_FILE.sha256
+
+      - name: "Upload wheels"
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels_${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: dist
+
+      - name: "Upload binary"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.sha256
+
+  musllinux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Prep README for PyPI"
+        run: python scripts/transform_readme.py --target pypi
+
+      - name: "Build wheels"
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: musllinux_1_2
+          args: >
+            --release
+            --locked
+            --out dist
+            --features python
+
+      - name: "Test wheel"
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        uses: addnab/docker-run-action@v3
+        with:
+          image: alpine:latest
+          options: -v ${{ github.workspace }}:/io -w /io
+          run: |
+            apk add python3 py3-pip
+            pip install dist/$PACKAGE_NAME-*.whl --force-reinstall --break-system-packages
+            $PACKAGE_NAME --help
+
+      - name: "Archive binary"
+        run: |
+          ARCHIVE_FILE=$PACKAGE_NAME-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
+          tar czvf $ARCHIVE_FILE -C target/${{ matrix.target }}/release $PACKAGE_NAME dbc
+          sha256sum $ARCHIVE_FILE > $ARCHIVE_FILE.sha256
+
+      - name: "Upload wheels"
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels_${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: dist
+
+      - name: "Upload binary"
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: |
+            *.tar.gz
+            *.sha256

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["maturin>=1.2,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "dbcrust"
+version = "0.1.0"
+description = "Multi-database interactive client (PostgreSQL, SQLite, MySQL) with tab completion"
+authors = [{ name = "Clément Tourrière", email = "clement.tourriere@gmail.com" }]
+requires-python = ">=3.10"
+keywords = [
+    "dbcrust", "database", "postgres", "mysql", "sqlite", "cli", "interactive",
+]
+readme = "README.md"
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "dbcrust._internal"
+strip = true
+python-source = "python"
+features = ["python"]
+console-scripts = ["dbcrust = dbcrust.__main__:main", "dbc = dbcrust.__main__:main"]
+
+[tool.maturin.dependencies]
+colorama = ">=0.4.4"
+
+[project.scripts]
+dbc = "dbcrust.__main__:main"
+dbcrust = "dbcrust.__main__:main"
+

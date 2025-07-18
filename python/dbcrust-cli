@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""
+Command-line script to run the dbcrust PostgreSQL client.
+This file will be installed as a script when the wheel is installed.
+"""
+import sys
+from dbcrust.__main__ import main
+
+if __name__ == "__main__":
+    sys.exit(main()) 

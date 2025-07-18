@@ -1,0 +1,64 @@
+name: "Release"
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and release"
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+    steps:
+      - id: plan
+        run: |
+          # For workflow_dispatch, use the provided tag
+          # For release events, use the tag from the release
+          TAG="${{ github.event.inputs.tag || github.event.release.tag_name }}"
+          echo "plan={\"tag\": \"$TAG\"}" >> $GITHUB_OUTPUT
+
+  build-binaries:
+    needs: plan
+    uses: ./.github/workflows/build-binaries.yml
+    with:
+      plan: ${{ needs.plan.outputs.plan }}
+
+  publish-pypi:
+    if: ${{ !github.event.release.prerelease }}
+    needs: [plan, build-binaries]
+    uses: ./.github/workflows/publish-pypi.yml
+    with:
+      plan: ${{ needs.plan.outputs.plan }}
+
+  upload-release-artifacts:
+    if: ${{ github.event_name == 'release' }}
+    needs: [plan, build-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: "Download all artifacts"
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: "Upload release assets"
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/dbcrust-*/*.tar.gz
+            artifacts/dbcrust-*/*.zip
+            artifacts/dbcrust-*/*.sha256
+          tag_name: ${{ github.event.release.tag_name }}
+          draft: false
+          prerelease: ${{ github.event.release.prerelease }}

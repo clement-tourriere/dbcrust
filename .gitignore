@@ -1,0 +1,13 @@
+/target
+.cargo/
+dist/
+.DS_Store
+.venv/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+.idea/
+.env
+
+__pycache__
+*.so

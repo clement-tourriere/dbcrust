@@ -1,0 +1,110 @@
+[package]
+name = "dbcrust"
+version = "0.1.0"
+edition = "2024"
+description = "Multi-database interactive client (PostgreSQL, SQLite, MySQL) with tab completion"
+authors = ["dbcrust authors"]
+default-run = "dbcrust"
+
+[lib]
+name = "dbcrust"
+crate-type = ["cdylib", "rlib"]
+required-features = ["python"]
+
+[[bin]]
+name = "dbcrust"
+path = "src/main.rs"
+
+[[bin]]
+name = "dbc"
+path = "src/bin/dbc.rs"
+
+[dependencies]
+reedline = { version = "0.40", default-features = false }
+sqlx = { version = "0.8", features = [
+    "runtime-tokio-rustls",
+    "postgres",
+    "sqlite",
+    "mysql",
+    "chrono",
+    "json",
+    "uuid",
+    "ipnetwork",
+    "mac_address",
+    "rust_decimal",
+    "any",
+], default-features = false }
+prettytable-rs = { version = "0.10", default-features = false }
+terminal_size = { version = "0.4.2", default-features = false }
+clap = { version = "4.5", features = [
+    "derive",
+    "std",
+    "help",
+    "env",
+], default-features = false }
+clap_complete = { version = "4.1", default-features = false }
+rpassword = { version = "7.3", default-features = false }
+hex = { version = "0.4", default-features = false, features = ["std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+serde = { version = "1.0", features = ["derive"], default-features = false }
+serde_json = { version = "1.0", default-features = false, features = ["std"] }
+nu-ansi-term = { version = "0.50", default-features = false }
+pyo3 = { version = "0.25.0", features = [
+    "extension-module",
+    "abi3-py38",
+    "experimental-async",
+], optional = true, default-features = false }
+toml = { version = "0.9", default-features = false, features = [
+    "display",
+    "parse",
+    "serde"
+] }
+dirs = { version = "6.0", default-features = false }
+regex = { version = "1.10.2", default-features = false, features = [
+    "unicode-perl",
+    "std",
+] }
+
+signal-hook = { version = "0.3.17", default-features = false }
+tempfile = { version = "3.20", default-features = false }
+tokio = { version = "1", default-features = false, features = [
+    "rt-multi-thread",
+    "macros",
+    "net",
+    "process",
+    "time",
+    "sync",
+] }
+async-trait = { version = "0.1", default-features = false }
+rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "thread_rng"] }
+thiserror = { version = "2.0", default-features = false }
+url = { version = "2.5.0", default-features = false }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+inquire = { version = "0.7.5", default-features = false, features = ["crossterm"] }
+arboard = { version = "3.4", default-features = false }
+bollard = { version = "0.19", default-features = true }
+
+[features]
+default = []
+python = ["pyo3", "pyo3/auto-initialize", "pyo3/macros"]
+
+[profile.release]
+opt-level = 3     # Maximum optimization
+lto = true        # Enable Link Time Optimization
+codegen-units = 1 # Maximize performance, slower compile time
+strip = true      # Strip symbols from binary
+panic = "abort"   # Abort on panic for smaller binary size
+debug = false     # No debug info
+
+[profile.dev]
+opt-level = 0 # No optimization for faster compile times during development
+debug = true  # Include debug info
+
+[profile.bench]
+opt-level = 3     # Maximum optimization for benchmarks
+lto = true        # Enable Link Time Optimization
+codegen-units = 1 # Maximize performance
+
+[dev-dependencies]
+rstest = { version = "0.25.0", default-features = false }
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }

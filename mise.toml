@@ -1,0 +1,7 @@
+[tools]
+node = "latest"
+"pipx:commitizen" = "latest"
+"pipx:pre-commit" = "latest"
+
+[env]
+_.python.venv = ".venv"
