@@ -128,6 +128,18 @@ impl SSHTunnel {
         cmd.arg("ExitOnForwardFailure=yes");
         cmd.arg("-o");
         cmd.arg("BatchMode=yes");
+        cmd.arg("-o");
+        cmd.arg("ConnectTimeout=3");  // Reduced from 5 to 3 seconds
+        cmd.arg("-o");
+        cmd.arg("ServerAliveInterval=10");
+        cmd.arg("-o");
+        cmd.arg("ServerAliveCountMax=2");
+        cmd.arg("-o");
+        cmd.arg("StrictHostKeyChecking=accept-new");
+        cmd.arg("-o");
+        cmd.arg("PasswordAuthentication=no");
+        cmd.arg("-o");
+        cmd.arg("LogLevel=ERROR");
 
         if let Some(key_path) = &self.ssh_key {
             cmd.arg("-i");
@@ -145,7 +157,7 @@ impl SSHTunnel {
 
         // Create a user-friendly representation of the SSH command for debug output
         let ssh_command_str = format!(
-            "ssh -L{}:{}:{} -N -o ExitOnForwardFailure=yes -o BatchMode=yes {}{}@{} -p {}",
+            "ssh -L{}:{}:{} -N -o ExitOnForwardFailure=yes -o BatchMode=yes -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=accept-new -o PasswordAuthentication=no -o LogLevel=ERROR {}{}@{} -p {}",
             self.local_port,
             self.remote_host,
             self.remote_port,
@@ -189,13 +201,42 @@ impl SSHTunnel {
         *process_guard = Some(child);
         drop(process_guard);
 
-        let total_establishment_timeout = Duration::from_secs(12);
-        let tcp_check_interval = Duration::from_secs(1);
-        let individual_tcp_connect_timeout = Duration::from_secs(1);
+        let total_establishment_timeout = Duration::from_secs(8);  // Reduced from 12
+        let tcp_check_interval = Duration::from_millis(500);      // Check more frequently
+        let individual_tcp_connect_timeout = Duration::from_millis(500);  // Faster timeout
         let start_time = tokio::time::Instant::now();
         let local_addr = format!("127.0.0.1:{}", self.local_port);
+        
+        // Give SSH a moment to establish before first check
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         loop {
+            // First check if SSH process has already exited (failed)
+            if let Ok(mut guard) = self.tunnel_process.lock() {
+                if let Some(child) = guard.as_mut() {
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            // SSH process has exited - this is an error
+                            let mut stderr_output = String::new();
+                            if let Some(mut stderr) = child.stderr.take() {
+                                let _ = stderr.read_to_string(&mut stderr_output).await;
+                            }
+                            return Err(SSHTunnelError::SshCommandFailed(format!(
+                                "SSH process exited with status: {}. Error: {}",
+                                status,
+                                stderr_output.trim()
+                            )));
+                        }
+                        Ok(None) => {
+                            // Process is still running, continue
+                        }
+                        Err(e) => {
+                            debug_log!("Error checking SSH process status: {}", e);
+                        }
+                    }
+                }
+            }
+            
             if start_time.elapsed() >= total_establishment_timeout {
                 eprintln!(
                     "Total timeout of {:?} reached for SSH tunnel establishment to {}.",

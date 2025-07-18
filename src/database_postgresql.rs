@@ -222,12 +222,13 @@ impl PostgreSQLClient {
             connect_options = connect_options.ssl_mode(ssl_mode);
         }
 
-        // Configure connection pool
+        // Configure connection pool - don't connect yet for SSH tunnel scenarios
         let pool = PgPoolOptions::new()
             .max_connections(8)
-            .min_connections(2)
-            .acquire_timeout(std::time::Duration::from_secs(30))
+            .min_connections(0)  // Don't pre-connect - wait for SSH tunnel
+            .acquire_timeout(std::time::Duration::from_secs(15)) // Allow time for SSH tunnel establishment
             .idle_timeout(std::time::Duration::from_secs(300))
+            .test_before_acquire(false)  // Skip connection tests
             .connect_with(connect_options)
             .await
             .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?;
@@ -278,7 +279,7 @@ impl PostgreSQLClient {
                     }
                     
                     formatted_results.push(vec!["".to_string()]);
-                    formatted_results.push(vec!["💡 Use \\copy to copy the raw JSON plan to clipboard".to_string()]);
+                    formatted_results.push(vec!["💡 Use \\ecopy to copy the raw JSON plan to clipboard".to_string()]);
                 },
                 Err(e) => {
                     debug_log!("[PostgreSQLClient::format_explain_output] JSON parse error: {}", e);

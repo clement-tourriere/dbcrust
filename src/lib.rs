@@ -24,6 +24,7 @@ pub mod script;
 pub mod ssh_tunnel; // Add the SSH tunnel module
 pub mod vault_client;
 pub mod docker; // Docker container integration
+pub mod backslash_commands; // Add backslash commands module
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;

@@ -1,6 +1,7 @@
 use std::io::{ErrorKind, Write};
 use std::process::{Command, Stdio};
 
+#[allow(dead_code)]
 pub fn page_output(content: &str, pager_cmd_str: &str) -> std::io::Result<()> {
     if content.is_empty() {
         return Ok(());

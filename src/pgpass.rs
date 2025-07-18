@@ -11,6 +11,7 @@ pub struct PgPassEntry {
     pub port: String,
     pub database: String,
     pub username: String,
+    #[allow(dead_code)]
     pub password: String,
 }
 
@@ -39,6 +40,7 @@ pub fn get_pgpass_path() -> Option<PathBuf> {
 }
 
 /// Check if .pgpass file has correct permissions (only for Unix systems)
+#[allow(dead_code)]
 fn has_correct_permissions(path: &Path) -> bool {
     #[cfg(target_family = "unix")]
     {
@@ -103,6 +105,7 @@ fn parse_pgpass_line(line: &str) -> Option<PgPassEntry> {
 }
 
 /// Read the .pgpass file and find a matching password
+#[allow(dead_code)]
 pub fn lookup_password(host: &str, port: u16, dbname: &str, username: &str) -> Option<String> {
     let pgpass_path = get_pgpass_path()?;
 

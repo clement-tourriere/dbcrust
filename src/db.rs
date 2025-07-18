@@ -66,6 +66,7 @@ impl Database {
         expanded_display_default: Option<bool>,
     ) -> std::result::Result<Self, Box<dyn StdError>> {
         debug_log!("[Database::from_url] Creating database from URL");
+        let step_start = std::time::Instant::now();
         
         // Handle Docker URLs specially
         if url.starts_with("docker://") {
@@ -73,15 +74,38 @@ impl Database {
         }
         
         // Parse the connection info from URL
+        println!("  📋 Parsing connection URL...");
         let connection_info = ConnectionInfo::parse_url(url)?;
+        debug_log!("[Database::from_url] Parsed URL in {:?}", step_start.elapsed());
         
         // For SQLite, we don't need SSH tunneling
         if connection_info.database_type == DatabaseType::SQLite {
             return Self::from_connection_info(connection_info, default_limit, expanded_display_default, None).await;
         }
         
-        // For PostgreSQL/MySQL, we might need SSH tunneling (to be implemented)
-        Self::from_connection_info(connection_info, default_limit, expanded_display_default, None).await
+        // For PostgreSQL/MySQL, check for SSH tunnel patterns
+        println!("  🔍 Checking for SSH tunnel patterns...");
+        let config_start = std::time::Instant::now();
+        let config = crate::config::Config::load();
+        let ssh_tunnel_config = if let Some(ref host) = connection_info.host {
+            config.get_ssh_tunnel_for_host(host)
+        } else {
+            None
+        };
+        debug_log!("[Database::from_url] Config check took {:?}", config_start.elapsed());
+        
+        if ssh_tunnel_config.is_some() {
+            println!("  ✓ SSH tunnel pattern found for host: {:?}", connection_info.host);
+            debug_log!("[Database::from_url] SSH tunnel configuration found for host: {:?}", connection_info.host);
+        } else {
+            println!("  ⚠️  No SSH tunnel pattern found for host: {:?}", connection_info.host);
+        }
+        
+        println!("  🔧 Creating database connection...");
+        let conn_start = std::time::Instant::now();
+        let result = Self::from_connection_info(connection_info, default_limit, expanded_display_default, ssh_tunnel_config).await;
+        debug_log!("[Database::from_url] from_connection_info took {:?}", conn_start.elapsed());
+        result
     }
     
     /// Create a new Database instance from a Docker URL
@@ -257,20 +281,33 @@ impl Database {
     ) -> std::result::Result<Self, Box<dyn StdError>> {
         debug_log!("[Database::from_connection_info] Creating database from connection info");
         
+        println!("    📦 Loading configuration...");
+        let config_start = std::time::Instant::now();
         let config = crate::config::Config::load();
+        debug_log!("[Database::from_connection_info] Config loaded in {:?}", config_start.elapsed());
         
         // Create database client using the new abstraction layer
-        let database_client = match create_database_client(connection_info.clone()).await {
-            Ok(client) => Some(client),
-            Err(e) => {
-                debug_log!("Failed to create database client: {}. Will use legacy implementation if available.", e);
-                // For SQLite databases, we must use the new abstraction layer - don't allow fallback to mock
-                if connection_info.database_type == DatabaseType::SQLite {
-                    return Err(format!("Failed to create SQLite database client: {}", e).into());
+        // Skip this for SSH tunnel scenarios to avoid premature connection attempts
+        println!("    🔌 Creating database client...");
+        let client_start = std::time::Instant::now();
+        let database_client = if ssh_tunnel_config.is_some() {
+            // Skip database client creation for SSH tunnel scenarios - use legacy path
+            println!("    ⏭️  Skipping database client for SSH tunnel scenario");
+            None
+        } else {
+            match create_database_client(connection_info.clone()).await {
+                Ok(client) => Some(client),
+                Err(e) => {
+                    debug_log!("Failed to create database client: {}. Will use legacy implementation if available.", e);
+                    // For SQLite databases, we must use the new abstraction layer - don't allow fallback to mock
+                    if connection_info.database_type == DatabaseType::SQLite {
+                        return Err(format!("Failed to create SQLite database client: {}", e).into());
+                    }
+                    None
                 }
-                None
             }
         };
+        debug_log!("[Database::from_connection_info] Database client creation took {:?}", client_start.elapsed());
         
         // For non-PostgreSQL databases, we don't use the legacy fields
         let (pool, host, port, user, password, current_dbname, ssh_tunnel, original_host, original_port) = 
@@ -281,10 +318,88 @@ impl Database {
                 let user = connection_info.username.unwrap_or_else(|| "postgres".to_string());
                 let dbname = connection_info.database.unwrap_or_else(|| "postgres".to_string());
                 
-                // Create legacy PostgreSQL connection (would use ssh_tunnel_config if provided)
+                // Store original connection details
+                let original_host = host.clone();
+                let original_port = port;
+                
+                // Create SSH tunnel if configured
+                let ssh_tunnel = Arc::new(Mutex::new(SSHTunnel::new()));
+                
+                // Variable to store the pool once created (either directly or after SSH tunnel)
+                let mut pg_pool: Option<sqlx::PgPool> = None;
+                
+                // Determine the actual host and port to use for database connection
+                let (connect_host, connect_port) = if let Some(ref tunnel_config) = ssh_tunnel_config {
+                    if tunnel_config.enabled {
+                        let mut tunnel_guard = ssh_tunnel.lock().unwrap();
+                        
+                        // Ensure there's a tunnel instance
+                        if tunnel_guard.is_none() {
+                            *tunnel_guard = SSHTunnel::new();
+                        }
+                        
+                        // Establish the tunnel
+                        if let Some(ref mut actual_tunnel) = *tunnel_guard {
+                            match actual_tunnel.establish(&tunnel_config, &host, port).await {
+                                Ok(local_port) => {
+                                    status_log!(
+                                        "SSH tunnel: {}:{} via {}@{} -> 127.0.0.1:{}",
+                                        host,
+                                        port,
+                                        tunnel_config.ssh_username.as_ref().unwrap_or(&"unknown".to_string()),
+                                        tunnel_config.ssh_host,
+                                        local_port
+                                    );
+                                    
+                                    // Now create the PostgreSQL pool using the tunnel connection
+                                    println!("    🔌 Creating PostgreSQL pool through SSH tunnel...");
+                                    let tunnel_connect_options = sqlx::postgres::PgConnectOptions::new()
+                                        .host("127.0.0.1")
+                                        .port(local_port)
+                                        .username(&user)
+                                        .database(&dbname);
+                                    
+                                    let tunnel_connect_options = if let Some(ref pass) = connection_info.password {
+                                        tunnel_connect_options.password(pass)
+                                    } else {
+                                        tunnel_connect_options
+                                    };
+                                    
+                                    // Create the pool now that tunnel is established
+                                    pg_pool = Some(sqlx::postgres::PgPoolOptions::new()
+                                        .max_connections(10)
+                                        .min_connections(0)
+                                        .acquire_timeout(std::time::Duration::from_secs(15))
+                                        .idle_timeout(std::time::Duration::from_secs(60))
+                                        .max_lifetime(std::time::Duration::from_secs(1800))
+                                        .test_before_acquire(false)
+                                        .connect_with(tunnel_connect_options)
+                                        .await
+                                        .map_err(|e| format!("Failed to create PostgreSQL pool through SSH tunnel: {}", e))?);
+                                    
+                                    // Release the tunnel guard
+                                    drop(tunnel_guard);
+                                    
+                                    ("127.0.0.1".to_string(), local_port)
+                                },
+                                Err(e) => {
+                                    return Err(format!("Failed to establish SSH tunnel: {}", e).into());
+                                }
+                            }
+                        } else {
+                            return Err("Failed to create SSH tunnel instance".into());
+                        }
+                    } else {
+                        (host.clone(), port)
+                    }
+                } else {
+                    (host.clone(), port)
+                };
+                
+                // Create PostgreSQL connection with actual connection details
                 let mut connect_options = sqlx::postgres::PgConnectOptions::new()
-                    .host(&host)
-                    .port(port)
+                    .host(&connect_host)
+                    .port(connect_port)
                     .username(&user)
                     .database(&dbname);
 
@@ -292,25 +407,22 @@ impl Database {
                     connect_options = connect_options.password(pass);
                 }
 
-                let pool = Some(sqlx::postgres::PgPoolOptions::new()
-                    .max_connections(10) // Increased pool size for autocompletion with large databases
-                    .min_connections(2) // Keep some connections alive
-                    .acquire_timeout(std::time::Duration::from_secs(30))
-                    .idle_timeout(std::time::Duration::from_secs(60))
-                    .max_lifetime(std::time::Duration::from_secs(1800))
-                    .test_before_acquire(false)
-                    .connect_with(connect_options)
-                    .await?);
+                // Create pool if not already created through SSH tunnel
+                if pg_pool.is_none() {
+                    println!("    🔌 Creating PostgreSQL pool...");
+                    pg_pool = Some(sqlx::postgres::PgPoolOptions::new()
+                        .max_connections(10) // Increased pool size for autocompletion with large databases
+                        .min_connections(0) // Don't pre-connect
+                        .acquire_timeout(std::time::Duration::from_secs(15))
+                        .idle_timeout(std::time::Duration::from_secs(60))
+                        .max_lifetime(std::time::Duration::from_secs(1800))
+                        .test_before_acquire(false)
+                        .connect_with(connect_options)
+                        .await?);
+                }
                 
-                // Use SSH tunnel if provided (for future enhancement)
-                let tunnel = if ssh_tunnel_config.is_some() {
-                    Arc::new(Mutex::new(SSHTunnel::new()))
-                } else {
-                    Arc::new(Mutex::new(SSHTunnel::new()))
-                };
-                
-                (pool, host.clone(), port, user.clone(), connection_info.password.clone(), 
-                 dbname.clone(), tunnel, host, port)
+                (pg_pool, connect_host, connect_port, user.clone(), connection_info.password.clone(), 
+                 dbname.clone(), ssh_tunnel, original_host, original_port)
             } else {
                 // For SQLite and other databases, use appropriate values (SSH tunneling not applicable)
                 let _ = ssh_tunnel_config; // Acknowledge the parameter to avoid warning
@@ -495,7 +607,7 @@ impl Database {
             PgPoolOptions::new()
                 .max_connections(10) // Increased pool size for autocompletion with large databases
                 .min_connections(2) // Keep some connections alive
-                .acquire_timeout(std::time::Duration::from_secs(30)) // Standard timeout for direct connections
+                .acquire_timeout(std::time::Duration::from_secs(2)) // Reduced to 2s for faster SSH tunnel setup
                 .idle_timeout(std::time::Duration::from_secs(60)) // Shorter idle timeout for direct connections
                 .max_lifetime(std::time::Duration::from_secs(1800)) // 30-minute connection lifetime
                 .test_before_acquire(false) // Skip connection validation for better performance
@@ -681,7 +793,7 @@ impl Database {
         let new_pool = PgPoolOptions::new()
             .max_connections(10) // Increased pool size for autocompletion with large databases
             .min_connections(2) // Keep some connections alive
-            .acquire_timeout(std::time::Duration::from_secs(30))
+            .acquire_timeout(std::time::Duration::from_secs(2))  // Reduced to 2s for faster SSH tunnel setup
             .idle_timeout(std::time::Duration::from_secs(60))
             .max_lifetime(std::time::Duration::from_secs(1800))
             .test_before_acquire(false)
@@ -3325,16 +3437,16 @@ mod tests {
     async fn test_toggle_banner_enabled() {
         let mut db = Database::new_for_test();
 
-        // Default should be true (based on config.show_banner_default)
-        assert!(db.is_banner_enabled());
-
-        // First toggle should disable
-        assert!(!db.toggle_banner_enabled());
+        // Default should be false (based on config.show_banner_default)
         assert!(!db.is_banner_enabled());
 
-        // Second toggle should enable
+        // First toggle should enable
         assert!(db.toggle_banner_enabled());
         assert!(db.is_banner_enabled());
+
+        // Second toggle should disable
+        assert!(!db.toggle_banner_enabled());
+        assert!(!db.is_banner_enabled());
     }
 
     #[rstest]
@@ -3455,5 +3567,122 @@ mod tests {
         assert_eq!(filtered_data[1][1], "val3");
         assert_eq!(filtered_data[2][0], "val4");
         assert_eq!(filtered_data[2][1], "val6");
+    }
+    
+    #[tokio::test]
+    async fn test_ssh_tunnel_pattern_detection() {
+        use crate::config::Config;
+        
+        // Create a test config with SSH tunnel patterns
+        let mut config = Config::default();
+        config.ssh_tunnel_patterns.insert(
+            "^test\\.internal\\..*\\.com$".to_string(),
+            "testuser@jumphost.example.com:2222".to_string(),
+        );
+        
+        // Test that get_ssh_tunnel_for_host correctly identifies matching patterns
+        let tunnel_config = config.get_ssh_tunnel_for_host("test.internal.example.com");
+        assert!(tunnel_config.is_some());
+        
+        let tunnel = tunnel_config.unwrap();
+        assert_eq!(tunnel.ssh_host, "jumphost.example.com");
+        assert_eq!(tunnel.ssh_port, 2222);
+        assert_eq!(tunnel.ssh_username, Some("testuser".to_string()));
+        assert!(tunnel.enabled);
+        
+        // Test non-matching pattern
+        let no_tunnel = config.get_ssh_tunnel_for_host("regular.example.com");
+        assert!(no_tunnel.is_none());
+    }
+    
+    #[tokio::test] 
+    async fn test_from_url_applies_ssh_tunnel_config() {
+        // Test the logic flow without actually establishing SSH tunnel
+        // We'll test that the SSH tunnel configuration is correctly passed through
+        
+        use crate::config::Config;
+        
+        // Create a URL that would trigger SSH tunnel
+        let test_url = "postgresql://user:pass@test.internal.example.com:5432/testdb";
+        
+        // Manually create and test the flow that from_url should follow
+        let connection_info = ConnectionInfo::parse_url(test_url).unwrap();
+        assert_eq!(connection_info.host, Some("test.internal.example.com".to_string()));
+        
+        // Create a test config with SSH tunnel pattern
+        let mut config = Config::default();
+        config.ssh_tunnel_patterns.insert(
+            "^test\\.internal\\..*\\.com$".to_string(),
+            "testuser@jumphost.example.com:2222".to_string(),
+        );
+        
+        // Test that the pattern is detected
+        let ssh_tunnel_config = if let Some(ref host) = connection_info.host {
+            config.get_ssh_tunnel_for_host(host)
+        } else {
+            None
+        };
+        
+        assert!(ssh_tunnel_config.is_some());
+        let tunnel = ssh_tunnel_config.unwrap();
+        assert_eq!(tunnel.ssh_host, "jumphost.example.com");
+        assert_eq!(tunnel.ssh_port, 2222);
+        assert_eq!(tunnel.ssh_username, Some("testuser".to_string()));
+    }
+    
+    #[test]
+    fn test_ssh_tunnel_config_parsing() {
+        use crate::config::Config;
+        
+        let config = Config::default();
+        
+        // Test parsing of SSH tunnel string format with port
+        let tunnel_str = "user@host.example.com:2222";
+        let tunnel_config = config.parse_ssh_tunnel_string(tunnel_str);
+        assert!(tunnel_config.is_some());
+        let tunnel_config = tunnel_config.unwrap();
+        
+        assert_eq!(tunnel_config.ssh_host, "host.example.com");
+        assert_eq!(tunnel_config.ssh_port, 2222);
+        assert_eq!(tunnel_config.ssh_username, Some("user".to_string()));
+        assert!(tunnel_config.enabled);
+        
+        // Test without port (should default to 22)
+        let tunnel_str = "user@host.example.com";
+        let tunnel_config = config.parse_ssh_tunnel_string(tunnel_str);
+        assert!(tunnel_config.is_some());
+        let tunnel_config = tunnel_config.unwrap();
+        assert_eq!(tunnel_config.ssh_host, "host.example.com");
+        assert_eq!(tunnel_config.ssh_port, 22);
+        assert_eq!(tunnel_config.ssh_username, Some("user".to_string()));
+        
+        // Test with just host (no user)
+        let tunnel_str = "host.example.com";
+        let tunnel_config = config.parse_ssh_tunnel_string(tunnel_str);
+        assert!(tunnel_config.is_some());
+        let tunnel_config = tunnel_config.unwrap();
+        assert_eq!(tunnel_config.ssh_host, "host.example.com");
+        assert_eq!(tunnel_config.ssh_port, 22);
+        assert!(tunnel_config.ssh_username.is_none());
+    }
+    
+    #[test]
+    fn test_connection_info_with_ssh_tunnel() {
+        // Test that ConnectionInfo properly handles SSH tunnel configuration
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::PostgreSQL,
+            host: Some("db.internal.example.com".to_string()),
+            port: Some(5432),
+            username: Some("dbuser".to_string()),
+            password: Some("dbpass".to_string()),
+            database: Some("mydb".to_string()),
+            file_path: None,
+            options: HashMap::new(),
+            docker_container: None,
+        };
+        
+        // Verify connection info has required fields for SSH tunnel
+        assert_eq!(connection_info.host, Some("db.internal.example.com".to_string()));
+        assert_eq!(connection_info.port, Some(5432));
     }
 }

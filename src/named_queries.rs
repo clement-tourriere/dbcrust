@@ -5,6 +5,7 @@ use regex::Regex;
 /// - Positional parameters: $1, $2, $3, etc.
 /// - Raw aggregation: $* (all remaining arguments as is)
 /// - String aggregation: $@ (all remaining arguments as quoted strings)
+#[allow(dead_code)]
 pub fn process_query(query: &str, args: &[&str]) -> String {
     let mut result = query.to_string();
 

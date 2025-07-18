@@ -8,6 +8,7 @@ pub struct DbPrompt {
 }
 
 impl DbPrompt {
+    #[allow(dead_code)]
     pub fn new(username: String, db_name: String) -> Self {
         Self { 
             username, 
@@ -24,6 +25,7 @@ impl DbPrompt {
         }
     }
     
+    #[allow(dead_code)]
     pub fn update_database(&mut self, new_db_name: &str) {
         self.db_name = new_db_name.to_string();
     }

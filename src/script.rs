@@ -17,6 +17,7 @@ use tempfile::NamedTempFile;
 /// # Returns
 /// * `Ok(String)` - The edited script content
 /// * `Err(Box<dyn Error>)` - Any error that occurred during the process
+#[allow(dead_code)]
 pub fn edit_multiline_script(current_script: &str) -> Result<String, Box<dyn Error>> {
     // Create a temporary file
     let mut temp_file = NamedTempFile::new()?;
@@ -65,6 +66,7 @@ pub fn edit_multiline_script(current_script: &str) -> Result<String, Box<dyn Err
 /// # Returns
 /// * `Ok(())` - If the script was saved successfully
 /// * `Err(Box<dyn Error>)` - Any error that occurred during saving
+#[allow(dead_code)]
 pub fn save_script_to_file(script: &str, filename: &str) -> Result<(), Box<dyn Error>> {
     let path = Path::new(filename);
 
@@ -94,6 +96,7 @@ pub fn save_script_to_file(script: &str, filename: &str) -> Result<(), Box<dyn E
 /// # Returns
 /// * `Ok(String)` - The loaded script content
 /// * `Err(Box<dyn Error>)` - Any error that occurred during loading
+#[allow(dead_code)]
 pub fn load_script_from_file(filename: &str) -> Result<String, Box<dyn Error>> {
     let path = Path::new(filename);
 
