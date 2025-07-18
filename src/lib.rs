@@ -555,6 +555,12 @@ pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32> {
     let parsed_args = match Args::try_parse_from(args) {
         Ok(args) => args,
         Err(e) => {
+            // Handle help and version display (which clap treats as "errors")
+            if e.kind() == clap::error::ErrorKind::DisplayHelp 
+                || e.kind() == clap::error::ErrorKind::DisplayVersion {
+                print!("{}", e);
+                return Ok(0);
+            }
             eprintln!("Error parsing arguments: {}", e);
             return Ok(1);
         }

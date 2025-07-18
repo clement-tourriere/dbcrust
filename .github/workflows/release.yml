@@ -39,9 +39,11 @@ jobs:
     uses: ./.github/workflows/publish-pypi.yml
     with:
       plan: ${{ needs.plan.outputs.plan }}
+    permissions:
+      id-token: write
 
   upload-release-artifacts:
-    if: ${{ github.event_name == 'release' }}
+    if: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
     needs: [plan, build-binaries]
     runs-on: ubuntu-latest
     permissions:
@@ -56,9 +58,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/dbcrust-*/*.tar.gz
-            artifacts/dbcrust-*/*.zip
-            artifacts/dbcrust-*/*.sha256
-          tag_name: ${{ github.event.release.tag_name }}
+            artifacts/wheels_*/*.whl
+            artifacts/wheels_*/*.tar.gz
+          tag_name: ${{ github.event.release.tag_name || github.event.inputs.tag }}
           draft: false
-          prerelease: ${{ github.event.release.prerelease }}
+          prerelease: ${{ github.event.release.prerelease || false }}
