@@ -42,6 +42,8 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
+        with:
+          enablement: true  # This will enable Pages if not already enabled
 
       - name: Build documentation
         run: |
