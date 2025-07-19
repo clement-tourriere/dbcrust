@@ -1,7 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_local_definitions)]
 
-mod cli;
+pub mod cli;
 // mod completion; // Removed pub mod completion;
 pub mod completion;
 pub mod config;
@@ -567,8 +567,8 @@ pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32> {
         }
     };
     
-    // Handle show debug logs
-    if parsed_args.show_debug_logs {
+    // Handle debug mode
+    if parsed_args.debug {
         match crate::logging::get_log_file_path_string() {
             Some(log_path) => {
                 println!("Debug logs are written to: {}", log_path);
@@ -582,7 +582,7 @@ pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32> {
     }
     
     // Generate shell completions
-    if let Some(shell) = parsed_args.generate_completion {
+    if let Some(shell) = parsed_args.completions {
         use clap::CommandFactory;
         use clap_complete::{generate, Shell as CompletionShell};
         use std::io;
@@ -596,46 +596,18 @@ pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32> {
             crate::cli::Shell::Elvish => CompletionShell::Elvish,
         };
         
-        if let Some(output_path) = parsed_args.completion_out {
-            let mut file = std::fs::File::create(output_path).map_err(|e| {
-                PyErr::new::<pyo3::exceptions::PyIOError, _>(format!(
-                    "Failed to create completion file: {}", e
-                ))
-            })?;
-            generate(shell_type, &mut app, "dbcrust", &mut file);
-        } else {
-            generate(shell_type, &mut app, "dbcrust", &mut io::stdout());
-        }
+        // Always output to stdout (CLI simplified structure)
+        generate(shell_type, &mut app, "dbcrust", &mut io::stdout());
         return Ok(0);
     }
     
     // Handle direct commands
     if !parsed_args.command.is_empty() {
         // Determine connection URL
-        let connection_url = if let Some(ref url) = parsed_args.connection_url {
-            url.clone()
-        } else if let Some(ref url) = parsed_args.url {
-            url.clone()
-        } else {
-            // Build URL from individual parameters
-            let password = parsed_args.password.unwrap_or_default();
-            if password.is_empty() {
-                format!("postgresql://{}@{}:{}/{}", 
-                    parsed_args.user, 
-                    parsed_args.host, 
-                    parsed_args.port, 
-                    parsed_args.dbname
-                )
-            } else {
-                format!("postgresql://{}:{}@{}:{}/{}", 
-                    parsed_args.user, 
-                    password,
-                    parsed_args.host, 
-                    parsed_args.port, 
-                    parsed_args.dbname
-                )
-            }
-        };
+        let connection_url = parsed_args.connection_url
+            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Connection URL is required when using command mode"
+            ))?;
         
         // Execute each command using the existing run_command function
         for command in parsed_args.command {
@@ -694,30 +666,8 @@ async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std:
     let config = crate::config::Config::load();
     
     // Determine connection URL
-    let connection_url = if let Some(ref url) = args.connection_url {
-        url.clone()
-    } else if let Some(ref url) = args.url {
-        url.clone()
-    } else {
-        // Build URL from individual parameters
-        let password = args.password.unwrap_or_default();
-        if password.is_empty() {
-            format!("postgresql://{}@{}:{}/{}", 
-                args.user, 
-                args.host, 
-                args.port, 
-                args.dbname
-            )
-        } else {
-            format!("postgresql://{}:{}@{}:{}/{}", 
-                args.user, 
-                password,
-                args.host, 
-                args.port, 
-                args.dbname
-            )
-        }
-    };
+    let connection_url = args.connection_url
+        .ok_or_else(|| "Connection URL is required for Python interface")?;
     
     // Create database connection
     let database = crate::db::Database::from_url(
