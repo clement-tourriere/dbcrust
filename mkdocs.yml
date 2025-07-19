@@ -1,0 +1,142 @@
+site_name: DBCrust
+site_description: The modern database CLI that speaks your language — PostgreSQL, MySQL, SQLite with zero compromises
+site_url: https://ctourriere.github.io/pgcrust
+repo_url: https://github.com/ctourriere/pgcrust
+repo_name: ctourriere/pgcrust
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  palette:
+    # Palette toggle for light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    # Palette toggle for dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.top
+    - navigation.tracking
+    - search.highlight
+    - search.share
+    - search.suggest
+    - toc.integrate
+    - content.action.edit
+    - content.action.view
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: fontawesome/brands/github
+    edit: material/pencil
+    view: material/eye
+  logo: assets/logo.png
+  favicon: assets/favicon.ico
+
+extra:
+  version:
+    provider: mike
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/ctourriere/pgcrust
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/dbcrust/
+  analytics:
+    provider: google
+    property: !ENV GOOGLE_ANALYTICS_KEY
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+plugins:
+  - search:
+      separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - minify:
+      minify_html: true
+  - git-revision-date-localized:
+      enable_creation_date: true
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quick Start: quick-start.md
+    - Installation: installation.md
+    - Configuration: configuration.md
+  - User Guide:
+    - Basic Usage: user-guide/basic-usage.md
+    - Database Connections: user-guide/connections.md
+    - Interactive Commands: user-guide/commands.md
+    - Query Features: user-guide/queries.md
+  - Advanced Features:
+    - SSH Tunneling: advanced/ssh-tunneling.md
+    - HashiCorp Vault: advanced/vault.md
+    - Docker Integration: advanced/docker.md
+    - Performance Analysis: advanced/performance.md
+  - Python API:
+    - Overview: python-api/overview.md
+    - Quick Start: python-api/quick-start.md
+    - CLI Integration: python-api/cli-integration.md
+    - Database Client: python-api/database-client.md
+    - Examples: python-api/examples.md
+  - Reference:
+    - CLI Commands: reference/cli-commands.md
+    - Backslash Commands: reference/backslash-commands.md
+    - Configuration Options: reference/configuration.md
+    - Connection URLs: reference/connection-urls.md
+  - Development:
+    - Contributing: contributing.md
+    - Architecture: development/architecture.md
+    - Building from Source: development/building.md
+    - Testing: development/testing.md
+  - Support:
+    - Troubleshooting: troubleshooting.md
+    - FAQ: faq.md
+    - Changelog: changelog.md

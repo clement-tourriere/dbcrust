@@ -1,0 +1,447 @@
+# Configuration
+
+DBCrust stores its configuration in a TOML file located at `~/.config/dbcrust/config.toml`. The configuration is automatically created with sensible defaults when you first run DBCrust.
+
+## 📍 Configuration Location
+
+```bash
+# Default configuration directory
+~/.config/dbcrust/
+├── config.toml          # Main configuration file
+├── history.txt          # Command history
+└── sessions/            # Saved connection sessions
+```
+
+## 🔧 Configuration Structure
+
+### Complete Example
+
+```toml
+# ~/.config/dbcrust/config.toml
+
+[database]
+default_limit = 1000
+expanded_display_default = false
+show_execution_time = true
+auto_explain_threshold = 1000  # ms
+null_display = "NULL"
+
+[display]
+border_style = 1  # 0=none, 1=light, 2=heavy
+date_format = "%Y-%m-%d %H:%M:%S"
+number_format = "human"  # "raw" or "human" (with commas)
+max_column_width = 50
+truncate_long_values = true
+
+[editor]
+command = "code --wait"
+temp_dir = "/tmp"
+syntax_highlighting = true
+
+[history]
+max_entries = 10000
+save_unnamed_queries = true
+deduplicate = true
+
+[ssh_tunnel_patterns]
+"^db\\.internal\\..*\\.com$" = "jumphost.example.com"
+".*\\.private\\.net" = "user@jumphost.example.com:2222"
+"prod-.*\\.company\\.com" = "bastion.company.com:22"
+
+[vault]
+addr = "https://vault.company.com"
+mount_point = "database"
+auth_method = "token"  # "token", "userpass", "ldap"
+timeout = 30
+
+[security]
+verify_ssl = true
+ssl_cert_path = ""
+ssl_key_path = ""
+password_cache_timeout = 3600  # seconds
+
+[performance]
+connection_timeout = 30
+query_timeout = 300
+pool_max_connections = 10
+enable_connection_pooling = true
+
+[completion]
+enabled = true
+cache_duration = 300  # seconds
+max_suggestions = 20
+fuzzy_matching = true
+
+[logging]
+level = "info"  # "error", "warn", "info", "debug", "trace"
+file_path = "~/.config/dbcrust/dbcrust.log"
+max_file_size = "10MB"
+max_files = 5
+```
+
+## ⚙️ Configuration Sections
+
+### [database] - Database Behavior
+
+Controls default database connection and query behavior.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `default_limit` | integer | `1000` | Default LIMIT for queries without explicit LIMIT |
+| `expanded_display_default` | boolean | `false` | Start in expanded display mode |
+| `show_execution_time` | boolean | `true` | Show query execution time |
+| `auto_explain_threshold` | integer | `1000` | Auto-enable EXPLAIN for slow queries (ms) |
+| `null_display` | string | `"NULL"` | How to display NULL values |
+
+**Example:**
+```toml
+[database]
+default_limit = 500
+expanded_display_default = true
+show_execution_time = true
+auto_explain_threshold = 2000
+null_display = "∅"
+```
+
+### [display] - Output Formatting
+
+Controls how query results and tables are displayed.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `border_style` | integer | `1` | Table border style (0=none, 1=light, 2=heavy) |
+| `date_format` | string | `"%Y-%m-%d %H:%M:%S"` | Date/timestamp display format |
+| `number_format` | string | `"human"` | Number formatting (`"raw"` or `"human"`) |
+| `max_column_width` | integer | `50` | Maximum column width before truncation |
+| `truncate_long_values` | boolean | `true` | Truncate long text values |
+
+**Example:**
+```toml
+[display]
+border_style = 2
+date_format = "%d/%m/%Y %H:%M"
+number_format = "human"
+max_column_width = 80
+truncate_long_values = false
+```
+
+### [editor] - External Editor
+
+Configuration for external editor integration (`\ed` command).
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `command` | string | `$EDITOR` | Editor command to use |
+| `temp_dir` | string | `"/tmp"` | Directory for temporary files |
+| `syntax_highlighting` | boolean | `true` | Enable SQL syntax highlighting |
+
+**Example:**
+```toml
+[editor]
+command = "vim"
+temp_dir = "~/.cache/dbcrust"
+syntax_highlighting = true
+```
+
+**Popular editor configurations:**
+```toml
+# VS Code
+command = "code --wait"
+
+# Vim/Neovim
+command = "vim"
+
+# Nano
+command = "nano"
+
+# Sublime Text
+command = "subl --wait"
+
+# Emacs
+command = "emacs"
+```
+
+### [ssh_tunnel_patterns] - Automatic SSH Tunneling
+
+Define patterns for automatic SSH tunnel creation based on hostname.
+
+**Format:** `"hostname_pattern" = "ssh_target"`
+
+**Examples:**
+```toml
+[ssh_tunnel_patterns]
+# Internal company databases
+"^db\\.internal\\..*\\.com$" = "jumphost.example.com"
+
+# Private network
+".*\\.private\\.net" = "user@jumphost.example.com:2222"
+
+# Production environment
+"prod-.*\\.company\\.com" = "bastion.company.com:22"
+
+# AWS RDS through bastion
+".*\\.rds\\.amazonaws\\.com$" = "ec2-bastion.company.com"
+```
+
+### [vault] - HashiCorp Vault Integration
+
+Configuration for dynamic database credentials via Vault.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `addr` | string | `$VAULT_ADDR` | Vault server address |
+| `mount_point` | string | `"database"` | Database secrets engine mount point |
+| `auth_method` | string | `"token"` | Authentication method |
+| `timeout` | integer | `30` | Request timeout in seconds |
+
+**Example:**
+```toml
+[vault]
+addr = "https://vault.company.com"
+mount_point = "database"
+auth_method = "userpass"
+timeout = 60
+```
+
+### [security] - Security Settings
+
+SSL/TLS and security-related configuration.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `verify_ssl` | boolean | `true` | Verify SSL certificates |
+| `ssl_cert_path` | string | `""` | Path to client SSL certificate |
+| `ssl_key_path` | string | `""` | Path to client SSL key |
+| `password_cache_timeout` | integer | `3600` | Password cache timeout (seconds) |
+
+**Example:**
+```toml
+[security]
+verify_ssl = true
+ssl_cert_path = "~/.ssl/client.crt"
+ssl_key_path = "~/.ssl/client.key"
+password_cache_timeout = 1800
+```
+
+## 🚀 Environment Variable Overrides
+
+Many configuration options can be overridden with environment variables:
+
+```bash
+# Database connection
+export DBCRUST_DATABASE_URL="postgresql://user@host/db"
+
+# SSH tunnel
+export DBCRUST_SSH_TUNNEL="user@jumphost.com:2222"
+
+# Vault configuration
+export VAULT_ADDR="https://vault.company.com"
+export VAULT_TOKEN="your-token"
+
+# Editor
+export EDITOR="code --wait"
+
+# Logging
+export DBCRUST_LOG_LEVEL="debug"
+```
+
+## 📝 Common Configuration Examples
+
+### Development Environment
+
+```toml
+[database]
+default_limit = 100
+show_execution_time = true
+expanded_display_default = false
+
+[display]
+border_style = 1
+max_column_width = 100
+
+[editor]
+command = "code --wait"
+
+[logging]
+level = "debug"
+```
+
+### Production Environment
+
+```toml
+[database]
+default_limit = 1000
+auto_explain_threshold = 2000
+
+[ssh_tunnel_patterns]
+"prod-db\\.company\\.com" = "prod-bastion.company.com"
+"staging-db\\.company\\.com" = "staging-bastion.company.com"
+
+[vault]
+addr = "https://vault.company.com"
+mount_point = "database"
+auth_method = "ldap"
+
+[security]
+verify_ssl = true
+password_cache_timeout = 1800
+
+[logging]
+level = "info"
+```
+
+### Data Analysis Workflow
+
+```toml
+[database]
+default_limit = 10000
+expanded_display_default = true
+show_execution_time = true
+
+[display]
+number_format = "human"
+max_column_width = 80
+truncate_long_values = false
+
+[editor]
+command = "jupyter lab"
+temp_dir = "~/analysis/queries"
+
+[performance]
+query_timeout = 600  # 10 minutes for long analytics queries
+```
+
+## 🔧 Configuration Management
+
+### View Current Configuration
+
+```sql
+-- Show all current settings
+\config
+
+-- Or check specific file
+cat ~/.config/dbcrust/config.toml
+```
+
+### Reset to Defaults
+
+```bash
+# Backup current config
+cp ~/.config/dbcrust/config.toml ~/.config/dbcrust/config.toml.backup
+
+# Remove config file (will be recreated with defaults)
+rm ~/.config/dbcrust/config.toml
+
+# Start DBCrust to generate new default config
+dbcrust --help
+```
+
+### Configuration Validation
+
+DBCrust validates configuration on startup and will show warnings for invalid settings:
+
+```
+⚠️  Warning: Invalid border_style '3' in config. Using default value '1'.
+⚠️  Warning: SSH tunnel pattern '^invalid[regex' is not valid regex.
+✅ Configuration loaded successfully.
+```
+
+### Hot Reloading
+
+Some configuration changes can be applied without restarting:
+
+```sql
+-- Reload configuration
+\config reload
+
+-- Or restart connection with new settings
+\reconnect
+```
+
+## 🎯 Best Practices
+
+### Security
+
+!!! warning "Sensitive Information"
+    
+    Never store passwords or tokens directly in the config file:
+    
+    ```toml
+    # ❌ Don't do this
+    [database]
+    password = "secret123"
+    
+    # ✅ Use environment variables or Vault
+    [vault]
+    addr = "https://vault.company.com"
+    ```
+
+### Performance
+
+!!! tip "Connection Pooling"
+    
+    Enable connection pooling for frequently accessed databases:
+    
+    ```toml
+    [performance]
+    enable_connection_pooling = true
+    pool_max_connections = 10
+    connection_timeout = 30
+    ```
+
+### Team Configurations
+
+!!! info "Shared Settings"
+    
+    For team environments, consider:
+    
+    ```toml
+    # Share common SSH tunnel patterns
+    [ssh_tunnel_patterns]
+    "^.*\\.company\\.internal$" = "shared-bastion.company.com"
+    
+    # Standardize display settings
+    [display]
+    border_style = 1
+    date_format = "%Y-%m-%d %H:%M:%S UTC"
+    ```
+
+## 🆘 Troubleshooting
+
+### Common Issues
+
+!!! question "Config file not found"
+    
+    ```bash
+    # Create config directory
+    mkdir -p ~/.config/dbcrust
+    
+    # Generate default config
+    dbcrust --init-config
+    ```
+
+!!! question "Permission denied"
+    
+    ```bash
+    # Fix permissions
+    chmod 755 ~/.config/dbcrust
+    chmod 644 ~/.config/dbcrust/config.toml
+    ```
+
+!!! question "Invalid TOML syntax"
+    
+    ```bash
+    # Validate TOML syntax
+    python -c "import toml; toml.load('~/.config/dbcrust/config.toml')"
+    
+    # Or use online validator
+    echo "Check at: https://www.toml-lint.com/"
+    ```
+
+---
+
+<div align="center">
+    <strong>Need more configuration help?</strong><br>
+    <a href="../troubleshooting.md" class="md-button md-button--primary">Troubleshooting</a>
+    <a href="../user-guide/basic-usage.md" class="md-button">User Guide</a>
+</div>
