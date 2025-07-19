@@ -58,6 +58,15 @@ console-scripts = ["dbcrust = dbcrust.__main__:main", "dbc = dbcrust.__main__:ma
 [tool.maturin.dependencies]
 colorama = ">=0.4.4"
 
+[dependency-groups]
+docs = [
+    "mkdocs>=1.6.1",
+    "mkdocs-material>=9.5.0",
+    "mkdocs-minify-plugin>=0.7.0",
+    "mkdocs-git-revision-date-localized-plugin>=1.2.0",
+    "pymdown-extensions>=10.3.0",
+]
+
 [project.scripts]
 dbc = "dbcrust.__main__:main"
 dbcrust = "dbcrust.__main__:main"

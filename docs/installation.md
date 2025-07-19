@@ -384,7 +384,7 @@ rm -rf ~/.config/dbcrust
 
 If you encounter issues:
 
-1. Check [troubleshooting guide](troubleshooting.md)
+1. Check the troubleshooting section below
 2. Search [existing issues](https://github.com/ctourriere/pgcrust/issues)
 3. Create a [new issue](https://github.com/ctourriere/pgcrust/issues/new) with:
    - Operating system and version

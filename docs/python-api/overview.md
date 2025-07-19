@@ -429,17 +429,17 @@ query("\\d users")  # Describe table structure
 
 ## 📚 API Reference
 
-For detailed API documentation, see:
+For more information, see:
 
-- **[Quick Start](quick-start.md)** - Get started with Python API
-- **[CLI Integration](cli-integration.md)** - Launch CLI from Python
-- **[Database Client](database-client.md)** - Rich client classes
-- **[Examples](examples.md)** - Real-world usage patterns
+- **[Quick Start](../quick-start.md)** - Get started with DBCrust
+- **[User Guide](../user-guide/basic-usage.md)** - Complete feature walkthrough
+- **[Installation](../installation.md)** - Setup instructions
+- **[Configuration](../configuration.md)** - Configuration options
 
 ---
 
 <div align="center">
     <strong>Ready to integrate DBCrust into your Python workflow?</strong><br>
-    <a href="quick-start.md" class="md-button md-button--primary">Python Quick Start</a>
-    <a href="examples.md" class="md-button">See Examples</a>
+    <a href="../quick-start.md" class="md-button md-button--primary">Get Started</a>
+    <a href="../user-guide/basic-usage.md" class="md-button">User Guide</a>
 </div>

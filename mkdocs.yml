@@ -7,7 +7,6 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
-  custom_dir: docs/overrides
   palette:
     # Palette toggle for light mode
     - media: "(prefers-color-scheme: light)"
@@ -44,20 +43,13 @@ theme:
     repo: fontawesome/brands/github
     edit: material/pencil
     view: material/eye
-  logo: assets/logo.png
-  favicon: assets/favicon.ico
 
 extra:
-  version:
-    provider: mike
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/ctourriere/pgcrust
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/dbcrust/
-  analytics:
-    provider: google
-    property: !ENV GOOGLE_ANALYTICS_KEY
 
 markdown_extensions:
   - admonition
@@ -112,31 +104,7 @@ nav:
     - Configuration: configuration.md
   - User Guide:
     - Basic Usage: user-guide/basic-usage.md
-    - Database Connections: user-guide/connections.md
-    - Interactive Commands: user-guide/commands.md
-    - Query Features: user-guide/queries.md
-  - Advanced Features:
-    - SSH Tunneling: advanced/ssh-tunneling.md
-    - HashiCorp Vault: advanced/vault.md
-    - Docker Integration: advanced/docker.md
-    - Performance Analysis: advanced/performance.md
   - Python API:
     - Overview: python-api/overview.md
-    - Quick Start: python-api/quick-start.md
-    - CLI Integration: python-api/cli-integration.md
-    - Database Client: python-api/database-client.md
-    - Examples: python-api/examples.md
   - Reference:
-    - CLI Commands: reference/cli-commands.md
     - Backslash Commands: reference/backslash-commands.md
-    - Configuration Options: reference/configuration.md
-    - Connection URLs: reference/connection-urls.md
-  - Development:
-    - Contributing: contributing.md
-    - Architecture: development/architecture.md
-    - Building from Source: development/building.md
-    - Testing: development/testing.md
-  - Support:
-    - Troubleshooting: troubleshooting.md
-    - FAQ: faq.md
-    - Changelog: changelog.md

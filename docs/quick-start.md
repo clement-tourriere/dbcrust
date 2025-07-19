@@ -251,7 +251,7 @@ Now that you're up and running:
 1. **[Installation Guide](installation.md)** - Detailed installation options
 2. **[User Guide](user-guide/basic-usage.md)** - Complete feature walkthrough  
 3. **[Python API](python-api/overview.md)** - Integration with your Python projects
-4. **[Advanced Features](advanced/ssh-tunneling.md)** - SSH tunnels, Vault, Docker
+4. **Advanced Features** - SSH tunnels, Vault, Docker (coming soon)
 
 ## 🆘 Common Issues
 

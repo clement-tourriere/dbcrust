@@ -31,21 +31,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install mkdocs-material
-          pip install mkdocs-minify-plugin
-          pip install mkdocs-git-revision-date-localized-plugin
+          uv sync --group docs
 
       - name: Build documentation
         run: |
-          mkdocs build --clean --strict
+          uv run mkdocs build --clean --strict
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
