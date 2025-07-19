@@ -1,0 +1,137 @@
+name: "Tag Release"
+
+on:
+  push:
+    tags:
+      - 'v*' # Trigger on version tags like v0.2.0, v1.0.0, etc.
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  # Create GitHub release from tag
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Need full history for changelog
+
+      - name: Extract version from tag
+        id: extract_version
+        run: |
+          TAG_NAME="${{ github.ref_name }}"
+          VERSION="${TAG_NAME#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
+
+      - name: Generate changelog for this version
+        id: changelog
+        run: |
+          # Install commitizen if needed
+          pip install commitizen
+          
+          # Generate changelog for this specific version
+          cz changelog "${{ steps.extract_version.outputs.version }}" --dry-run > RELEASE_NOTES.md
+          
+          # If changelog generation fails, create a simple one
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "## Release ${{ steps.extract_version.outputs.tag_name }}" > RELEASE_NOTES.md
+            echo "" >> RELEASE_NOTES.md
+            echo "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ steps.extract_version.outputs.tag_name }}/CHANGELOG.md) for details." >> RELEASE_NOTES.md
+          fi
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.extract_version.outputs.tag_name }}
+          name: DBCrust ${{ steps.extract_version.outputs.version }}
+          body_path: RELEASE_NOTES.md
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }} # Pre-release if version contains hyphen
+          generate_release_notes: false # We're using our own changelog
+
+  # Build and upload artifacts
+  build-and-upload:
+    needs: create-release
+    strategy:
+      matrix:
+        include:
+          # Build matrix for different platforms
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset_name: dbcrust-linux-x64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            asset_name: dbcrust-linux-arm64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            asset_name: dbcrust-macos-x64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset_name: dbcrust-macos-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset_name: dbcrust-windows-x64
+    
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.asset_name }}.tar.gz dbcrust dbc
+          cd ../../../
+      
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          cd target/${{ matrix.target }}/release
+          7z a ../../../${{ matrix.asset_name }}.zip dbcrust.exe dbc.exe
+          cd ../../../
+      
+      - name: Upload Release Asset (Unix)
+        if: runner.os != 'Windows'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ${{ matrix.asset_name }}.tar.gz
+      
+      - name: Upload Release Asset (Windows)
+        if: runner.os == 'Windows'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: ${{ matrix.asset_name }}.zip
+
+  # Trigger the existing workflows
+  trigger-existing-workflows:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger build-binaries workflow
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          event-type: release-created
+          client-payload: '{"tag": "${{ github.ref_name }}"}'
+      
+      # The existing release.yml workflow will handle PyPI publishing
+      # when it detects the release event

@@ -1,0 +1,25 @@
+[tool.commitizen]
+name = "cz_conventional_commits"
+version = "0.2.0"
+tag_format = "v$version"
+version_scheme = "semver"
+update_changelog_on_bump = true
+bump_message = "release: v$current_version → v$new_version"
+
+# Files to update with new version
+version_files = [
+    "Cargo.toml:version",
+    "pyproject.toml:version"
+]
+
+# Pre-bump hooks to ensure everything is ready
+pre_bump_hooks = [
+    "cargo test",
+    "cargo build --release",
+    "maturin build --release"
+]
+
+# Changelog settings
+changelog_file = "CHANGELOG.md"
+changelog_incremental = true
+changelog_start_rev = "v0.1.0"

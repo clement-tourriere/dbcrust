@@ -3,6 +3,9 @@ name: "Release"
 on:
   release:
     types: [published]
+  push:
+    tags:
+      - 'v*' # Also trigger on version tags
   workflow_dispatch:
     inputs:
       tag:

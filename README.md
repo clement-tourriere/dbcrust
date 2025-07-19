@@ -31,12 +31,14 @@ DBCrust brings the power of modern CLI tools to database management. Built in Ru
 ## Quick Start
 
 ```bash
-# Install from source
-cargo install --path .
+# Quick run with uv (no installation needed)
+uvx dbcrust postgresql://user:pass@localhost/mydb
 
-# Connect to your database
+# Or install globally
+uv tool install dbcrust
 dbcrust postgresql://user:pass@localhost/mydb
-# or use the short alias
+
+# Short alias also available
 dbc postgresql://user:pass@localhost/mydb
 
 # Multi-database support
@@ -51,18 +53,32 @@ dbcrust docker://   # Interactive container selection
 ## Installation
 
 ### Prerequisites
-- Rust 2024 edition or later
+- Rust 2024 edition or later (for building from source)
+- [uv](https://github.com/astral-sh/uv) (recommended for Python installation)
+
+### Quick Install with uv (Recommended)
+```bash
+# Install globally as a tool
+uv tool install dbcrust
+
+# Or run directly without installation
+uvx dbcrust postgresql://user:pass@localhost/mydb
+```
+
+### Install from PyPI
+```bash
+# Using uv
+uv pip install dbcrust
+
+# Using pip (if you prefer)
+pip install dbcrust
+```
 
 ### Install from Source
 ```bash
 git clone git@gitlab.gitguardian.ovh:ctourriere/dbcrust.git
 cd dbcrust
 cargo install --path .
-```
-
-### Python Package
-```bash
-pip install -e ./python
 ```
 
 ## Usage Examples

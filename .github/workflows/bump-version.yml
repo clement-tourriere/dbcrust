@@ -1,0 +1,87 @@
+name: Bump Version
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Type of version bump'
+        required: false
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+        default: auto
+
+jobs:
+  bump-version:
+    if: "!startsWith(github.event.head_commit.message, 'release:')"
+    runs-on: ubuntu-latest
+    name: "Bump version and create changelog"
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          # Use a Personal Access Token to trigger other workflows
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install commitizen
+          pip install maturin
+
+      - name: Configure git
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine bump type
+        id: bump_type
+        run: |
+          if [ "${{ github.event.inputs.bump_type }}" != "" ] && [ "${{ github.event.inputs.bump_type }}" != "auto" ]; then
+            echo "type=${{ github.event.inputs.bump_type }}" >> $GITHUB_OUTPUT
+          else
+            echo "type=auto" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Bump version
+        id: bump
+        run: |
+          if [ "${{ steps.bump_type.outputs.type }}" = "auto" ]; then
+            # Let commitizen determine the bump based on commits
+            cz bump --yes --changelog
+          else
+            # Force specific bump type
+            cz bump --increment "${{ steps.bump_type.outputs.type }}" --yes --changelog
+          fi
+          
+          # Get the new version
+          NEW_VERSION=$(grep '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "new_tag=v$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Push changes
+        run: |
+          git push origin main
+          git push origin "v${{ steps.bump.outputs.new_version }}"
+
+      - name: Summary
+        run: |
+          echo "## Version Bumped! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "New version: **v${{ steps.bump.outputs.new_version }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "The tag has been pushed and will trigger the release workflow automatically." >> $GITHUB_STEP_SUMMARY
