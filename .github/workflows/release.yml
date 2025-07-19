@@ -1,11 +1,11 @@
 name: "Release"
 
 on:
-  release:
-    types: [published]
   push:
     tags:
-      - 'v*' # Also trigger on version tags
+      - 'v*' # Trigger on version tags
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -57,8 +57,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    outputs:
-      release_created: ${{ steps.create_release.outputs.release_created }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -74,7 +72,6 @@ jobs:
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
       - name: Generate release notes
-        id: release_notes
         run: |
           echo "## Release ${{ steps.extract_version.outputs.tag_name }}" > RELEASE_NOTES.md
           echo "" >> RELEASE_NOTES.md
@@ -91,15 +88,9 @@ jobs:
           echo "uv tool install dbcrust" >> RELEASE_NOTES.md
           echo '```' >> RELEASE_NOTES.md
           echo "" >> RELEASE_NOTES.md
-          echo "#### From Source" >> RELEASE_NOTES.md
-          echo '```bash' >> RELEASE_NOTES.md
-          echo "cargo install --git https://github.com/${{ github.repository }} --tag ${{ steps.extract_version.outputs.tag_name }}" >> RELEASE_NOTES.md
-          echo '```' >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
           echo "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ steps.extract_version.outputs.tag_name }}/CHANGELOG.md) for detailed changes." >> RELEASE_NOTES.md
 
       - name: Create GitHub Release
-        id: create_release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.extract_version.outputs.tag_name }}
@@ -109,21 +100,32 @@ jobs:
           prerelease: ${{ contains(steps.extract_version.outputs.tag_name, '-') }}
           generate_release_notes: false
 
-      - name: Output result
-        id: output
-        run: echo "release_created=true" >> $GITHUB_OUTPUT
-
   publish-pypi:
     if: ${{ !contains(fromJson(needs.plan.outputs.plan).tag, '-') }}
     needs: [plan, build-binaries]
-    uses: ./.github/workflows/publish-pypi.yml
-    with:
-      plan: ${{ needs.plan.outputs.plan }}
+    name: Upload dbcrust to PyPI
+    runs-on: ubuntu-latest
     permissions:
       id-token: write
+    environment:
+      name: pypi
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels_dbcrust-*
+          path: wheels_dbcrust
+          merge-multiple: true
+
+      - name: "List downloaded artifacts"
+        run: find wheels_dbcrust -type f -name "*.whl" | head -20
+
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheels_dbcrust/
 
   upload-release-artifacts:
-    if: ${{ always() && !cancelled() && needs.build-binaries.result == 'success' && (needs.create-release.result == 'success' || needs.create-release.result == 'skipped') }}
+    if: ${{ always() && !cancelled() && needs.build-binaries.result == 'success' }}
     needs: [plan, build-binaries, create-release]
     runs-on: ubuntu-latest
     permissions:

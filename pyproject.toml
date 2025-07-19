@@ -8,10 +8,45 @@ version = "0.3.1"
 description = "Multi-database interactive client (PostgreSQL, SQLite, MySQL) with tab completion"
 authors = [{ name = "Clément Tourrière", email = "clement.tourriere@gmail.com" }]
 requires-python = ">=3.10"
+license = { text = "MIT" }
 keywords = [
     "dbcrust", "database", "postgres", "mysql", "sqlite", "cli", "interactive",
+    "sql", "postgresql", "mysql", "sqlite", "ssh-tunnel", "vault", "docker"
 ]
 readme = "README.md"
+homepage = "https://github.com/ctourriere/pgcrust"
+repository = "https://github.com/ctourriere/pgcrust"
+documentation = "https://github.com/ctourriere/pgcrust#readme"
+changelog = "https://github.com/ctourriere/pgcrust/blob/main/CHANGELOG.md"
+
+[project.urls]
+"Homepage" = "https://github.com/ctourriere/pgcrust"
+"Repository" = "https://github.com/ctourriere/pgcrust"
+"Documentation" = "https://github.com/ctourriere/pgcrust#readme"
+"Changelog" = "https://github.com/ctourriere/pgcrust/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/ctourriere/pgcrust/issues"
+"Source Code" = "https://github.com/ctourriere/pgcrust"
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators", 
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+    "Topic :: Database :: Front-Ends",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Terminals",
+    "Topic :: Utilities",
+    "Environment :: Console",
+]
 
 [tool.maturin]
 bindings = "pyo3"
