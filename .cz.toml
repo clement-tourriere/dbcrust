@@ -1,10 +1,11 @@
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.3.0"
+version = "0.1.0"
 tag_format = "v$version"
 version_scheme = "semver"
-update_changelog_on_bump = true
+#update_changelog_on_bump = true
 bump_message = "release: v$current_version → v$new_version"
+gpg_sign = true
 
 # Handle existing tags without 'v' prefix
 legacy_tag_formats = [
@@ -26,5 +27,5 @@ version_files = [
 
 # Changelog settings
 changelog_file = "CHANGELOG.md"
-changelog_incremental = true
-changelog_start_rev = "0.0.1"
+#changelog_incremental = true
+#changelog_start_rev = "0.0.1"
