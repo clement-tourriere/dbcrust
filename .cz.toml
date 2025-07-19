@@ -7,23 +7,19 @@ version_scheme = "semver"
 bump_message = "release: v$current_version → v$new_version"
 gpg_sign = true
 
-# Handle existing tags without 'v' prefix
-legacy_tag_formats = [
-    "$version"
-]
 
 # Files to update with new version
 version_files = [
     "Cargo.toml:version",
-    "pyproject.toml:version"
+    "pyproject.toml:version",
+    "Cargo.lock:version"
 ]
 
-# Pre-bump hooks (optional - uncomment to enable)
-# pre_bump_hooks = [
-#     "cargo test",
-#     "cargo build --release",
-#     "maturin build --release"
-# ]
+# Post-bump hooks to update Cargo.lock
+post_bump_hooks = [
+    "cargo check"
+]
+
 
 # Changelog settings
 changelog_file = "CHANGELOG.md"
