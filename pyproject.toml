@@ -18,15 +18,6 @@ homepage = "https://github.com/ctourriere/pgcrust"
 repository = "https://github.com/ctourriere/pgcrust"
 documentation = "https://github.com/ctourriere/pgcrust#readme"
 changelog = "https://github.com/ctourriere/pgcrust/blob/main/CHANGELOG.md"
-
-[project.urls]
-"Homepage" = "https://github.com/ctourriere/pgcrust"
-"Repository" = "https://github.com/ctourriere/pgcrust"
-"Documentation" = "https://github.com/ctourriere/pgcrust#readme"
-"Changelog" = "https://github.com/ctourriere/pgcrust/blob/main/CHANGELOG.md"
-"Bug Tracker" = "https://github.com/ctourriere/pgcrust/issues"
-"Source Code" = "https://github.com/ctourriere/pgcrust"
-
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -47,6 +38,14 @@ classifiers = [
     "Topic :: Utilities",
     "Environment :: Console",
 ]
+
+[project.urls]
+"Homepage" = "https://github.com/ctourriere/pgcrust"
+"Repository" = "https://github.com/ctourriere/pgcrust"
+"Documentation" = "https://github.com/ctourriere/pgcrust#readme"
+"Changelog" = "https://github.com/ctourriere/pgcrust/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/ctourriere/pgcrust/issues"
+"Source Code" = "https://github.com/ctourriere/pgcrust"
 
 [tool.maturin]
 bindings = "pyo3"
