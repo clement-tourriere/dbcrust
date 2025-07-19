@@ -11,12 +11,11 @@ gpg_sign = true
 # Files to update with new version
 version_files = [
     "Cargo.toml:version",
-    "pyproject.toml:version",
-    "Cargo.lock:version"
+    "pyproject.toml:version"
 ]
 
-# Post-bump hooks to update Cargo.lock
-post_bump_hooks = [
+# Pre-bump hooks to update Cargo.lock before commit
+pre_bump_hooks = [
     "cargo check"
 ]
 
