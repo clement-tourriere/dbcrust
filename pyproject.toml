@@ -14,14 +14,14 @@ keywords = [
     "sql", "postgresql", "mysql", "sqlite", "ssh-tunnel", "vault", "docker"
 ]
 readme = "README.md"
-homepage = "https://github.com/ctourriere/pgcrust"
-repository = "https://github.com/ctourriere/pgcrust"
-documentation = "https://github.com/ctourriere/pgcrust#readme"
-changelog = "https://github.com/ctourriere/pgcrust/blob/main/CHANGELOG.md"
+homepage = "https://github.com/ctourriere/dbcrust"
+repository = "https://github.com/ctourriere/dbcrust"
+documentation = "https://github.com/ctourriere/dbcrust#readme"
+changelog = "https://github.com/ctourriere/dbcrust/blob/main/CHANGELOG.md"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "Intended Audience :: System Administrators", 
+    "Intended Audience :: System Administrators",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
@@ -40,12 +40,12 @@ classifiers = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/ctourriere/pgcrust"
-"Repository" = "https://github.com/ctourriere/pgcrust"
-"Documentation" = "https://github.com/ctourriere/pgcrust#readme"
-"Changelog" = "https://github.com/ctourriere/pgcrust/blob/main/CHANGELOG.md"
-"Bug Tracker" = "https://github.com/ctourriere/pgcrust/issues"
-"Source Code" = "https://github.com/ctourriere/pgcrust"
+"Homepage" = "https://github.com/ctourriere/dbcrust"
+"Repository" = "https://github.com/ctourriere/dbcrust"
+"Documentation" = "https://github.com/ctourriere/dbcrust#readme"
+"Changelog" = "https://github.com/ctourriere/dbcrust/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/ctourriere/dbcrust/issues"
+"Source Code" = "https://github.com/ctourriere/dbcrust"
 
 [tool.maturin]
 bindings = "pyo3"
