@@ -111,8 +111,8 @@ source ~/.cargo/env
 
 ```bash
 # Clone the repository
-git clone https://github.com/ctourriere/pgcrust.git
-cd pgcrust
+git clone https://github.com/clement-tourriere/dbcrust.git
+cd dbcrust
 
 # Build release version
 cargo build --release
@@ -130,8 +130,8 @@ For contributing or testing latest features:
 
 ```bash
 # Clone and build
-git clone https://github.com/ctourriere/pgcrust.git
-cd pgcrust
+git clone https://github.com/clement-tourriere/dbcrust.git
+cd dbcrust
 
 # Development build (faster compilation)
 cargo build
@@ -385,8 +385,8 @@ rm -rf ~/.config/dbcrust
 If you encounter issues:
 
 1. Check the troubleshooting section below
-2. Search [existing issues](https://github.com/ctourriere/pgcrust/issues)
-3. Create a [new issue](https://github.com/ctourriere/pgcrust/issues/new) with:
+2. Search [existing issues](https://github.com/clement-tourriere/dbcrust/issues)
+3. Create a [new issue](https://github.com/clement-tourriere/dbcrust/issues/new) with:
    - Operating system and version
    - Installation method used
    - Full error message

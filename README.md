@@ -13,7 +13,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Documentation](https://img.shields.io/badge/docs-mkdocs-blue.svg)](https://ctourriere.github.io/pgcrust/)
+[![Documentation](https://img.shields.io/badge/docs-mkdocs-blue.svg)](https://clement-tourriere.github.io/dbcrust/)
 [![PyPI](https://img.shields.io/pypi/v/dbcrust.svg)](https://pypi.org/project/dbcrust/)
 
 ## Why DBCrust?
@@ -355,10 +355,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Support
 
-- **[📚 Documentation](https://ctourriere.github.io/pgcrust/)** - Comprehensive guides and API reference
-- **[🐛 Issues](https://github.com/ctourriere/pgcrust/issues)** - Bug reports and feature requests
+- **[📚 Documentation](https://clement-tourriere.github.io/dbcrust/)** - Comprehensive guides and API reference
+- **[🐛 Issues](https://github.com/clement-tourriere/dbcrust/issues)** - Bug reports and feature requests
 - **[📦 PyPI Package](https://pypi.org/project/dbcrust/)** - Install via pip or uv
-- **[⭐ GitHub Repository](https://github.com/ctourriere/pgcrust)** - Source code and contributions
+- **[⭐ GitHub Repository](https://github.com/clement-tourriere/dbcrust)** - Source code and contributions
 
 ---
 

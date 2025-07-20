@@ -30,8 +30,8 @@ Get up and running with DBCrust in under 2 minutes! This guide will have you que
 === "From Source"
 
     ```bash
-    git clone https://github.com/ctourriere/pgcrust.git
-    cd pgcrust
+    git clone https://github.com/clement-tourriere/dbcrust.git
+    cd dbcrust
     cargo install --path .
     dbcrust --version
     ```

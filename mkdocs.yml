@@ -1,8 +1,8 @@
 site_name: DBCrust
 site_description: The modern database CLI that speaks your language — PostgreSQL, MySQL, SQLite with zero compromises
-site_url: https://ctourriere.github.io/pgcrust
-repo_url: https://github.com/ctourriere/pgcrust
-repo_name: ctourriere/pgcrust
+site_url: https://clement-tourriere.github.io/dbcrust
+repo_url: https://github.com/clement-tourriere/dbcrust
+repo_name: clement-tourriere/dbcrust
 edit_uri: edit/main/docs/
 
 theme:
@@ -47,7 +47,7 @@ theme:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/ctourriere/pgcrust
+      link: https://github.com/clement-tourriere/dbcrust
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/dbcrust/
 

@@ -234,7 +234,7 @@ dbcrust postgresql://backup-user@replica.db.internal/app \
 
     Open source on GitHub with MIT license
 
-    [:octicons-arrow-right-24: View source](https://github.com/ctourriere/pgcrust)
+    [:octicons-arrow-right-24: View source](https://github.com/clement-tourriere/dbcrust)
 
 -   :material-package-variant:{ .lg .middle } **PyPI Package**
 
@@ -250,7 +250,7 @@ dbcrust postgresql://backup-user@replica.db.internal/app \
 
     Get help via GitHub issues
 
-    [:octicons-arrow-right-24: Get support](https://github.com/ctourriere/pgcrust/issues)
+    [:octicons-arrow-right-24: Get support](https://github.com/clement-tourriere/dbcrust/issues)
 
 </div>
 
