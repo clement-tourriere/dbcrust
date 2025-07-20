@@ -70,7 +70,8 @@ impl Database {
         
         // Handle Docker URLs specially
         if url.starts_with("docker://") {
-            return Self::from_docker_url(url, default_limit, expanded_display_default).await;
+            let (database, _) = Self::from_docker_url(url, default_limit, expanded_display_default).await?;
+            return Ok(database);
         }
         
         // Parse the connection info from URL
@@ -113,7 +114,7 @@ impl Database {
         url: &str,
         default_limit: Option<usize>,
         expanded_display_default: Option<bool>,
-    ) -> std::result::Result<Self, Box<dyn StdError>> {
+    ) -> std::result::Result<(Self, Option<ConnectionInfo>), Box<dyn StdError>> {
         debug_log!("[Database::from_docker_url] Creating database from Docker URL");
         
         // Parse Docker URL
@@ -152,7 +153,8 @@ impl Database {
                 docker_container: Some(selected_container.clone()),
             };
             
-            return Self::from_connection_info(resolved_connection_info, default_limit, expanded_display_default, None).await;
+            let database = Self::from_connection_info(resolved_connection_info.clone(), default_limit, expanded_display_default, None).await?;
+            return Ok((database, Some(resolved_connection_info)));
         }
         
         // Create Docker client and inspect the container
@@ -186,7 +188,8 @@ impl Database {
                   resolved_connection_info.database.as_deref().unwrap_or(""));
         
         // Create database connection using the resolved info
-        Self::from_connection_info(resolved_connection_info, default_limit, expanded_display_default, None).await
+        let database = Self::from_connection_info(resolved_connection_info.clone(), default_limit, expanded_display_default, None).await?;
+        Ok((database, Some(resolved_connection_info)))
     }
     
     /// Interactive Docker container selection
@@ -270,6 +273,15 @@ impl Database {
                 selected_container.database_type.as_ref().map(|dt| format!("{}", dt)).unwrap_or("Unknown".to_string()));
         
         Ok(selected_container.name.clone())
+    }
+    
+    /// Create a new Database instance from a Docker URL and return connection info for tracking
+    pub async fn from_docker_url_with_tracking(
+        url: &str,
+        default_limit: Option<usize>,
+        expanded_display_default: Option<bool>,
+    ) -> std::result::Result<(Self, Option<ConnectionInfo>), Box<dyn StdError>> {
+        Self::from_docker_url(url, default_limit, expanded_display_default).await
     }
     
     /// Create a new Database instance from ConnectionInfo
@@ -1098,6 +1110,11 @@ impl Database {
 
     pub fn get_database_client(&self) -> Option<&Box<dyn DatabaseClient>> {
         self.database_client.as_ref()
+    }
+    
+    /// Get the current connection information
+    pub fn get_connection_info(&self) -> Option<&crate::database::ConnectionInfo> {
+        self.database_client.as_ref().map(|client| client.get_connection_info())
     }
 
     pub async fn list_tables(

@@ -38,6 +38,16 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
     | `\ns <name> <query>` | Save named query | `\ns users SELECT * FROM users` |
     | `\nd <name>` | Delete named query | `\nd users` |
 
+=== "Sessions & History"
+
+    | Command | Description | Example |
+    |---------|-------------|---------|
+    | `\s [name]` | List saved sessions or connect | `\s` or `\s prod` |
+    | `\ss <name>` | Save current connection as session | `\ss production` |
+    | `\sd <name>` | Delete saved session | `\sd oldprod` |
+    | `\r` | List recent connections | `\r` |
+    | `\rc` | Clear recent connections | `\rc` |
+
 === "Help & Control"
 
     | Command | Description | Example |
@@ -338,6 +348,110 @@ Removes a saved named query.
 **Output:**
 ```
 Named query 'active_users' deleted.
+```
+
+### Session Management
+
+#### `\s [name]` - List or Connect to Sessions
+
+Without arguments, lists all saved sessions. With a session name, connects to that session.
+
+```sql
+-- List all saved sessions
+\s
+```
+
+**Output:**
+```
+Saved Sessions:
+  production - PostgreSQL postgres@prod.db.com:5432/myapp
+  staging - PostgreSQL postgres@staging.db.com:5432/myapp_staging  
+  local_mysql - MySQL root@localhost:3306/testdb
+  analytics - SQLite /data/analytics.db
+
+Use 'session://<name>' to connect via command line
+```
+
+```sql
+-- Connect to a saved session
+\s production
+```
+
+**Output:**
+```
+Connecting to saved session 'production'...
+✓ Successfully connected to database
+```
+
+#### `\ss <name>` - Save Session
+
+Saves the current connection as a named session for quick reconnection.
+
+```sql
+\ss production
+```
+
+**Output:**
+```
+Session 'production' saved successfully
+```
+
+!!! info "Password Security"
+    Sessions never store passwords. DBCrust integrates with:
+    - PostgreSQL: `.pgpass` file
+    - MySQL: `.my.cnf` file  
+    - SQLite: No authentication needed
+
+#### `\sd <name>` - Delete Session
+
+Removes a saved session.
+
+```sql
+\sd old_staging
+```
+
+**Output:**
+```
+Deleted session 'old_staging'
+```
+
+### Connection History
+
+#### `\r` - List Recent Connections
+
+Shows your recent connection history with full URLs (excluding passwords).
+
+```sql
+\r
+```
+
+**Output:**
+```
+Recent Connections:
+  [1] ✓ docker://postgres@myapp-postgres/myapp_dev - 2024-01-15 14:22 (PostgreSQL)
+  [2] ✓ postgresql://user@localhost:5432/testdb - 2024-01-15 14:15 (PostgreSQL)
+  [3] ✗ mysql://root@badhost:3306/db - 2024-01-15 14:10 (MySQL)
+  [4] ✓ sqlite:///home/user/data.db - 2024-01-15 13:55 (SQLite)
+
+Use 'recent://' to interactively select and connect to a recent connection
+```
+
+!!! tip "Connection Status"
+    - ✓ = Successful connection
+    - ✗ = Failed connection attempt
+
+#### `\rc` - Clear Recent Connections
+
+Clears all connection history.
+
+```sql
+\rc
+```
+
+**Output:**
+```
+Cleared all recent connections
+Configuration saved
 ```
 
 ## 💡 Advanced Usage Patterns

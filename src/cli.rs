@@ -15,6 +15,8 @@ pub struct Args {
     ///   MySQL:      mysql://user:pass@localhost:3306/mydb
     ///   SQLite:     sqlite:///path/to/database.db
     ///   Docker:     docker://container_name/mydb
+    ///   Session:    session://saved_session_name
+    ///   Recent:     recent:// (interactive selection)
     #[arg(value_name = "URL")]
     pub connection_url: Option<String>,
 

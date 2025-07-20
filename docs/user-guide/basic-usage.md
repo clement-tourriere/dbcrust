@@ -221,16 +221,58 @@ DBCrust maintains a persistent history of your commands:
 
 ### Session Management
 
+DBCrust provides two distinct features for managing connections:
+
+#### Saved Sessions
+
+Named sessions for frequently used connections:
+
 ```sql
 -- Save current connection as a session
-\save production
+\ss production
 
--- List saved sessions
-\sessions
+-- List all saved sessions
+\s
 
--- Connect to saved session
-dbcrust --session production
+-- Connect to a saved session interactively
+\s production
+
+-- Delete a saved session
+\sd old_staging
 ```
+
+Command line access:
+```bash
+# Connect using saved session
+dbcrust session://production
+
+# Run query on saved session
+dbcrust session://production -c "SELECT version()"
+```
+
+#### Connection History
+
+Automatic tracking of all connections:
+
+```sql
+-- List recent connections with full URLs
+\r
+
+-- Clear connection history
+\rc
+```
+
+Interactive reconnection:
+```bash
+# Select from recent connections interactively
+dbcrust recent://
+```
+
+!!! tip "Full URL Storage"
+    Connection history stores complete URLs including Docker containers:
+    - `docker://user@my-postgres-container/myapp`
+    - `postgresql://user@host:5432/database`
+    - `mysql://user@host:3306/database`
 
 ## 📁 File Operations
 

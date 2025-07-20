@@ -7,6 +7,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use crate::database::DatabaseType;
+use chrono::{DateTime, Utc};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SSHTunnelConfig {
@@ -32,12 +33,39 @@ impl Default for SSHTunnelConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RecentConnection {
+    pub connection_url: String,  // Full URL with all details except password
+    pub display_name: String,    // Human-readable description for selection
+    pub timestamp: DateTime<Utc>,
+    pub database_type: DatabaseType,
+    pub success: bool,
+}
+
+/// Recent connections storage - stored in a separate file
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RecentConnectionsStorage {
+    #[serde(default)]
+    pub connections: Vec<RecentConnection>,
+}
+
+impl Default for RecentConnectionsStorage {
+    fn default() -> Self {
+        RecentConnectionsStorage {
+            connections: Vec::new(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SavedSession {
     pub host: String,
     pub port: u16,
     pub user: String,
     pub dbname: String,
-    // No password here - passwords will be stored in .pgpass
+    // No password here - passwords are stored in database-specific credential files:
+    // - PostgreSQL: ~/.pgpass file
+    // - MySQL: ~/.my.cnf file  
+    // - SQLite: no password needed (file-based)
     #[serde(default)]
     pub ssh_tunnel: Option<SSHTunnelConfig>,
     // Database type for multi-database support
@@ -96,6 +124,8 @@ pub struct Config {
     pub saved_sessions: HashMap<String, SavedSession>,
     #[serde(default)]
     pub ssh_tunnel_patterns: HashMap<String, String>,
+    #[serde(default = "default_max_recent_connections")]
+    pub max_recent_connections: usize,
 
     #[serde(default = "default_pager_enabled")]
     pub pager_enabled: bool,
@@ -127,6 +157,10 @@ pub struct Config {
     pub save_password: bool,
     #[serde(skip_serializing, skip_deserializing, default)]
     pub password: Option<String>,
+
+    // Recent connections - not serialized with main config, stored separately
+    #[serde(skip)]
+    recent_connections_storage: RecentConnectionsStorage,
 }
 
 impl Default for Config {
@@ -143,6 +177,7 @@ impl Default for Config {
             named_queries: HashMap::new(),
             saved_sessions: HashMap::new(),
             ssh_tunnel_patterns: HashMap::new(),
+            max_recent_connections: default_max_recent_connections(),
             pager_enabled: default_pager_enabled(),
             pager_command: default_pager_command(),
             pager_threshold_lines: default_pager_threshold_lines(),
@@ -156,11 +191,16 @@ impl Default for Config {
             dbname: connection.dbname.clone(),
             save_password: connection.save_password,
             password: connection.password.clone(),
+            recent_connections_storage: RecentConnectionsStorage::default(),
         }
     }
 }
 
 fn default_column_selection_threshold() -> usize {
+    10
+}
+
+fn default_max_recent_connections() -> usize {
     10
 }
 
@@ -193,6 +233,109 @@ fn default_database_type() -> DatabaseType {
 }
 
 impl Config {
+    /// Get the configuration directory path
+    pub fn get_config_dir() -> Result<PathBuf, Box<dyn Error>> {
+        if let Some(config_dir) = get_config_dir() {
+            if !config_dir.exists() {
+                fs::create_dir_all(&config_dir)?;
+            }
+            Ok(config_dir)
+        } else {
+            Err("Failed to get configuration directory".into())
+        }
+    }
+
+    /// Get the path to the recent connections file
+    pub fn get_recent_connections_path() -> Result<PathBuf, Box<dyn Error>> {
+        Ok(Self::get_config_dir()?.join("recent.toml"))
+    }
+
+    /// Load recent connections from separate file
+    fn load_recent_connections() -> RecentConnectionsStorage {
+        match Self::get_recent_connections_path() {
+            Ok(path) => {
+                if path.exists() {
+                    match fs::read_to_string(&path) {
+                        Ok(content) => {
+                            match toml::from_str(&content) {
+                                Ok(storage) => storage,
+                                Err(e) => {
+                                    eprintln!("Error parsing recent connections file: {}", e);
+                                    RecentConnectionsStorage::default()
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error reading recent connections file: {}", e);
+                            RecentConnectionsStorage::default()
+                        }
+                    }
+                } else {
+                    // File doesn't exist, check if we need to migrate from old config format
+                    let migrated_connections = Self::migrate_recent_connections_if_needed();
+                    if !migrated_connections.is_empty() {
+                        let storage = RecentConnectionsStorage {
+                            connections: migrated_connections,
+                        };
+                        // Save the migrated connections to the new file
+                        if let Ok(content) = toml::to_string_pretty(&storage) {
+                            if let Err(e) = fs::write(&path, content) {
+                                eprintln!("Error saving migrated recent connections: {}", e);
+                            }
+                        }
+                        storage
+                    } else {
+                        RecentConnectionsStorage::default()
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error getting recent connections path: {}", e);
+                RecentConnectionsStorage::default()
+            }
+        }
+    }
+
+    /// Save recent connections to separate file
+    fn save_recent_connections(&self) -> Result<(), Box<dyn Error>> {
+        let path = Self::get_recent_connections_path()?;
+        let content = toml::to_string_pretty(&self.recent_connections_storage)?;
+        fs::write(path, content)?;
+        Ok(())
+    }
+
+    /// Migrate recent connections from main config file to separate file
+    /// This reads the old config format and extracts recent_connections
+    fn migrate_recent_connections_if_needed() -> Vec<RecentConnection> {
+        if let Some(config_path) = get_config_path() {
+            if let Ok(content) = fs::read_to_string(&config_path) {
+                // Check if the config file contains recent_connections
+                if content.contains("[[recent_connections]]") {
+                    // Try to parse it as a TOML value to extract just the recent connections
+                    if let Ok(toml_value) = toml::from_str::<toml::Value>(&content) {
+                        if let Some(table) = toml_value.as_table() {
+                            if let Some(recent_array) = table.get("recent_connections") {
+                                if let Some(connections) = recent_array.as_array() {
+                                    let mut migrated_connections = Vec::new();
+                                    for conn_value in connections {
+                                        if let Ok(connection) = conn_value.clone().try_into::<RecentConnection>() {
+                                            migrated_connections.push(connection);
+                                        }
+                                    }
+                                    if !migrated_connections.is_empty() {
+                                        println!("📦 Migrating {} recent connections to separate file", migrated_connections.len());
+                                        return migrated_connections;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Vec::new()
+    }
+
     pub fn load() -> Self {
         if let Some(config_path) = get_config_path() {
             match fs::read_to_string(&config_path) {
@@ -223,6 +366,8 @@ impl Config {
                                 config.save_password = config.connection.save_password;
                                 config.password = config.connection.password.clone();
                             }
+                            // Load recent connections from separate file
+                            config.recent_connections_storage = Self::load_recent_connections();
                             config
                         }
                         Err(e) => {
@@ -413,22 +558,32 @@ impl Config {
                                         println!("Config file updated with new format");
                                     }
 
+                                    // Load recent connections from separate file
+                                    config.recent_connections_storage = Self::load_recent_connections();
                                     config
                                 }
                                 Err(_) => {
                                     eprintln!(
                                         "Could not parse config file as TOML, using defaults"
                                     );
-                                    Config::default()
+                                    let mut config = Config::default();
+                                    config.recent_connections_storage = Self::load_recent_connections();
+                                    config
                                 }
                             }
                         }
                     }
                 }
-                Err(_) => Config::default(),
+                Err(_) => {
+                    let mut config = Config::default();
+                    config.recent_connections_storage = Self::load_recent_connections();
+                    config
+                },
             }
         } else {
-            Config::default()
+            let mut config = Config::default();
+            config.recent_connections_storage = Self::load_recent_connections();
+            config
         }
     }
 
@@ -501,6 +656,43 @@ impl Config {
             database_type,
             file_path,
             options,
+        };
+
+        self.saved_sessions.insert(name.to_string(), session);
+        self.save()?;
+        Ok(())
+    }
+
+    /// Save session from actual connection info (for Docker and other resolved connections)
+    pub fn save_session_from_connection_info(&mut self, name: &str, connection_info: &crate::database::ConnectionInfo) -> Result<(), Box<dyn Error>> {
+        // For Docker connections, we want to save a special marker that can be re-resolved
+        let (host, port, user, dbname) = if connection_info.is_docker_connection() {
+            // For Docker connections, save a special format that can be re-resolved
+            (
+                format!("DOCKER:{}", connection_info.docker_container.as_ref().unwrap_or(&"unknown".to_string())),
+                0, // Port 0 indicates Docker connection
+                connection_info.username.as_ref().unwrap_or(&"".to_string()).clone(),
+                connection_info.database.as_ref().unwrap_or(&"".to_string()).clone(),
+            )
+        } else {
+            // For regular connections, use the actual connection details
+            (
+                connection_info.host.as_ref().unwrap_or(&"localhost".to_string()).clone(),
+                connection_info.port.unwrap_or(5432),
+                connection_info.username.as_ref().unwrap_or(&"".to_string()).clone(),
+                connection_info.database.as_ref().unwrap_or(&"".to_string()).clone(),
+            )
+        };
+
+        let session = SavedSession {
+            host,
+            port,
+            user,
+            dbname,
+            ssh_tunnel: None, // SSH tunnel info not available in ConnectionInfo
+            database_type: connection_info.database_type.clone(),
+            file_path: connection_info.file_path.clone(),
+            options: connection_info.options.clone(),
         };
 
         self.saved_sessions.insert(name.to_string(), session);
@@ -679,6 +871,122 @@ impl Config {
             }
         }
         None
+    }
+
+    // Helper function to generate display name from connection URL
+    fn generate_display_name_from_url(url: &str, _database_type: &DatabaseType) -> String {
+        // Extract meaningful parts from the URL for display
+        if url.starts_with("sqlite://") {
+            // For SQLite, show just the file path without the scheme
+            url.strip_prefix("sqlite://").unwrap_or(url).to_string()
+        } else if url.starts_with("session://") {
+            // For session URLs, show the session name
+            url.strip_prefix("session://").unwrap_or(url).to_string()
+        } else if url.starts_with("vault://") || url.starts_with("vaultdb://") {
+            // For vault URLs, show the vault path
+            url.to_string()
+        } else {
+            // For standard database URLs (including Docker-resolved ones), extract user@host:port/database
+            if let Some(scheme_end) = url.find("://") {
+                let after_scheme = &url[scheme_end + 3..];
+                
+                // Check for Docker suffix and extract main URL part
+                let main_part = if let Some(docker_pos) = after_scheme.find(" # Docker: ") {
+                    &after_scheme[..docker_pos]
+                } else {
+                    after_scheme
+                };
+                
+                if let Some(at_pos) = main_part.find('@') {
+                    let user = &main_part[..at_pos];
+                    let after_user = &main_part[at_pos + 1..];
+                    
+                    if let Some(slash_pos) = after_user.find('/') {
+                        let host_port = &after_user[..slash_pos];
+                        let database = &after_user[slash_pos + 1..];
+                        // Remove query parameters
+                        let database = database.split('?').next().unwrap_or(database);
+                        
+                        // Include Docker container info if present
+                        if let Some(docker_pos) = url.find(" # Docker: ") {
+                            let container = &url[docker_pos + 11..]; // Skip " # Docker: "
+                            format!("{}@{}/{} (Docker: {})", user, host_port, database, container)
+                        } else {
+                            format!("{}@{}/{}", user, host_port, database)
+                        }
+                    } else {
+                        // No database in URL, just user@host:port
+                        if let Some(docker_pos) = url.find(" # Docker: ") {
+                            let container = &url[docker_pos + 11..];
+                            format!("{}@{} (Docker: {})", user, after_user, container)
+                        } else {
+                            format!("{}@{}", user, after_user)
+                        }
+                    }
+                } else {
+                    // No user in URL, show host:port/database or just the main part
+                    if let Some(docker_pos) = url.find(" # Docker: ") {
+                        let container = &url[docker_pos + 11..];
+                        format!("{} (Docker: {})", main_part, container)
+                    } else {
+                        main_part.to_string()
+                    }
+                }
+            } else {
+                // No scheme found, return as-is
+                url.to_string()
+            }
+        }
+    }
+
+    // Recent connection history methods
+    pub fn add_recent_connection(
+        &mut self, 
+        connection_url: String, 
+        display_name: String,
+        database_type: DatabaseType, 
+        success: bool
+    ) -> Result<(), Box<dyn Error>> {
+        let connection = RecentConnection {
+            connection_url,
+            display_name,
+            timestamp: Utc::now(),
+            database_type,
+            success,
+        };
+        
+        // Add to the beginning of the list (most recent first)
+        self.recent_connections_storage.connections.insert(0, connection);
+        
+        // Keep only the configured number of recent connections
+        if self.recent_connections_storage.connections.len() > self.max_recent_connections {
+            self.recent_connections_storage.connections.truncate(self.max_recent_connections);
+        }
+        
+        // Save recent connections to separate file
+        self.save_recent_connections()?;
+        Ok(())
+    }
+
+    // Convenience method that auto-generates display name from URL
+    pub fn add_recent_connection_auto_display(
+        &mut self,
+        connection_url: String,
+        database_type: DatabaseType,
+        success: bool
+    ) -> Result<(), Box<dyn Error>> {
+        let display_name = Self::generate_display_name_from_url(&connection_url, &database_type);
+        self.add_recent_connection(connection_url, display_name, database_type, success)
+    }
+    
+    pub fn get_recent_connections(&self) -> &Vec<RecentConnection> {
+        &self.recent_connections_storage.connections
+    }
+    
+    pub fn clear_recent_connections(&mut self) -> Result<(), Box<dyn Error>> {
+        self.recent_connections_storage.connections.clear();
+        self.save_recent_connections()?;
+        Ok(())
     }
 }
 
@@ -919,5 +1227,421 @@ mod tests {
         assert_eq!(tunnel.ssh_username, Some("app".to_string()));
         assert_eq!(tunnel.ssh_port, 22);
         assert!(tunnel.enabled);
+    }
+
+    // ===================
+    // Session Management Tests
+    // ===================
+
+    #[rstest]
+    fn test_recent_connection_add_and_retrieve() {
+        let mut config = get_test_config();
+        
+        // Add a recent connection
+        let result = config.add_recent_connection_auto_display(
+            "postgresql://user@localhost:5432/testdb".to_string(),
+            DatabaseType::PostgreSQL,
+            true
+        );
+        assert!(result.is_ok());
+        
+        // Verify it was added
+        let recent = config.get_recent_connections();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].connection_url, "postgresql://user@localhost:5432/testdb");
+        assert_eq!(recent[0].database_type, DatabaseType::PostgreSQL);
+        assert!(recent[0].success);
+        // No session_name field in the new separated architecture
+    }
+
+    #[rstest]
+    fn test_recent_connection_with_display_name() {
+        let mut config = get_test_config();
+        
+        // Add a recent connection and verify display name is generated
+        let result = config.add_recent_connection_auto_display(
+            "mysql://user@localhost:3306/testdb".to_string(),
+            DatabaseType::MySQL,
+            true
+        );
+        assert!(result.is_ok());
+        
+        // Verify display name was generated from URL
+        let recent = config.get_recent_connections();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].display_name, "user@localhost:3306/testdb");
+        assert_eq!(recent[0].connection_url, "mysql://user@localhost:3306/testdb");
+    }
+
+    #[rstest]
+    fn test_recent_connection_max_limit() {
+        let mut config = get_test_config();
+        
+        // Add more connections than the configured limit
+        let limit = config.max_recent_connections;
+        for i in 0..(limit + 5) {
+            let url = format!("postgresql://user@localhost:5432/testdb{}", i);
+            let result = config.add_recent_connection_auto_display(
+                url,
+                DatabaseType::PostgreSQL,
+                true
+            );
+            assert!(result.is_ok());
+        }
+        
+        // Verify only the configured number are kept
+        let recent = config.get_recent_connections();
+        assert_eq!(recent.len(), limit);
+        
+        // Verify most recent is first
+        assert!(recent[0].connection_url.contains(&format!("testdb{}", limit + 4)));
+        assert!(recent[limit - 1].connection_url.contains(&format!("testdb{}", 5)));
+    }
+
+    #[rstest]
+    fn test_configurable_max_recent_connections() {
+        let mut config = get_test_config();
+        
+        // Test with default value (10)
+        assert_eq!(config.max_recent_connections, 10);
+        
+        // Change the configuration
+        config.max_recent_connections = 5;
+        
+        // Add 8 connections (more than the new limit of 5)
+        for i in 0..8 {
+            let url = format!("postgresql://user@localhost:5432/testdb{}", i);
+            let result = config.add_recent_connection_auto_display(
+                url,
+                DatabaseType::PostgreSQL,
+                true
+            );
+            assert!(result.is_ok());
+        }
+        
+        // Verify only 5 are kept
+        let recent = config.get_recent_connections();
+        assert_eq!(recent.len(), 5);
+        
+        // Verify most recent connections are kept (testdb7, testdb6, ..., testdb3)
+        assert!(recent[0].connection_url.contains("testdb7"));
+        assert!(recent[4].connection_url.contains("testdb3"));
+    }
+
+    #[rstest]
+    fn test_recent_connection_ordering() {
+        let mut config = get_test_config();
+        
+        // Add connections in order
+        for i in 0..3 {
+            let url = format!("postgresql://user@localhost:5432/testdb{}", i);
+            let result = config.add_recent_connection_auto_display(
+                url,
+                DatabaseType::PostgreSQL,
+                true
+            );
+            assert!(result.is_ok());
+            
+            // Small delay to ensure different timestamps
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        
+        // Verify most recent is first
+        let recent = config.get_recent_connections();
+        assert_eq!(recent.len(), 3);
+        assert!(recent[0].connection_url.contains("testdb2"));
+        assert!(recent[1].connection_url.contains("testdb1"));
+        assert!(recent[2].connection_url.contains("testdb0"));
+    }
+
+    #[rstest]
+    fn test_clear_recent_connections() {
+        let mut config = get_test_config();
+        
+        // Add some connections
+        for i in 0..3 {
+            let url = format!("postgresql://user@localhost:5432/testdb{}", i);
+            let result = config.add_recent_connection_auto_display(
+                url,
+                DatabaseType::PostgreSQL,
+                true
+            );
+            assert!(result.is_ok());
+        }
+        
+        // Verify they were added
+        assert_eq!(config.get_recent_connections().len(), 3);
+        
+        // Clear them
+        let result = config.clear_recent_connections();
+        assert!(result.is_ok());
+        
+        // Verify they were cleared
+        assert_eq!(config.get_recent_connections().len(), 0);
+    }
+
+    #[rstest]
+    fn test_save_session_with_database_types() {
+        let mut config = get_test_config();
+        
+        // Test PostgreSQL session
+        config.connection.host = "pg.example.com".to_string();
+        config.connection.port = 5432;
+        config.connection.user = "pguser".to_string();
+        config.connection.dbname = "pgdb".to_string();
+        
+        let result = config.save_session_with_db_type(
+            "pg_session",
+            DatabaseType::PostgreSQL,
+            None,
+            HashMap::new()
+        );
+        assert!(result.is_ok());
+        
+        // Test MySQL session
+        config.connection.host = "mysql.example.com".to_string();
+        config.connection.port = 3306;
+        config.connection.user = "mysqluser".to_string();
+        config.connection.dbname = "mysqldb".to_string();
+        
+        let result = config.save_session_with_db_type(
+            "mysql_session",
+            DatabaseType::MySQL,
+            None,
+            HashMap::new()
+        );
+        assert!(result.is_ok());
+        
+        // Test SQLite session
+        let result = config.save_session_with_db_type(
+            "sqlite_session",
+            DatabaseType::SQLite,
+            Some("/path/to/db.sqlite".to_string()),
+            HashMap::new()
+        );
+        assert!(result.is_ok());
+        
+        // Verify all sessions were saved
+        let sessions = config.list_sessions();
+        assert_eq!(sessions.len(), 3);
+        
+        // Verify PostgreSQL session
+        let pg_session = config.get_session("pg_session").unwrap();
+        assert_eq!(pg_session.database_type, DatabaseType::PostgreSQL);
+        assert_eq!(pg_session.host, "pg.example.com");
+        assert_eq!(pg_session.port, 5432);
+        assert_eq!(pg_session.user, "pguser");
+        assert_eq!(pg_session.dbname, "pgdb");
+        assert_eq!(pg_session.file_path, None);
+        
+        // Verify MySQL session
+        let mysql_session = config.get_session("mysql_session").unwrap();
+        assert_eq!(mysql_session.database_type, DatabaseType::MySQL);
+        assert_eq!(mysql_session.host, "mysql.example.com");
+        assert_eq!(mysql_session.port, 3306);
+        
+        // Verify SQLite session
+        let sqlite_session = config.get_session("sqlite_session").unwrap();
+        assert_eq!(sqlite_session.database_type, DatabaseType::SQLite);
+        assert_eq!(sqlite_session.file_path, Some("/path/to/db.sqlite".to_string()));
+    }
+
+    #[rstest]
+    fn test_session_serialization_with_recent_connections() {
+        let mut config = get_test_config();
+        
+        // Add a session and recent connections
+        let result = config.save_session_with_db_type(
+            "test_session",
+            DatabaseType::PostgreSQL,
+            None,
+            HashMap::new()
+        );
+        assert!(result.is_ok());
+        
+        let result = config.add_recent_connection_auto_display(
+            "postgresql://user@localhost:5432/testdb".to_string(),
+            DatabaseType::PostgreSQL,
+            true
+        );
+        assert!(result.is_ok());
+        
+        // Save config (sessions are saved to config.toml, recent connections to recent.toml)
+        let save_result = config.save();
+        assert!(save_result.is_ok());
+        
+        // For testing, just verify that sessions and recent connections are managed separately
+        // In real usage, Config::load() would reload both files properly
+        
+        // Verify session was saved to the main config
+        assert!(config.get_session("test_session").is_some());
+        let session = config.get_session("test_session").unwrap();
+        assert_eq!(session.database_type, DatabaseType::PostgreSQL);
+        
+        // Verify recent connections are in separate storage
+        let recent = config.get_recent_connections();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].connection_url, "postgresql://user@localhost:5432/testdb");
+    }
+
+    #[rstest]
+    fn test_recent_connection_database_types() {
+        let mut config = get_test_config();
+        
+        // Add connections for each database type
+        let result1 = config.add_recent_connection_auto_display(
+            "postgresql://user@localhost:5432/pgdb".to_string(),
+            DatabaseType::PostgreSQL,
+            true
+        );
+        assert!(result1.is_ok());
+        
+        let result2 = config.add_recent_connection_auto_display(
+            "mysql://user@localhost:3306/mysqldb".to_string(),
+            DatabaseType::MySQL,
+            true
+        );
+        assert!(result2.is_ok());
+        
+        let result3 = config.add_recent_connection_auto_display(
+            "sqlite:///path/to/db.sqlite".to_string(),
+            DatabaseType::SQLite,
+            true
+        );
+        assert!(result3.is_ok());
+        
+        // Verify all database types are tracked
+        let recent = config.get_recent_connections();
+        assert_eq!(recent.len(), 3);
+        
+        // Verify database types (most recent first)
+        assert_eq!(recent[0].database_type, DatabaseType::SQLite);
+        assert_eq!(recent[1].database_type, DatabaseType::MySQL);
+        assert_eq!(recent[2].database_type, DatabaseType::PostgreSQL);
+    }
+
+    #[rstest]
+    fn test_recent_connection_success_failure_tracking() {
+        let mut config = get_test_config();
+        
+        // Add successful connection
+        let result1 = config.add_recent_connection_auto_display(
+            "postgresql://user@localhost:5432/testdb".to_string(),
+            DatabaseType::PostgreSQL,
+            true
+        );
+        assert!(result1.is_ok());
+        
+        // Add failed connection
+        let result2 = config.add_recent_connection_auto_display(
+            "postgresql://user@badhost:5432/testdb".to_string(),
+            DatabaseType::PostgreSQL,
+            false
+        );
+        assert!(result2.is_ok());
+        
+        // Verify success/failure tracking
+        let recent = config.get_recent_connections();
+        assert_eq!(recent.len(), 2);
+        assert!(!recent[0].success); // Most recent (failed)
+        assert!(recent[1].success);  // Previous (successful)
+    }
+
+    #[rstest]
+    fn test_generate_display_name_docker_connections() {
+        // Test Docker connection with complete resolved URL
+        let docker_url = "postgresql://user@container.orb.local:5432/myapp # Docker: tt2-postgres";
+        let display_name = Config::generate_display_name_from_url(docker_url, &DatabaseType::PostgreSQL);
+        assert_eq!(display_name, "user@container.orb.local:5432/myapp (Docker: tt2-postgres)");
+        
+        // Test MySQL Docker connection
+        let mysql_docker_url = "mysql://root@localhost:3306/testdb # Docker: mysql-container";
+        let mysql_display_name = Config::generate_display_name_from_url(mysql_docker_url, &DatabaseType::MySQL);
+        assert_eq!(mysql_display_name, "root@localhost:3306/testdb (Docker: mysql-container)");
+    }
+
+    #[rstest]
+    fn test_generate_display_name_standard_connections() {
+        // Test standard PostgreSQL connection
+        let pg_url = "postgresql://user@host.example.com:5432/database";
+        let pg_display_name = Config::generate_display_name_from_url(pg_url, &DatabaseType::PostgreSQL);
+        assert_eq!(pg_display_name, "user@host.example.com:5432/database");
+        
+        // Test SQLite connection
+        let sqlite_url = "sqlite:///path/to/database.db";
+        let sqlite_display_name = Config::generate_display_name_from_url(sqlite_url, &DatabaseType::SQLite);
+        assert_eq!(sqlite_display_name, "/path/to/database.db");
+        
+        // Test session URL
+        let session_url = "session://production";
+        let session_display_name = Config::generate_display_name_from_url(session_url, &DatabaseType::PostgreSQL);
+        assert_eq!(session_display_name, "production");
+    }
+
+    #[rstest]
+    fn test_docker_resolved_url_storage() {
+        let mut config = get_test_config();
+        
+        // Simulate a Docker connection that gets resolved to a complete URL
+        let resolved_docker_url = "postgresql://postgres@myapp-postgres.orb.local:5432/myapp # Docker: myapp-postgres";
+        
+        let result = config.add_recent_connection_auto_display(
+            resolved_docker_url.to_string(),
+            DatabaseType::PostgreSQL,
+            true
+        );
+        assert!(result.is_ok());
+        
+        // Verify the connection was stored with complete details
+        let recent = config.get_recent_connections();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].connection_url, resolved_docker_url);
+        assert_eq!(recent[0].display_name, "postgres@myapp-postgres.orb.local:5432/myapp (Docker: myapp-postgres)");
+        assert_eq!(recent[0].database_type, DatabaseType::PostgreSQL);
+        assert!(recent[0].success);
+    }
+
+    #[rstest]
+    fn test_session_update_existing() {
+        let mut config = get_test_config();
+        
+        // Save initial session
+        config.connection.host = "oldhost".to_string();
+        config.connection.port = 5432;
+        config.connection.user = "olduser".to_string();
+        config.connection.dbname = "olddb".to_string();
+        
+        let result = config.save_session_with_db_type(
+            "updatable_session",
+            DatabaseType::PostgreSQL,
+            None,
+            HashMap::new()
+        );
+        assert!(result.is_ok());
+        
+        // Update connection details
+        config.connection.host = "newhost".to_string();
+        config.connection.port = 5433;
+        config.connection.user = "newuser".to_string();
+        config.connection.dbname = "newdb".to_string();
+        
+        // Save session with same name (should update)
+        let result = config.save_session_with_db_type(
+            "updatable_session",
+            DatabaseType::PostgreSQL,
+            None,
+            HashMap::new()
+        );
+        assert!(result.is_ok());
+        
+        // Verify session was updated, not duplicated
+        let sessions = config.list_sessions();
+        assert_eq!(sessions.len(), 1);
+        
+        let session = config.get_session("updatable_session").unwrap();
+        assert_eq!(session.host, "newhost");
+        assert_eq!(session.port, 5433);
+        assert_eq!(session.user, "newuser");
+        assert_eq!(session.dbname, "newdb");
     }
 }

@@ -8,8 +8,8 @@ DBCrust stores its configuration in a TOML file located at `~/.config/dbcrust/co
 # Default configuration directory
 ~/.config/dbcrust/
 ├── config.toml          # Main configuration file
-├── history.txt          # Command history
-└── sessions/            # Saved connection sessions
+├── recent.toml          # Recent connections storage
+└── history.txt          # Command history
 ```
 
 ## 🔧 Configuration Structure
@@ -42,6 +42,7 @@ syntax_highlighting = true
 max_entries = 10000
 save_unnamed_queries = true
 deduplicate = true
+max_recent_connections = 10
 
 [ssh_tunnel_patterns]
 "^db\\.internal\\..*\\.com$" = "jumphost.example.com"
@@ -77,7 +78,51 @@ level = "info"  # "error", "warn", "info", "debug", "trace"
 file_path = "~/.config/dbcrust/dbcrust.log"
 max_file_size = "10MB"
 max_files = 5
+
+# Saved sessions (added by \ss command)
+[saved_sessions.production]
+host = "prod.example.com"
+port = 5432
+user = "app_user"
+dbname = "myapp"
+database_type = "PostgreSQL"
+created_at = "2024-01-15T10:30:00Z"
+
+[saved_sessions.staging]
+host = "staging.example.com"
+port = 3306
+user = "root"
+dbname = "myapp_staging"
+database_type = "MySQL"
+created_at = "2024-01-14T15:45:00Z"
+
+# Note: Recent connections are stored separately in ~/.config/dbcrust/recent.toml
 ```
+
+## 📄 Recent Connections File
+
+DBCrust automatically tracks recent connections in a separate file to avoid mixing transient data with your configuration:
+
+**File:** `~/.config/dbcrust/recent.toml`
+
+```toml
+# Recent connections (automatically tracked)
+[[connections]]
+connection_url = "postgresql://postgres@myapp-postgres.orb.local:5432/myapp # Docker: myapp-postgres"
+display_name = "postgres@myapp-postgres.orb.local:5432/myapp (Docker: myapp-postgres)"
+timestamp = "2024-01-15T14:22:33Z"
+database_type = "PostgreSQL"
+success = true
+
+[[connections]]
+connection_url = "postgresql://user@localhost:5432/testdb"
+display_name = "user@localhost:5432/testdb"
+timestamp = "2024-01-15T14:20:15Z"
+database_type = "PostgreSQL"
+success = true
+```
+
+This file is managed automatically and stores up to the configured number of recent connections (default: 10). You can control this limit with the `max_recent_connections` setting in your main config file.
 
 ## ⚙️ Configuration Sections
 
@@ -159,6 +204,26 @@ command = "subl --wait"
 
 # Emacs
 command = "emacs"
+```
+
+### [history] - History and Session Management
+
+Controls command history and recent connection tracking.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `max_entries` | integer | `10000` | Maximum number of command history entries |
+| `save_unnamed_queries` | boolean | `true` | Save unnamed queries in history |
+| `deduplicate` | boolean | `true` | Remove duplicate entries from history |
+| `max_recent_connections` | integer | `10` | Maximum number of recent connections to track |
+
+**Example:**
+```toml
+[history]
+max_entries = 5000
+save_unnamed_queries = true
+deduplicate = true
+max_recent_connections = 15
 ```
 
 ### [ssh_tunnel_patterns] - Automatic SSH Tunneling

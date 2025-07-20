@@ -239,6 +239,72 @@ impl ConnectionInfo {
             }
         }
     }
+    
+    /// Build a complete connection URL from connection information
+    /// This is useful for storing in connection history
+    pub fn to_url(&self) -> String {
+        match self.database_type {
+            DatabaseType::SQLite => {
+                if let Some(ref file_path) = self.file_path {
+                    format!("sqlite://{}", file_path)
+                } else {
+                    "sqlite://".to_string()
+                }
+            },
+            DatabaseType::PostgreSQL => {
+                let mut url = "postgresql://".to_string();
+                
+                // Build standard PostgreSQL URL with resolved connection details
+                if let Some(ref username) = self.username {
+                    url.push_str(username);
+                    url.push('@');
+                }
+                if let Some(ref host) = self.host {
+                    url.push_str(host);
+                    if let Some(port) = self.port {
+                        url.push(':');
+                        url.push_str(&port.to_string());
+                    }
+                }
+                if let Some(ref database) = self.database {
+                    url.push('/');
+                    url.push_str(database);
+                }
+                
+                // Add docker container info as a comment-like suffix if present
+                if let Some(ref container) = self.docker_container {
+                    url.push_str(&format!(" # Docker: {}", container));
+                }
+                url
+            },
+            DatabaseType::MySQL => {
+                let mut url = "mysql://".to_string();
+                
+                // Build standard MySQL URL with resolved connection details
+                if let Some(ref username) = self.username {
+                    url.push_str(username);
+                    url.push('@');
+                }
+                if let Some(ref host) = self.host {
+                    url.push_str(host);
+                    if let Some(port) = self.port {
+                        url.push(':');
+                        url.push_str(&port.to_string());
+                    }
+                }
+                if let Some(ref database) = self.database {
+                    url.push('/');
+                    url.push_str(database);
+                }
+                
+                // Add docker container info as a comment-like suffix if present
+                if let Some(ref container) = self.docker_container {
+                    url.push_str(&format!(" # Docker: {}", container));
+                }
+                url
+            }
+        }
+    }
 }
 
 /// Trait for database-specific metadata operations
@@ -303,7 +369,83 @@ pub trait DatabaseClient: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rstest::*;
+    use rstest::rstest;
+
+    #[rstest]
+    fn test_connection_info_to_url_postgresql() {
+        // Test standard PostgreSQL connection
+        let conn_info = ConnectionInfo {
+            database_type: DatabaseType::PostgreSQL,
+            host: Some("localhost".to_string()),
+            port: Some(5432),
+            username: Some("user".to_string()),
+            password: Some("password".to_string()),
+            database: Some("testdb".to_string()),
+            file_path: None,
+            options: HashMap::new(),
+            docker_container: None,
+        };
+        
+        let url = conn_info.to_url();
+        assert_eq!(url, "postgresql://user@localhost:5432/testdb");
+    }
+
+    #[rstest]
+    fn test_connection_info_to_url_docker_postgresql() {
+        // Test Docker PostgreSQL connection
+        let conn_info = ConnectionInfo {
+            database_type: DatabaseType::PostgreSQL,
+            host: Some("container.orb.local".to_string()),
+            port: Some(5432),
+            username: Some("postgres".to_string()),
+            password: Some("password".to_string()),
+            database: Some("myapp".to_string()),
+            file_path: None,
+            options: HashMap::new(),
+            docker_container: Some("myapp-postgres".to_string()),
+        };
+        
+        let url = conn_info.to_url();
+        assert_eq!(url, "postgresql://postgres@container.orb.local:5432/myapp # Docker: myapp-postgres");
+    }
+
+    #[rstest]
+    fn test_connection_info_to_url_mysql() {
+        // Test MySQL connection
+        let conn_info = ConnectionInfo {
+            database_type: DatabaseType::MySQL,
+            host: Some("localhost".to_string()),
+            port: Some(3306),
+            username: Some("root".to_string()),
+            password: Some("password".to_string()),
+            database: Some("testdb".to_string()),
+            file_path: None,
+            options: HashMap::new(),
+            docker_container: None,
+        };
+        
+        let url = conn_info.to_url();
+        assert_eq!(url, "mysql://root@localhost:3306/testdb");
+    }
+
+    #[rstest]
+    fn test_connection_info_to_url_sqlite() {
+        // Test SQLite connection
+        let conn_info = ConnectionInfo {
+            database_type: DatabaseType::SQLite,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: Some("/path/to/database.db".to_string()),
+            options: HashMap::new(),
+            docker_container: None,
+        };
+        
+        let url = conn_info.to_url();
+        assert_eq!(url, "sqlite:///path/to/database.db");
+    }
 
     #[rstest]
     #[case("postgresql://user:pass@localhost:5432/mydb", DatabaseType::PostgreSQL, Some("localhost"), Some(5432), Some("user"), Some("mydb"))]

@@ -3,6 +3,16 @@ use url::Url;
 
 /// Sanitize a connection URL by removing the password
 pub fn sanitize_connection_url(url: &str) -> String {
+    // Check if this is our special Docker format with comment
+    if let Some(comment_pos) = url.find(" # Docker: ") {
+        let main_url = &url[..comment_pos];
+        let comment_part = &url[comment_pos..];
+        
+        // Sanitize the main URL part and re-add the comment
+        let sanitized_main = sanitize_connection_url(main_url);
+        return format!("{}{}", sanitized_main, comment_part);
+    }
+    
     // First check if this looks like a connection string without a proper scheme
     if !url.starts_with("postgresql://")
         && !url.starts_with("postgres://")
@@ -104,6 +114,19 @@ pub fn sanitize_text_for_logging(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sanitize_docker_connection_url() {
+        // Test Docker URL with comment and password
+        let docker_url = "postgresql://user:password@host:5432/db # Docker: container-name";
+        let sanitized = sanitize_connection_url(docker_url);
+        assert_eq!(sanitized, "postgresql://user:[REDACTED]@host:5432/db # Docker: container-name");
+        
+        // Test Docker URL without password
+        let docker_url_no_pass = "postgresql://user@host:5432/db # Docker: container-name";
+        let sanitized_no_pass = sanitize_connection_url(docker_url_no_pass);
+        assert_eq!(sanitized_no_pass, "postgresql://user@host:5432/db # Docker: container-name");
+    }
 
     #[test]
     fn test_sanitize_connection_url_with_password() {

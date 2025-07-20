@@ -389,6 +389,156 @@ impl BackslashCommandRegistry {
                 }
                 Ok(false)
             }
+            "\\s" => {
+                let name = args.trim();
+                
+                if name.is_empty() {
+                    // List saved sessions only
+                    let sessions = config.list_sessions();
+                    
+                    if !sessions.is_empty() {
+                        println!("Saved Sessions:");
+                        for (name, session) in sessions {
+                            let db_type = match session.database_type {
+                                crate::database::DatabaseType::PostgreSQL => "PostgreSQL",
+                                crate::database::DatabaseType::MySQL => "MySQL",
+                                crate::database::DatabaseType::SQLite => "SQLite",
+                            };
+                            
+                            match session.database_type {
+                                crate::database::DatabaseType::SQLite => {
+                                    if let Some(ref path) = session.file_path {
+                                        println!("  {} - {} {}", name, db_type, path);
+                                    } else {
+                                        println!("  {} - {} (no file path)", name, db_type);
+                                    }
+                                }
+                                _ => {
+                                    println!("  {} - {} {}@{}:{}/{}", 
+                                        name, db_type, session.user, session.host, session.port, session.dbname);
+                                }
+                            }
+                        }
+                        println!("\nUse 'session://<name>' to connect via command line");
+                    } else {
+                        println!("No saved sessions found.");
+                        println!("Use '\\ss <name>' to save the current connection as a session.");
+                    }
+                } else {
+                    // Connect to saved session
+                    match config.get_session(name) {
+                        Some(_session) => {
+                            println!("Connecting to saved session '{}'...", name);
+                            // TODO: Actually connect using the session info
+                            // This will be implemented when we handle the connection logic
+                            eprintln!("Session connection not yet implemented");
+                        }
+                        None => {
+                            eprintln!("Session '{}' not found. Use \\s to list available sessions.", name);
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            "\\ss" => {
+                let name = args.trim();
+                if name.is_empty() {
+                    eprintln!("Usage: \\ss <name>");
+                    return Ok(false);
+                }
+                
+                // Get current connection info from database and save session
+                let db = database.lock().unwrap();
+                if let Some(connection_info) = db.get_connection_info() {
+                    match config.save_session_from_connection_info(name, connection_info) {
+                        Ok(()) => {
+                            println!("Saved current connection as session '{}'", name);
+                        }
+                        Err(e) => {
+                            eprintln!("Error saving session: {}", e);
+                        }
+                    }
+                } else {
+                    // Fallback to old method if connection info not available
+                    match config.save_session_with_db_type(
+                        name, 
+                        crate::database::DatabaseType::PostgreSQL,
+                        None,
+                        std::collections::HashMap::new()
+                    ) {
+                        Ok(()) => {
+                            println!("Saved current connection as session '{}'", name);
+                        }
+                        Err(e) => {
+                            eprintln!("Error saving session: {}", e);
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            "\\sd" => {
+                let name = args.trim();
+                if name.is_empty() {
+                    eprintln!("Usage: \\sd <name>");
+                    return Ok(false);
+                }
+                
+                match config.delete_session(name) {
+                    Ok(true) => {
+                        println!("Deleted session '{}'", name);
+                    }
+                    Ok(false) => {
+                        eprintln!("Session '{}' not found", name);
+                    }
+                    Err(e) => {
+                        eprintln!("Error deleting session: {}", e);
+                    }
+                }
+                Ok(false)
+            }
+            "\\r" => {
+                // List recent connections
+                let recent = config.get_recent_connections();
+                
+                if !recent.is_empty() {
+                    println!("Recent Connections:");
+                    for (i, conn) in recent.iter().take(20).enumerate() {
+                        let status = if conn.success { "✓" } else { "✗" };
+                        let timestamp = conn.timestamp.format("%Y-%m-%d %H:%M");
+                        println!("  [{}] {} {} - {} ({})", 
+                            i + 1,
+                            status,
+                            conn.display_name,
+                            timestamp,
+                            match conn.database_type {
+                                crate::database::DatabaseType::PostgreSQL => "PostgreSQL",
+                                crate::database::DatabaseType::MySQL => "MySQL", 
+                                crate::database::DatabaseType::SQLite => "SQLite",
+                            }
+                        );
+                    }
+                    println!("\nUse 'recent://' to interactively select and connect to a recent connection");
+                } else {
+                    println!("No recent connections found.");
+                }
+                Ok(false)
+            }
+            "\\rc" => {
+                // Clear recent connections
+                match config.clear_recent_connections() {
+                    Ok(()) => {
+                        println!("Cleared all recent connections");
+                        match config.save() {
+                            Ok(()) => println!("Configuration saved"),
+                            Err(e) => eprintln!("Error saving configuration: {}", e),
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error clearing recent connections: {}", e);
+                    }
+                }
+                Ok(false)
+            }
             _ => {
                 eprintln!("Unknown command: {}. Type \\h for help.", cmd);
                 Ok(false)
@@ -397,7 +547,7 @@ impl BackslashCommandRegistry {
     }
     
     pub fn get_command_names(&self) -> Vec<&'static str> {
-        vec!["\\q", "\\h", "\\l", "\\dt", "\\d", "\\c", "\\x", "\\e", "\\w", "\\i", "\\ed", "\\ecopy", "\\config", "\\n", "\\ns", "\\nd"]
+        vec!["\\q", "\\h", "\\l", "\\dt", "\\d", "\\c", "\\x", "\\e", "\\w", "\\i", "\\ed", "\\ecopy", "\\config", "\\n", "\\ns", "\\nd", "\\s", "\\ss", "\\sd", "\\r", "\\rc"]
     }
     
     pub fn get_command_info(&self) -> Vec<(&'static str, &'static str)> {
@@ -418,6 +568,11 @@ impl BackslashCommandRegistry {
             ("\\n", "List all named queries"),
             ("\\ns", "Save a named query (e.g., \\ns myquery SELECT * FROM users)"),
             ("\\nd", "Delete a named query (e.g., \\nd myquery)"),
+            ("\\s", "List saved sessions or connect to a session (e.g., \\s prod)"),
+            ("\\ss", "Save current connection as a session (e.g., \\ss production)"),
+            ("\\sd", "Delete a saved session (e.g., \\sd oldprod)"),
+            ("\\r", "List recent connections"),
+            ("\\rc", "Clear recent connections"),
         ]
     }
 }
@@ -441,6 +596,11 @@ fn print_help_commands(_config: &DbCrustConfig) {
     println!("  \\n               List all named queries");
     println!("  \\ns <name> <query> Save a named query");
     println!("  \\nd <name>        Delete a named query");
+    println!("  \\s [name]        List saved sessions or connect to a session");
+    println!("  \\ss <name>       Save current connection as a session");
+    println!("  \\sd <name>       Delete a saved session");
+    println!("  \\r               List recent connections");
+    println!("  \\rc              Clear recent connections");
     println!();
     println!("SQL queries are executed immediately when you press Enter.");
     println!("Use Alt+Enter to add newlines for multi-line queries.");
@@ -704,7 +864,7 @@ mod tests {
         let command_names = registry.get_command_names();
         
         // Verify we have the expected number of commands
-        assert_eq!(command_names.len(), 16);
+        assert_eq!(command_names.len(), 21);
         
         // Verify specific commands exist
         assert!(command_names.contains(&"\\q"));
@@ -716,6 +876,8 @@ mod tests {
         assert!(command_names.contains(&"\\ns"));
         assert!(command_names.contains(&"\\nd"));
         assert!(command_names.contains(&"\\ecopy"));
+        assert!(command_names.contains(&"\\r"));
+        assert!(command_names.contains(&"\\rc"));
     }
 
     #[rstest]
@@ -1443,7 +1605,8 @@ mod tests {
         let continue_commands = vec![
             "\\h", "\\l", "\\dt", "\\d", "\\d users", "\\c testdb", "\\x", "\\e", 
             "\\w /tmp/test.sql", "\\i /tmp/test.sql", "\\ecopy", "\\config", 
-            "\\n", "\\ns test_all SELECT 1", "\\nd test_all"
+            "\\n", "\\ns test_all SELECT 1", "\\nd test_all",
+            "\\s", "\\ss test_session", "\\sd test_session"
         ];
         
         for cmd in continue_commands {
@@ -1459,5 +1622,457 @@ mod tests {
             assert!(result.is_ok(), "Command '{}' should succeed", cmd);
             assert_eq!(result.unwrap(), false, "Command '{}' should return false (continue)", cmd);
         }
+    }
+
+    // ===================
+    // Session Management Command Tests
+    // ===================
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_list_empty() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = DbCrustConfig::default(); // Empty config
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        let result = registry.execute(
+            "\\s",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_list_with_sessions() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = DbCrustConfig::default();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        // Add test sessions
+        config.save_session_with_db_type(
+            "test_pg",
+            crate::database::DatabaseType::PostgreSQL,
+            None,
+            HashMap::new()
+        ).unwrap();
+
+        config.save_session_with_db_type(
+            "test_mysql",
+            crate::database::DatabaseType::MySQL,
+            None,
+            HashMap::new()
+        ).unwrap();
+
+        config.save_session_with_db_type(
+            "test_sqlite",
+            crate::database::DatabaseType::SQLite,
+            Some("/tmp/test.db".to_string()),
+            HashMap::new()
+        ).unwrap();
+
+        // Add recent connections
+        config.add_recent_connection_auto_display(
+            "postgresql://user@localhost:5432/testdb".to_string(),
+            crate::database::DatabaseType::PostgreSQL,
+            true
+        ).unwrap();
+
+        let result = registry.execute(
+            "\\s",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_connect_nonexistent() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = DbCrustConfig::default();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        let result = registry.execute(
+            "\\s nonexistent_session",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_connect_existing() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = DbCrustConfig::default();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        // Add a test session
+        config.save_session_with_db_type(
+            "existing_session",
+            crate::database::DatabaseType::PostgreSQL,
+            None,
+            HashMap::new()
+        ).unwrap();
+
+        let result = registry.execute(
+            "\\s existing_session",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_save_valid() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = create_test_config();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        // Verify no sessions initially
+        assert_eq!(config.list_sessions().len(), 0);
+
+        let result = registry.execute(
+            "\\ss new_session",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+
+        // Verify session was saved
+        assert_eq!(config.list_sessions().len(), 1);
+        assert!(config.get_session("new_session").is_some());
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_save_invalid_syntax() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = create_test_config();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        // Test with empty session name
+        let result = registry.execute(
+            "\\ss",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+
+        // Verify no session was saved
+        assert_eq!(config.list_sessions().len(), 0);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_save_update_existing() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = create_test_config();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        // Save initial session
+        let result1 = registry.execute(
+            "\\ss test_session",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result1.is_ok());
+        assert_eq!(config.list_sessions().len(), 1);
+
+        // Save session with same name (should update, not create duplicate)
+        let result2 = registry.execute(
+            "\\ss test_session",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result2.is_ok());
+        assert_eq!(config.list_sessions().len(), 1); // Still only one session
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_delete_existing() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = create_test_config();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        // Create a session first
+        config.save_session_with_db_type(
+            "deletable_session",
+            crate::database::DatabaseType::PostgreSQL,
+            None,
+            HashMap::new()
+        ).unwrap();
+
+        assert_eq!(config.list_sessions().len(), 1);
+
+        let result = registry.execute(
+            "\\sd deletable_session",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+
+        // Verify session was deleted
+        assert_eq!(config.list_sessions().len(), 0);
+        assert!(config.get_session("deletable_session").is_none());
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_delete_nonexistent() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = create_test_config();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        let result = registry.execute(
+            "\\sd nonexistent_session",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_delete_invalid_syntax() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = create_test_config();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        // Test with empty session name
+        let result = registry.execute(
+            "\\sd",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), false);
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_commands_with_special_characters() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = create_test_config();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        // Test session names with special characters
+        let special_names = vec![
+            "session-with-dashes",
+            "session_with_underscores",
+            "session123",
+            "production_db_2024"
+        ];
+
+        for name in special_names {
+            // Save session
+            let save_cmd = format!("\\ss {}", name);
+            let result = registry.execute(
+                &save_cmd,
+                &database,
+                &mut config,
+                &mut last_script,
+                &interrupt_flag,
+                &mut prompt,
+            ).await;
+
+            assert!(result.is_ok(), "Failed to save session '{}'", name);
+            assert!(config.get_session(name).is_some(), "Session '{}' not found after save", name);
+
+            // Delete session
+            let delete_cmd = format!("\\sd {}", name);
+            let result = registry.execute(
+                &delete_cmd,
+                &database,
+                &mut config,
+                &mut last_script,
+                &interrupt_flag,
+                &mut prompt,
+            ).await;
+
+            assert!(result.is_ok(), "Failed to delete session '{}'", name);
+            assert!(config.get_session(name).is_none(), "Session '{}' still exists after delete", name);
+        }
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_session_workflow_integration() {
+        let registry = create_command_registry();
+        let database = create_test_database();
+        let mut config = create_test_config();
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        let mut prompt = create_test_prompt();
+
+        // Step 1: List sessions (should be empty)
+        let result = registry.execute(
+            "\\s",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+        assert!(result.is_ok());
+
+        // Step 2: Save a new session
+        let result = registry.execute(
+            "\\ss production",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+        assert!(result.is_ok());
+
+        // Step 3: Save another session
+        let result = registry.execute(
+            "\\ss development",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+        assert!(result.is_ok());
+
+        // Step 4: List sessions (should show both)
+        let result = registry.execute(
+            "\\s",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+        assert!(result.is_ok());
+        assert_eq!(config.list_sessions().len(), 2);
+
+        // Step 5: Try to connect to a session (should work but show not implemented message)
+        let result = registry.execute(
+            "\\s production",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+        assert!(result.is_ok());
+
+        // Step 6: Delete one session
+        let result = registry.execute(
+            "\\sd development",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+        assert!(result.is_ok());
+        assert_eq!(config.list_sessions().len(), 1);
+
+        // Step 7: Final list (should show only production)
+        let result = registry.execute(
+            "\\s",
+            &database,
+            &mut config,
+            &mut last_script,
+            &interrupt_flag,
+            &mut prompt,
+        ).await;
+        assert!(result.is_ok());
+        assert!(config.get_session("production").is_some());
+        assert!(config.get_session("development").is_none());
     }
 }

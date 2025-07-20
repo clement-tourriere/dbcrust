@@ -183,7 +183,10 @@ fn print_help(config: &DbCrustConfig) {
     println!(
         "  Named queries support positional parameters ($1, $2), raw aggregation ($*) and string aggregation ($@)"
     );
-    println!("  Passwords are always stored in the .pgpass file, not in saved sessions");
+    println!("  Passwords are stored in database-specific credential files, not in saved sessions:");
+    println!("    - PostgreSQL: ~/.pgpass file");
+    println!("    - MySQL: ~/.my.cnf file"); 
+    println!("    - SQLite: no password needed (file-based)");
     println!("  SSH tunnels can be configured in config.toml with regex patterns");
     println!("  Debug logging can be enabled in config.toml with debug_logging_enabled = true");
     println!("  Debug logs are written to ~/.config/dbcrust/debug.log");
@@ -419,7 +422,7 @@ async fn async_main() -> Result<(), Box<dyn StdError>> {
     };
 
     // Normalize URL if it doesn't have a scheme
-    let full_url_str = if !connection_url.contains("://") {
+    let mut full_url_str = if !connection_url.contains("://") {
         format!("postgresql://{}", connection_url)
     } else {
         connection_url
@@ -428,6 +431,231 @@ async fn async_main() -> Result<(), Box<dyn StdError>> {
     // Show banner if not disabled
     if !args.no_banner && args.command.is_empty() && config.show_banner_default {
         print_banner(&config);
+    }
+
+    // Handle session URLs
+    if full_url_str.starts_with("session://") {
+        let session_name = full_url_str.strip_prefix("session://").unwrap_or("");
+        
+        let final_session_name = if session_name.is_empty() {
+            // Interactive session selection
+            let sessions = config.list_sessions();
+            
+            if sessions.is_empty() {
+                eprintln!("No saved sessions found. Use \\ss <name> to save a session first.");
+                return Err("No saved sessions available".into());
+            }
+            
+            // Create options for inquire selection
+            let mut options = Vec::new();
+            for (name, session) in sessions.iter() {
+                let db_type = match session.database_type {
+                    dbcrust::database::DatabaseType::PostgreSQL => "PostgreSQL",
+                    dbcrust::database::DatabaseType::MySQL => "MySQL",
+                    dbcrust::database::DatabaseType::SQLite => "SQLite",
+                };
+                let option = if session.database_type == dbcrust::database::DatabaseType::SQLite {
+                    if let Some(ref file_path) = session.file_path {
+                        format!("{} - {} ({})", name, file_path, db_type)
+                    } else {
+                        format!("{} - SQLite (no path)", name)
+                    }
+                } else {
+                    format!("{} - {}@{}:{}/{} ({})", 
+                        name, session.user, session.host, session.port, session.dbname, db_type)
+                };
+                options.push(option);
+            }
+            
+            // Use inquire for interactive selection
+            let selected_option = inquire::Select::new("Select a saved session:", options)
+                .prompt()
+                .map_err(|e| format!("Selection cancelled: {}", e))?;
+            
+            // Find the session name from the selected option
+            sessions.iter()
+                .find(|(name, session)| {
+                    let db_type = match session.database_type {
+                        dbcrust::database::DatabaseType::PostgreSQL => "PostgreSQL",
+                        dbcrust::database::DatabaseType::MySQL => "MySQL",
+                        dbcrust::database::DatabaseType::SQLite => "SQLite",
+                    };
+                    let option = if session.database_type == dbcrust::database::DatabaseType::SQLite {
+                        if let Some(ref file_path) = session.file_path {
+                            format!("{} - {} ({})", name, file_path, db_type)
+                        } else {
+                            format!("{} - SQLite (no path)", name)
+                        }
+                    } else {
+                        format!("{} - {}@{}:{}/{} ({})", 
+                            name, session.user, session.host, session.port, session.dbname, db_type)
+                    };
+                    option == selected_option
+                })
+                .map(|(name, _)| name.clone())
+                .ok_or("Invalid selection")?
+        } else {
+            session_name.to_string()
+        };
+        
+        println!("🔗 Connecting to saved session '{}'...", final_session_name);
+        
+        // Get the saved session from config
+        match config.get_session(&final_session_name) {
+            Some(session) => {
+                // Reconstruct connection URL from saved session
+                let session_url = match session.database_type {
+                    dbcrust::database::DatabaseType::SQLite => {
+                        if let Some(ref file_path) = session.file_path {
+                            format!("sqlite://{}", file_path)
+                        } else {
+                            return Err("SQLite session missing file path".into());
+                        }
+                    }
+                    dbcrust::database::DatabaseType::MySQL => {
+                        // Try to get password from .my.cnf file
+                        if let Some(password) = dbcrust::myconf::lookup_mysql_password(
+                            &session.host, session.port, &session.dbname, &session.user
+                        ) {
+                            format!("mysql://{}:{}@{}:{}/{}", 
+                                session.user, password, session.host, session.port, session.dbname)
+                        } else {
+                            // No password found in .my.cnf, construct URL without password
+                            // The database connection will prompt for password
+                            format!("mysql://{}@{}:{}/{}", 
+                                session.user, session.host, session.port, session.dbname)
+                        }
+                    }
+                    dbcrust::database::DatabaseType::PostgreSQL => {
+                        // Check if this is a Docker session
+                        if session.host.starts_with("DOCKER:") {
+                            // Extract container name and create docker:// URL
+                            let container_name = session.host.strip_prefix("DOCKER:").unwrap_or(&session.host);
+                            println!("🐳 Re-resolving Docker container for saved session: {}", container_name);
+                            format!("docker://{}", container_name)
+                        } else {
+                            // Regular PostgreSQL connection - try to get password from .pgpass file
+                            if let Some(password) = dbcrust::pgpass::lookup_password(
+                                &session.host, session.port, &session.dbname, &session.user
+                            ) {
+                                format!("postgresql://{}:{}@{}:{}/{}", 
+                                    session.user, password, session.host, session.port, session.dbname)
+                            } else {
+                                // No password found in .pgpass, construct URL without password
+                                // The database connection will prompt for password
+                                format!("postgresql://{}@{}:{}/{}", 
+                                    session.user, session.host, session.port, session.dbname)
+                            }
+                        }
+                    }
+                };
+                
+                // Create database from session
+                let database = match Database::from_url(
+                    &session_url,
+                    Some(config.default_limit.clone()),
+                    Some(config.expanded_display_default.clone()),
+                ).await {
+                    Ok(db) => db,
+                    Err(e) => {
+                        eprintln!("Failed to connect to session '{}': {}", final_session_name, e);
+                        return Err(e);
+                    }
+                };
+                
+                println!("✓ Successfully connected to session '{}'", final_session_name);
+                
+                // Track this connection in history
+                let sanitized_url = password_sanitizer::sanitize_connection_url(&session_url);
+                if let Err(e) = config.add_recent_connection_auto_display(
+                    sanitized_url,
+                    session.database_type.clone(),
+                    true
+                ) {
+                    debug_log!("Failed to add connection to history: {}", e);
+                }
+                
+                // Handle commands and start interactive mode
+                return handle_database_connection(database, config, args).await;
+            }
+            None => {
+                eprintln!("Session '{}' not found. Use \\s to list available sessions.", final_session_name);
+                return Err("Session not found".into());
+            }
+        }
+    }
+
+    // Handle recent:// URLs for interactive recent connection selection
+    if full_url_str.starts_with("recent://") {
+        let recent_connections = config.get_recent_connections();
+        
+        if recent_connections.is_empty() {
+            eprintln!("No recent connections found. Connect to a database first to build connection history.");
+            return Err("No recent connections available".into());
+        }
+        
+        // Create options for inquire selection
+        let mut options = Vec::new();
+        for conn in recent_connections.iter().take(20) {
+            let status = if conn.success { "✅" } else { "❌" };
+            let timestamp = conn.timestamp.format("%Y-%m-%d %H:%M");
+            let db_type = match conn.database_type {
+                dbcrust::database::DatabaseType::PostgreSQL => "PostgreSQL",
+                dbcrust::database::DatabaseType::MySQL => "MySQL",
+                dbcrust::database::DatabaseType::SQLite => "SQLite",
+            };
+            let option = format!("{} {} - {} ({})", 
+                status,
+                conn.display_name,
+                timestamp,
+                db_type
+            );
+            options.push(option);
+        }
+        
+        // Use inquire for interactive selection
+        let selected_option = inquire::Select::new("Select a recent connection:", options)
+            .prompt()
+            .map_err(|e| format!("Selection cancelled: {}", e))?;
+        
+        // Find the index of the selected option
+        let selected_index = recent_connections.iter().take(20).enumerate()
+            .find(|(_i, conn)| {
+                let status = if conn.success { "✅" } else { "❌" };
+                let timestamp = conn.timestamp.format("%Y-%m-%d %H:%M");
+                let db_type = match conn.database_type {
+                    dbcrust::database::DatabaseType::PostgreSQL => "PostgreSQL",
+                    dbcrust::database::DatabaseType::MySQL => "MySQL",
+                    dbcrust::database::DatabaseType::SQLite => "SQLite",
+                };
+                let option = format!("{} {} - {} ({})", 
+                    status,
+                    conn.display_name,
+                    timestamp,
+                    db_type
+                );
+                option == selected_option
+            })
+            .map(|(i, _)| i)
+            .ok_or("Invalid selection")?;
+        
+        let selected_connection = &recent_connections[selected_index];
+        println!("🔗 Connecting to: {}", selected_connection.display_name);
+        
+        // Use the stored connection URL to reconnect
+        // For Docker connections, we need to re-resolve them since the container IP might have changed
+        if selected_connection.connection_url.contains(" # Docker: ") {
+            // Extract the container name from the Docker comment
+            if let Some(docker_pos) = selected_connection.connection_url.find(" # Docker: ") {
+                let container_name = &selected_connection.connection_url[docker_pos + 11..]; // Skip " # Docker: "
+                full_url_str = format!("docker://{}", container_name);
+                println!("🐳 Re-resolving Docker container: {}", container_name);
+            } else {
+                full_url_str = selected_connection.connection_url.clone();
+            }
+        } else {
+            full_url_str = selected_connection.connection_url.clone();
+        }
     }
 
     // Handle vault URLs
@@ -569,22 +797,47 @@ async fn async_main() -> Result<(), Box<dyn StdError>> {
         let connect_elapsed = connect_start.elapsed();
         println!("✓ Database connection established in {:.1}s", connect_elapsed.as_secs_f32());
 
+        // Track connection in history
+        let sanitized_vault_url = password_sanitizer::sanitize_connection_url(&full_url_str);
+        if let Err(e) = config.add_recent_connection_auto_display(
+            sanitized_vault_url,
+            dbcrust::database::DatabaseType::PostgreSQL, // Vault typically provides PostgreSQL
+            true
+        ) {
+            debug_log!("Failed to add vault connection to history: {}", e);
+        }
+
         // Handle commands and start interactive mode
         return handle_database_connection(database, config, args).await;
     }
 
-    // Use the new Database::from_url method for all database types
-    let database = Database::from_url(
-        &full_url_str,
-        Some(config.default_limit.clone()),
-        Some(config.expanded_display_default.clone()),
-    )
-    .await
-    .map_err(|e| {
-        eprintln!("Failed to connect to database: {}", e);
-        eprintln!("Connection URL: {}", crate::password_sanitizer::sanitize_connection_url(&full_url_str));
-        e
-    })?;
+    // Handle Docker URLs specially to get connection info for tracking
+    let (database, docker_connection_info) = if full_url_str.starts_with("docker://") {
+        Database::from_docker_url_with_tracking(
+            &full_url_str,
+            Some(config.default_limit.clone()),
+            Some(config.expanded_display_default.clone()),
+        )
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to connect to database: {}", e);
+            eprintln!("Connection URL: {}", crate::password_sanitizer::sanitize_connection_url(&full_url_str));
+            e
+        })?
+    } else {
+        let database = Database::from_url(
+            &full_url_str,
+            Some(config.default_limit.clone()),
+            Some(config.expanded_display_default.clone()),
+        )
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to connect to database: {}", e);
+            eprintln!("Connection URL: {}", crate::password_sanitizer::sanitize_connection_url(&full_url_str));
+            e
+        })?;
+        (database, None)
+    };
 
     // Handle SSH tunnel if specified
     if let Some(ref tunnel_str) = args.ssh_tunnel {
@@ -594,6 +847,37 @@ async fn async_main() -> Result<(), Box<dyn StdError>> {
     }
 
     println!("✓ Successfully connected to database");
+
+    // Track connection in history
+    let (database_type, connection_url_for_history) = if let Some(resolved_info) = docker_connection_info {
+        // For Docker connections, use the resolved connection info
+        let resolved_url = resolved_info.to_url();
+        let sanitized_url = password_sanitizer::sanitize_connection_url(&resolved_url);
+        (resolved_info.database_type, sanitized_url)
+    } else {
+        // For non-Docker connections, use the original URL
+        let database_type = if full_url_str.starts_with("postgresql://") {
+            dbcrust::database::DatabaseType::PostgreSQL
+        } else if full_url_str.starts_with("mysql://") {
+            dbcrust::database::DatabaseType::MySQL
+        } else if full_url_str.starts_with("sqlite://") {
+            dbcrust::database::DatabaseType::SQLite
+        } else {
+            // Default to PostgreSQL for URLs without scheme
+            dbcrust::database::DatabaseType::PostgreSQL
+        };
+        
+        let sanitized_url = password_sanitizer::sanitize_connection_url(&full_url_str);
+        (database_type, sanitized_url)
+    };
+    
+    if let Err(e) = config.add_recent_connection_auto_display(
+        connection_url_for_history,
+        database_type,
+        true
+    ) {
+        debug_log!("Failed to add connection to history: {}", e);
+    }
 
     // Handle commands and start interactive mode
     handle_database_connection(database, config, args).await

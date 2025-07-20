@@ -187,7 +187,8 @@ dbcrust postgresql://backup-user@replica.db.internal/app \
 - **Syntax highlighting** for SQL and output
 - **History search** with fuzzy matching
 - **External editor** support for complex queries
-- **Session management** for connection reuse
+- **Session management** with saved sessions and connection history
+- **recent://** for interactive reconnection to any past connection
 
 ### Intelligent Features
 
