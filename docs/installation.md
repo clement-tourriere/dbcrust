@@ -219,17 +219,17 @@ Run DBCrust in a container:
 
 ```bash
 # Pull the image (coming soon)
-docker pull ghcr.io/ctourriere/dbcrust:latest
+docker pull ghcr.io/clement-tourriere/dbcrust:latest
 
 # Run with database connection
 docker run -it --rm \
   -e DATABASE_URL="postgresql://user:pass@host.docker.internal/db" \
-  ghcr.io/ctourriere/dbcrust:latest
+  ghcr.io/clement-tourriere/dbcrust:latest
 
 # Mount config directory
 docker run -it --rm \
   -v ~/.config/dbcrust:/root/.config/dbcrust \
-  ghcr.io/ctourriere/dbcrust:latest
+  ghcr.io/clement-tourriere/dbcrust:latest
 ```
 
 ## ✅ Verify Installation
@@ -248,6 +248,7 @@ dbcrust sqlite://:memory: --query "SELECT 'Hello DBCrust!' as message"
 ```
 
 Expected output:
+
 ```
 ╭─────────────────╮
 │ message         │
@@ -387,10 +388,10 @@ If you encounter issues:
 1. Check the troubleshooting section below
 2. Search [existing issues](https://github.com/clement-tourriere/dbcrust/issues)
 3. Create a [new issue](https://github.com/clement-tourriere/dbcrust/issues/new) with:
-   - Operating system and version
-   - Installation method used
-   - Full error message
-   - Output of `dbcrust --version`
+    - Operating system and version
+    - Installation method used
+    - Full error message
+    - Output of `dbcrust --version`
 
 ---
 

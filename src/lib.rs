@@ -3,28 +3,28 @@
 
 pub mod cli;
 // mod completion; // Removed pub mod completion;
+pub mod backslash_commands;
 pub mod completion;
 pub mod config;
 pub mod database; // New database abstraction layer
+pub mod database_mysql; // MySQL implementation
 pub mod database_postgresql; // PostgreSQL implementation
 pub mod database_sqlite; // SQLite implementation
-pub mod database_mysql; // MySQL implementation
 pub mod db;
+pub mod docker; // Docker container integration
 pub mod format; // Made format module public
-pub mod performance_analyzer; // Performance analysis for EXPLAIN queries
 pub mod highlighter;
 pub mod logging;
 pub mod myconf; // MySQL configuration file support
 pub mod named_queries;
 pub mod pager;
 pub mod password_sanitizer;
+pub mod performance_analyzer; // Performance analysis for EXPLAIN queries
 pub mod pgpass;
 pub mod prompt;
 pub mod script;
 pub mod ssh_tunnel; // Add the SSH tunnel module
-pub mod vault_client;
-pub mod docker; // Docker container integration
-pub mod backslash_commands; // Add backslash commands module
+pub mod vault_client; // Add backslash commands module
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
@@ -395,7 +395,7 @@ impl PyConfig {
 #[pyfunction]
 pub fn run_command(url: &str, command: &str) -> PyResult<String> {
     use crate::database::ConnectionInfo;
-    
+
     // Create a new tokio runtime for this operation
     let rt = Runtime::new().map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
@@ -403,14 +403,13 @@ pub fn run_command(url: &str, command: &str) -> PyResult<String> {
             e
         ))
     })?;
-    
+
     rt.block_on(async {
         // Parse the database URL
-        let _connection_info = ConnectionInfo::parse_url(url)
-            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                "Invalid database URL: {}", e
-            )))?;
-        
+        let _connection_info = ConnectionInfo::parse_url(url).map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("Invalid database URL: {}", e))
+        })?;
+
         // Create database connection
         let config = config::Config::load();
         let mut database = db::Database::from_url(
@@ -419,12 +418,15 @@ pub fn run_command(url: &str, command: &str) -> PyResult<String> {
             Some(config.expanded_display_default),
         )
         .await
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
-            "Failed to connect to database: {}", e
-        )))?;
-        
+        .map_err(|e| {
+            PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
+                "Failed to connect to database: {}",
+                e
+            ))
+        })?;
+
         let command_trimmed = command.trim();
-        
+
         // Handle backslash commands
         if command_trimmed.starts_with('\\') {
             match command_trimmed {
@@ -433,7 +435,8 @@ pub fn run_command(url: &str, command: &str) -> PyResult<String> {
                     match database.list_databases().await {
                         Ok(databases) => Ok(crate::format::format_query_results_psql(&databases)),
                         Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                            "Error listing databases: {}", e
+                            "Error listing databases: {}",
+                            e
                         ))),
                     }
                 }
@@ -451,7 +454,7 @@ pub fn run_command(url: &str, command: &str) -> PyResult<String> {
                                     }
                                 })
                                 .collect();
-                            
+
                             if transformed_tables.is_empty() {
                                 Ok("No tables found.".to_string())
                             } else {
@@ -459,7 +462,8 @@ pub fn run_command(url: &str, command: &str) -> PyResult<String> {
                             }
                         }
                         Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                            "Error listing tables: {}", e
+                            "Error listing tables: {}",
+                            e
                         ))),
                     }
                 }
@@ -468,14 +472,17 @@ pub fn run_command(url: &str, command: &str) -> PyResult<String> {
                     let table_name = cmd[3..].trim();
                     if table_name.is_empty() {
                         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                            "Table name required for \\d command".to_string()
+                            "Table name required for \\d command".to_string(),
                         ));
                     }
-                    
+
                     match database.get_table_details(table_name).await {
-                        Ok(details) => Ok(crate::format::format_table_details(&details).to_string()),
+                        Ok(details) => {
+                            Ok(crate::format::format_table_details(&details).to_string())
+                        }
                         Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                            "Error getting table details: {}", e
+                            "Error getting table details: {}",
+                            e
                         ))),
                     }
                 }
@@ -484,47 +491,63 @@ pub fn run_command(url: &str, command: &str) -> PyResult<String> {
                     let db_name = cmd[3..].trim();
                     if db_name.is_empty() {
                         return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                            "Database name required for \\c command".to_string()
+                            "Database name required for \\c command".to_string(),
                         ));
                     }
-                    
+
                     match database.connect_to_db(db_name).await {
                         Ok(_) => Ok(format!("Connected to database: {}", db_name)),
                         Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                            "Error connecting to database: {}", e
+                            "Error connecting to database: {}",
+                            e
                         ))),
                     }
                 }
                 "\\x" => {
                     // Toggle expanded display
                     database.toggle_expanded_display();
-                    let status = if database.is_expanded_display() { "on" } else { "off" };
+                    let status = if database.is_expanded_display() {
+                        "on"
+                    } else {
+                        "off"
+                    };
                     Ok(format!("Expanded display is {}.", status))
                 }
                 "\\e" => {
                     // Toggle explain mode
                     database.toggle_explain_mode();
-                    let status = if database.is_explain_mode() { "on" } else { "off" };
+                    let status = if database.is_explain_mode() {
+                        "on"
+                    } else {
+                        "off"
+                    };
                     Ok(format!("Explain mode is {}.", status))
                 }
                 "\\a" => {
                     // Toggle autocomplete
                     let current_status = database.is_autocomplete();
                     database.set_autocomplete(!current_status);
-                    let status = if database.is_autocomplete() { "on" } else { "off" };
+                    let status = if database.is_autocomplete() {
+                        "on"
+                    } else {
+                        "off"
+                    };
                     Ok(format!("Autocomplete is {}.", status))
                 }
                 "\\cs" => {
                     // Toggle column selection
                     database.toggle_column_select_mode();
-                    let status = if database.is_column_select_mode() { "on" } else { "off" };
+                    let status = if database.is_column_select_mode() {
+                        "on"
+                    } else {
+                        "off"
+                    };
                     Ok(format!("Column selection mode is {}.", status))
                 }
-                _ => {
-                    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
-                        "Unknown command: {}", command_trimmed
-                    )))
-                }
+                _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+                    "Unknown command: {}",
+                    command_trimmed
+                ))),
             }
         } else {
             // Handle SQL queries
@@ -537,7 +560,8 @@ pub fn run_command(url: &str, command: &str) -> PyResult<String> {
                     }
                 }
                 Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "Error executing query: {}", e
+                    "Error executing query: {}",
+                    e
                 ))),
             }
         }
@@ -551,14 +575,15 @@ pub fn run_command(url: &str, command: &str) -> PyResult<String> {
 pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32> {
     use crate::cli::Args;
     use clap::Parser;
-    
+
     // Parse arguments
     let parsed_args = match Args::try_parse_from(args) {
         Ok(args) => args,
         Err(e) => {
             // Handle help and version display (which clap treats as "errors")
-            if e.kind() == clap::error::ErrorKind::DisplayHelp 
-                || e.kind() == clap::error::ErrorKind::DisplayVersion {
+            if e.kind() == clap::error::ErrorKind::DisplayHelp
+                || e.kind() == clap::error::ErrorKind::DisplayVersion
+            {
                 print!("{}", e);
                 return Ok(0);
             }
@@ -566,7 +591,7 @@ pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32> {
             return Ok(1);
         }
     };
-    
+
     // Handle debug mode
     if parsed_args.debug {
         match crate::logging::get_log_file_path_string() {
@@ -580,13 +605,13 @@ pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32> {
             }
         }
     }
-    
+
     // Generate shell completions
     if let Some(shell) = parsed_args.completions {
         use clap::CommandFactory;
         use clap_complete::{generate, Shell as CompletionShell};
         use std::io;
-        
+
         let mut app = Args::command();
         let shell_type = match shell {
             crate::cli::Shell::Bash => CompletionShell::Bash,
@@ -595,20 +620,21 @@ pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32> {
             crate::cli::Shell::PowerShell => CompletionShell::PowerShell,
             crate::cli::Shell::Elvish => CompletionShell::Elvish,
         };
-        
+
         // Always output to stdout (CLI simplified structure)
         generate(shell_type, &mut app, "dbcrust", &mut io::stdout());
         return Ok(0);
     }
-    
+
     // Handle direct commands
     if !parsed_args.command.is_empty() {
         // Determine connection URL
-        let connection_url = parsed_args.connection_url
-            .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyValueError, _>(
-                "Connection URL is required when using command mode"
-            ))?;
-        
+        let connection_url = parsed_args.connection_url.ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "Connection URL is required when using command mode",
+            )
+        })?;
+
         // Execute each command using the existing run_command function
         for command in parsed_args.command {
             match run_command(&connection_url, &command) {
@@ -621,21 +647,23 @@ pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32> {
         }
         return Ok(0);
     }
-    
+
     // For interactive mode, launch the interactive CLI
     // Create a new tokio runtime for this operation
     let rt = Runtime::new().map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-            "Failed to create Tokio runtime: {}", e
+            "Failed to create Tokio runtime: {}",
+            e
         ))
     })?;
-    
+
     rt.block_on(async {
         match run_interactive_cli(parsed_args).await {
             Ok(exit_code) => Ok(exit_code),
             Err(e) => Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Error in interactive mode: {}", e
-            )))
+                "Error in interactive mode: {}",
+                e
+            ))),
         }
     })
 }
@@ -645,46 +673,49 @@ pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32> {
 /// autocomplete, syntax highlighting, history, etc. that can be called from Python.
 #[cfg(feature = "python")]
 async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std::error::Error>> {
-    use crate::completion::{SqlCompleter, NoopCompleter};
+    use crate::completion::{NoopCompleter, SqlCompleter};
     use crate::highlighter::SqlHighlighter;
     use crate::prompt::DbPrompt;
-    use reedline::{
-        ColumnarMenu, Completer, DefaultHinter, Emacs, EditCommand, FileBackedHistory, KeyCode, KeyModifiers,
-        ReedlineEvent, ReedlineMenu, default_emacs_keybindings, Reedline, Signal, MenuBuilder
-    };
     use nu_ansi_term::{Color, Style};
-    use std::sync::{Arc, Mutex};
-    use std::sync::atomic::AtomicBool;
+    use reedline::{
+        default_emacs_keybindings, ColumnarMenu, Completer, DefaultHinter, EditCommand, Emacs, FileBackedHistory,
+        KeyCode, KeyModifiers, MenuBuilder, Reedline, ReedlineEvent, ReedlineMenu,
+        Signal,
+    };
     use signal_hook::{consts::SIGINT, flag};
-    
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
+
     // Initialize logging
     if let Err(e) = crate::logging::init() {
         eprintln!("Warning: Failed to initialize logging: {}", e);
     }
-    
+
     // Load configuration
     let config = crate::config::Config::load();
-    
+
     // Determine connection URL
-    let connection_url = args.connection_url
+    let connection_url = args
+        .connection_url
         .ok_or_else(|| "Connection URL is required for Python interface")?;
-    
+
     // Create database connection
     let database = crate::db::Database::from_url(
         &connection_url,
         Some(config.default_limit),
         Some(config.expanded_display_default),
-    ).await?;
-    
+    )
+    .await?;
+
     // Print banner if not disabled
     if !args.no_banner {
         print_banner();
         println!("Connected to database: {}", database.get_current_db());
     }
-    
+
     // Set up the rich interactive environment similar to main.rs
     let db_arc = Arc::new(Mutex::new(database));
-    
+
     // Preload database metadata for autocomplete
     {
         let mut db_guard = db_arc.lock().unwrap();
@@ -692,21 +723,21 @@ async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std:
             eprintln!("Warning: Failed to preload metadata: {}", e);
         }
     }
-    
+
     // Set up autocompletion
     let completer: Box<dyn Completer> = if config.autocomplete_enabled {
         Box::new(SqlCompleter::new(db_arc.clone()))
     } else {
         Box::new(NoopCompleter {})
     };
-    
+
     // Set up completion menu
     let completion_menu = Box::new(
         ColumnarMenu::default()
             .with_name("completion_menu")
             .with_text_style(Style::new().fg(Color::Green)),
     );
-    
+
     // Set up keybindings
     let mut keybindings = default_emacs_keybindings();
     keybindings.add_binding(
@@ -717,7 +748,7 @@ async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std:
             ReedlineEvent::MenuNext,
         ]),
     );
-    
+
     // Add multi-line support: Shift+Enter, Ctrl+Enter, and Alt+Enter for newlines
     keybindings.add_binding(
         KeyModifiers::SHIFT,
@@ -734,12 +765,13 @@ async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std:
         KeyCode::Enter,
         ReedlineEvent::Edit(vec![EditCommand::InsertNewline]),
     );
-    
+
     let edit_mode = Box::new(Emacs::new(keybindings));
-    
+
     // Set up syntax highlighting
-    let hinter = Box::new(DefaultHinter::default().with_style(Style::new().italic().fg(Color::LightGray)));
-    
+    let hinter =
+        Box::new(DefaultHinter::default().with_style(Style::new().italic().fg(Color::LightGray)));
+
     // Set up history
     let history_path = dirs::config_dir()
         .map(|dir| dir.join("dbcrust").join("history"))
@@ -748,7 +780,7 @@ async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std:
                 .expect("Could not determine home directory")
                 .join(".dbcrust_history")
         });
-    
+
     let history = Box::new(match FileBackedHistory::with_file(1000, history_path) {
         Ok(history) => history,
         Err(e) => {
@@ -756,7 +788,7 @@ async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std:
             FileBackedHistory::default()
         }
     });
-    
+
     // Create the reedline editor
     let mut line_editor = Reedline::create()
         .with_completer(completer)
@@ -765,33 +797,34 @@ async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std:
         .with_hinter(hinter)
         .with_highlighter(Box::new(SqlHighlighter::new()))
         .with_history(history);
-    
+
     // Set up the prompt
     let db = db_arc.lock().unwrap();
     let username = db.get_username().to_string();
     let db_name = db.get_current_db();
     drop(db);
-    let mut prompt = DbPrompt::with_config(username, db_name, config.multiline_prompt_indicator.clone());
-    
+    let mut prompt =
+        DbPrompt::with_config(username, db_name, config.multiline_prompt_indicator.clone());
+
     // Set up signal handling
     let interrupt_flag = Arc::new(AtomicBool::new(false));
     flag::register(SIGINT, Arc::clone(&interrupt_flag))?;
-    
+
     // Keep track of the last executed query or edited script
     let mut last_script = String::new();
-    
+
     println!("Type \\h for help");
-    
+
     // Main interactive loop
     loop {
         match line_editor.read_line(&prompt)? {
             Signal::Success(input) => {
                 let input_trimmed = input.trim();
-                
+
                 if input_trimmed.is_empty() {
                     continue;
                 }
-                
+
                 // Handle special commands
                 if input_trimmed.starts_with('\\') {
                     if handle_backslash_command_python(
@@ -800,7 +833,9 @@ async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std:
                         &mut last_script,
                         &interrupt_flag,
                         &mut prompt,
-                    ).await? {
+                    )
+                    .await?
+                    {
                         break; // Exit if command requests it (like \q)
                     }
                 } else {
@@ -811,7 +846,8 @@ async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std:
                             if results.is_empty() {
                                 println!("Query OK, no results.");
                             } else {
-                                process_query_results_python(&mut db, results, &interrupt_flag).await?;
+                                process_query_results_python(&mut db, results, &interrupt_flag)
+                                    .await?;
                             }
                         }
                         Err(e) => {
@@ -832,11 +868,11 @@ async fn run_interactive_cli(args: crate::cli::Args) -> Result<i32, Box<dyn std:
             }
         }
     }
-    
+
     // Close the database connection
     let mut db = db_arc.lock().unwrap();
     db.close().await;
-    
+
     Ok(0)
 }
 
@@ -849,8 +885,8 @@ async fn handle_backslash_command_python(
     _interrupt_flag: &Arc<std::sync::atomic::AtomicBool>,
     prompt: &mut crate::prompt::DbPrompt,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    use crate::format::{format_query_results_psql};
-    
+    use crate::format::format_query_results_psql;
+
     match input {
         "\\q" => return Ok(true), // Signal to exit
         "\\h" => print_help_python(),
@@ -900,7 +936,11 @@ async fn handle_backslash_command_python(
         "\\x" => {
             let mut db = db_arc.lock().unwrap();
             db.toggle_expanded_display();
-            let status = if db.is_expanded_display() { "on" } else { "off" };
+            let status = if db.is_expanded_display() {
+                "on"
+            } else {
+                "off"
+            };
             println!("Expanded display is {}.", status);
         }
         "\\a" => {
@@ -913,7 +953,11 @@ async fn handle_backslash_command_python(
         "\\cs" => {
             let mut db = db_arc.lock().unwrap();
             db.toggle_column_select_mode();
-            let status = if db.is_column_select_mode() { "on" } else { "off" };
+            let status = if db.is_column_select_mode() {
+                "on"
+            } else {
+                "off"
+            };
             println!("Column selection mode is {}.", status);
         }
         "\\l" => {
@@ -940,7 +984,7 @@ async fn handle_backslash_command_python(
                             }
                         })
                         .collect();
-                    
+
                     if transformed_tables.is_empty() {
                         println!("No tables found.");
                     } else {
@@ -956,7 +1000,7 @@ async fn handle_backslash_command_python(
                 println!("Error: Please provide a table name after \\d");
                 return Ok(false);
             }
-            
+
             let mut db = db_arc.lock().unwrap();
             match db.get_table_details(table_name).await {
                 Ok(details) => {
@@ -971,7 +1015,7 @@ async fn handle_backslash_command_python(
                 println!("Error: Please provide a database name after \\c");
                 return Ok(false);
             }
-            
+
             let mut db = db_arc.lock().unwrap();
             match db.connect_to_db(db_name).await {
                 Ok(_) => {
@@ -979,7 +1023,8 @@ async fn handle_backslash_command_python(
                     // Update the prompt to reflect the new database
                     let username = db.get_username().to_string();
                     let new_db_name = db.get_current_db();
-                    *prompt = crate::prompt::DbPrompt::with_config(username, new_db_name, "".to_string());
+                    *prompt =
+                        crate::prompt::DbPrompt::with_config(username, new_db_name, "".to_string());
                 }
                 Err(e) => eprintln!("Error connecting to database: {}", e),
             }
@@ -989,7 +1034,7 @@ async fn handle_backslash_command_python(
             println!("Type \\h for help");
         }
     }
-    
+
     Ok(false)
 }
 
@@ -1002,13 +1047,13 @@ async fn process_query_results_python(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use crate::format::{format_query_results, format_query_results_expanded};
     use std::sync::atomic::Ordering;
-    
+
     if interrupt_flag.load(Ordering::SeqCst) {
         println!("Query interrupted by user.");
         interrupt_flag.store(false, Ordering::SeqCst);
         return Ok(());
     }
-    
+
     // For Python mode, we'll use simple println instead of pager for now
     // This could be enhanced later to detect terminal capabilities
     if database.is_expanded_display() {
@@ -1020,7 +1065,7 @@ async fn process_query_results_python(
         let formatted_output = format_query_results(&results);
         println!("{}", formatted_output);
     }
-    
+
     Ok(())
 }
 
@@ -1047,7 +1092,7 @@ fn print_help_python() {
     println!("  \\er <query>     - Execute query with raw EXPLAIN output");
     println!("  \\ef <query>     - Execute query with formatted EXPLAIN output");
     println!();
-    println!("For more information, visit: https://github.com/ctourriere/dbcrust");
+    println!("For more information, visit: https://github.com/clement-tourriere/dbcrust");
 }
 
 /// Print the DBCRUST ASCII art banner
@@ -1062,10 +1107,9 @@ fn print_banner() {
  |_____/  |____/  \_____\_____/  \______||_____/    |_|   
                 Multi-Database Interactive Client
 "#;
-    
+
     println!("{}", banner);
 }
-
 
 #[macro_export]
 macro_rules! debug_log {

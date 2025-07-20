@@ -18,7 +18,8 @@
 
 ## Why DBCrust?
 
-DBCrust brings the power of modern CLI tools to database management. Built in Rust for maximum performance, it provides an intuitive interface for PostgreSQL, MySQL, and SQLite with features that boost developer productivity.
+DBCrust brings the power of modern CLI tools to database management. Built in Rust for maximum performance, it provides
+an intuitive interface for PostgreSQL, MySQL, and SQLite with features that boost developer productivity.
 
 ## 🚀 Key Features
 
@@ -26,7 +27,8 @@ DBCrust brings the power of modern CLI tools to database management. Built in Ru
 - **Smart Autocompletion** - Context-aware suggestions for tables, columns, and SQL keywords
 - **Query Visualization** - Beautiful EXPLAIN output with execution plans
 - **Enterprise Security** - SSH tunneling, HashiCorp Vault integration, and encrypted connections
-- **Docker Integration** - Connect to databases in Docker containers with automatic port detection and OrbStack DNS support
+- **Docker Integration** - Connect to databases in Docker containers with automatic port detection and OrbStack DNS
+  support
 - **Python Integration** - Use as a library in your Python applications
 - **Developer Experience** - History, syntax highlighting, and external editor support
 
@@ -55,10 +57,12 @@ dbcrust docker://   # Interactive container selection
 ## Installation
 
 ### Prerequisites
+
 - Rust 2024 edition or later (for building from source)
 - [uv](https://github.com/astral-sh/uv) (recommended for Python installation)
 
 ### Quick Install with uv (Recommended)
+
 ```bash
 # Install globally as a tool
 uv tool install dbcrust
@@ -68,6 +72,7 @@ uvx dbcrust postgresql://user:pass@localhost/mydb
 ```
 
 ### Install from PyPI
+
 ```bash
 # Using uv
 uv pip install dbcrust
@@ -77,8 +82,9 @@ pip install dbcrust
 ```
 
 ### Install from Source
+
 ```bash
-git clone git@gitlab.gitguardian.ovh:ctourriere/dbcrust.git
+git clone git@gitlab.gitguardian.ovh:clement-tourriere/dbcrust.git
 cd dbcrust
 cargo install --path .
 ```
@@ -86,6 +92,7 @@ cargo install --path .
 ## Usage Examples
 
 ### Basic Connection
+
 ```bash
 # PostgreSQL
 dbcrust postgresql://postgres:pass@localhost/myapp
@@ -102,12 +109,14 @@ dbcrust docker://user:pass@container-name/database
 ```
 
 ### Interactive Commands
+
 ```sql
 -- List databases
 \l
 
 -- List tables
-\dt
+\
+dt
 
 -- Describe table structure
 \d users
@@ -119,17 +128,22 @@ dbcrust docker://user:pass@container-name/database
 \docker
 
 -- Query with autocompletion
-SELECT id, name, email FROM users WHERE active = true;
+SELECT id, name, email
+FROM users
+WHERE active = true;
 ```
 
 ### Query Visualization
+
 Enable EXPLAIN mode to see execution plans:
+
 ```
 \e
 SELECT * FROM users WHERE email = 'user@example.com';
 ```
 
 Output:
+
 ```
 ○ Execution Time: 1.23 ms
 ○ Planning Time: 0.15 ms
@@ -145,6 +159,7 @@ Index Scan
 ```
 
 ### SSH Tunneling
+
 ```bash
 # Connect through SSH tunnel
 dbcrust postgresql://user:pass@db.internal.com/myapp \
@@ -156,6 +171,7 @@ dbcrust postgresql://user:pass@db.internal.com/myapp \
 ```
 
 ### Vault Integration
+
 ```bash
 # Connect using HashiCorp Vault
 dbcrust vault://app-role@database/postgres-prod
@@ -226,32 +242,32 @@ result = client.run_command("SELECT COUNT(*) FROM users")
 
 ## Command Reference
 
-| Command | Description |
-|---------|-------------|
-| `\l` | List databases |
-| `\dt` | List tables |
-| `\d <table>` | Describe table |
-| `\c <database>` | Switch database |
-| `\x` | Toggle expanded display |
-| `\e` | Toggle EXPLAIN mode |
-| `\ed` | Edit query in external editor |
-| `\i <file>` | Execute SQL file |
-| `\docker` | List Docker database containers |
-| `\q` | Quit |
+| Command         | Description                     |
+|-----------------|---------------------------------|
+| `\l`            | List databases                  |
+| `\dt`           | List tables                     |
+| `\d <table>`    | Describe table                  |
+| `\c <database>` | Switch database                 |
+| `\x`            | Toggle expanded display         |
+| `\e`            | Toggle EXPLAIN mode             |
+| `\ed`           | Edit query in external editor   |
+| `\i <file>`     | Execute SQL file                |
+| `\docker`       | List Docker database containers |
+| `\q`            | Quit                            |
 
 <details>
 <summary>View all commands</summary>
 
-| Command | Description |
-|---------|-------------|
-| `\a` | Toggle autocomplete |
-| `\cs` | Toggle column selection |
-| `\config` | Show configuration |
-| `\save` | Save current connection |
-| `\pgpass` | Show .pgpass info |
-| `\n` | Named queries |
-| `\s` | Session management |
-| `\h` | Help |
+| Command   | Description             |
+|-----------|-------------------------|
+| `\a`      | Toggle autocomplete     |
+| `\cs`     | Toggle column selection |
+| `\config` | Show configuration      |
+| `\save`   | Save current connection |
+| `\pgpass` | Show .pgpass info       |
+| `\n`      | Named queries           |
+| `\s`      | Session management      |
+| `\h`      | Help                    |
 
 </details>
 
@@ -261,29 +277,34 @@ result = client.run_command("SELECT COUNT(*) FROM users")
 <summary>SSH Tunneling</summary>
 
 Configure automatic SSH tunnels in your config file:
+
 ```toml
 [ssh_tunnel_patterns]
 "^db\\.internal\\..*\\.com$" = "jumphost.example.com"
 ".*\\.private\\.net" = "user@jumphost.example.com:2222"
 ```
+
 </details>
 
 <details>
 <summary>HashiCorp Vault</summary>
 
 Set up Vault integration:
+
 ```bash
 export VAULT_ADDR="https://vault.example.com"
 export VAULT_TOKEN="your-token"
 
 dbcrust vault://my-role@database/postgres-prod
 ```
+
 </details>
 
 <details>
 <summary>Configuration</summary>
 
 DBCrust stores configuration in `~/.config/dbcrust/config.toml`:
+
 ```toml
 [database]
 default_limit = 1000
@@ -292,6 +313,7 @@ expanded_display_default = false
 [ssh_tunnel_patterns]
 "^db\\.internal\\..*\\.com$" = "jumphost.example.com"
 ```
+
 </details>
 
 <details>
@@ -311,10 +333,12 @@ dbcrust docker://user:pass@container-name/dbname
 ```
 
 Features:
+
 - Automatic port detection for exposed containers
 - OrbStack DNS support for containers without exposed ports
 - Support for custom OrbStack domains via `dev.orbstack.domains` label
 - Automatic DNS for Docker Compose projects: `service.project.orb.local`
+
 </details>
 
 ## Contributing
@@ -322,14 +346,16 @@ Features:
 We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
 
 ### Development Setup
+
 ```bash
-git clone git@gitlab.gitguardian.ovh:ctourriere/dbcrust.git
+git clone git@gitlab.gitguardian.ovh:clement-tourriere/dbcrust.git
 cd dbcrust
 cargo build
 cargo test
 ```
 
 ### Running Tests
+
 ```bash
 cargo test -- --nocapture
 ```
@@ -362,4 +388,5 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-Built with ❤️ using [Rust](https://www.rust-lang.org/), [SQLx](https://github.com/launchbadge/sqlx), and [reedline](https://github.com/nushell/reedline).
+Built with ❤️ using [Rust](https://www.rust-lang.org/), [SQLx](https://github.com/launchbadge/sqlx),
+and [reedline](https://github.com/nushell/reedline).

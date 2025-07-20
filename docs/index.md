@@ -15,7 +15,7 @@
 *PostgreSQL • MySQL • SQLite with zero compromises*
 
 [![Version](https://img.shields.io/pypi/v/dbcrust.svg)](https://pypi.org/project/dbcrust/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/ctourriere/pgcrust/blob/main/LICENSE)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/clement-tourriere/pgcrust/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 
@@ -25,10 +25,12 @@
 
 ## 🚀 Why DBCrust?
 
-DBCrust revolutionizes database interaction by combining the **speed of Rust** with the **simplicity of modern CLIs**. Whether you're debugging production issues, analyzing data, or automating workflows, DBCrust provides an unmatched developer experience.
+DBCrust revolutionizes database interaction by combining the **speed of Rust** with the **simplicity of modern CLIs**.
+Whether you're debugging production issues, analyzing data, or automating workflows, DBCrust provides an unmatched
+developer experience.
 
 !!! success "One Tool, All Databases"
-    Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three languages fluently.
+Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three languages fluently.
 
 ## ✨ Features That Matter
 
@@ -136,7 +138,7 @@ DBCrust revolutionizes database interaction by combining the **speed of Rust** w
 === "From Source"
 
     ```bash
-    git clone https://github.com/ctourriere/pgcrust.git
+    git clone https://github.com/clement-tourriere/pgcrust.git
     cd pgcrust
     cargo install --path .
     dbcrust --help
@@ -151,11 +153,10 @@ DBCrust revolutionizes database interaction by combining the **speed of Rust** w
 \l
 
 -- Show table sizes
-SELECT 
-    schemaname,
-    tablename,
-    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size
-FROM pg_tables 
+SELECT schemaname,
+       tablename,
+       pg_size_pretty(pg_total_relation_size(schemaname || '.' || tablename)) as size
+FROM pg_tables
 WHERE schemaname = 'public'
 ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 ```
@@ -169,7 +170,7 @@ ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 -- Now all queries show execution plans
 SELECT u.email, COUNT(o.id) as order_count
 FROM users u
-LEFT JOIN orders o ON u.id = o.user_id
+         LEFT JOIN orders o ON u.id = o.user_id
 WHERE u.created_at > '2024-01-01'
 GROUP BY u.email
 HAVING COUNT(o.id) > 5;
@@ -191,18 +192,21 @@ dbcrust postgresql://backup-user@replica.db.internal/app \
 ## 🎨 What Makes DBCrust Special?
 
 ### Modern CLI Experience
+
 - **Syntax highlighting** for SQL and output
-- **History search** with fuzzy matching  
+- **History search** with fuzzy matching
 - **External editor** support for complex queries
 - **Session management** for connection reuse
 
 ### Intelligent Features
+
 - **Named queries** with parameter substitution
 - **Automatic paging** for large result sets
 - **Copy-paste friendly** output formats
 - **Error highlighting** with helpful suggestions
 
 ### Built for Speed
+
 - **Rust performance** - start in milliseconds
 - **Efficient rendering** - handle millions of rows
 - **Smart caching** - autocompletion data persists
@@ -211,7 +215,7 @@ dbcrust postgresql://backup-user@replica.db.internal/app \
 ## 🛡️ Security First
 
 - ✅ **TLS/SSL encryption** by default
-- ✅ **SSH key authentication** support  
+- ✅ **SSH key authentication** support
 - ✅ **Password-free workflows** via Vault
 - ✅ **No plaintext storage** of credentials
 - ✅ **Audit logging** for compliance
@@ -220,37 +224,37 @@ dbcrust postgresql://backup-user@replica.db.internal/app \
 
 <div class="grid cards" markdown>
 
--   :material-book-open-page-variant:{ .lg .middle } **Documentation**
+- :material-book-open-page-variant:{ .lg .middle } **Documentation**
 
-    ---
+  ---
 
-    Comprehensive guides and API reference
+  Comprehensive guides and API reference
 
-    [:octicons-arrow-right-24: Explore docs](quick-start.md)
+  [:octicons-arrow-right-24: Explore docs](quick-start.md)
 
--   :material-github:{ .lg .middle } **Source Code**
+- :material-github:{ .lg .middle } **Source Code**
 
-    ---
+  ---
 
-    Open source on GitHub with MIT license
+  Open source on GitHub with MIT license
 
-    [:octicons-arrow-right-24: View source](https://github.com/clement-tourriere/dbcrust)
+  [:octicons-arrow-right-24: View source](https://github.com/clement-tourriere/dbcrust)
 
--   :material-package-variant:{ .lg .middle } **PyPI Package**
+- :material-package-variant:{ .lg .middle } **PyPI Package**
 
-    ---
+  ---
 
-    Install via pip or uv package manager
+  Install via pip or uv package manager
 
-    [:octicons-arrow-right-24: Install now](https://pypi.org/project/dbcrust/)
+  [:octicons-arrow-right-24: Install now](https://pypi.org/project/dbcrust/)
 
--   :material-chat-question:{ .lg .middle } **Support**
+- :material-chat-question:{ .lg .middle } **Support**
 
-    ---
+  ---
 
-    Get help via GitHub issues
+  Get help via GitHub issues
 
-    [:octicons-arrow-right-24: Get support](https://github.com/clement-tourriere/dbcrust/issues)
+  [:octicons-arrow-right-24: Get support](https://github.com/clement-tourriere/dbcrust/issues)
 
 </div>
 
@@ -262,4 +266,5 @@ dbcrust postgresql://backup-user@replica.db.internal/app \
     <a href="user-guide/basic-usage.md" class="md-button">Learn More</a>
 </div>
 
-*Built with ❤️ using [Rust](https://www.rust-lang.org/), [SQLx](https://github.com/launchbadge/sqlx), and [reedline](https://github.com/nushell/reedline)*
+*Built with ❤️ using [Rust](https://www.rust-lang.org/), [SQLx](https://github.com/launchbadge/sqlx),
+and [reedline](https://github.com/nushell/reedline)*

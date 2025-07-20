@@ -14,10 +14,10 @@ keywords = [
     "sql", "postgresql", "mysql", "sqlite", "ssh-tunnel", "vault", "docker"
 ]
 readme = "README.md"
-homepage = "https://github.com/ctourriere/dbcrust"
-repository = "https://github.com/ctourriere/dbcrust"
-documentation = "https://github.com/ctourriere/dbcrust#readme"
-changelog = "https://github.com/ctourriere/dbcrust/blob/main/CHANGELOG.md"
+homepage = "https://github.com/clement-tourriere/dbcrust"
+repository = "https://github.com/clement-tourriere/dbcrust"
+documentation = "https://github.com/clement-tourriere/dbcrust#readme"
+changelog = "https://github.com/clement-tourriere/dbcrust/blob/main/CHANGELOG.md"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -40,12 +40,12 @@ classifiers = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/ctourriere/dbcrust"
-"Repository" = "https://github.com/ctourriere/dbcrust"
-"Documentation" = "https://github.com/ctourriere/dbcrust#readme"
-"Changelog" = "https://github.com/ctourriere/dbcrust/blob/main/CHANGELOG.md"
-"Bug Tracker" = "https://github.com/ctourriere/dbcrust/issues"
-"Source Code" = "https://github.com/ctourriere/dbcrust"
+"Homepage" = "https://github.com/clement-tourriere/dbcrust"
+"Repository" = "https://github.com/clement-tourriere/dbcrust"
+"Documentation" = "https://github.com/clement-tourriere/dbcrust#readme"
+"Changelog" = "https://github.com/clement-tourriere/dbcrust/blob/main/CHANGELOG.md"
+"Bug Tracker" = "https://github.com/clement-tourriere/dbcrust/issues"
+"Source Code" = "https://github.com/clement-tourriere/dbcrust"
 
 [tool.maturin]
 bindings = "pyo3"
