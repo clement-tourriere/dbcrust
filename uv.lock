@@ -124,12 +124,13 @@ sdist = { url = "https://files.pythonhosted.org/packages/f1/2a/8c3ac3d8bc94e6de8
 
 [[package]]
 name = "dbcrust"
-version = "0.4.0"
+version = "0.4.1"
 source = { editable = "." }
 
 [package.dev-dependencies]
 docs = [
     { name = "mkdocs" },
+    { name = "mkdocs-badges" },
     { name = "mkdocs-git-revision-date-localized-plugin" },
     { name = "mkdocs-material" },
     { name = "mkdocs-minify-plugin" },
@@ -141,6 +142,7 @@ docs = [
 [package.metadata.requires-dev]
 docs = [
     { name = "mkdocs", specifier = ">=1.6.1" },
+    { name = "mkdocs-badges", specifier = ">=0.4.5" },
     { name = "mkdocs-git-revision-date-localized-plugin", specifier = ">=1.2.0" },
     { name = "mkdocs-material", specifier = ">=9.5.0" },
     { name = "mkdocs-minify-plugin", specifier = ">=0.7.0" },
@@ -316,6 +318,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/bc/c6/bbd4f061bd16b378247f12953ffcb04786a618ce5e904b8c5a01a0309061/mkdocs-1.6.1.tar.gz", hash = "sha256:7b432f01d928c084353ab39c57282f29f92136665bdd6abf7c1ec8d822ef86f2", size = 3889159, upload_time = "2024-08-30T12:24:06.899Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/22/5b/dbc6a8cddc9cfa9c4971d59fb12bb8d42e161b7e7f8cc89e49137c5b279c/mkdocs-1.6.1-py3-none-any.whl", hash = "sha256:db91759624d1647f3f34aa0c3f327dd2601beae39a366d6e064c03468d35c20e", size = 3864451, upload_time = "2024-08-30T12:24:05.054Z" },
+]
+
+[[package]]
+name = "mkdocs-badges"
+version = "0.4.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mkdocs" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/64/e6/3710963e9c97c526c222c5a0b2629381bb049c04cb5fa2ea69adfec9c91e/mkdocs_badges-0.4.5.tar.gz", hash = "sha256:9a796fcd492b92270fa87f0818df474e8edd5a08f92a1555d22ae20f288cbc72", size = 19006, upload_time = "2025-04-11T18:02:46.672Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f7/35/ebb920761d3add7bf64a1c42d2bba9e170efcf95f19946f26202487801e6/mkdocs_badges-0.4.5-py3-none-any.whl", hash = "sha256:f440bf858df3f7e39c8e4eccf3a3491fc069676893659e2bb2755622d89c279e", size = 19988, upload_time = "2025-04-11T18:02:45.64Z" },
 ]
 
 [[package]]

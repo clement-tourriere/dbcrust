@@ -1,20 +1,16 @@
-# DBCrust
+<h1 align="center" style="font-size: 3em; font-weight: 800; margin: 0.5em 0; background: linear-gradient(to right, #7e57c2, #5e35b1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">DBCrust</h1>
 
-<div align="center">
+<p align="center">
+<strong>The modern database CLI that speaks your language</strong><br>
+<em>PostgreSQL • MySQL • SQLite with zero compromises</em>
+</p>
 
-<h1 style="font-size: 3em; font-weight: 800; margin: 0.5em 0; background: linear-gradient(to right, #7e57c2, #5e35b1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
-DBCrust
-</h1>
-
-**The modern database CLI that speaks your language**  
-*PostgreSQL • MySQL • SQLite with zero compromises*
-
-[![PyPI Version](https://img.shields.io/pypi/v/dbcrust.svg)](https://pypi.org/project/dbcrust/)
-[![GitHub](https://img.shields.io/badge/GitHub-Source-181717.svg?logo=github)](https://github.com/clement-tourriere/dbcrust)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust 2024](https://img.shields.io/badge/Rust-2024-orange.svg)](https://blog.rust-lang.org/2024/02/29/1.77.0.html)
-
-</div>
+<p align="center">
+L|PyPI|https://pypi.org/project/dbcrust/|
+L|GitHub|https://github.com/clement-tourriere/dbcrust|
+L|MIT License|https://opensource.org/licenses/MIT|
+L|Rust 2024|https://blog.rust-lang.org/2024/02/29/1.77.0.html|
+</p>
 
 ---
 

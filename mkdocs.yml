@@ -51,6 +51,7 @@ extra:
     - icon: fontawesome/brands/python
       link: https://pypi.org/project/dbcrust/
 
+
 markdown_extensions:
   - admonition
   - attr_list
@@ -91,6 +92,7 @@ markdown_extensions:
 plugins:
   - search:
       separator: '[\s\-,:!=\[\]()"`/]+|\.(?!\d)|&[lg]t;|(?!\b)(?=[A-Z][a-z])'
+  - badges
   - minify:
       minify_html: true
   - git-revision-date-localized:
