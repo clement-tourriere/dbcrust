@@ -2,22 +2,17 @@
 
 <div align="center">
 
-```
-██████╗ ██████╗  ██████╗██████╗ ██╗   ██╗███████╗████████╗
-██╔══██╗██╔══██╗██╔════╝██╔══██╗██║   ██║██╔════╝╚══██╔══╝
-██║  ██║██████╔╝██║     ██████╔╝██║   ██║███████╗   ██║   
-██║  ██║██╔══██╗██║     ██╔══██╗██║   ██║╚════██║   ██║   
-██████╔╝██████╔╝╚██████╗██║  ██║╚██████╔╝███████║   ██║   
-╚═════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝   
-```
+<h1 style="font-size: 3em; font-weight: 800; margin: 0.5em 0; background: linear-gradient(to right, #7e57c2, #5e35b1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">
+DBCrust
+</h1>
 
 **The modern database CLI that speaks your language**  
 *PostgreSQL • MySQL • SQLite with zero compromises*
 
-[![Version](https://img.shields.io/pypi/v/dbcrust.svg)](https://pypi.org/project/dbcrust/)
-[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/clement-tourriere/pgcrust/blob/main/LICENSE)
-[![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![PyPI Version](https://img.shields.io/pypi/v/dbcrust.svg)](https://pypi.org/project/dbcrust/)
+[![GitHub](https://img.shields.io/badge/GitHub-Source-181717.svg?logo=github)](https://github.com/clement-tourriere/dbcrust)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust 2024](https://img.shields.io/badge/Rust-2024-orange.svg)](https://blog.rust-lang.org/2024/02/29/1.77.0.html)
 
 </div>
 
