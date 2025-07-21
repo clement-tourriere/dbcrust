@@ -138,7 +138,7 @@ pub struct Config {
     pub debug_logging_enabled: bool,
 
     #[serde(default = "default_show_banner")]
-    pub show_banner_default: bool,
+    pub show_banner: bool,
 
     #[serde(default = "default_multiline_prompt_indicator")]
     pub multiline_prompt_indicator: String,
@@ -182,7 +182,7 @@ impl Default for Config {
             pager_command: default_pager_command(),
             pager_threshold_lines: default_pager_threshold_lines(),
             debug_logging_enabled: default_debug_logging(),
-            show_banner_default: default_show_banner(),
+            show_banner: default_show_banner(),
             multiline_prompt_indicator: default_multiline_prompt_indicator(),
             // Legacy fields initialized from connection
             host: connection.host.clone(),

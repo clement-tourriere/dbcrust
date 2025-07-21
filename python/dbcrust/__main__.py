@@ -9,7 +9,7 @@ def main(db_url=None):
     """Run the dbcrust CLI using the shared Rust library"""
 
     # Import the Rust CLI function
-    from dbcrust._internal import run_cli_loop
+    from dbcrust._internal import run_command
 
     # Prepare command arguments
     cmd_args = ["dbcrust"]
@@ -23,7 +23,7 @@ def main(db_url=None):
 
     # Run the CLI using the shared Rust library
     try:
-        return run_cli_loop(cmd_args)
+        return run_command(cmd_args)
     except Exception as e:
         print(f"Error running dbcrust: {e}", file=sys.stderr)
         return 1

@@ -306,7 +306,7 @@ impl BackslashCommandRegistry {
                 println!("  Pager threshold lines: {}", 
                     if config.pager_threshold_lines == 0 { "terminal height".to_string() } else { config.pager_threshold_lines.to_string() });
                 println!("  Debug logging enabled: {}", config.debug_logging_enabled);
-                println!("  Show banner default: {}", config.show_banner_default);
+                println!("  Show banner: {}", config.show_banner);
                 println!("  Multiline prompt indicator: '{}'", config.multiline_prompt_indicator);
                 println!("  Named queries: {}", config.named_queries.len());
                 println!("  Saved sessions: {}", config.saved_sessions.len());

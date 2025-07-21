@@ -479,7 +479,7 @@ impl Database {
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: config.explain_mode_default,
             column_select_mode: config.column_selection_mode_default,
-            banner_enabled: config.show_banner_default,
+            banner_enabled: config.show_banner,
             column_selection_threshold: config.column_selection_threshold,
             column_views: HashMap::new(),
             last_view_key: None,
@@ -695,7 +695,7 @@ impl Database {
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: config.explain_mode_default,
             column_select_mode: config.column_selection_mode_default,
-            banner_enabled: config.show_banner_default,
+            banner_enabled: config.show_banner,
             column_selection_threshold: config.column_selection_threshold,
             column_views: HashMap::new(),
             last_view_key: None,
@@ -2387,7 +2387,7 @@ impl Database {
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: false,
             column_select_mode: false,
-            banner_enabled: config.show_banner_default,
+            banner_enabled: config.show_banner,
             column_selection_threshold: config.column_selection_threshold,
             column_views: HashMap::new(),
             last_view_key: None,
@@ -3454,7 +3454,7 @@ mod tests {
     async fn test_toggle_banner_enabled() {
         let mut db = Database::new_for_test();
 
-        // Default should be false (based on config.show_banner_default)
+        // Default should be false (based on config.show_banner)
         assert!(!db.is_banner_enabled());
 
         // First toggle should enable

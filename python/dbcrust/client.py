@@ -120,4 +120,6 @@ class PostgresClient:
         # SSL parameters, connection options, etc.
         connection_url = f"postgresql://{self.db.user}@{self.db.host}:{self.db.port}/{self.db.current_database}"
         
-        return run_command(connection_url, command) 
+        # Format arguments as a list for the Rust function
+        args = ["dbcrust", connection_url, "-c", command]
+        return run_command(args) 

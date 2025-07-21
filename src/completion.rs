@@ -1,7 +1,7 @@
 use crate::config::{Config, SavedSession};
 use crate::db::Database;
 use crate::debug_log;
-use crate::backslash_commands::BackslashCommandRegistry;
+use crate::commands::CommandParser;
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Span, Suggestion};
 use sqlx::Row;
@@ -12,13 +12,12 @@ use std::time::{Duration, Instant};
 use tokio;
 
 // The hardcoded BACKSLASH_COMMANDS array has been removed.
-// Commands are now dynamically retrieved from BackslashCommandRegistry.
+// Commands are now dynamically retrieved from CommandParser.
 
 pub struct SqlCompleter {
     database: Arc<Mutex<Database>>,
     sql_keywords: Vec<String>,
     config: Config,
-    command_registry: BackslashCommandRegistry,
     schemas_cache: Option<Vec<String>>,
     tables_cache: Option<HashMap<String, Vec<String>>>,
     columns_cache: Option<HashMap<String, Vec<String>>>,
@@ -103,7 +102,6 @@ impl SqlCompleter {
             database,
             sql_keywords,
             config: Config::load(),
-            command_registry: BackslashCommandRegistry::new(),
             schemas_cache: None,
             tables_cache: None,
             columns_cache: None,
@@ -436,22 +434,28 @@ impl SqlCompleter {
         };
         let current_command_part = &line[command_start_index..pos];
 
-        // Get command info from the registry
-        let command_info = self.command_registry.get_command_info();
-        for (cmd_name, cmd_description) in command_info {
-            let cmd_name_no_slash = &cmd_name[1..]; // remove leading '\' for matching
-            if cmd_name_no_slash.starts_with(current_command_part) {
-                completions.push(Suggestion {
-                    value: cmd_name.to_string(),
-                    description: Some(cmd_description.to_string()),
-                    span: Span {
-                        start: word_start, // Replace from the beginning of the typed command part
-                        end: pos,
-                    },
-                    append_whitespace: !cmd_name.ends_with("threshold"), // Add a space unless it needs a value after
-                    extra: None,
-                    style: None,
-                });
+        // Get command info from the CommandParser system
+        for (_category, commands) in CommandParser::get_commands_by_category() {
+            for (cmd_name, cmd_description) in commands {
+                let cmd_name_no_slash = if cmd_name.starts_with('\\') {
+                    &cmd_name[1..] // remove leading '\' for matching
+                } else {
+                    &cmd_name
+                };
+                
+                if cmd_name_no_slash.starts_with(current_command_part) {
+                    completions.push(Suggestion {
+                        value: cmd_name.to_string(),
+                        description: Some(cmd_description.to_string()),
+                        span: Span {
+                            start: word_start, // Replace from the beginning of the typed command part
+                            end: pos,
+                        },
+                        append_whitespace: !cmd_name.ends_with("threshold"), // Add a space unless it needs a value after
+                        extra: None,
+                        style: None,
+                    });
+                }
             }
         }
         completions
@@ -1361,7 +1365,6 @@ mod tests {
             .map(String::from)
             .collect(),
             config: Config::load(),
-            command_registry: BackslashCommandRegistry::new(),
             schemas_cache: None,
             tables_cache: None,
             columns_cache: None,

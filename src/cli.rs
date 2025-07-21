@@ -6,7 +6,7 @@ use clap::{Parser, ValueEnum};
 #[command(name = "dbcrust")]
 #[command(version, long_about = None)]
 #[command(about = "A blazing-fast multi-database client with intelligent autocompletion")]
-#[command(arg_required_else_help = true)]
+#[command(arg_required_else_help = false)]
 pub struct Args {
     /// Database connection URL
     /// 

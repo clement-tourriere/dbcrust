@@ -9,6 +9,7 @@ pub struct SqlHighlighter {
 }
 
 impl SqlHighlighter {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         // SQL keywords (commands)
         let sql_keywords = vec![
