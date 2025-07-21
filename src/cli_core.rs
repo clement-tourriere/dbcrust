@@ -840,14 +840,22 @@ impl CliCore {
             Some(session) => {
                 let session_url = match session.database_type {
                     crate::database::DatabaseType::SQLite => {
-                        if let Some(ref file_path) = session.file_path {
+                        if session.host.starts_with("DOCKER:") {
+                            let container_name = session.host.strip_prefix("DOCKER:").unwrap_or(&session.host);
+                            println!("🐳 Re-resolving Docker container for saved session: {container_name}");
+                            format!("docker://{container_name}")
+                        } else if let Some(ref file_path) = session.file_path {
                             format!("sqlite://{file_path}")
                         } else {
                             return Err(CliError::ConnectionError("SQLite session missing file path".to_string()));
                         }
                     }
                     crate::database::DatabaseType::MySQL => {
-                        if let Some(password) = crate::myconf::lookup_mysql_password(
+                        if session.host.starts_with("DOCKER:") {
+                            let container_name = session.host.strip_prefix("DOCKER:").unwrap_or(&session.host);
+                            println!("🐳 Re-resolving Docker container for saved session: {container_name}");
+                            format!("docker://{container_name}")
+                        } else if let Some(password) = crate::myconf::lookup_mysql_password(
                             &session.host,
                             session.port,
                             &session.dbname,
@@ -869,6 +877,18 @@ impl CliCore {
                             let container_name = session.host.strip_prefix("DOCKER:").unwrap_or(&session.host);
                             println!("🐳 Re-resolving Docker container for saved session: {container_name}");
                             format!("docker://{container_name}")
+                        } else if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
+                            session.options.get("vault_mount"),
+                            session.options.get("vault_database"), 
+                            session.options.get("vault_role")
+                        ) {
+                            // This is a Vault session, reconstruct vault:// URL for fresh credentials
+                            println!("🔐 Re-obtaining Vault credentials for saved session: {vault_database}");
+                            if vault_role.is_empty() {
+                                format!("vault://{vault_mount}/{vault_database}")
+                            } else {
+                                format!("vault://{}@{vault_mount}/{vault_database}", vault_role)
+                            }
                         } else if let Some(password) = crate::pgpass::lookup_password(
                             &session.host,
                             session.port,
@@ -1113,7 +1133,7 @@ impl CliCore {
         .map_err(|e| CliError::ConnectionError(format!("Failed to construct connection URL: {e}")))?;
 
         // Create database connection using the dynamic credentials
-        let database = Database::from_url(
+        let mut database = Database::from_url(
             &postgres_url,
             Some(self.config.default_limit),
             Some(self.config.expanded_display_default),
@@ -1122,22 +1142,35 @@ impl CliCore {
         .map_err(|e| CliError::ConnectionError(format!("Failed to connect with Vault credentials: {e}")))?;
 
         // Create connection info for the Vault connection
-        let connection_info = Some(crate::database::ConnectionInfo {
+        // Parse the original connection URL template to get the real host/port (not tunneled)
+        let original_connection_info = crate::database::ConnectionInfo::parse_url(connection_url_template)
+            .map_err(|e| CliError::ConnectionError(format!("Failed to parse Vault connection URL template: {e}")))?;
+        
+        // Create connection info with original host/port and Vault metadata
+        let mut options = std::collections::HashMap::new();
+        options.insert("vault_mount".to_string(), mount_path.clone());
+        options.insert("vault_database".to_string(), db_name.clone());
+        options.insert("vault_role".to_string(), role_name.clone());
+        
+        let connection_info = crate::database::ConnectionInfo {
             database_type: crate::database::DatabaseType::PostgreSQL,
-            host: Some(database.get_host().to_string()),
-            port: Some(database.get_port()),
+            host: original_connection_info.host.clone(), // Use original host, not tunnel host
+            port: original_connection_info.port,         // Use original port, not tunnel port
             username: Some(credentials.username.clone()),
             password: Some(credentials.password),
-            database: Some(database.get_current_db()),
+            database: original_connection_info.database.clone(), // Use original database name
             file_path: None,
-            options: std::collections::HashMap::new(),
+            options,
             docker_container: None,
-        });
+        };
+
+        // Set the connection info in the database so it's accessible via get_connection_info()
+        database.set_connection_info_override(connection_info.clone());
 
         println!("✅ Successfully connected to PostgreSQL via Vault");
         println!("👤 Connected as temporary user: {}", credentials.username);
         
-        Ok((database, connection_info))
+        Ok((database, Some(connection_info)))
     }
 
     /// Get command completions for autocomplete

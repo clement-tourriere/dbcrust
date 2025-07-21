@@ -705,22 +705,18 @@ impl CommandExecutor for Command {
             }
 
             Command::SaveSession { name } => {
-                // Extract connection info from database
+                // Extract connection info from database and use the proper save method
                 let db = database.lock().unwrap();
-                let host = db.get_host();
-                let port = db.get_port();
-                let user = db.get_username();
-                let dbname = db.get_current_db();
-                let database_type = db.get_connection_info().unwrap().database_type.clone();
+                let connection_info = match db.get_connection_info() {
+                    Some(info) => info,
+                    None => {
+                        return Ok(CommandResult::Error(
+                            "Cannot save session: connection information not available. This may happen with certain connection types.".to_string()
+                        ));
+                    }
+                };
 
-                // Create options map
-                let mut options = std::collections::HashMap::new();
-                options.insert("host".to_string(), host.to_string());
-                options.insert("port".to_string(), port.to_string());
-                options.insert("user".to_string(), user.to_string());
-                options.insert("dbname".to_string(), dbname.to_string());
-
-                match config.save_session_with_db_type(name, database_type, None, options) {
+                match config.save_session_from_connection_info(name, connection_info) {
                     Ok(_) => Ok(CommandResult::Output(format!("Session '{name}' saved successfully."))),
                     Err(e) => Ok(CommandResult::Error(format!("Failed to save session '{name}': {e}"))),
                 }

@@ -50,6 +50,9 @@ pub struct Database {
     // New abstraction layer client (will eventually replace PostgreSQL-specific fields)
     database_client: Option<Box<dyn DatabaseClient>>,
     
+    // Connection info override for special cases like Vault connections
+    connection_info_override: Option<crate::database::ConnectionInfo>,
+    
     // Legacy PostgreSQL-specific fields (kept for backward compatibility during migration)
     pool: Option<PgPool>,
     host: String,
@@ -485,6 +488,7 @@ impl Database {
 
         let db = Self {
             database_client,
+            connection_info_override: None,
             pool,
             host,
             port,
@@ -699,6 +703,7 @@ impl Database {
 
         let mut db = Self {
             database_client,
+            connection_info_override: None,
             pool: Some(pool),
             host: connect_host,
             port: connect_port,
@@ -1127,7 +1132,19 @@ impl Database {
     
     /// Get the current connection information
     pub fn get_connection_info(&self) -> Option<&crate::database::ConnectionInfo> {
-        self.database_client.as_ref().map(|client| client.get_connection_info())
+        // Check override first (for Vault connections), then fall back to database client
+        if let Some(ref override_info) = self.connection_info_override {
+            Some(override_info)
+        } else {
+            self.database_client.as_ref().map(|client| client.get_connection_info())
+        }
+    }
+
+    /// Set or override the connection information for this database
+    /// This is useful for cases like Vault connections where the connection info
+    /// needs to be set after database creation
+    pub fn set_connection_info_override(&mut self, connection_info: crate::database::ConnectionInfo) {
+        self.connection_info_override = Some(connection_info);
     }
 
     pub async fn list_tables(
@@ -2377,6 +2394,7 @@ impl Database {
         let config = crate::config::Config::load();
         Self {
             database_client: None, // No database client in test mode
+            connection_info_override: None,
             pool: None,
             host: "localhost_test".to_string(),
             port: 54321,

@@ -355,6 +355,7 @@ pub async fn run_interactive_cli(url: &str) -> Result<(), Box<dyn std::error::Er
         debug: false,
         completions: None,
         no_banner: false,
+        verbosity: None,
     };
     
     // Run the CLI with the constructed args
