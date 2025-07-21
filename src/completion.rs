@@ -1517,8 +1517,8 @@ mod tests {
     }
 
     // NOTE: These tests are commented out because the commands (\n, \nd, \s, \sd) are not 
-    // implemented in the BackslashCommandRegistry yet. The completion logic for these 
-    // commands exists but the actual command handlers need to be added to the registry.
+    // fully implemented in the enum-based command system yet. The completion logic for these 
+    // commands exists but the actual command handlers need to be added to the Command enum.
     
     // #[tokio::test]
     // async fn test_complete_named_query_execution() {

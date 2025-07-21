@@ -5,7 +5,6 @@ pub mod cli;
 pub mod cli_core; // New unified CLI core
 pub mod commands; // New type-safe enum-based command system
 // mod completion; // Removed pub mod completion;
-pub mod backslash_commands;
 pub mod completion;
 pub mod config;
 pub mod database; // New database abstraction layer

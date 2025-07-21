@@ -90,7 +90,7 @@ DBCrust implements a **single source of truth** architecture where the Rust and 
 ### Architecture Principles
 
 1. **Zero Duplication**: Python CLI calls Rust main logic directly, no separate implementations
-2. **Shared Command Registry**: Both CLIs use `BackslashCommandRegistry` for identical behavior
+2. **Shared Command System**: Both CLIs use the same enum-based command system for identical behavior
 3. **Complete Feature Parity**: All connection types, commands, and features work identically
 4. **Single Codebase**: New features automatically available in both CLIs
 
@@ -110,9 +110,9 @@ pub async fn run_interactive_mode(database: Database, args: &Args, config: &mut 
 pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32>              // Python CLI entry
 pub async fn run_main_cli_workflow(args: Args) -> Result<i32, Box<dyn StdError>>  // Unified workflow
 
-// Unified command handling (src/backslash_commands.rs)
-impl BackslashCommandRegistry {
-    pub fn execute(&self, command: &str, ...) -> Result<bool, Box<dyn Error>>  // Shared by both CLIs
+// Type-safe command handling (src/commands.rs)
+impl CommandExecutor for Command {
+    async fn execute(&self, ...) -> Result<CommandResult, Box<dyn Error>>  // Shared by both CLIs
 }
 ```
 
@@ -151,20 +151,28 @@ dbcrust postgresql://db -c "\\dt"        # List tables
 python -m dbcrust postgresql://db -c "\\dt"  # Identical behavior
 ```
 
-### Backslash Command Integration
+### Type-Safe Command Integration
 
-The `BackslashCommandRegistry` provides 40+ commands shared between CLIs:
+The enum-based command system provides 40+ commands shared between CLIs:
 
 ```rust
 // Adding new commands (benefits both CLIs automatically)
-impl BackslashCommandRegistry {
-    pub async fn execute(&self, input: &str, ...) -> Result<bool, Box<dyn Error>> {
-        match input {
-            "\\dt" => self.handle_list_tables(...).await,
-            "\\l" => self.handle_list_databases(...).await,
-            "\\s" => self.handle_session_list(...).await,
-            "\\new_command" => self.handle_new_command(...).await,  // Auto-available in both CLIs
-            // ... 40+ commands
+#[derive(Debug, Clone, PartialEq)]
+pub enum Command {
+    ListTables,
+    ListDatabases,
+    ListSessions,
+    NewCommand { args: String },  // Auto-available in both CLIs
+    // ... 40+ commands
+}
+
+impl CommandExecutor for Command {
+    async fn execute(&self, ...) -> Result<CommandResult, Box<dyn Error>> {
+        match self {
+            Command::ListTables => self.handle_list_tables(...).await,
+            Command::ListDatabases => self.handle_list_databases(...).await,
+            Command::ListSessions => self.handle_session_list(...).await,
+            Command::NewCommand { args } => self.handle_new_command(args, ...).await,
         }
     }
 }
@@ -175,8 +183,8 @@ impl BackslashCommandRegistry {
 When adding new features that affect the CLI:
 
 1. **Implement in Rust**: Add core functionality to appropriate module
-2. **Update BackslashCommandRegistry**: Add new commands if needed
-3. **Update Args struct**: Add command-line arguments if needed
+2. **Update Command enum**: Add new command variants to the enum
+3. **Update CommandParser**: Add parsing logic for new commands
 4. **Automatic Python Support**: Feature is automatically available in Python CLI
 5. **Test Both CLIs**: Use `tests/python_cli_parity.rs` to verify identical behavior
 
@@ -194,12 +202,17 @@ fn test_python_cli_connection_url_support(#[case] connection_url: &str) {
     // Verify Python CLI supports all connection URL types
 }
 
-// Command registry testing (tests/unified_command_handling.rs)
+// Command system testing (tests/command_system_tests.rs)
 #[test]
-fn test_command_registry_completeness() {
-    let registry = BackslashCommandRegistry::new();
-    let commands = registry.get_command_names();
-    assert!(commands.len() >= 40, "Should have 40+ commands");
+fn test_command_enum_completeness() {
+    let all_commands = Command::all_variants();
+    assert!(all_commands.len() >= 40, "Should have 40+ commands");
+    
+    // Test that all commands can be parsed
+    for cmd in all_commands {
+        let parsed = CommandParser::parse(&cmd.to_string());
+        assert!(parsed.is_ok(), "Command should parse correctly: {:?}", cmd);
+    }
 }
 ```
 
