@@ -1118,8 +1118,241 @@ async fn run_main_cli_workflow(args: Vec<String>) -> Result<(), Box<dyn std::err
         }
     }
 
-    // [Continue with vault://, docker://, and regular connection handling...]
-    // For now, let's handle regular connections and add the special URLs later
+    // Handle vault URLs (exactly like main.rs)
+    if full_url_str.starts_with("vault://") || full_url_str.starts_with("vaultdb://") {
+        // Parse vault URL and get dynamic credentials
+        let vault_params = crate::vault_client::parse_vault_url(&full_url_str)
+            .ok_or_else(|| format!("Invalid vault URL format: {}", full_url_str))?;
+
+        // Get vault credentials and construct connection URL
+        let (role_name, mount_path, db_name) = vault_params;
+        
+        // Handle interactive prompting for missing components
+        let db_name = match db_name {
+            Some(name) => name,
+            None => {
+                // List available databases and prompt user to select
+                match crate::vault_client::list_vault_databases(&mount_path).await {
+                    Ok(databases) => {
+                        if databases.is_empty() {
+                            eprintln!("No databases available at mount path '{}'", mount_path);
+                            return Err("No databases available".into());
+                        }
+                        
+                        // Filter databases to only show those with available roles
+                        let accessible_databases = crate::vault_client::filter_databases_with_available_roles(&mount_path, databases).await
+                            .map_err(|e| {
+                                eprintln!("Error filtering databases: {}", e);
+                                e
+                            })?;
+                        
+                        if accessible_databases.is_empty() {
+                            eprintln!("No accessible databases found at mount path '{}'", mount_path);
+                            return Err("No accessible databases found".into());
+                        }
+                        
+                        // Prompt user to select database
+                        match inquire::Select::new("Select a database:", accessible_databases.clone()).prompt() {
+                            Ok(selected) => selected,
+                            Err(e) => {
+                                eprintln!("Error selecting database: {}", e);
+                                return Err(format!("Database selection failed: {}", e).into());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to list databases: {}", e);
+                        return Err(format!("Failed to list databases: {}", e).into());
+                    }
+                }
+            }
+        };
+        
+        let role_name = match role_name {
+            Some(name) => name,
+            None => {
+                // List available roles for the database and prompt user to select
+                match crate::vault_client::get_available_roles_for_user(&mount_path, &db_name).await {
+                    Ok(roles) => {
+                        if roles.is_empty() {
+                            eprintln!("No roles available for database '{}'", db_name);
+                            return Err("No roles available".into());
+                        }
+                        
+                        // Prompt user to select role
+                        match inquire::Select::new("Select a role:", roles.clone()).prompt() {
+                            Ok(selected) => selected,
+                            Err(e) => {
+                                eprintln!("Error selecting role: {}", e);
+                                return Err(format!("Role selection failed: {}", e).into());
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to get available roles: {}", e);
+                        return Err(format!("Failed to get available roles: {}", e).into());
+                    }
+                }
+            }
+        };
+
+        println!("🔐 Requesting temporary database credentials from Vault...");
+        println!("   This may take 5-10 seconds while Vault creates a new database user.");
+        let start_time = std::time::Instant::now();
+        let dynamic_creds = crate::vault_client::get_dynamic_credentials(
+            &mount_path,
+            &db_name,
+            &role_name,
+        )
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to get vault credentials: {}", e);
+            e
+        })?;
+        let creds_elapsed = start_time.elapsed();
+        println!("✓ Credentials obtained in {:.1}s", creds_elapsed.as_secs_f32());
+        debug_log!("Got dynamic credentials in {:?}", creds_elapsed);
+
+        // Get vault database config to construct final URL
+        debug_log!("Getting database configuration...");
+        let config_start = std::time::Instant::now();
+        let db_config = crate::vault_client::get_vault_database_config(&mount_path, &db_name)
+            .await
+            .map_err(|e| {
+                eprintln!("Failed to get vault database config: {}", e);
+                e
+            })?;
+        debug_log!("Got database config in {:?}", config_start.elapsed());
+
+        let connection_url_template = db_config
+            .connection_details
+            .connection_url
+            .ok_or_else(|| "Missing connection URL in vault config")?;
+
+        let postgres_url = crate::vault_client::construct_postgres_url(
+            &connection_url_template,
+            &dynamic_creds.username,
+            &dynamic_creds.password,
+        )
+        .map_err(|e| {
+            eprintln!("Failed to construct PostgreSQL URL: {}", e);
+            e
+        })?;
+
+        // Use the constructed URL for connection
+        println!("🔌 Connecting to database...");
+        let connect_start = std::time::Instant::now();
+        let database = Database::from_url(
+            &postgres_url,
+            Some(config.default_limit.clone()),
+            Some(config.expanded_display_default.clone()),
+        )
+        .await
+        .map_err(|e| {
+            eprintln!("Failed to connect to vault database: {}", e);
+            e
+        })?;
+
+        let connect_elapsed = connect_start.elapsed();
+        println!("✓ Database connection established in {:.1}s", connect_elapsed.as_secs_f32());
+
+        // Track connection in history
+        let sanitized_vault_url = password_sanitizer::sanitize_connection_url(&full_url_str);
+        if let Err(e) = config.add_recent_connection_auto_display(
+            sanitized_vault_url,
+            crate::database::DatabaseType::PostgreSQL, // Vault typically provides PostgreSQL
+            true
+        ) {
+            debug_log!("Failed to add vault connection to history: {}", e);
+        }
+
+        // Handle commands and start interactive mode (delegate to existing logic)
+        if !args.command.is_empty() {
+            // Handle -c commands with vault connection
+            let mut database = database;
+            for command in &args.command {
+                let command_trimmed = command.trim();
+
+                // Check if this is a backslash command
+                if command_trimmed.starts_with('\\') {
+                    // Initialize backslash command registry for -c commands
+                    let command_registry = BackslashCommandRegistry::new();
+                    let db_arc = Arc::new(Mutex::new(database));
+                    let mut last_script = String::new();
+                    let interrupt_flag = Arc::new(AtomicBool::new(false));
+
+                    // Create prompt with single database lock to avoid deadlock
+                    let (username, db_name) = {
+                        let db_guard = db_arc.lock().unwrap();
+                        (
+                            db_guard.get_username().to_string(),
+                            db_guard.get_current_db(),
+                        )
+                    };
+                    let mut prompt = DbPrompt::with_config(
+                        username,
+                        db_name,
+                        config.multiline_prompt_indicator.clone(),
+                    );
+
+                    match command_registry
+                        .execute(
+                            command_trimmed,
+                            &db_arc,
+                            &mut config,
+                            &mut last_script,
+                            &interrupt_flag,
+                            &mut prompt,
+                        )
+                        .await
+                    {
+                        Ok(should_exit) => {
+                            if should_exit {
+                                return Ok(());
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error executing command: {}", e);
+                            return Err(e);
+                        }
+                    }
+
+                    // Update the database reference
+                    database = Arc::try_unwrap(db_arc)
+                        .map_err(|_| "Failed to unwrap Arc")?
+                        .into_inner()
+                        .map_err(|_| "Failed to unwrap Mutex")?;
+                } else {
+                    // Execute the SQL command
+                    match database.execute_query(command_trimmed).await {
+                        Ok(results) => {
+                            if results.is_empty() {
+                                // No output for commands that don't return results
+                            } else {
+                                // Format and display the results
+                                if database.is_expanded_display() {
+                                    let tables = format_query_results_expanded(&results);
+                                    for table in tables {
+                                        println!("{}", table);
+                                    }
+                                } else {
+                                    let formatted_output = format_query_results_psql(&results);
+                                    println!("{}", formatted_output);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error executing query: {}", e);
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        } else {
+            // Start interactive mode with vault connection
+            return run_python_interactive_mode(database, config, args).await;
+        }
+    }
 
     // Create database connection
     let (mut database, docker_connection_info) = if full_url_str.starts_with("docker://") {

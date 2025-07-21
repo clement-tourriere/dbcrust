@@ -272,63 +272,6 @@ fn log_system_info(args: &Args) {
     }
 }
 
-// Parse a vault:// URL and extract vault parameters
-// Format: vault://<role_name>@<mount_path:database>/<vault_db_name>
-// All components are optional:
-// - If role_name is not specified, user will be prompted to select one
-// - If mount_path is not specified, defaults to "database"
-// - If vault_db_name is not specified, user will be prompted to select one
-fn parse_vault_url(url_str: &str) -> Option<(Option<String>, String, Option<String>)> {
-    if !url_str.starts_with("vault://") {
-        return None;
-    }
-
-    // Remove the protocol prefix
-    let url_without_prefix = &url_str["vault://".len()..];
-
-    // Extract role_name and mount_path from the user/host part
-    let (user_host_part, db_part) = match url_without_prefix.find('/') {
-        Some(idx) => (
-            &url_without_prefix[..idx],
-            Some(&url_without_prefix[idx + 1..]),
-        ),
-        None => (url_without_prefix, None),
-    };
-
-    // Parse the role_name@mount_path part
-    let (role_name, mount_path) = match user_host_part.find('@') {
-        Some(idx) => {
-            let role = user_host_part[..idx].to_string();
-            let role_opt = if role.is_empty() { None } else { Some(role) };
-            let mount = user_host_part[idx + 1..].to_string();
-            (
-                role_opt,
-                if mount.is_empty() {
-                    "database".to_string()
-                } else {
-                    mount
-                },
-            )
-        }
-        None => {
-            // No @ symbol means no role_name specified, use entire string as mount_path
-            let mount = user_host_part.to_string();
-            (
-                None,
-                if mount.is_empty() {
-                    "database".to_string()
-                } else {
-                    mount
-                },
-            )
-        }
-    };
-
-    // Extract vault_db_name from the path part
-    let vault_db_name = db_part.map(|s| s.to_string()).filter(|s| !s.is_empty());
-
-    Some((role_name, mount_path, vault_db_name))
-}
 
 /// Main async workflow that can be called from both main() and Python
 pub async fn async_main() -> Result<(), Box<dyn StdError>> {
@@ -667,7 +610,7 @@ pub async fn async_main_with_args(args: Args) -> Result<(), Box<dyn StdError>> {
     // Handle vault URLs
     if full_url_str.starts_with("vault://") || full_url_str.starts_with("vaultdb://") {
         // Parse vault URL and get dynamic credentials
-        let vault_params = parse_vault_url(&full_url_str)
+        let vault_params = dbcrust::vault_client::parse_vault_url(&full_url_str)
             .ok_or_else(|| format!("Invalid vault URL format: {}", full_url_str))?;
 
         // Get vault credentials and construct connection URL

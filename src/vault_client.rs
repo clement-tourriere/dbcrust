@@ -8,6 +8,61 @@ use url::Url;
 
 use crate::debug_log;
 
+// Parse a vault:// URL and extract vault parameters
+// Format: vault://<role_name>@<mount_path:database>/<vault_db_name>
+// All components are optional:
+// - If role_name is not specified, user will be prompted to select one
+// - If mount_path is not specified, defaults to "database"
+// - If vault_db_name is not specified, user will be prompted to select one
+pub fn parse_vault_url(url_str: &str) -> Option<(Option<String>, String, Option<String>)> {
+    if !url_str.starts_with("vault://") {
+        return None;
+    }
+
+    // Remove the protocol prefix
+    let url_without_prefix = &url_str["vault://".len()..];
+
+    // Extract role_name and mount_path from the user/host part
+    let (user_host_part, db_part) = match url_without_prefix.find('/') {
+        Some(idx) => (
+            &url_without_prefix[..idx],
+            Some(&url_without_prefix[idx + 1..]),
+        ),
+        None => (url_without_prefix, None),
+    };
+
+    // Parse the user/host part: <role_name>@<mount_path>
+    let (role_name, mount_path) = {
+        if let Some(at_pos) = user_host_part.find('@') {
+            let role = &user_host_part[..at_pos];
+            let mount = &user_host_part[at_pos + 1..];
+            
+            (
+                if role.is_empty() { None } else { Some(role.to_string()) },
+                if mount.is_empty() {
+                    "database".to_string()
+                } else {
+                    mount.to_string()
+                },
+            )
+        } else {
+            (
+                None, // No role specified
+                if user_host_part.is_empty() {
+                    "database".to_string()
+                } else {
+                    user_host_part.to_string()
+                },
+            )
+        }
+    };
+
+    // Extract vault_db_name from the path part
+    let vault_db_name = db_part.map(|s| s.to_string()).filter(|s| !s.is_empty());
+
+    Some((role_name, mount_path, vault_db_name))
+}
+
 #[derive(Error, Debug)]
 pub enum VaultError {
     #[error("Vault address not set (VAULT_ADDR environment variable)")]
@@ -454,5 +509,36 @@ mod tests {
         // User lacks some required capabilities
         assert!(!has_capabilities(&user_caps, &["read", "create"]));
         assert!(!has_capabilities(&user_caps, &["write"]));
+    }
+
+    #[test]
+    fn test_parse_vault_url() {
+        // Test complete URL
+        let result = parse_vault_url("vault://role@mount/database");
+        assert_eq!(result, Some((Some("role".to_string()), "mount".to_string(), Some("database".to_string()))));
+
+        // Test URL with default mount path
+        let result = parse_vault_url("vault:///database");
+        assert_eq!(result, Some((None, "database".to_string(), Some("database".to_string()))));
+
+        // Test URL without role
+        let result = parse_vault_url("vault://mount/database");
+        assert_eq!(result, Some((None, "mount".to_string(), Some("database".to_string()))));
+
+        // Test URL with role but no database
+        let result = parse_vault_url("vault://role@mount");
+        assert_eq!(result, Some((Some("role".to_string()), "mount".to_string(), None)));
+
+        // Test URL with empty components
+        let result = parse_vault_url("vault://@/");
+        assert_eq!(result, Some((None, "database".to_string(), None)));
+
+        // Test invalid URL
+        let result = parse_vault_url("postgresql://user@host/db");
+        assert_eq!(result, None);
+
+        // Test minimal vault URL
+        let result = parse_vault_url("vault://");
+        assert_eq!(result, Some((None, "database".to_string(), None)));
     }
 }
