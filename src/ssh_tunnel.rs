@@ -186,7 +186,7 @@ impl SSHTunnel {
         );
 
         let child = cmd.spawn().map_err(|e| {
-            SSHTunnelError::SshCommandError(format!("Failed to spawn ssh command: {}", e))
+            SSHTunnelError::SshCommandError(format!("Failed to spawn ssh command: {e}"))
         })?;
 
         let child_id = child
@@ -239,8 +239,7 @@ impl SSHTunnel {
             
             if start_time.elapsed() >= total_establishment_timeout {
                 eprintln!(
-                    "Total timeout of {:?} reached for SSH tunnel establishment to {}.",
-                    total_establishment_timeout, local_addr
+                    "Total timeout of {total_establishment_timeout:?} reached for SSH tunnel establishment to {local_addr}."
                 );
                 // Attempt to grab stderr before failing
                 let mut stderr_output = String::new();
@@ -256,8 +255,7 @@ impl SSHTunnel {
                             {
                                 Ok(Ok(_)) => { /* Successfully read stderr */ }
                                 Ok(Err(io_err)) => eprintln!(
-                                    "IO error reading SSH stderr after timeout: {}",
-                                    io_err
+                                    "IO error reading SSH stderr after timeout: {io_err}"
                                 ),
                                 Err(_) => eprintln!(
                                     "Timeout reading SSH stderr after overall establishment timeout."
@@ -266,16 +264,13 @@ impl SSHTunnel {
                         }
                         match child_check.try_wait() {
                             Ok(Some(status)) => eprintln!(
-                                "SSH process {} exited with status {} during final error handling.",
-                                child_id, status
+                                "SSH process {child_id} exited with status {status} during final error handling."
                             ),
                             Ok(None) => eprintln!(
-                                "SSH process {} still running during final error handling.",
-                                child_id
+                                "SSH process {child_id} still running during final error handling."
                             ),
                             Err(e) => eprintln!(
-                                "Error checking SSH process status during final error handling: {}",
-                                e
+                                "Error checking SSH process status during final error handling: {e}"
                             ),
                         }
                     }
@@ -414,7 +409,7 @@ impl SSHTunnel {
                                 debug_log!("SSH tunnel process exited with status: {}", status)
                             }
                             Ok(Err(e)) => {
-                                eprintln!("Error waiting for SSH tunnel process to exit: {}", e)
+                                eprintln!("Error waiting for SSH tunnel process to exit: {e}")
                             }
                             Err(_) => eprintln!(
                                 "Timeout waiting for SSH tunnel process to exit after kill."
@@ -423,12 +418,10 @@ impl SSHTunnel {
                     }
                     Err(e) => {
                         eprintln!(
-                            "Failed to kill SSH tunnel process: {}. It might have already exited.",
-                            e
+                            "Failed to kill SSH tunnel process: {e}. It might have already exited."
                         );
                         return Err(SSHTunnelError::SshCommandError(format!(
-                            "Failed to kill SSH tunnel process: {}",
-                            e
+                            "Failed to kill SSH tunnel process: {e}"
                         )));
                     }
                 }
@@ -466,7 +459,7 @@ impl Drop for SSHTunnel {
                     child.id()
                 );
                 if let Err(e) = child.start_kill() {
-                    eprintln!("Error attempting to kill SSH tunnel process in drop: {}", e);
+                    eprintln!("Error attempting to kill SSH tunnel process in drop: {e}");
                 } else {
                     status_log!("SSH tunnel closed");
                     debug_log!("SSH tunnel process kill signal sent from drop.");
@@ -585,16 +578,14 @@ mod tests {
         match establish_result {
             Ok(local_port) => {
                 println!(
-                    "Tunnel unexpectedly established on local port: {}",
-                    local_port
+                    "Tunnel unexpectedly established on local port: {local_port}"
                 );
                 assert_eq!(tunnel.ssh_host, basic_tunnel_config.ssh_host);
                 assert_ne!(local_port, 0);
 
                 tunnel.stop().await.unwrap_or_else(|e| {
                     eprintln!(
-                        "Error stopping tunnel (might be ok if already stopped): {}",
-                        e
+                        "Error stopping tunnel (might be ok if already stopped): {e}"
                     );
                 });
                 assert!(
@@ -604,8 +595,7 @@ mod tests {
             }
             Err(e) => {
                 println!(
-                    "Tunnel establishment failed as expected (or due to actual error): {}",
-                    e
+                    "Tunnel establishment failed as expected (or due to actual error): {e}"
                 );
                 assert!(matches!(
                     e,
@@ -616,7 +606,7 @@ mod tests {
             }
         }
         tunnel.stop().await.unwrap_or_else(|e| {
-            eprintln!("Error stopping tunnel (idempotency check): {}", e);
+            eprintln!("Error stopping tunnel (idempotency check): {e}");
         });
         assert!(
             tunnel.tunnel_process.lock().unwrap().is_none(),

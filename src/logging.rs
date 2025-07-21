@@ -13,7 +13,7 @@ macro_rules! debug_log {
     ($($arg:tt)*) => {
         // For now, always log debug messages if debug logging is available
         // In the future, this could check configuration
-        let _ = crate::logging::debug(&format!($($arg)*));
+        let _ = $crate::logging::debug(&format!($($arg)*));
     };
 }
 
@@ -47,7 +47,7 @@ pub fn init() -> io::Result<()> {
             if let Some(parent) = config_dir.parent() {
                 if !parent.exists() {
                     if let Err(e) = std::fs::create_dir_all(parent) {
-                        eprintln!("Failed to create parent directory for logs: {}", e);
+                        eprintln!("Failed to create parent directory for logs: {e}");
                         result = Err(e);
                         return;
                     }
@@ -56,7 +56,7 @@ pub fn init() -> io::Result<()> {
 
             if !config_dir.exists() {
                 if let Err(e) = std::fs::create_dir_all(&config_dir) {
-                    eprintln!("Failed to create config directory for logs: {}", e);
+                    eprintln!("Failed to create config directory for logs: {e}");
                     result = Err(e);
                     return;
                 }
@@ -68,7 +68,7 @@ pub fn init() -> io::Result<()> {
             match OpenOptions::new()
                 .create(true)
                 .append(true)
-                .write(true)
+                
                 .open(&log_file_path)
             {
                 Ok(file) => {
@@ -88,7 +88,7 @@ pub fn init() -> io::Result<()> {
                     // We'll only show this when specifically requested
                 }
                 Err(e) => {
-                    eprintln!("Failed to open log file: {}", e);
+                    eprintln!("Failed to open log file: {e}");
                     result = Err(e);
                 }
             }
@@ -144,5 +144,5 @@ pub fn debug(message: &str) -> io::Result<()> {
 
     // Initialize logging if not already initialized
     init()?;
-    log_message(&format!("DEBUG {}", message))
+    log_message(&format!("DEBUG {message}"))
 }

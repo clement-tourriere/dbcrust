@@ -11,7 +11,7 @@ pub fn page_output(content: &str, pager_cmd_str: &str) -> std::io::Result<()> {
     if parts.is_empty() {
         // No pager command, print directly (should not happen if correctly configured)
         // but as a fallback, we print.
-        print!("{}", content);
+        print!("{content}");
         return Ok(());
     }
 
@@ -34,8 +34,8 @@ pub fn page_output(content: &str, pager_cmd_str: &str) -> std::io::Result<()> {
                     if e.kind() != ErrorKind::BrokenPipe {
                         // BrokenPipe is expected if `less` exits early (e.g. small content, or user quits)
                         // For other errors, print them and fallback.
-                        eprintln!("Error writing to pager stdin: {}", e);
-                        print!("{}", content); // Fallback to direct print
+                        eprintln!("Error writing to pager stdin: {e}");
+                        print!("{content}"); // Fallback to direct print
                         return Err(e);
                     }
                 }
@@ -53,18 +53,17 @@ pub fn page_output(content: &str, pager_cmd_str: &str) -> std::io::Result<()> {
                     Ok(())
                 }
                 Err(e) => {
-                    eprintln!("Pager process exited with an error: {}", e);
-                    print!("{}", content); // Fallback to direct print
+                    eprintln!("Pager process exited with an error: {e}");
+                    print!("{content}"); // Fallback to direct print
                     Err(e)
                 }
             }
         }
         Err(e) => {
             eprintln!(
-                "Failed to start pager '{}': {}. Outputting directly.",
-                pager_cmd_str, e
+                "Failed to start pager '{pager_cmd_str}': {e}. Outputting directly."
             );
-            print!("{}", content); // Fallback to direct print
+            print!("{content}"); // Fallback to direct print
             Err(e)
         }
     }

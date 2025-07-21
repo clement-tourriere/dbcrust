@@ -131,13 +131,13 @@ struct VaultResultantAclResponse {
 }
 
 #[derive(Deserialize, Debug)]
-struct VaultResultantAclData {
+pub struct VaultResultantAclData {
     pub exact_paths: std::collections::HashMap<String, VaultPathCapabilities>,
     pub glob_paths: std::collections::HashMap<String, VaultPathCapabilities>,
 }
 
 #[derive(Deserialize, Debug)]
-struct VaultPathCapabilities {
+pub struct VaultPathCapabilities {
     pub capabilities: Vec<String>,
 }
 
@@ -158,7 +158,7 @@ pub fn get_vault_token() -> Result<String, VaultError> {
 
     fs::read_to_string(token_path)
         .map(|s| s.trim().to_string())
-        .map_err(|e| VaultError::TokenFileError(format!("{}", e)))
+        .map_err(|e| VaultError::TokenFileError(format!("{e}")))
 }
 
 // Create HTTP client with Vault headers
@@ -167,7 +167,9 @@ async fn create_vault_client() -> Result<(reqwest::Client, String), VaultError> 
     let vault_token = get_vault_token()?;
 
     let mut headers = HeaderMap::new();
-    headers.insert("X-Vault-Token", vault_token.parse().unwrap());
+    let header_value = vault_token.parse()
+        .map_err(|e| VaultError::ApiError(format!("Invalid token header value: {e}")))?;
+    headers.insert("X-Vault-Token", header_value);
 
     let client = reqwest::Client::builder()
         .default_headers(headers)
@@ -178,7 +180,7 @@ async fn create_vault_client() -> Result<(reqwest::Client, String), VaultError> 
 
 pub async fn list_vault_databases(mount_path: &str) -> Result<Vec<String>, VaultError> {
     let (client, vault_addr) = create_vault_client().await?;
-    let list_path = format!("{}/v1/{}/config?list=true", vault_addr, mount_path);
+    let list_path = format!("{vault_addr}/v1/{mount_path}/config?list=true");
 
     let response = client.get(&list_path).send().await?;
 
@@ -186,14 +188,12 @@ pub async fn list_vault_databases(mount_path: &str) -> Result<Vec<String>, Vault
         let status = response.status();
         if status.as_u16() == 404 {
             return Err(VaultError::ApiError(format!(
-                "Path {}/config not found (404). Ensure DB secrets engine is at '{}' and you have permissions.",
-                mount_path, mount_path
+                "Path {mount_path}/config not found (404). Ensure DB secrets engine is at '{mount_path}' and you have permissions."
             )));
         }
         let error_text = response.text().await?;
         return Err(VaultError::ApiError(format!(
-            "Vault API error ({}): {}",
-            status, error_text
+            "Vault API error ({status}): {error_text}"
         )));
     }
 
@@ -206,7 +206,7 @@ pub async fn get_vault_database_config(
     db_config_name: &str,
 ) -> Result<VaultDbConfigData, VaultError> {
     let (client, vault_addr) = create_vault_client().await?;
-    let path = format!("{}/v1/{}/config/{}", vault_addr, mount_path, db_config_name);
+    let path = format!("{vault_addr}/v1/{mount_path}/config/{db_config_name}");
 
     let response = client.get(&path).send().await?;
 
@@ -220,8 +220,7 @@ pub async fn get_vault_database_config(
         }
         let error_text = response.text().await?;
         return Err(VaultError::ApiError(format!(
-            "Vault API error ({}): {}",
-            status, error_text
+            "Vault API error ({status}): {error_text}"
         )));
     }
 
@@ -237,7 +236,7 @@ pub async fn get_dynamic_credentials(
     let (client, vault_addr) = create_vault_client().await?;
     // The correct path format is just: {mount_path}/creds/{role_name}
     // The db_config_name is not part of the credentials path
-    let path = format!("{}/v1/{}/creds/{}", vault_addr, mount_path, role_name);
+    let path = format!("{vault_addr}/v1/{mount_path}/creds/{role_name}");
 
     let response = client.get(&path).send().await?;
 
@@ -252,8 +251,7 @@ pub async fn get_dynamic_credentials(
         }
         let error_text = response.text().await?;
         return Err(VaultError::ApiError(format!(
-            "Vault API error ({}): {}",
-            status, error_text
+            "Vault API error ({status}): {error_text}"
         )));
     }
 
@@ -319,8 +317,8 @@ pub async fn filter_databases_with_available_roles(
         // 1. database/creds/<database> - needs read/create
         // 2. database/<database> - needs read/create
         
-        let creds_path = format!("{}/creds/{}", mount_path, db_name);
-        let direct_path = format!("{}/{}", mount_path, db_name);
+        let creds_path = format!("{mount_path}/creds/{db_name}");
+        let direct_path = format!("{mount_path}/{db_name}");
         
         let creds_access = has_path_permission(&user_acl, &creds_path, &["read", "create"]);
         let direct_access = has_path_permission(&user_acl, &direct_path, &["read", "create"]);
@@ -341,7 +339,7 @@ pub async fn filter_databases_with_available_roles(
 /// Retrieves the user's ACL permissions from the resultant-acl endpoint
 async fn get_user_acl_permissions() -> Result<VaultResultantAclData, VaultError> {
     let (client, vault_addr) = create_vault_client().await?;
-    let acl_path = format!("{}/v1/sys/internal/ui/resultant-acl", vault_addr);
+    let acl_path = format!("{vault_addr}/v1/sys/internal/ui/resultant-acl");
 
     let response = client.get(&acl_path).send().await?;
 
@@ -349,8 +347,7 @@ async fn get_user_acl_permissions() -> Result<VaultResultantAclData, VaultError>
         let status = response.status();
         let error_text = response.text().await?;
         return Err(VaultError::ApiError(format!(
-            "Failed to retrieve ACL permissions ({}): {}",
-            status, error_text
+            "Failed to retrieve ACL permissions ({status}): {error_text}"
         )));
     }
 
@@ -358,13 +355,13 @@ async fn get_user_acl_permissions() -> Result<VaultResultantAclData, VaultError>
     debug_log!("ACL Response: {}", response_text);
     
     let acl_response: VaultResultantAclResponse = serde_json::from_str(&response_text)
-        .map_err(|e| VaultError::JsonError(e))?;
+        .map_err(VaultError::JsonError)?;
         
     Ok(acl_response.data)
 }
 
 /// Checks if the user has the required capabilities for a specific path
-fn has_path_permission(
+pub fn has_path_permission(
     acl_data: &VaultResultantAclData,
     path: &str,
     required_capabilities: &[&str],
@@ -392,7 +389,7 @@ fn has_path_permission(
 }
 
 // Helper function to check if a glob pattern matches a path
-fn glob_matches(pattern: &str, path: &str) -> bool {
+pub fn glob_matches(pattern: &str, path: &str) -> bool {
     // Simple glob matching for various patterns
     
     // Case 1: Exact match
@@ -402,9 +399,8 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
     
     // Case 2: Trailing slash (directory match)
     // e.g., "path/" matches "path" and "path/subpath"
-    if pattern.ends_with('/') {
-        let prefix = &pattern[..pattern.len() - 1];
-        if path == prefix || path.starts_with(&format!("{}/", prefix)) {
+    if let Some(prefix) = pattern.strip_suffix('/') {
+        if path == prefix || path.starts_with(&format!("{prefix}/")) {
             return true;
         }
     }
@@ -412,10 +408,12 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
     // Case 3: Trailing asterisk (wildcard match)
     // e.g., "path/*" or "path*" matches anything with that prefix
     if pattern.ends_with('*') {
-        let prefix = if pattern.ends_with("/*") {
-            &pattern[..pattern.len() - 2]
+        let prefix = if let Some(p) = pattern.strip_suffix("/*") {
+            p
+        } else if let Some(p) = pattern.strip_suffix('*') {
+            p
         } else {
-            &pattern[..pattern.len() - 1]
+            unreachable!()
         };
         
         if path.starts_with(prefix) {
@@ -436,7 +434,7 @@ fn glob_matches(pattern: &str, path: &str) -> bool {
 }
 
 /// Helper function to check if the user has all required capabilities
-fn has_capabilities(user_capabilities: &[String], required_capabilities: &[&str]) -> bool {
+pub fn has_capabilities(user_capabilities: &[String], required_capabilities: &[&str]) -> bool {
     // Must have ALL required capabilities
     required_capabilities.iter().all(|required| {
         user_capabilities.iter().any(|cap| cap == required)

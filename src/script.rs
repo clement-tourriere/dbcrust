@@ -41,7 +41,7 @@ pub fn edit_multiline_script(current_script: &str) -> Result<String, Box<dyn Err
     });
 
     // Print a message to indicate the editor being used
-    println!("Opening {} for multiline editing...", editor);
+    println!("Opening {editor} for multiline editing...");
 
     // Open the editor with the temporary file
     let status = Command::new(&editor).arg(&temp_path).status()?;
@@ -102,7 +102,7 @@ pub fn load_script_from_file(filename: &str) -> Result<String, Box<dyn Error>> {
 
     // Check if the file exists
     if !path.exists() {
-        return Err(format!("File not found: {}", filename).into());
+        return Err(format!("File not found: {filename}").into());
     }
 
     // Read the file content

@@ -1,6 +1,5 @@
-/// Performance analyzer for database query plans
-/// Provides standardized performance analysis across PostgreSQL, MySQL, and SQLite
-
+//! Performance analyzer for database query plans
+//! Provides standardized performance analysis across PostgreSQL, MySQL, and SQLite
 use nu_ansi_term::Color;
 use serde_json::Value as JsonValue;
 
@@ -190,7 +189,7 @@ impl PerformanceAnalyzer {
             if let (Some(plan), Some(actual)) = (plan_rows.as_f64(), actual_rows.as_f64()) {
                 if actual > 0.0 {
                     let ratio = plan / actual;
-                    if ratio > 10.0 || ratio < 0.1 {
+                    if !(0.1..=10.0).contains(&ratio) {
                         return PerformanceLevel::Poor;
                     }
                 }
@@ -206,7 +205,7 @@ impl PerformanceAnalyzer {
             "Seq Scan" => {
                 metric.add_warning("Full table scan detected".to_string());
                 if let Some(JsonValue::String(relation)) = node_obj.get("Relation Name") {
-                    metric.add_recommendation(format!("Consider adding an index on table '{}'", relation));
+                    metric.add_recommendation(format!("Consider adding an index on table '{relation}'"));
                 }
             },
             "Nested Loop" => {
@@ -267,7 +266,7 @@ impl PerformanceAnalyzer {
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown");
             
-            let mut metric = PerformanceMetrics::new(format!("Table: {}", table_name));
+            let mut metric = PerformanceMetrics::new(format!("Table: {table_name}"));
             
             // Extract access type
             let access_type = obj.get("access_type")
@@ -324,7 +323,7 @@ impl PerformanceAnalyzer {
             "ALL" => {
                 metric.add_warning("Full table scan detected".to_string());
                 if let Some(JsonValue::String(table_name)) = obj.get("table_name") {
-                    metric.add_recommendation(format!("Add an index to table '{}'", table_name));
+                    metric.add_recommendation(format!("Add an index to table '{table_name}'"));
                 }
             },
             "index" => {
@@ -337,7 +336,7 @@ impl PerformanceAnalyzer {
         // Check filtering efficiency
         if let Some(efficiency) = metric.efficiency_percent {
             if efficiency < 10.0 {
-                metric.add_warning(format!("Poor filtering efficiency: {:.1}%", efficiency));
+                metric.add_warning(format!("Poor filtering efficiency: {efficiency:.1}%"));
                 metric.add_recommendation("Consider adding more selective WHERE conditions".to_string());
             }
         }
@@ -352,7 +351,7 @@ impl PerformanceAnalyzer {
                           plan_rows[0].iter().any(|col| col.to_lowercase().contains("id") || col.to_lowercase().contains("detail")) {
             &plan_rows[1..]
         } else {
-            &plan_rows[..]
+            plan_rows
         };
         
         for (i, row) in data_rows.iter().enumerate() {
@@ -443,7 +442,7 @@ impl PerformanceAnalyzer {
         };
         
         formatted.push(format!("📊 {}",
-            score_color.bold().paint(format!("Query Performance Analysis (Score: {}/100)", overall_score))
+            score_color.bold().paint(format!("Query Performance Analysis (Score: {overall_score}/100)"))
         ));
         
         // Add performance dashboard summary
@@ -478,7 +477,7 @@ impl PerformanceAnalyzer {
                     Color::Green
                 };
                 formatted.push(format!("  ⏱️  Duration: {}", 
-                    time_color.paint(format!("{:.2} ms", time))
+                    time_color.paint(format!("{time:.2} ms"))
                 ));
             }
             
@@ -498,10 +497,10 @@ impl PerformanceAnalyzer {
             
             // Add row information
             if let Some(examined) = metric.rows_examined {
-                formatted.push(format!("  🔍 Rows Examined: {}", Color::Blue.paint(format!("{}", examined))));
+                formatted.push(format!("  🔍 Rows Examined: {}", Color::Blue.paint(format!("{examined}"))));
             }
             if let Some(returned) = metric.rows_returned {
-                formatted.push(format!("  📤 Rows Returned: {}", Color::Blue.paint(format!("{}", returned))));
+                formatted.push(format!("  📤 Rows Returned: {}", Color::Blue.paint(format!("{returned}"))));
             }
             
             // Add efficiency information
@@ -514,7 +513,7 @@ impl PerformanceAnalyzer {
                     Color::Red
                 };
                 formatted.push(format!("  📊 Efficiency: {}",
-                    efficiency_color.paint(format!("{:.1}%", efficiency))
+                    efficiency_color.paint(format!("{efficiency:.1}%"))
                 ));
             }
             
@@ -569,16 +568,16 @@ impl PerformanceAnalyzer {
             }
         }
         
-        dashboard.push(format!("🟢 Excellent Operations: {}", Color::Green.paint(format!("{}", excellent_count))));
-        dashboard.push(format!("🟢 Good Operations: {}", Color::LightGreen.paint(format!("{}", good_count))));
+        dashboard.push(format!("🟢 Excellent Operations: {}", Color::Green.paint(format!("{excellent_count}"))));
+        dashboard.push(format!("🟢 Good Operations: {}", Color::LightGreen.paint(format!("{good_count}"))));
         if warning_count > 0 {
-            dashboard.push(format!("🟡 Warning Operations: {}", Color::Yellow.paint(format!("{}", warning_count))));
+            dashboard.push(format!("🟡 Warning Operations: {}", Color::Yellow.paint(format!("{warning_count}"))));
         }
         if poor_count > 0 {
-            dashboard.push(format!("🟠 Poor Operations: {}", Color::LightRed.paint(format!("{}", poor_count))));
+            dashboard.push(format!("🟠 Poor Operations: {}", Color::LightRed.paint(format!("{poor_count}"))));
         }
         if critical_count > 0 {
-            dashboard.push(format!("🔴 Critical Operations: {}", Color::Red.paint(format!("{}", critical_count))));
+            dashboard.push(format!("🔴 Critical Operations: {}", Color::Red.paint(format!("{critical_count}"))));
         }
         
         // Performance statistics
@@ -588,10 +587,10 @@ impl PerformanceAnalyzer {
         dashboard.push(String::new());
         dashboard.push(format!("📊 Total Operations: {}", metrics.len()));
         if total_warnings > 0 {
-            dashboard.push(format!("⚠️  Total Warnings: {}", Color::Red.paint(format!("{}", total_warnings))));
+            dashboard.push(format!("⚠️  Total Warnings: {}", Color::Red.paint(format!("{total_warnings}"))));
         }
         if total_recommendations > 0 {
-            dashboard.push(format!("💡 Optimization Opportunities: {}", Color::Cyan.paint(format!("{}", total_recommendations))));
+            dashboard.push(format!("💡 Optimization Opportunities: {}", Color::Cyan.paint(format!("{total_recommendations}"))));
         }
         
         // Performance grade
@@ -639,12 +638,12 @@ impl PerformanceAnalyzer {
         );
         
         let has_slow_operations = metrics.iter().any(|m| 
-            m.time_ms.map_or(false, |t| t > 100.0) ||
+            m.time_ms.is_some_and(|t| t > 100.0) ||
             m.cost_score > 1000.0
         );
         
         let has_inefficient_operations = metrics.iter().any(|m|
-            m.efficiency_percent.map_or(false, |e| e < 10.0)
+            m.efficiency_percent.is_some_and(|e| e < 10.0)
         );
         
         let has_sort_spill = metrics.iter().any(|m|
@@ -720,11 +719,11 @@ impl PerformanceAnalyzer {
         if overall_score < 80 {
             recommendations.push(String::new());
             recommendations.push(format!("📚 {}", Color::White.bold().paint("General Best Practices:")));
-            recommendations.push(format!("   • Update table statistics regularly (ANALYZE/UPDATE STATISTICS)"));
-            recommendations.push(format!("   • Monitor index usage and remove unused indexes"));
-            recommendations.push(format!("   • Consider query caching for frequently executed queries"));
-            recommendations.push(format!("   • Review application-level caching strategies"));
-            recommendations.push(format!("   • Use EXPLAIN ANALYZE for detailed execution metrics"));
+            recommendations.push("   • Update table statistics regularly (ANALYZE/UPDATE STATISTICS)".to_string());
+            recommendations.push("   • Monitor index usage and remove unused indexes".to_string());
+            recommendations.push("   • Consider query caching for frequently executed queries".to_string());
+            recommendations.push("   • Review application-level caching strategies".to_string());
+            recommendations.push("   • Use EXPLAIN ANALYZE for detailed execution metrics".to_string());
         }
         
         recommendations

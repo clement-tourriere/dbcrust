@@ -1,3 +1,7 @@
+//! PostgreSQL password file (.pgpass) support
+//!
+//! This module provides functionality to read and write PostgreSQL password files
+//! for automatic password authentication.
 use std::env;
 use std::fs;
 use std::fs::File;
@@ -237,7 +241,7 @@ pub fn save_password(
     // Write entries back to file
     let mut file = File::create(&pgpass_path)?;
     for entry in entries {
-        writeln!(file, "{}", entry)?;
+        writeln!(file, "{entry}")?;
     }
 
     // Set correct permissions on Unix
@@ -276,15 +280,14 @@ mod tests {
             let pid = std::process::id();
 
             let test_path =
-                temp_dir.join(format!("dbcrust_test_{}_{}_{}", test_name, pid, timestamp));
+                temp_dir.join(format!("dbcrust_test_{test_name}_{pid}_{timestamp}"));
 
             // Create parent directory if needed
             if let Some(parent) = test_path.parent() {
                 if !parent.exists() {
                     fs::create_dir_all(parent).unwrap_or_else(|e| {
                         eprintln!(
-                            "Warning: Could not create parent directory for test pgpass: {}",
-                            e
+                            "Warning: Could not create parent directory for test pgpass: {e}"
                         );
                     });
                 }
@@ -293,7 +296,7 @@ mod tests {
             // Delete file if it exists
             if test_path.exists() {
                 fs::remove_file(&test_path).unwrap_or_else(|e| {
-                    eprintln!("Warning: Could not remove existing test pgpass file: {}", e);
+                    eprintln!("Warning: Could not remove existing test pgpass file: {e}");
                 });
             }
 
@@ -306,7 +309,7 @@ mod tests {
             if let Some(parent) = self.path.parent() {
                 if !parent.exists() {
                     fs::create_dir_all(parent).unwrap_or_else(|e| {
-                        eprintln!("Warning: Could not create parent directory: {}", e);
+                        eprintln!("Warning: Could not create parent directory: {e}");
                     });
                 }
             }
@@ -319,7 +322,7 @@ mod tests {
 
             // Use the real save_password function
             save_password(host, port, dbname, username, password).unwrap_or_else(|e| {
-                eprintln!("Warning: Failed to save password in test: {}", e);
+                eprintln!("Warning: Failed to save password in test: {e}");
             });
 
             // Ensure the file was written
@@ -330,7 +333,7 @@ mod tests {
             );
 
             // Force a file flush and sync
-            if let Ok(file) = File::options().write(true).append(true).open(&self.path) {
+            if let Ok(file) = File::options().append(true).open(&self.path) {
                 let _ = file.sync_all(); // Ensure file is written to disk
             }
 
@@ -406,7 +409,7 @@ mod tests {
             }
             let mut file =
                 File::create(&test_pgpass.path).expect("Failed to create test pgpass file");
-            let content = format!("{}:{}:{}:{}:{}", host, port, dbname, username, password);
+            let content = format!("{host}:{port}:{dbname}:{username}:{password}");
             file.write_all(content.as_bytes())
                 .expect("Failed to write to test pgpass file");
             file.flush().expect("Failed to flush test pgpass file");
@@ -421,11 +424,10 @@ mod tests {
 
         // Read file contents directly for debugging
         let file_contents = std::fs::read_to_string(&test_pgpass.path)
-            .unwrap_or_else(|e| format!("Failed to read file: {}", e));
+            .unwrap_or_else(|e| format!("Failed to read file: {e}"));
         assert!(
             !file_contents.is_empty(),
-            "Test pgpass file is empty: {}",
-            file_contents
+            "Test pgpass file is empty: {file_contents}"
         );
 
         // Look up the password
@@ -433,10 +435,7 @@ mod tests {
         assert_eq!(
             retrieved_pass,
             Some(password.to_string()),
-            "Expected to find password '{}' but got '{:?}'. File contents: {}",
-            password,
-            retrieved_pass,
-            file_contents
+            "Expected to find password '{password}' but got '{retrieved_pass:?}'. File contents: {file_contents}"
         );
 
         // Look up with wrong host (should not find)
@@ -468,8 +467,7 @@ mod tests {
         let mut file = std::fs::File::create(&test_pgpass.path).unwrap();
         writeln!(
             file,
-            "{}:{}:{}:{}:{}",
-            host, port1, dbname, username, password1
+            "{host}:{port1}:{dbname}:{username}:{password1}"
         )
         .unwrap();
         file.flush().unwrap();
@@ -500,11 +498,10 @@ mod tests {
 
         // Read file contents directly for debugging
         let file_contents = std::fs::read_to_string(&test_pgpass.path)
-            .unwrap_or_else(|e| format!("Failed to read file: {}", e));
+            .unwrap_or_else(|e| format!("Failed to read file: {e}"));
         assert!(
             !file_contents.is_empty(),
-            "Test pgpass file is empty: {}",
-            file_contents
+            "Test pgpass file is empty: {file_contents}"
         );
 
         // Verify original password is preserved
@@ -512,10 +509,7 @@ mod tests {
         assert_eq!(
             retrieved_pass,
             Some(password1.to_string()),
-            "Expected '{}', but got '{:?}'. File contents: {}",
-            password1,
-            retrieved_pass,
-            file_contents
+            "Expected '{password1}', but got '{retrieved_pass:?}'. File contents: {file_contents}"
         );
 
         // Add a new entry with different port
@@ -533,8 +527,8 @@ mod tests {
 
         // Read updated file contents
         let file_contents = std::fs::read_to_string(&test_pgpass.path)
-            .unwrap_or_else(|e| format!("Failed to read file: {}", e));
-        println!("File contents: {}", file_contents);
+            .unwrap_or_else(|e| format!("Failed to read file: {e}"));
+        println!("File contents: {file_contents}");
 
         // Verify both entries can be retrieved
         let original_pass = test_pgpass.lookup(host, port1, dbname, username);
@@ -543,16 +537,12 @@ mod tests {
         assert_eq!(
             original_pass,
             Some(password1.to_string()),
-            "Expected original password '{}', but got '{:?}'",
-            password1,
-            original_pass
+            "Expected original password '{password1}', but got '{original_pass:?}'"
         );
         assert_eq!(
             new_pass,
             Some(password3.to_string()),
-            "Expected new password '{}', but got '{:?}'",
-            password3,
-            new_pass
+            "Expected new password '{password3}', but got '{new_pass:?}'"
         );
     }
 }

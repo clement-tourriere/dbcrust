@@ -158,12 +158,12 @@ impl SqlCompleter {
         let cached_port = self.cached_for_port;
 
         // Check if this is a meaningful change that requires cache invalidation
-        let database_changed = cached_dbname.map_or(true, |name| name != current_dbname);
+        let database_changed = cached_dbname.is_none_or(|name| name != current_dbname);
         
         // For SSH tunnels, be more lenient about host/port changes since they're local tunnels
         let using_ssh_tunnel = self.is_using_ssh_tunnel(current_host, current_port);
-        let was_using_ssh_tunnel = cached_host.map_or(false, |host| 
-            cached_port.map_or(false, |port| self.is_using_ssh_tunnel(host, port))
+        let was_using_ssh_tunnel = cached_host.is_some_and(|host| 
+            cached_port.is_some_and(|port| self.is_using_ssh_tunnel(host, port))
         );
         
         // Smart connection change detection
@@ -175,8 +175,8 @@ impl SqlCompleter {
             true
         } else {
             // Direct connections - check host and port strictly
-            cached_host.map_or(true, |host| host != current_host) ||
-            cached_port.map_or(true, |port| port != current_port)
+            cached_host.is_none_or(|host| host != current_host) ||
+            (cached_port != Some(current_port))
         };
 
         // Use extended TTL for SSH tunnel connections
@@ -188,7 +188,7 @@ impl SqlCompleter {
 
         let ttl_expired = self
             .cache_last_updated
-            .map_or(true, |updated| updated.elapsed() >= effective_ttl);
+            .is_none_or(|updated| updated.elapsed() >= effective_ttl);
 
         // Only clear cache if there's a meaningful change or TTL expired
         if database_changed || connection_changed || ttl_expired {
@@ -381,7 +381,7 @@ impl SqlCompleter {
                     let schema_name: String = row.get(1);
                     tables_by_schema
                         .entry(schema_name)
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(table_name);
                 }
 
@@ -392,7 +392,7 @@ impl SqlCompleter {
                     let schema_name: String = row.get(1);
                     functions_by_schema
                         .entry(schema_name)
-                        .or_insert_with(Vec::new)
+                        .or_default()
                         .push(function_name);
                 }
 
@@ -440,7 +440,7 @@ impl SqlCompleter {
                 let cmd_name_no_slash = if cmd_name.starts_with('\\') {
                     &cmd_name[1..] // remove leading '\' for matching
                 } else {
-                    &cmd_name
+                    cmd_name
                 };
                 
                 if cmd_name_no_slash.starts_with(current_command_part) {
@@ -521,11 +521,11 @@ impl SqlCompleter {
                 schemas
             }
             Ok(Err(e)) => {
-                eprintln!("Error fetching schemas: {}", e);
+                eprintln!("Error fetching schemas: {e}");
                 Vec::new()
             }
             Err(e_join) => {
-                eprintln!("Thread panicked fetching schemas: {:?}", e_join);
+                eprintln!("Thread panicked fetching schemas: {e_join:?}");
                 Vec::new()
             }
         }
@@ -598,11 +598,11 @@ impl SqlCompleter {
                 tables
             }
             Ok(Err(e)) => {
-                eprintln!("Error fetching tables for schema '{}': {}", schema, e);
+                eprintln!("Error fetching tables for schema '{schema}': {e}");
                 Vec::new()
             }
             Err(e_join) => {
-                eprintln!("Thread panicked fetching tables for schema '{}': {:?}", schema, e_join);
+                eprintln!("Thread panicked fetching tables for schema '{schema}': {e_join:?}");
                 Vec::new()
             }
         }
@@ -661,11 +661,11 @@ impl SqlCompleter {
                 funcs
             }
             Ok(Err(e)) => {
-                eprintln!("Error fetching functions for schema '{}': {}", schema, e);
+                eprintln!("Error fetching functions for schema '{schema}': {e}");
                 Vec::new()
             }
             Err(e_join) => {
-                eprintln!("Thread panicked fetching functions for schema '{}': {:?}", schema, e_join);
+                eprintln!("Thread panicked fetching functions for schema '{schema}': {e_join:?}");
                 Vec::new()
             }
         }
@@ -766,16 +766,14 @@ impl SqlCompleter {
             Ok(Err(e)) => {
                 let total_duration = start_time.elapsed();
                 eprintln!(
-                    "Error fetching columns for table '{}' in completer thread: {} (took {:?})",
-                    table_name_with_schema, e, total_duration
+                    "Error fetching columns for table '{table_name_with_schema}' in completer thread: {e} (took {total_duration:?})"
                 );
                 Vec::new()
             }
             Err(e_join) => {
                 let total_duration = start_time.elapsed();
                 eprintln!(
-                    "Completer thread for columns (table '{}') panicked: {:?} (took {:?})",
-                    table_name_with_schema, e_join, total_duration
+                    "Completer thread for columns (table '{table_name_with_schema}') panicked: {e_join:?} (took {total_duration:?})"
                 );
                 Vec::new()
             }
@@ -841,7 +839,7 @@ impl Completer for SqlCompleter {
                             match rt.block_on(db_guard.list_database_names()) {
                                 Ok(databases) => databases,
                                 Err(e) => {
-                                    eprintln!("Error listing databases in completer thread: {}", e);
+                                    eprintln!("Error listing databases in completer thread: {e}");
                                     Vec::<String>::new()
                                 }
                             }
@@ -868,7 +866,7 @@ impl Completer for SqlCompleter {
                             }
                         }
                         Err(e) => {
-                            eprintln!("Completer thread for list_database_names panicked: {:?}", e);
+                            eprintln!("Completer thread for list_database_names panicked: {e:?}");
                         }
                     }
                     return completions; // Return completions gathered so far for \c
@@ -890,8 +888,8 @@ impl Completer for SqlCompleter {
                                 for table in tables_in_schema {
                                     if table.to_lowercase().starts_with(table_prefix) {
                                         completions.push(Suggestion {
-                                            value: format!("{}.{}", schema, table),
-                                            description: Some(format!("Table in {}", schema)),
+                                            value: format!("{schema}.{table}"),
+                                            description: Some(format!("Table in {schema}")),
                                             span: Span {
                                                 start: word_start,
                                                 end: pos,
@@ -937,8 +935,8 @@ impl Completer for SqlCompleter {
         }
 
         // Check if we're completing a named query execution command (e.g., "\n query_name")
-        if line.starts_with("\\n ") {
-            let prefix = &line[3..]; // Skip "\n "
+        if let Some(prefix) = line.strip_prefix("\\n ") {
+            // Skip "\n "
             let arg_word_start = prefix[..pos.saturating_sub(3)]
                 .rfind(char::is_whitespace)
                 .map_or(0, |idx| idx + 1)
@@ -950,7 +948,7 @@ impl Completer for SqlCompleter {
                 if name.starts_with(current_arg_word) {
                     completions.push(Suggestion {
                         value: name.clone(),
-                        description: Some(format!("Named query: {}", query)),
+                        description: Some(format!("Named query: {query}")),
                         span: Span {
                             start: arg_word_start,
                             end: pos,
@@ -965,8 +963,8 @@ impl Completer for SqlCompleter {
         }
 
         // Check if we're completing a named query deletion command
-        if line.starts_with("\\nd ") {
-            let prefix = &line[4..]; // Skip "\nd "
+        if let Some(prefix) = line.strip_prefix("\\nd ") {
+            // Skip "\nd "
             let arg_word_start = prefix[..pos.saturating_sub(4)]
                 .rfind(char::is_whitespace)
                 .map_or(0, |idx| idx + 1)
@@ -993,8 +991,8 @@ impl Completer for SqlCompleter {
         }
 
         // Check if we're completing a session command
-        if line.starts_with("\\s ") {
-            let prefix = &line[3..]; // Skip "\s "
+        if let Some(prefix) = line.strip_prefix("\\s ") {
+            // Skip "\s "
             let arg_word_start = prefix[..pos.saturating_sub(3)]
                 .rfind(char::is_whitespace)
                 .map_or(0, |idx| idx + 1)
@@ -1024,8 +1022,8 @@ impl Completer for SqlCompleter {
         }
 
         // Check if we're completing a session deletion command
-        if line.starts_with("\\sd ") {
-            let prefix = &line[4..]; // Skip "\sd "
+        if let Some(prefix) = line.strip_prefix("\\sd ") {
+            // Skip "\sd "
             let arg_word_start = prefix[..pos.saturating_sub(4)]
                 .rfind(char::is_whitespace)
                 .map_or(0, |idx| idx + 1)
@@ -1160,7 +1158,7 @@ impl Completer for SqlCompleter {
                     let suggestion_span_start = word_start + schema_context_str.len() + 1;
                     completions.push(Suggestion {
                         value: item.clone(),
-                        description: Some(format!("Table/View in {}", schema_context_str)),
+                        description: Some(format!("Table/View in {schema_context_str}")),
                         span: Span {
                             start: suggestion_span_start,
                             end: pos,
@@ -1246,7 +1244,7 @@ impl Completer for SqlCompleter {
             {
                 completions.push(Suggestion {
                     value: name.clone(),
-                    description: Some(format!("Named query: {}", query)),
+                    description: Some(format!("Named query: {query}")),
                     span: Span {
                         start: word_start,
                         end: pos,
@@ -1262,7 +1260,7 @@ impl Completer for SqlCompleter {
         // and secondarily by alphabetical order
         completions.sort_by(|a, b| {
             let type_priority = |suggestion: &Suggestion| -> i32 {
-                match suggestion.description.as_ref().map(|d| d.as_str()) {
+                match suggestion.description.as_deref() {
                     Some("Table/View") => 1,
                     Some(desc) if desc.starts_with("Table/View") => 1,
                     Some("Column") => 2,
@@ -1476,13 +1474,11 @@ mod tests {
         let suggestions = completer.complete(line, line.len());
         assert!(
             suggestions.iter().any(|s| s.value == "main_db"),
-            "Should suggest main_db. Got: {:?}",
-            suggestions
+            "Should suggest main_db. Got: {suggestions:?}"
         );
         assert!(
             suggestions.iter().any(|s| s.value == "test_db"),
-            "Should suggest test_db. Got: {:?}",
-            suggestions
+            "Should suggest test_db. Got: {suggestions:?}"
         );
     }
 

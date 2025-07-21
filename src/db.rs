@@ -131,14 +131,14 @@ impl Database {
             
             // Create Docker client
             let docker_client = crate::docker::DockerClient::new()
-                .map_err(|e| format!("Failed to create Docker client: {}", e))?;
+                .map_err(|e| format!("Failed to create Docker client: {e}"))?;
             
             let container_info = docker_client.inspect_container(&selected_container).await
-                .map_err(|e| format!("Failed to inspect selected Docker container '{}': {}", selected_container, e))?;
+                .map_err(|e| format!("Failed to inspect selected Docker container '{selected_container}': {e}"))?;
             
             // Build database connection info from container
             let docker_connection = docker_client.build_connection_info(&container_info)
-                .map_err(|e| format!("Failed to build connection info: {}", e))?;
+                .map_err(|e| format!("Failed to build connection info: {e}"))?;
             
             // Create a new ConnectionInfo with the resolved Docker information
             let resolved_connection_info = ConnectionInfo {
@@ -159,14 +159,14 @@ impl Database {
         
         // Create Docker client and inspect the container
         let docker_client = crate::docker::DockerClient::new()
-            .map_err(|e| format!("Failed to create Docker client: {}", e))?;
+            .map_err(|e| format!("Failed to create Docker client: {e}"))?;
         
         let container_info = docker_client.inspect_container(container_name).await
-            .map_err(|e| format!("Failed to inspect Docker container '{}': {}", container_name, e))?;
+            .map_err(|e| format!("Failed to inspect Docker container '{container_name}': {e}"))?;
         
         // Build database connection info from container
         let docker_connection = docker_client.build_connection_info(&container_info)
-            .map_err(|e| format!("Failed to build connection info: {}", e))?;
+            .map_err(|e| format!("Failed to build connection info: {e}"))?;
         
         // Create a new ConnectionInfo with the resolved Docker information
         let resolved_connection_info = ConnectionInfo {
@@ -198,11 +198,11 @@ impl Database {
         
         // Create Docker client
         let docker_client = crate::docker::DockerClient::new()
-            .map_err(|e| format!("Failed to create Docker client: {}", e))?;
+            .map_err(|e| format!("Failed to create Docker client: {e}"))?;
         
         // List all database containers
         let containers = docker_client.list_database_containers().await
-            .map_err(|e| format!("Failed to list Docker containers: {}", e))?;
+            .map_err(|e| format!("Failed to list Docker containers: {e}"))?;
         
         if containers.is_empty() {
             return Err("No database containers found. Make sure you have database containers running.".into());
@@ -222,7 +222,7 @@ impl Database {
             for container in &stopped_containers {
                 let db_type = container.database_type
                     .as_ref()
-                    .map(|dt| format!("{}", dt))
+                    .map(|dt| format!("{dt}"))
                     .unwrap_or("Unknown".to_string());
                 println!("   🔴 {} ({}) - {}", container.name, db_type, container.status);
             }
@@ -239,11 +239,11 @@ impl Database {
         for container in &running_containers {
             let db_type = container.database_type
                 .as_ref()
-                .map(|dt| format!("{}", dt))
+                .map(|dt| format!("{dt}"))
                 .unwrap_or("Unknown".to_string());
             
             let port_info = if let Some(port) = container.host_port {
-                format!(" | Port: {}", port)
+                format!(" | Port: {port}")
             } else {
                 " (no exposed port)".to_string()
             };
@@ -259,7 +259,7 @@ impl Database {
         // Show interactive selection and get the index
         let selected_index = inquire::Select::new("Select a database container:", options.clone())
             .prompt()
-            .map_err(|e| format!("Selection cancelled: {}", e))?;
+            .map_err(|e| format!("Selection cancelled: {e}"))?;
         
         // Find the index of the selected option
         let container_index = options.iter().position(|option| option == &selected_index)
@@ -270,7 +270,7 @@ impl Database {
         
         println!("📦 Selected container: {} ({})", 
                 selected_container.name,
-                selected_container.database_type.as_ref().map(|dt| format!("{}", dt)).unwrap_or("Unknown".to_string()));
+                selected_container.database_type.as_ref().map(|dt| format!("{dt}")).unwrap_or("Unknown".to_string()));
         
         Ok(selected_container.name.clone())
     }
@@ -313,7 +313,7 @@ impl Database {
                     debug_log!("Failed to create database client: {}. Will use legacy implementation if available.", e);
                     // For SQLite databases, we must use the new abstraction layer - don't allow fallback to mock
                     if connection_info.database_type == DatabaseType::SQLite {
-                        return Err(format!("Failed to create SQLite database client: {}", e).into());
+                        return Err(format!("Failed to create SQLite database client: {e}").into());
                     }
                     None
                 }
@@ -352,7 +352,7 @@ impl Database {
                         
                         // Establish the tunnel
                         if let Some(ref mut actual_tunnel) = *tunnel_guard {
-                            match actual_tunnel.establish(&tunnel_config, &host, port).await {
+                            match actual_tunnel.establish(tunnel_config, &host, port).await {
                                 Ok(local_port) => {
                                     status_log!(
                                         "SSH tunnel: {}:{} via {}@{} -> 127.0.0.1:{}",
@@ -387,7 +387,7 @@ impl Database {
                                         .test_before_acquire(false)
                                         .connect_with(tunnel_connect_options)
                                         .await
-                                        .map_err(|e| format!("Failed to create PostgreSQL pool through SSH tunnel: {}", e))?);
+                                        .map_err(|e| format!("Failed to create PostgreSQL pool through SSH tunnel: {e}"))?);
                                     
                                     // Release the tunnel guard
                                     drop(tunnel_guard);
@@ -395,7 +395,7 @@ impl Database {
                                     ("127.0.0.1".to_string(), local_port)
                                 },
                                 Err(e) => {
-                                    return Err(format!("Failed to establish SSH tunnel: {}", e).into());
+                                    return Err(format!("Failed to establish SSH tunnel: {e}").into());
                                 }
                             }
                         } else {
@@ -491,9 +491,7 @@ impl Database {
 
         // Validate the connection before returning
         debug_log!("[Database::from_connection_info] Validating connection");
-        if let Err(e) = db.validate_connection().await {
-            return Err(e);
-        }
+        db.validate_connection().await?;
 
         Ok(db)
     }
@@ -553,7 +551,7 @@ impl Database {
                 // Now, tunnel_guard definitely holds Some(SSHTunnel), so we can proceed.
                 if let Some(ref mut actual_tunnel_instance) = *tunnel_guard {
                     match actual_tunnel_instance
-                        .establish(&tunnel_config, host, port)
+                        .establish(tunnel_config, host, port)
                         .await
                     {
                         Ok(local_port) => {
@@ -574,7 +572,7 @@ impl Database {
                             ("127.0.0.1".to_string(), local_port)
                         }
                         Err(e) => {
-                            return Err(format!("Failed to establish SSH tunnel: {}", e).into());
+                            return Err(format!("Failed to establish SSH tunnel: {e}").into());
                         }
                     }
                 } else {
@@ -713,9 +711,7 @@ impl Database {
 
         // Validate the connection before returning
         debug_log!("[Database::new] Validating connection");
-        if let Err(e) = db.validate_connection().await {
-            return Err(e);
-        }
+        db.validate_connection().await?;
 
         Ok(db)
     }
@@ -780,7 +776,7 @@ impl Database {
         }
 
         let password_to_use =
-            if self.password.is_none() || self.password.as_ref().map_or(true, |p| p.is_empty()) {
+            if self.password.is_none() || self.password.as_ref().is_none_or(|p| p.is_empty()) {
                 pgpass::lookup_password(&self.original_host, self.original_port, dbname, &self.user)
             } else {
                 self.password.clone()
@@ -938,7 +934,7 @@ impl Database {
                         Ok(results) => return Ok(results),
                         Err(e) => {
                             debug_log!("MySQL user query failed: {}", e);
-                            return Err(format!("Error listing MySQL users: {}", e).into());
+                            return Err(format!("Error listing MySQL users: {e}").into());
                         }
                     }
                 },
@@ -967,7 +963,7 @@ impl Database {
         let _pool = self.pool.as_ref().ok_or("Database pool not initialized")?;
         match self.execute_query("SELECT usename, usesuper, usecreatedb FROM pg_user ORDER BY usename").await {
             Ok(results) => Ok(results),
-            Err(e) => Err(format!("Error listing PostgreSQL users: {}", e).into()),
+            Err(e) => Err(format!("Error listing PostgreSQL users: {e}").into()),
         }
     }
 
@@ -998,7 +994,7 @@ impl Database {
                     "#;
                     match self.execute_query(query).await {
                         Ok(results) => return Ok(results),
-                        Err(e) => return Err(format!("Error listing SQLite indexes: {}", e).into()),
+                        Err(e) => return Err(format!("Error listing SQLite indexes: {e}").into()),
                     }
                 },
                 crate::database::DatabaseType::MySQL => {
@@ -1374,7 +1370,7 @@ impl Database {
                     let type_info = row.column(i).type_info();
                     let value_str = match type_info.name() {
                         "BOOL" => row.try_get::<Option<bool>, _>(i).map(|v| v.map_or("NULL".to_string(), |b| b.to_string())),
-                        "BYTEA" => row.try_get::<Option<Vec<u8>>, _>(i).map(|v| v.map_or("NULL".to_string(), |data| hex::encode(data))),
+                        "BYTEA" => row.try_get::<Option<Vec<u8>>, _>(i).map(|v| v.map_or("NULL".to_string(), hex::encode)),
  
                         "INT2" => row.try_get::<Option<i16>, _>(i).map(|v| v.map_or("NULL".to_string(), |val| val.to_string())),
                         "INT4" => row.try_get::<Option<i32>, _>(i).map(|v| v.map_or("NULL".to_string(), |val| val.to_string())),
@@ -1388,7 +1384,7 @@ impl Database {
                         "TIMESTAMPTZ" => row.try_get::<Option<DateTime<Utc>>, _>(i).map(|v| v.map_or("NULL".to_string(), |dt| dt.to_string())),
                         "DATE" => row.try_get::<Option<NaiveDate>, _>(i).map(|v| v.map_or("NULL".to_string(), |d| d.to_string())),
                         "TIME" => row.try_get::<Option<NaiveTime>, _>(i).map(|v| v.map_or("NULL".to_string(), |t| t.to_string())),
-                        "TIMETZ" => row.try_get::<Option<PgTimeTz>, _>(i).map(|v| v.map_or("NULL".to_string(), |t| format!("{:?}", t))), // Use Debug format for PgTimeTz
+                        "TIMETZ" => row.try_get::<Option<PgTimeTz>, _>(i).map(|v| v.map_or("NULL".to_string(), |t| format!("{t:?}"))), // Use Debug format for PgTimeTz
                         "JSON" | "JSONB" => row.try_get::<Option<JsonValue>, _>(i).map(|v| v.map_or("NULL".to_string(), |j| j.to_string())),
                         "UUID" => row.try_get::<Option<Uuid>, _>(i).map(|v| v.map_or("NULL".to_string(), |u| u.to_string())),
                         "INET" | "CIDR" => row.try_get::<Option<IpNetwork>, _>(i).map(|v| v.map_or("NULL".to_string(), |ip| ip.to_string())),
@@ -1397,19 +1393,18 @@ impl Database {
                         "MONEY" => row.try_get::<Option<PgMoney>, _>(i).map(|v| v.map_or("NULL".to_string(), |val| format_pg_money(&val))),
                         "NUMERIC" => row.try_get::<Option<Decimal>, _>(i).map(|v| v.map_or("NULL".to_string(), |d| d.to_string())), 
                         // Geometric types - use Debug formatting
-                        "POINT" => row.try_get::<Option<PgPoint>, _>(i).map(|v| v.map_or("NULL".to_string(), |p| format!("{:?}", p))),
-                        "LINE" => row.try_get::<Option<PgLine>, _>(i).map(|v| v.map_or("NULL".to_string(), |l| format!("{:?}", l))),
-                        "LSEG" => row.try_get::<Option<PgLSeg>, _>(i).map(|v| v.map_or("NULL".to_string(), |ls| format!("{:?}", ls))),
-                        "BOX" => row.try_get::<Option<PgBox>, _>(i).map(|v| v.map_or("NULL".to_string(), |b| format!("{:?}", b))),
-                        "PATH" => row.try_get::<Option<PgPath>, _>(i).map(|v| v.map_or("NULL".to_string(), |p| format!("{:?}", p))),
-                        "POLYGON" => row.try_get::<Option<PgPolygon>, _>(i).map(|v| v.map_or("NULL".to_string(), |p| format!("{:?}", p))),
-                        "CIRCLE" => row.try_get::<Option<PgCircle>, _>(i).map(|v| v.map_or("NULL".to_string(), |c| format!("{:?}", c))),
+                        "POINT" => row.try_get::<Option<PgPoint>, _>(i).map(|v| v.map_or("NULL".to_string(), |p| format!("{p:?}"))),
+                        "LINE" => row.try_get::<Option<PgLine>, _>(i).map(|v| v.map_or("NULL".to_string(), |l| format!("{l:?}"))),
+                        "LSEG" => row.try_get::<Option<PgLSeg>, _>(i).map(|v| v.map_or("NULL".to_string(), |ls| format!("{ls:?}"))),
+                        "BOX" => row.try_get::<Option<PgBox>, _>(i).map(|v| v.map_or("NULL".to_string(), |b| format!("{b:?}"))),
+                        "PATH" => row.try_get::<Option<PgPath>, _>(i).map(|v| v.map_or("NULL".to_string(), |p| format!("{p:?}"))),
+                        "POLYGON" => row.try_get::<Option<PgPolygon>, _>(i).map(|v| v.map_or("NULL".to_string(), |p| format!("{p:?}"))),
+                        "CIRCLE" => row.try_get::<Option<PgCircle>, _>(i).map(|v| v.map_or("NULL".to_string(), |c| format!("{c:?}"))),
                         // Text Search Types - specialized handling
                         "TSVECTOR" | "tsvector" => {
                             // Just return a placeholder and log the issue to a file instead of console
                             log_type_error(&format!(
-                                "Info: tsvector type encountered in column {} (idx: {}). Using placeholder.", 
-                                column, i
+                                "Info: tsvector type encountered in column {column} (idx: {i}). Using placeholder."
                             ));
                             // Always return a simple placeholder without attempting to decode
                             Ok("[TSVECTOR]".to_string())
@@ -1417,15 +1412,14 @@ impl Database {
                         "TSQUERY" | "tsquery" => {
                             // Just return a placeholder and log the issue to a file instead of console
                             log_type_error(&format!(
-                                "Info: tsquery type encountered in column {} (idx: {}). Using placeholder.", 
-                                column, i
+                                "Info: tsquery type encountered in column {column} (idx: {i}). Using placeholder."
                             ));
                             // Always return a simple placeholder without attempting to decode
                             Ok("[TSQUERY]".to_string())
                         },
                         // Array types need specific handling
                         "_BOOL" => row.try_get::<Option<Vec<bool>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
-                        "_BYTEA" => row.try_get::<Option<Vec<Vec<u8>>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| hex::encode(e)).collect::<Vec<_>>().join(",")))),
+                        "_BYTEA" => row.try_get::<Option<Vec<Vec<u8>>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(hex::encode).collect::<Vec<_>>().join(",")))),
                         "_CHAR" => row.try_get::<Option<Vec<String>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|s| format!("\"{}\"", s.replace("\"", "\\\""))).collect::<Vec<_>>().join(",")))),
                         "_INT2" => row.try_get::<Option<Vec<i16>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
                         "_INT4" => row.try_get::<Option<Vec<i32>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
@@ -1439,22 +1433,22 @@ impl Database {
                         "_TIMESTAMPTZ" => row.try_get::<Option<Vec<DateTime<Utc>>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
                         "_DATE" => row.try_get::<Option<Vec<NaiveDate>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
                         "_TIME" => row.try_get::<Option<Vec<NaiveTime>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
-                        "_TIMETZ" => row.try_get::<Option<Vec<PgTimeTz>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(",")))), // Use Debug format
+                        "_TIMETZ" => row.try_get::<Option<Vec<PgTimeTz>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(",")))), // Use Debug format
                         "_JSON" | "_JSONB" => row.try_get::<Option<Vec<JsonValue>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
                         "_UUID" => row.try_get::<Option<Vec<Uuid>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
                         "_INET" | "_CIDR" => row.try_get::<Option<Vec<IpNetwork>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
                         "_MACADDR" => row.try_get::<Option<Vec<MacAddress>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
-                        "_INTERVAL" => row.try_get::<Option<Vec<PgInterval>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format_pg_interval_simple(e)).collect::<Vec<_>>().join(",")))),
-                        "_MONEY" => row.try_get::<Option<Vec<PgMoney>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format_pg_money(e)).collect::<Vec<_>>().join(",")))),
+                        "_INTERVAL" => row.try_get::<Option<Vec<PgInterval>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(format_pg_interval_simple).collect::<Vec<_>>().join(",")))),
+                        "_MONEY" => row.try_get::<Option<Vec<PgMoney>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(format_pg_money).collect::<Vec<_>>().join(",")))),
                         "_NUMERIC" => row.try_get::<Option<Vec<Decimal>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
                         // Geometric array types - use Debug formatting
-                        "_POINT" => row.try_get::<Option<Vec<PgPoint>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(",")))),
-                        "_LINE" => row.try_get::<Option<Vec<PgLine>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(",")))),
-                        "_LSEG" => row.try_get::<Option<Vec<PgLSeg>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(",")))),
-                        "_BOX" => row.try_get::<Option<Vec<PgBox>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(",")))),
-                        "_PATH" => row.try_get::<Option<Vec<PgPath>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(",")))),
-                        "_POLYGON" => row.try_get::<Option<Vec<PgPolygon>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(",")))),
-                        "_CIRCLE" => row.try_get::<Option<Vec<PgCircle>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{:?}", e)).collect::<Vec<_>>().join(",")))),
+                        "_POINT" => row.try_get::<Option<Vec<PgPoint>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(",")))),
+                        "_LINE" => row.try_get::<Option<Vec<PgLine>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(",")))),
+                        "_LSEG" => row.try_get::<Option<Vec<PgLSeg>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(",")))),
+                        "_BOX" => row.try_get::<Option<Vec<PgBox>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(",")))),
+                        "_PATH" => row.try_get::<Option<Vec<PgPath>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(",")))),
+                        "_POLYGON" => row.try_get::<Option<Vec<PgPolygon>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(",")))),
+                        "_CIRCLE" => row.try_get::<Option<Vec<PgCircle>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>().join(",")))),
                         // Text Search array types - commented out
                         // "_TSVECTOR" => row.try_get::<Option<Vec<PgTsVector>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
                         // "_TSQUERY" => row.try_get::<Option<Vec<PgTsQuery>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(",")))),
@@ -1465,14 +1459,13 @@ impl Database {
                         // Fallback for other/unknown types, including other array types not explicitly handled
                         type_name if type_name.starts_with('_') || type_name.ends_with("[]") => {
                             // Attempt to treat as Vec<String> for generic array display
-                            eprintln!("Warning: Unhandled array type '{}'. Attempting to display as Vec<String>.", type_name);
+                            eprintln!("Warning: Unhandled array type '{type_name}'. Attempting to display as Vec<String>.");
                             row.try_get::<Option<Vec<String>>, _>(i).map(|v| v.map_or("NULL".to_string(), |arr| format!("{{{}}}", arr.iter().map(|s| format!("\"{}\"", s.replace("\"", "\\\""))).collect::<Vec<_>>().join(","))))
                         },
                         other_type => {
                             // Log to file instead of console
                             log_type_error(&format!(
-                                "Warning: Unhandled scalar type '{}' in column {} (idx: {}). Attempting string fallback.", 
-                                other_type, column, i
+                                "Warning: Unhandled scalar type '{other_type}' in column {column} (idx: {i}). Attempting string fallback."
                             ));
                             // Attempt to fallback to string representation
                             row.try_get::<Option<String>, _>(i).map(|v| v.unwrap_or_else(|| "NULL".to_string()))
@@ -1601,12 +1594,11 @@ impl Database {
                     debug_log!("[execute_explain_query_raw] Database abstraction layer returned {} rows", results.len());
                     
                     // Store the JSON plan for copying (for PostgreSQL)
-                    if database_client.get_connection_info().database_type == crate::database::DatabaseType::PostgreSQL {
-                        if results.len() > 1 && !results[1].is_empty() {
+                    if database_client.get_connection_info().database_type == crate::database::DatabaseType::PostgreSQL
+                        && results.len() > 1 && !results[1].is_empty() {
                             // Store the JSON plan from the second row (first row is header)
                             self.last_json_plan = Some(results[1][0].clone());
                         }
-                    }
                     
                     return Ok(results);
                 },
@@ -1630,7 +1622,7 @@ impl Database {
             Box::<dyn StdError>::from("Database pool not initialized for execute_explain_query_raw")
         })?;
 
-        let explain_query = format!("EXPLAIN (FORMAT JSON) {}", query);
+        let explain_query = format!("EXPLAIN (FORMAT JSON) {query}");
         let explain_results: Vec<JsonValue> = sqlx::query_scalar(&explain_query)
             .fetch_all(pool_ref)
             .await?;
@@ -1706,30 +1698,30 @@ impl Database {
         debug_log!("[Database::test_network_connectivity] Testing connection to {}:{}", host, port);
         
         // Test DNS resolution first
-        match tokio::net::lookup_host(format!("{}:{}", host, port)).await {
+        match tokio::net::lookup_host(format!("{host}:{port}")).await {
             Ok(mut addresses) => {
                 if addresses.next().is_none() {
-                    return Err(format!("DNS resolution failed: no addresses found for {}", host).into());
+                    return Err(format!("DNS resolution failed: no addresses found for {host}").into());
                 }
                 debug_log!("[Database::test_network_connectivity] DNS resolution successful for {}", host);
             }
             Err(e) => {
-                return Err(format!("DNS resolution failed for {}: {}", host, e).into());
+                return Err(format!("DNS resolution failed for {host}: {e}").into());
             }
         }
         
         // Test TCP connectivity with timeout
         let timeout = std::time::Duration::from_secs(timeout_secs);
-        match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(format!("{}:{}", host, port))).await {
+        match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(format!("{host}:{port}"))).await {
             Ok(Ok(_)) => {
                 debug_log!("[Database::test_network_connectivity] TCP connection successful to {}:{}", host, port);
                 Ok(())
             }
             Ok(Err(e)) => {
-                Err(format!("TCP connection failed to {}:{}: {}", host, port, e).into())
+                Err(format!("TCP connection failed to {host}:{port}: {e}").into())
             }
             Err(_) => {
-                Err(format!("Connection timeout to {}:{} after {} seconds", host, port, timeout_secs).into())
+                Err(format!("Connection timeout to {host}:{port} after {timeout_secs} seconds").into())
             }
         }
     }
@@ -1754,12 +1746,11 @@ impl Database {
                         
                         if !std::path::Path::new(file_path).exists() {
                             return Err(format!(
-                                "SQLite database file does not exist: {}\n\
+                                "SQLite database file does not exist: {file_path}\n\
                                 Please check:\n\
                                 • File path is correct\n\
                                 • File exists and is accessible\n\
-                                • You have read permissions",
-                                file_path
+                                • You have read permissions"
                             ).into());
                         }
                     }
@@ -1767,7 +1758,7 @@ impl Database {
                 crate::database::DatabaseType::PostgreSQL | crate::database::DatabaseType::MySQL => {
                     // For networked databases, test connectivity
                     let host = connection_info.host.as_deref().unwrap_or("localhost");
-                    let port = connection_info.port.unwrap_or_else(|| {
+                    let port = connection_info.port.unwrap_or({
                         match connection_info.database_type {
                             crate::database::DatabaseType::PostgreSQL => 5432,
                             crate::database::DatabaseType::MySQL => 3306,
@@ -1776,35 +1767,33 @@ impl Database {
                     });
                     
                     // Test DNS resolution first
-                    match tokio::net::lookup_host(format!("{}:{}", host, port)).await {
+                    match tokio::net::lookup_host(format!("{host}:{port}")).await {
                         Ok(mut addresses) => {
                             if addresses.next().is_none() {
                                 return Err(format!(
-                                    "DNS resolution failed for host: {}\n\
+                                    "DNS resolution failed for host: {host}\n\
                                     Please check:\n\
                                     • Host name is correct\n\
                                     • DNS server is reachable\n\
-                                    • Network connectivity",
-                                    host
+                                    • Network connectivity"
                                 ).into());
                             }
                         }
                         Err(e) => {
                             return Err(format!(
-                                "DNS resolution failed for {}:{}: {}\n\
+                                "DNS resolution failed for {host}:{port}: {e}\n\
                                 Please check:\n\
-                                • Host name '{}' is correct\n\
+                                • Host name '{host}' is correct\n\
                                 • DNS server is reachable\n\
                                 • Network connectivity\n\
-                                • No typos in hostname",
-                                host, port, e, host
+                                • No typos in hostname"
                             ).into());
                         }
                     }
                     
                     // Test TCP connectivity
                     let timeout = std::time::Duration::from_secs(10);
-                    match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(format!("{}:{}", host, port))).await {
+                    match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(format!("{host}:{port}"))).await {
                         Ok(Ok(_)) => {
                             debug_log!("[Database::validate_connection] TCP connection successful to {}:{}", host, port);
                         }
@@ -1821,13 +1810,12 @@ impl Database {
                         }
                         Err(_) => {
                             return Err(format!(
-                                "Connection timeout to {}:{}\n\
+                                "Connection timeout to {host}:{port}\n\
                                 Please check:\n\
                                 • Database server is running and responding\n\
                                 • Network connectivity is stable\n\
                                 • No firewall blocking connections\n\
-                                • Host '{}' is reachable",
-                                host, port, host
+                                • Host '{host}' is reachable"
                             ).into());
                         }
                     }
@@ -1849,36 +1837,33 @@ impl Database {
                     let error_msg = match db_type {
                         crate::database::DatabaseType::PostgreSQL => {
                             format!(
-                                "PostgreSQL connection failed: {}\n\
+                                "PostgreSQL connection failed: {e}\n\
                                 Please check:\n\
-                                • Username '{}' exists and has login privileges\n\
+                                • Username '{username}' exists and has login privileges\n\
                                 • Password is correct (check .pgpass file)\n\
-                                • Database '{}' exists and user has access\n\
+                                • Database '{database}' exists and user has access\n\
                                 • PostgreSQL server is accepting connections\n\
-                                • SSL settings if required",
-                                e, username, database
+                                • SSL settings if required"
                             )
                         }
                         crate::database::DatabaseType::MySQL => {
                             format!(
-                                "MySQL connection failed: {}\n\
+                                "MySQL connection failed: {e}\n\
                                 Please check:\n\
-                                • Username '{}' exists and has login privileges\n\
+                                • Username '{username}' exists and has login privileges\n\
                                 • Password is correct (check .my.cnf file)\n\
-                                • Database '{}' exists and user has access\n\
+                                • Database '{database}' exists and user has access\n\
                                 • MySQL server is accepting connections\n\
-                                • SSL settings if required",
-                                e, username, database
+                                • SSL settings if required"
                             )
                         }
                         crate::database::DatabaseType::SQLite => {
                             format!(
-                                "SQLite connection failed: {}\n\
+                                "SQLite connection failed: {e}\n\
                                 Please check:\n\
                                 • Database file has correct permissions\n\
                                 • SQLite database is not corrupted\n\
-                                • Sufficient disk space available",
-                                e
+                                • Sufficient disk space available"
                             )
                         }
                     };
@@ -1945,7 +1930,7 @@ impl Database {
                 return Ok(TableDetails {
                     name: name_str.to_string(),
                     schema: schema_str.to_string(),
-                    full_name: format!("{}.{}", schema_str, name_str),
+                    full_name: format!("{schema_str}.{name_str}"),
                     columns: vec![
                         ColumnInfo {
                             name: "id".to_string(),
@@ -1980,7 +1965,7 @@ impl Database {
                 return Ok(TableDetails {
                     name: name_str.to_string(),
                     schema: schema_str.to_string(),
-                    full_name: format!("{}.{}", name_str, schema_str),
+                    full_name: format!("{name_str}.{schema_str}"),
                     columns: vec![
                         ColumnInfo {
                             name: "order_id".to_string(),
@@ -2004,8 +1989,7 @@ impl Database {
                 });
             }
             return Err(Box::from(format!(
-                "Mock table details not found for {}",
-                table_name
+                "Mock table details not found for {table_name}"
             )));
         }
 
@@ -2231,7 +2215,7 @@ impl Database {
         Ok(TableDetails {
             name: name.clone(),                        // Clone name for the struct field
             schema: schema.clone(),                    // Clone schema for the struct field
-            full_name: format!("{}.{}", name, schema), // Use original name and schema for format!
+            full_name: format!("{name}.{schema}"), // Use original name and schema for format!
             columns: column_details,
             indexes: final_index_details,
             check_constraints: cc_details,
@@ -2301,7 +2285,7 @@ impl Database {
 
         // EXPLAIN (FORMAT JSON) returns a JSON array, usually with one element which is an object.
         // Each object is a plan tree.
-        let explain_query = format!("EXPLAIN (FORMAT JSON) {}", query);
+        let explain_query = format!("EXPLAIN (FORMAT JSON) {query}");
         let explain_results: Vec<JsonValue> = sqlx::query_scalar(&explain_query)
             .fetch_all(pool_ref)
             .await?;
@@ -2350,13 +2334,13 @@ impl Database {
 
                     if let Some(JsonValue::Number(exec_time)) = plan_obj.get("Execution Time") {
                         if let Some(exec_time) = exec_time.as_f64() {
-                            output.push_str(&format!("○ Execution Time: {:.2} ms\n", exec_time));
+                            output.push_str(&format!("○ Execution Time: {exec_time:.2} ms\n"));
                         }
                     }
 
                     if let Some(JsonValue::Number(planning_time)) = plan_obj.get("Planning Time") {
                         if let Some(planning_time) = planning_time.as_f64() {
-                            output.push_str(&format!("○ Planning Time: {:.2} ms\n", planning_time));
+                            output.push_str(&format!("○ Planning Time: {planning_time:.2} ms\n"));
                         }
                     }
 
@@ -2816,7 +2800,7 @@ impl Database {
         // For testing purposes, we'll add a special case that provides a mocked input
         // This is only used in tests and won't affect normal operation
         #[cfg(test)]
-        if data.len() > 0 && data[0].len() > 0 && data[0][0] == "test_mock_input" {
+        if !data.is_empty() && !data[0].is_empty() && data[0][0] == "test_mock_input" {
             // In test mode, return a pre-filtered set based on the test case
             return Ok(data.to_vec());
         }
@@ -3017,7 +3001,7 @@ impl Database {
                 // Call is_active() on the SSHTunnel instance
                 if let Err(e) = tunnel_instance.stop().await {
                     // Call stop() on the SSHTunnel instance
-                    eprintln!("Error stopping SSH tunnel: {}", e);
+                    eprintln!("Error stopping SSH tunnel: {e}");
                 }
             }
         }
@@ -3118,7 +3102,7 @@ impl Database {
                 debug_log!("[preload_metadata] Successfully fetched {} schemas", count);
             }
             Err(e) => {
-                eprintln!("Error preloading schemas: {}", e);
+                eprintln!("Error preloading schemas: {e}");
             }
         }
 
@@ -3128,7 +3112,7 @@ impl Database {
                 debug_log!("[preload_metadata] Successfully fetched {} tables", count);
             }
             Err(e) => {
-                eprintln!("Error preloading tables: {}", e);
+                eprintln!("Error preloading tables: {e}");
             }
         }
 
@@ -3221,7 +3205,7 @@ fn format_plan_node(
             .unwrap_or("Unknown");
 
         // Add node header
-        output.push_str(&format!("{}{}\n", prefix, node_type));
+        output.push_str(&format!("{prefix}{node_type}\n"));
 
         // Node details prefix
         let detail_prefix = if depth == 0 {
@@ -3233,51 +3217,50 @@ fn format_plan_node(
         // Add node description
         let description = get_node_description(node_type);
         if !description.is_empty() {
-            output.push_str(&format!("{}{}.\n", detail_prefix, description));
+            output.push_str(&format!("{detail_prefix}{description}.\n"));
         }
 
         // Add node statistics
         if let Some(JsonValue::Number(actual_time)) = node_obj.get("Actual Total Time") {
             if let Some(time_val) = actual_time.as_f64() {
                 output.push_str(&format!(
-                    "{}○ Duration: {:.2} ms\n",
-                    detail_prefix, time_val
+                    "{detail_prefix}○ Duration: {time_val:.2} ms\n"
                 ));
             }
         }
 
         if let Some(JsonValue::Number(total_cost)) = node_obj.get("Total Cost") {
             if let Some(cost) = total_cost.as_f64() {
-                output.push_str(&format!("{}○ Cost: {:.0}\n", detail_prefix, cost));
+                output.push_str(&format!("{detail_prefix}○ Cost: {cost:.0}\n"));
             }
         }
 
         if let Some(JsonValue::Number(rows)) = node_obj.get("Plan Rows") {
             if let Some(rows) = rows.as_u64() {
-                output.push_str(&format!("{}○ Rows: {}\n", detail_prefix, rows));
+                output.push_str(&format!("{detail_prefix}○ Rows: {rows}\n"));
             }
         }
 
         // Special handling for Join details
         if node_type.contains("Join") {
             if let Some(JsonValue::String(join_type)) = node_obj.get("Join Type") {
-                output.push_str(&format!("{}  {} join\n", detail_prefix, join_type));
+                output.push_str(&format!("{detail_prefix}  {join_type} join\n"));
             }
         }
 
         // Add relation info if available
         if let Some(JsonValue::String(relation)) = node_obj.get("Relation Name") {
-            output.push_str(&format!("{}  on {}\n", detail_prefix, relation));
+            output.push_str(&format!("{detail_prefix}  on {relation}\n"));
         }
 
         // Add scan info
         if node_type.contains("Scan") {
             if let Some(JsonValue::String(index_name)) = node_obj.get("Index Name") {
-                output.push_str(&format!("{}  using {}\n", detail_prefix, index_name));
+                output.push_str(&format!("{detail_prefix}  using {index_name}\n"));
             }
 
             if let Some(JsonValue::String(filter)) = node_obj.get("Filter") {
-                output.push_str(&format!("{}  filter {}\n", detail_prefix, filter));
+                output.push_str(&format!("{detail_prefix}  filter {filter}\n"));
             }
         }
 
@@ -3532,11 +3515,9 @@ mod tests {
         let mut column_views = HashMap::new();
 
         // Sample test data
-        let test_data = vec![
-            vec!["col1".to_string(), "col2".to_string(), "col3".to_string()],
+        let test_data = [vec!["col1".to_string(), "col2".to_string(), "col3".to_string()],
             vec!["val1".to_string(), "val2".to_string(), "val3".to_string()],
-            vec!["val4".to_string(), "val5".to_string(), "val6".to_string()],
-        ];
+            vec!["val4".to_string(), "val5".to_string(), "val6".to_string()]];
 
         // Save a column view with only the first and third columns
         let view_key = "col1:col2:col3"; // This matches the key generation logic

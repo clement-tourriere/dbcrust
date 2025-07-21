@@ -1,5 +1,4 @@
-/// SQLite implementation of the database abstraction layer
-
+//! SQLite implementation of the database abstraction layer
 use async_trait::async_trait;
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
 use crate::db::TableDetails;
@@ -52,12 +51,11 @@ impl MetadataProvider for SqliteMetadataProvider {
         let query = format!(
             r#"
             SELECT name as table_name
-            FROM {}.sqlite_master
+            FROM {schema_name}.sqlite_master
             WHERE type IN ('table', 'view')
               AND name NOT LIKE 'sqlite_%'
             ORDER BY name
-            "#,
-            schema_name
+            "#
         );
 
         let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
@@ -76,7 +74,7 @@ impl MetadataProvider for SqliteMetadataProvider {
         let schema_name = schema.unwrap_or("main");
         
         // Use PRAGMA table_info to get column information
-        let query = format!("PRAGMA {}.table_info({})", schema_name, table);
+        let query = format!("PRAGMA {schema_name}.table_info({table})");
         
         let rows = sqlx::query(&query)
             .fetch_all(&self.pool)
@@ -139,8 +137,7 @@ impl MetadataProvider for SqliteMetadataProvider {
         
         // First check if the table exists
         let table_exists_query = format!(
-            "SELECT name FROM {}.sqlite_master WHERE type='table' AND name=?",
-            schema_name
+            "SELECT name FROM {schema_name}.sqlite_master WHERE type='table' AND name=?"
         );
         let table_exists = sqlx::query(&table_exists_query)
             .bind(table)
@@ -148,11 +145,11 @@ impl MetadataProvider for SqliteMetadataProvider {
             .await?;
             
         if table_exists.is_none() {
-            return Err(DatabaseError::QueryError(format!("Table '{}' does not exist", table)));
+            return Err(DatabaseError::QueryError(format!("Table '{table}' does not exist")));
         }
         
         // Get basic table info using PRAGMA table_info
-        let query = format!("PRAGMA {}.table_info({})", schema_name, table);
+        let query = format!("PRAGMA {schema_name}.table_info({table})");
         let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
         
         let mut columns = Vec::new();
@@ -168,7 +165,7 @@ impl MetadataProvider for SqliteMetadataProvider {
         }
 
         // Get index information
-        let index_query = format!("PRAGMA {}.index_list({})", schema_name, table);
+        let index_query = format!("PRAGMA {schema_name}.index_list({table})");
         let index_rows = sqlx::query(&index_query).fetch_all(&self.pool).await?;
         
         let mut indexes = Vec::new();
@@ -177,7 +174,7 @@ impl MetadataProvider for SqliteMetadataProvider {
             let is_unique: bool = index_row.get("unique");
             
             // Get index details
-            let detail_query = format!("PRAGMA {}.index_info({})", schema_name, index_name);
+            let detail_query = format!("PRAGMA {schema_name}.index_info({index_name})");
             let detail_rows = sqlx::query(&detail_query).fetch_all(&self.pool).await?;
             
             let mut columns_in_index = Vec::new();
@@ -200,7 +197,7 @@ impl MetadataProvider for SqliteMetadataProvider {
         }
 
         // Get foreign key information
-        let fk_query = format!("PRAGMA {}.foreign_key_list({})", schema_name, table);
+        let fk_query = format!("PRAGMA {schema_name}.foreign_key_list({table})");
         let fk_rows = sqlx::query(&fk_query).fetch_all(&self.pool).await?;
         
         let mut foreign_keys = Vec::new();
@@ -210,8 +207,8 @@ impl MetadataProvider for SqliteMetadataProvider {
             let to_col: String = fk_row.get("to");
             
             let fk_info = crate::db::ForeignKeyInfo {
-                name: format!("fk_{}_{}", table, from_col),
-                definition: format!("FOREIGN KEY ({}) REFERENCES {}({})", from_col, to_table, to_col),
+                name: format!("fk_{table}_{from_col}"),
+                definition: format!("FOREIGN KEY ({from_col}) REFERENCES {to_table}({to_col})"),
             };
             foreign_keys.push(fk_info);
         }
@@ -219,7 +216,7 @@ impl MetadataProvider for SqliteMetadataProvider {
         let table_details = TableDetails {
             schema: schema_name.to_string(),
             name: table.to_string(),
-            full_name: format!("{}.{}", schema_name, table),
+            full_name: format!("{schema_name}.{table}"),
             columns,
             indexes,
             check_constraints: Vec::new(), // SQLite check constraints are harder to query
@@ -263,24 +260,24 @@ impl SqliteClient {
             file_path.clone()
         } else {
             // Resolve the path properly
-            let resolved_path = if file_path.starts_with('/') && std::path::Path::new(file_path).exists() {
+            
+            if file_path.starts_with('/') && std::path::Path::new(file_path).exists() {
                 // Absolute Unix path that exists
-                format!("sqlite://{}", file_path)
+                format!("sqlite://{file_path}")
             } else if file_path.starts_with('/') {
                 // Path from URL like /test_data/test_sample.db - treat as relative
                 let relative_path = file_path.trim_start_matches('/');
                 let current_dir = std::env::current_dir()
-                    .map_err(|e| DatabaseError::ConnectionError(format!("Could not get current directory: {}", e)))?;
+                    .map_err(|e| DatabaseError::ConnectionError(format!("Could not get current directory: {e}")))?;
                 let full_path = current_dir.join(relative_path);
                 format!("sqlite://{}", full_path.to_string_lossy())
             } else {
                 // Relative path or Windows path
                 let current_dir = std::env::current_dir()
-                    .map_err(|e| DatabaseError::ConnectionError(format!("Could not get current directory: {}", e)))?;
+                    .map_err(|e| DatabaseError::ConnectionError(format!("Could not get current directory: {e}")))?;
                 let full_path = current_dir.join(file_path);
                 format!("sqlite://{}", full_path.to_string_lossy())
-            };
-            resolved_path
+            }
         };
 
         debug_log!("[SqliteClient::new] Connecting to: {}", database_url);
@@ -560,7 +557,7 @@ impl DatabaseClient for SqliteClient {
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug_log!("[SqliteClient::explain_query] Executing EXPLAIN QUERY PLAN for query");
         
-        let explain_sql = format!("EXPLAIN QUERY PLAN {}", sql);
+        let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
         let raw_results = self.execute_query(&explain_sql).await?;
         
         // Format the output for better readability
@@ -570,7 +567,7 @@ impl DatabaseClient for SqliteClient {
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug_log!("[SqliteClient::explain_query_raw] Executing raw EXPLAIN QUERY PLAN for query");
         
-        let explain_sql = format!("EXPLAIN QUERY PLAN {}", sql);
+        let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
         self.execute_query(&explain_sql).await
     }
 
@@ -601,14 +598,14 @@ impl DatabaseClient for SqliteClient {
                 "Primary"
             } else if name == "temp" {
                 "Temporary"
-            } else if file.is_empty() || file == "" {
+            } else if file.is_empty() || file.is_empty() {
                 "In-Memory"
             } else {
                 "Attached"
             };
             
             // Format file path for better display
-            let formatted_file = if file.is_empty() || file == "" {
+            let formatted_file = if file.is_empty() || file.is_empty() {
                 if name == "temp" {
                     "(temporary)".to_string()
                 } else {
@@ -624,7 +621,7 @@ impl DatabaseClient for SqliteClient {
                     if let (Some(filename), Some(parent)) = (path.file_name(), path.parent()) {
                         if let (Some(filename_str), Some(parent_str)) = (filename.to_str(), parent.to_str()) {
                             format!(".../{}/{}", 
-                                parent_str.split('/').last().unwrap_or(""), 
+                                parent_str.split('/').next_back().unwrap_or(""), 
                                 filename_str)
                         } else {
                             file
@@ -681,10 +678,7 @@ impl DatabaseClient for SqliteClient {
 
     async fn is_connected(&self) -> bool {
         // Try a simple query to check if connection is still alive
-        match sqlx::query("SELECT 1").fetch_one(&self.pool).await {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        (sqlx::query("SELECT 1").fetch_one(&self.pool).await).is_ok()
     }
 
     async fn close(&mut self) -> Result<(), DatabaseError> {
@@ -749,8 +743,7 @@ fn format_sqlite_value(row: &SqliteRow, column_index: usize) -> Result<String, D
                 Ok(val.to_string())
             } else {
                 Err(DatabaseError::QueryError(format!(
-                    "Unable to format INTEGER value at column {}", 
-                    column_index
+                    "Unable to format INTEGER value at column {column_index}"
                 )))
             }
         }
@@ -762,8 +755,7 @@ fn format_sqlite_value(row: &SqliteRow, column_index: usize) -> Result<String, D
                 Ok(val.to_string())
             } else {
                 Err(DatabaseError::QueryError(format!(
-                    "Unable to format DECIMAL/NUMERIC value at column {}", 
-                    column_index
+                    "Unable to format DECIMAL/NUMERIC value at column {column_index}"
                 )))
             }
         }
@@ -790,7 +782,7 @@ mod tests {
         
         // Skip test if the test database doesn't exist
         if !test_db_path.exists() {
-            println!("Test database not found at {:?}, skipping test", test_db_path);
+            println!("Test database not found at {test_db_path:?}, skipping test");
             return;
         }
         
@@ -818,7 +810,7 @@ mod tests {
                 assert_eq!(results[1][0], "5"); // 5 users in test data
             }
             Err(e) => {
-                panic!("Failed to create SQLite client: {:?}", e);
+                panic!("Failed to create SQLite client: {e:?}");
             }
         }
     }
@@ -833,7 +825,7 @@ mod tests {
         
         // Skip test if the test database doesn't exist
         if !test_db_path.exists() {
-            println!("Test database not found at {:?}, skipping test", test_db_path);
+            println!("Test database not found at {test_db_path:?}, skipping test");
             return;
         }
         
@@ -877,7 +869,7 @@ mod tests {
         
         // Skip test if the test database doesn't exist
         if !test_db_path.exists() {
-            println!("Test database not found at {:?}, skipping test", test_db_path);
+            println!("Test database not found at {test_db_path:?}, skipping test");
             return;
         }
         

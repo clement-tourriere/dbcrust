@@ -1,5 +1,5 @@
-/// Type-safe enum-based command system with traits for compile-time validation
-/// This replaces the string-based BackslashCommandRegistry with a robust type system
+//! Type-safe enum-based command system with traits for compile-time validation
+//! This replaces the string-based BackslashCommandRegistry with a robust type system
 
 use crate::config::Config as DbCrustConfig;
 use crate::db::Database;
@@ -287,6 +287,12 @@ impl CommandShortcut {
 /// Parser for converting string commands to typed Command enums
 pub struct CommandParser;
 
+impl Default for CommandParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandParser {
     pub fn new() -> Self {
         Self
@@ -359,7 +365,7 @@ impl CommandParser {
                     let name = name_parts.next().unwrap().to_string();
                     let exec_args = name_parts.next()
                         .map(|s| s.split_whitespace().map(|s| s.to_string()).collect())
-                        .unwrap_or_else(Vec::new);
+                        .unwrap_or_default();
                     Ok(Command::ExecuteNamedQuery { name, args: exec_args })
                 }
             },
@@ -491,7 +497,7 @@ impl CommandParser {
             let category = shortcut.category();
             let cmd = shortcut.command();
             let desc = shortcut.description();
-            categories.entry(category).or_insert_with(Vec::new).push((cmd, desc));
+            categories.entry(category).or_default().push((cmd, desc));
         }
         
         // Return in a deterministic order using strum iteration over categories
@@ -527,18 +533,18 @@ impl CommandExecutor for Command {
                 let mut db = database.lock().unwrap();
                 db.toggle_expanded_display();
                 let status = if db.is_expanded_display() { "on" } else { "off" };
-                Ok(CommandResult::Output(format!("Expanded display is {}.", status)))
+                Ok(CommandResult::Output(format!("Expanded display is {status}.")))
             }
             
             Command::ToggleExplainMode => {
                 let mut db = database.lock().unwrap();
                 db.toggle_explain_mode();
                 let status = if db.is_explain_mode() { "on" } else { "off" };
-                Ok(CommandResult::Output(format!("Explain mode is {}.", status)))
+                Ok(CommandResult::Output(format!("Explain mode is {status}.")))
             }
             
             Command::ShowConfig => {
-                let output = format!("Configuration:\n{:#?}", config);
+                let output = format!("Configuration:\n{config:#?}");
                 Ok(CommandResult::Output(output))
             }
             
@@ -558,7 +564,7 @@ impl CommandExecutor for Command {
                             Ok(CommandResult::Output(output))
                         }
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to list databases: {}", e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to list databases: {e}"))),
                 }
             }
             
@@ -578,7 +584,7 @@ impl CommandExecutor for Command {
                             Ok(CommandResult::Output(output))
                         }
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to list tables: {}", e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to list tables: {e}"))),
                 }
             }
             
@@ -597,7 +603,7 @@ impl CommandExecutor for Command {
                                 );
                                 Ok(CommandResult::Output(output))
                             }
-                            Err(e) => Ok(CommandResult::Error(format!("Failed to describe table '{}': {}", name, e))),
+                            Err(e) => Ok(CommandResult::Error(format!("Failed to describe table '{name}': {e}"))),
                         }
                     }
                     None => {
@@ -616,7 +622,7 @@ impl CommandExecutor for Command {
                                     Ok(CommandResult::Output(output))
                                 }
                             }
-                            Err(e) => Ok(CommandResult::Error(format!("Failed to list tables: {}", e))),
+                            Err(e) => Ok(CommandResult::Error(format!("Failed to list tables: {e}"))),
                         }
                     }
                 }
@@ -634,9 +640,9 @@ impl CommandExecutor for Command {
                             new_db_name.clone(),
                             config.multiline_prompt_indicator.clone(),
                         );
-                        Ok(CommandResult::Output(format!("Connected to database '{}'.", new_db_name)))
+                        Ok(CommandResult::Output(format!("Connected to database '{new_db_name}'.")))
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to connect to database '{}': {}", database_name, e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to connect to database '{database_name}': {e}"))),
                 }
             }
             
@@ -655,9 +661,9 @@ impl CommandExecutor for Command {
                         };
                         if session.database_type == crate::database::DatabaseType::SQLite {
                             if let Some(ref file_path) = session.file_path {
-                                output.push_str(&format!("  {} - {} ({})\n", name, file_path, db_type));
+                                output.push_str(&format!("  {name} - {file_path} ({db_type})\n"));
                             } else {
-                                output.push_str(&format!("  {} - SQLite (no path)\n", name));
+                                output.push_str(&format!("  {name} - SQLite (no path)\n"));
                             }
                         } else {
                             output.push_str(&format!("  {} - {}@{}:{}/{} ({})\n", 
@@ -692,7 +698,7 @@ impl CommandExecutor for Command {
             
             Command::ClearRecentConnections => {
                 if let Err(e) = config.clear_recent_connections() {
-                    Ok(CommandResult::Error(format!("Failed to clear recent connections: {}", e)))
+                    Ok(CommandResult::Error(format!("Failed to clear recent connections: {e}")))
                 } else {
                     Ok(CommandResult::Output("Recent connections cleared.".to_string()))
                 }
@@ -715,15 +721,15 @@ impl CommandExecutor for Command {
                 options.insert("dbname".to_string(), dbname.to_string());
 
                 match config.save_session_with_db_type(name, database_type, None, options) {
-                    Ok(_) => Ok(CommandResult::Output(format!("Session '{}' saved successfully.", name))),
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to save session '{}': {}", name, e))),
+                    Ok(_) => Ok(CommandResult::Output(format!("Session '{name}' saved successfully."))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to save session '{name}': {e}"))),
                 }
             }
 
             Command::DeleteSession { name } => {
                 match config.delete_session(name) {
-                    Ok(_) => Ok(CommandResult::Output(format!("Session '{}' deleted successfully.", name))),
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to delete session '{}': {}", name, e))),
+                    Ok(_) => Ok(CommandResult::Output(format!("Session '{name}' deleted successfully."))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to delete session '{name}': {e}"))),
                 }
             }
 
@@ -735,7 +741,7 @@ impl CommandExecutor for Command {
                             name, session.user, session.host, session.port, session.dbname)))
                     }
                     None => {
-                        Ok(CommandResult::Error(format!("Session '{}' not found. Use \\s to list available sessions.", name)))
+                        Ok(CommandResult::Error(format!("Session '{name}' not found. Use \\s to list available sessions.")))
                     }
                 }
             }
@@ -753,7 +759,7 @@ impl CommandExecutor for Command {
                         } else {
                             query.clone()
                         };
-                        output.push_str(&format!("  {} - {}\n", name, preview));
+                        output.push_str(&format!("  {name} - {preview}\n"));
                     }
                     Ok(CommandResult::Output(output))
                 }
@@ -761,15 +767,15 @@ impl CommandExecutor for Command {
 
             Command::SaveNamedQuery { name, query } => {
                 match config.add_named_query(name, query) {
-                    Ok(_) => Ok(CommandResult::Output(format!("Named query '{}' saved successfully.", name))),
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to save named query '{}': {}", name, e))),
+                    Ok(_) => Ok(CommandResult::Output(format!("Named query '{name}' saved successfully."))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to save named query '{name}': {e}"))),
                 }
             }
 
             Command::DeleteNamedQuery { name } => {
                 match config.delete_named_query(name) {
-                    Ok(_) => Ok(CommandResult::Output(format!("Named query '{}' deleted successfully.", name))),
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to delete named query '{}': {}", name, e))),
+                    Ok(_) => Ok(CommandResult::Output(format!("Named query '{name}' deleted successfully."))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to delete named query '{name}': {e}"))),
                 }
             }
 
@@ -779,7 +785,7 @@ impl CommandExecutor for Command {
                         let mut db = database.lock().unwrap();
                         // Apply parameter substitution
                         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                        let final_query = crate::named_queries::process_query(&query_template, &args_refs);
+                        let final_query = crate::named_queries::process_query(query_template, &args_refs);
                         
                         // Execute the query
                         match db.execute_query(&final_query).await {
@@ -796,10 +802,10 @@ impl CommandExecutor for Command {
                                     Ok(CommandResult::Output(output))
                                 }
                             }
-                            Err(e) => Ok(CommandResult::Error(format!("Error executing named query '{}': {}", name, e))),
+                            Err(e) => Ok(CommandResult::Error(format!("Error executing named query '{name}': {e}"))),
                         }
                     }
-                    None => Ok(CommandResult::Error(format!("Named query '{}' not found.", name))),
+                    None => Ok(CommandResult::Error(format!("Named query '{name}' not found."))),
                 }
             }
 
@@ -808,8 +814,8 @@ impl CommandExecutor for Command {
                     Ok(CommandResult::Error("No script content to write. Use \\ed to edit a script first.".to_string()))
                 } else {
                     match std::fs::write(filename, last_script) {
-                        Ok(_) => Ok(CommandResult::Output(format!("Script saved to '{}'.", filename))),
-                        Err(e) => Ok(CommandResult::Error(format!("Failed to write script to '{}': {}", filename, e))),
+                        Ok(_) => Ok(CommandResult::Output(format!("Script saved to '{filename}'."))),
+                        Err(e) => Ok(CommandResult::Error(format!("Failed to write script to '{filename}': {e}"))),
                     }
                 }
             }
@@ -818,9 +824,9 @@ impl CommandExecutor for Command {
                 match std::fs::read_to_string(filename) {
                     Ok(content) => {
                         *last_script = content.clone();
-                        Ok(CommandResult::Output(format!("Script loaded from '{}'. Use \\ed to edit or execute directly.", filename)))
+                        Ok(CommandResult::Output(format!("Script loaded from '{filename}'. Use \\ed to edit or execute directly.")))
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to load script from '{}': {}", filename, e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to load script from '{filename}': {e}"))),
                 }
             }
 
@@ -846,7 +852,7 @@ impl CommandExecutor for Command {
                             Ok(CommandResult::Output(output))
                         }
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to list users: {}", e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to list users: {e}"))),
                 }
             }
 
@@ -866,7 +872,7 @@ impl CommandExecutor for Command {
                             Ok(CommandResult::Output(output))
                         }
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to list indexes: {}", e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to list indexes: {e}"))),
                 }
             }
 
@@ -902,12 +908,12 @@ impl CommandExecutor for Command {
                                         Ok(CommandResult::Output(format!("EXPLAIN JSON plan copied to clipboard ({} characters)", json_plan.len())))
                                     }
                                     Err(e) => {
-                                        Ok(CommandResult::Error(format!("Error copying to clipboard: {}", e)))
+                                        Ok(CommandResult::Error(format!("Error copying to clipboard: {e}")))
                                     }
                                 }
                             }
                             Err(e) => {
-                                Ok(CommandResult::Error(format!("Error accessing clipboard: {}", e)))
+                                Ok(CommandResult::Error(format!("Error accessing clipboard: {e}")))
                             }
                         }
                     }
@@ -933,7 +939,7 @@ impl CommandExecutor for Command {
                             Ok(CommandResult::Output(output))
                         }
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to list pragmas: {}", e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to list pragmas: {e}"))),
                 }
             }
 
@@ -954,13 +960,13 @@ impl CommandExecutor for Command {
                                         })
                                         .collect::<Vec<_>>()
                                         .join("\n");
-                                    Ok(CommandResult::Output(format!("Available database containers:\n{}", output)))
+                                    Ok(CommandResult::Output(format!("Available database containers:\n{output}")))
                                 }
                             }
-                            Err(e) => Ok(CommandResult::Error(format!("Failed to list Docker containers: {}", e))),
+                            Err(e) => Ok(CommandResult::Error(format!("Failed to list Docker containers: {e}"))),
                         }
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to connect to Docker: {}", e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to connect to Docker: {e}"))),
                 }
             }
 
@@ -971,7 +977,7 @@ impl CommandExecutor for Command {
                         let output = crate::format::format_query_results_psql(&results);
                         Ok(CommandResult::Output(output))
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to explain query: {}", e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to explain query: {e}"))),
                 }
             }
 
@@ -989,7 +995,7 @@ impl CommandExecutor for Command {
                         };
                         Ok(CommandResult::Output(output))
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to explain query: {}", e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to explain query: {e}"))),
                 }
             }
 
@@ -999,52 +1005,52 @@ impl CommandExecutor for Command {
                     Ok(results) => {
                         let output = crate::format::format_query_results_psql(&results);
                         match std::fs::write(filename, &output) {
-                            Ok(_) => Ok(CommandResult::Output(format!("EXPLAIN results exported to {}", filename))),
-                            Err(e) => Ok(CommandResult::Error(format!("Failed to write to {}: {}", filename, e))),
+                            Ok(_) => Ok(CommandResult::Output(format!("EXPLAIN results exported to {filename}"))),
+                            Err(e) => Ok(CommandResult::Error(format!("Failed to write to {filename}: {e}"))),
                         }
                     }
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to explain query: {}", e))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to explain query: {e}"))),
                 }
             }
 
             Command::SetMultilineIndicator { indicator } => {
                 config.multiline_prompt_indicator = indicator.clone();
                 config.save().map_err(|e| CommandError::DatabaseError(e.into()))?;
-                Ok(CommandResult::Output(format!("Multiline indicator set to: {} (will take effect on next restart)", indicator)))
+                Ok(CommandResult::Output(format!("Multiline indicator set to: {indicator} (will take effect on next restart)")))
             }
 
             Command::TogglePager => {
                 config.pager_enabled = !config.pager_enabled;
                 config.save().map_err(|e| CommandError::DatabaseError(e.into()))?;
                 let status = if config.pager_enabled { "enabled" } else { "disabled" };
-                Ok(CommandResult::Output(format!("Pager is now {}.", status)))
+                Ok(CommandResult::Output(format!("Pager is now {status}.")))
             }
 
             Command::ToggleBanner => {
                 config.show_banner = !config.show_banner;
                 config.save().map_err(|e| CommandError::DatabaseError(e.into()))?;
                 let status = if config.show_banner { "enabled" } else { "disabled" };
-                Ok(CommandResult::Output(format!("Banner is now {}.", status)))
+                Ok(CommandResult::Output(format!("Banner is now {status}.")))
             }
 
             Command::ToggleAutocomplete => {
                 config.autocomplete_enabled = !config.autocomplete_enabled;
                 config.save().map_err(|e| CommandError::DatabaseError(e.into()))?;
                 let status = if config.autocomplete_enabled { "enabled" } else { "disabled" };
-                Ok(CommandResult::Output(format!("Autocomplete is now {}.", status)))
+                Ok(CommandResult::Output(format!("Autocomplete is now {status}.")))
             }
 
             Command::ToggleColumnSelection => {
                 config.column_selection_mode_default = !config.column_selection_mode_default;
                 config.save().map_err(|e| CommandError::DatabaseError(e.into()))?;
                 let status = if config.column_selection_mode_default { "enabled" } else { "disabled" };
-                Ok(CommandResult::Output(format!("Column selection is now {}.", status)))
+                Ok(CommandResult::Output(format!("Column selection is now {status}.")))
             }
 
             Command::SetColumnSelectionThreshold { threshold } => {
                 config.column_selection_threshold = *threshold;
                 config.save().map_err(|e| CommandError::DatabaseError(e.into()))?;
-                Ok(CommandResult::Output(format!("Column selection threshold set to: {}", threshold)))
+                Ok(CommandResult::Output(format!("Column selection threshold set to: {threshold}")))
             }
 
             Command::ClearColumnViews => {
@@ -1180,9 +1186,9 @@ fn generate_help_text() -> String {
     help.push_str("Available Commands:\n\n");
     
     for (category, commands) in CommandParser::get_commands_by_category() {
-        help.push_str(&format!("{:?}:\n", category));
+        help.push_str(&format!("{category:?}:\n"));
         for (cmd, desc) in commands {
-            help.push_str(&format!("  {:<12} - {}\n", cmd, desc));
+            help.push_str(&format!("  {cmd:<12} - {desc}\n"));
         }
         help.push('\n');
     }
@@ -1246,7 +1252,7 @@ mod tests {
         
         // Verify each category has commands
         for (category, commands) in categories {
-            assert!(!commands.is_empty(), "Category {:?} should have commands", category);
+            assert!(!commands.is_empty(), "Category {category:?} should have commands");
         }
     }
 

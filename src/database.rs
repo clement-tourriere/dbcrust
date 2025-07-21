@@ -1,6 +1,5 @@
-/// Database abstraction layer for multi-database support
-/// Supports PostgreSQL, SQLite, and MySQL/MariaDB
-
+//! Database abstraction layer for multi-database support
+//! Supports PostgreSQL, SQLite, and MySQL/MariaDB
 use async_trait::async_trait;
 use crate::debug_log;
 use std::collections::HashMap;
@@ -95,7 +94,7 @@ impl ConnectionInfo {
         debug_log!("[ConnectionInfo::parse_url] Parsing URL: {}", crate::password_sanitizer::sanitize_connection_url(url_str));
         
         let url = Url::parse(url_str)
-            .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to parse URL: {}", e)))?;
+            .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to parse URL: {e}")))?;
 
         let database_type = match url.scheme() {
             "postgresql" | "postgres" => DatabaseType::PostgreSQL,
@@ -246,7 +245,7 @@ impl ConnectionInfo {
         match self.database_type {
             DatabaseType::SQLite => {
                 if let Some(ref file_path) = self.file_path {
-                    format!("sqlite://{}", file_path)
+                    format!("sqlite://{file_path}")
                 } else {
                     "sqlite://".to_string()
                 }
@@ -273,7 +272,7 @@ impl ConnectionInfo {
                 
                 // Add docker container info as a comment-like suffix if present
                 if let Some(ref container) = self.docker_container {
-                    url.push_str(&format!(" # Docker: {}", container));
+                    url.push_str(&format!(" # Docker: {container}"));
                 }
                 url
             },
@@ -299,7 +298,7 @@ impl ConnectionInfo {
                 
                 // Add docker container info as a comment-like suffix if present
                 if let Some(ref container) = self.docker_container {
-                    url.push_str(&format!(" # Docker: {}", container));
+                    url.push_str(&format!(" # Docker: {container}"));
                 }
                 url
             }

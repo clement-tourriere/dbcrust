@@ -100,8 +100,7 @@ impl DockerClient {
                     
                     let container_info = DockerContainerInfo {
                         id: container.id.unwrap_or_default(),
-                        name: container.names.unwrap_or_default()
-                            .get(0)
+                        name: container.names.unwrap_or_default().first()
                             .map(|n| n.trim_start_matches('/').to_string())
                             .unwrap_or_default(),
                         image: image.to_string(),
@@ -207,7 +206,7 @@ impl DockerClient {
             
             // If no IP in default network, try to get from any network
             if let Some(networks) = &network_settings.networks {
-                for (_, network) in networks {
+                for network in networks.values() {
                     if let Some(ip_address) = &network.ip_address {
                         if !ip_address.is_empty() {
                             return Some(ip_address.clone());
@@ -230,10 +229,10 @@ impl DockerClient {
         if let Some(ports) = &container.ports {
             for port in ports {
                 // Check if this port matches our database port
-                if port.private_port as u16 == default_port {
+                if port.private_port == default_port {
                     // Found matching database port
                     if let Some(public_port) = port.public_port {
-                        return (Some(public_port as u16), Some(default_port));
+                        return (Some(public_port), Some(default_port));
                     }
                 }
             }
@@ -253,7 +252,7 @@ impl DockerClient {
         if let Some(network_settings) = &container.network_settings {
             if let Some(ports) = &network_settings.ports {
                 // Look for the database port
-                let port_key = format!("{}/tcp", default_port);
+                let port_key = format!("{default_port}/tcp");
                 if let Some(port_bindings) = ports.get(&port_key) {
                     if let Some(port_binding) = port_bindings {
                         if let Some(binding) = port_binding.first() {
@@ -324,32 +323,26 @@ impl DockerClient {
         let (username, password, database_name) = match database_type {
             DatabaseType::PostgreSQL => {
                 let username = container_info.environment.get("POSTGRES_USER")
-                    .or_else(|| container_info.environment.get("PGUSER"))
-                    .map(|s| s.clone())
+                    .or_else(|| container_info.environment.get("PGUSER")).cloned()
                     .unwrap_or_else(|| "postgres".to_string());
                 
                 let password = container_info.environment.get("POSTGRES_PASSWORD")
-                    .or_else(|| container_info.environment.get("PGPASSWORD"))
-                    .map(|s| s.clone());
+                    .or_else(|| container_info.environment.get("PGPASSWORD")).cloned();
                 
                 let database_name = container_info.environment.get("POSTGRES_DB")
-                    .or_else(|| container_info.environment.get("PGDATABASE"))
-                    .map(|s| s.clone())
+                    .or_else(|| container_info.environment.get("PGDATABASE")).cloned()
                     .unwrap_or_else(|| username.clone());
                 
                 (Some(username), password, Some(database_name))
             }
             DatabaseType::MySQL => {
-                let username = container_info.environment.get("MYSQL_USER")
-                    .map(|s| s.clone())
+                let username = container_info.environment.get("MYSQL_USER").cloned()
                     .unwrap_or_else(|| "root".to_string());
                 
                 let password = container_info.environment.get("MYSQL_PASSWORD")
-                    .or_else(|| container_info.environment.get("MYSQL_ROOT_PASSWORD"))
-                    .map(|s| s.clone());
+                    .or_else(|| container_info.environment.get("MYSQL_ROOT_PASSWORD")).cloned();
                 
-                let database_name = container_info.environment.get("MYSQL_DATABASE")
-                    .map(|s| s.clone());
+                let database_name = container_info.environment.get("MYSQL_DATABASE").cloned();
                 
                 (Some(username), password, database_name)
             }
@@ -443,10 +436,10 @@ impl DockerClient {
         if let Some(project_name) = container_info.labels.get("com.docker.compose.project") {
             if let Some(service_name) = container_info.labels.get("com.docker.compose.service") {
                 // For compose projects, OrbStack uses service.project.orb.local format
-                return Some(format!("{}.{}.orb.local", service_name, project_name));
+                return Some(format!("{service_name}.{project_name}.orb.local"));
             } else {
                 // Fallback to just project name
-                return Some(format!("{}.orb.local", project_name));
+                return Some(format!("{project_name}.orb.local"));
             }
         }
         
@@ -457,7 +450,7 @@ impl DockerClient {
             if parts.len() >= 2 {
                 // Take everything except the last part (which is usually the replica number)
                 let project_service = parts[..parts.len()-1].join("-");
-                return Some(format!("{}.orb.local", project_service));
+                return Some(format!("{project_service}.orb.local"));
             }
         }
         None

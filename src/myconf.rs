@@ -1,8 +1,7 @@
-/// MySQL configuration file (.my.cnf) support
-/// 
-/// This module provides functionality to read MySQL configuration files
-/// similar to how pgpass.rs handles PostgreSQL password files.
-
+//! MySQL configuration file (.my.cnf) support
+//! 
+//! This module provides functionality to read MySQL configuration files
+//! similar to how pgpass.rs handles PostgreSQL password files.
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -11,6 +10,7 @@ use std::env;
 use crate::debug_log;
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct MySQLConfig {
     pub host: Option<String>,
     pub port: Option<u16>,
@@ -23,21 +23,6 @@ pub struct MySQLConfig {
     pub ssl_key: Option<String>,
 }
 
-impl Default for MySQLConfig {
-    fn default() -> Self {
-        Self {
-            host: None,
-            port: None,
-            user: None,
-            password: None,
-            database: None,
-            socket: None,
-            ssl_ca: None,
-            ssl_cert: None,
-            ssl_key: None,
-        }
-    }
-}
 
 /// Get the path to the MySQL configuration file
 /// Checks in order: $MYSQL_CONFIG, ~/.my.cnf, /etc/mysql/my.cnf, /etc/my.cnf
@@ -192,10 +177,10 @@ pub fn lookup_mysql_password(host: &str, port: u16, database: &str, user: &str) 
     
     if let Some(config) = lookup_mysql_config(None) {
         // Check if the configuration matches the requested connection
-        let host_matches = config.host.as_ref().map_or(true, |h| h == host || h == "localhost");
-        let port_matches = config.port.map_or(true, |p| p == port);
-        let user_matches = config.user.as_ref().map_or(true, |u| u == user);
-        let database_matches = config.database.as_ref().map_or(true, |d| d == database);
+        let host_matches = config.host.as_ref().is_none_or(|h| h == host || h == "localhost");
+        let port_matches = config.port.is_none_or(|p| p == port);
+        let user_matches = config.user.as_ref().is_none_or(|u| u == user);
+        let database_matches = config.database.as_ref().is_none_or(|d| d == database);
 
         if host_matches && port_matches && user_matches && database_matches {
             debug_log!("[lookup_mysql_password] Configuration matches, returning password");
@@ -236,34 +221,34 @@ pub fn save_mysql_config(host: &str, port: u16, database: &str, user: &str, pass
     let mut content = String::new();
     
     for (section_name, config) in &existing_configs {
-        content.push_str(&format!("[{}]\n", section_name));
+        content.push_str(&format!("[{section_name}]\n"));
         
         if let Some(ref host) = config.host {
-            content.push_str(&format!("host = {}\n", host));
+            content.push_str(&format!("host = {host}\n"));
         }
         if let Some(port) = config.port {
-            content.push_str(&format!("port = {}\n", port));
+            content.push_str(&format!("port = {port}\n"));
         }
         if let Some(ref user) = config.user {
-            content.push_str(&format!("user = {}\n", user));
+            content.push_str(&format!("user = {user}\n"));
         }
         if let Some(ref password) = config.password {
-            content.push_str(&format!("password = {}\n", password));
+            content.push_str(&format!("password = {password}\n"));
         }
         if let Some(ref database) = config.database {
-            content.push_str(&format!("database = {}\n", database));
+            content.push_str(&format!("database = {database}\n"));
         }
         if let Some(ref socket) = config.socket {
-            content.push_str(&format!("socket = {}\n", socket));
+            content.push_str(&format!("socket = {socket}\n"));
         }
         if let Some(ref ssl_ca) = config.ssl_ca {
-            content.push_str(&format!("ssl-ca = {}\n", ssl_ca));
+            content.push_str(&format!("ssl-ca = {ssl_ca}\n"));
         }
         if let Some(ref ssl_cert) = config.ssl_cert {
-            content.push_str(&format!("ssl-cert = {}\n", ssl_cert));
+            content.push_str(&format!("ssl-cert = {ssl_cert}\n"));
         }
         if let Some(ref ssl_key) = config.ssl_key {
-            content.push_str(&format!("ssl-key = {}\n", ssl_key));
+            content.push_str(&format!("ssl-key = {ssl_key}\n"));
         }
         
         content.push('\n');

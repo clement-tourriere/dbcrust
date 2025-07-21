@@ -10,7 +10,7 @@ pub fn sanitize_connection_url(url: &str) -> String {
         
         // Sanitize the main URL part and re-add the comment
         let sanitized_main = sanitize_connection_url(main_url);
-        return format!("{}{}", sanitized_main, comment_part);
+        return format!("{sanitized_main}{comment_part}");
     }
     
     // First check if this looks like a connection string without a proper scheme

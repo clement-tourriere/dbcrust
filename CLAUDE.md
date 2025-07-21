@@ -304,6 +304,7 @@ This pattern ensures "thanks to the enum/traits, synchronization issues will not
 - Use `thiserror` for custom error types
 - Async/await throughout with proper error propagation
 - Follow Rust naming conventions and use clippy for linting
+- **MANDATORY**: ALL user interactions MUST use the `inquire` crate - NEVER use manual stdin/stdout prompting or `println!` for interactive input
 
 ### Feature Development Patterns
 
@@ -322,6 +323,7 @@ When implementing serious/new features, follow this systematic approach:
 - **Business Logic**: Implement core functionality in dedicated modules
 - **CLI Integration**: Add command-line arguments and help text
 - **Interactive Commands**: Add backslash commands following psql conventions
+- **User Interactions**: ALL user prompts MUST use `inquire` crate (Select, Confirm, Text, etc.) - NEVER manual stdin/stdout
 - **Error Handling**: Use `thiserror` for custom error types with user-friendly messages
 
 #### 3. Testing Strategy (Critical)

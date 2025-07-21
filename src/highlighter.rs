@@ -8,6 +8,12 @@ pub struct SqlHighlighter {
     sql_functions: Vec<String>,
 }
 
+impl Default for SqlHighlighter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SqlHighlighter {
     #[allow(dead_code)]
     pub fn new() -> Self {
@@ -372,7 +378,7 @@ impl Highlighter for SqlHighlighter {
             }
         }
 
-        if final_styled_text.buffer.len() == 0 {
+        if final_styled_text.buffer.is_empty() {
             // If no highlighting was applied, return the original text
             return styled_text;
         }

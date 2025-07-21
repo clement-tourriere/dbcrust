@@ -1,5 +1,4 @@
-/// PostgreSQL implementation of the database abstraction layer
-
+//! PostgreSQL implementation of the database abstraction layer
 use async_trait::async_trait;
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, DatabaseType, MetadataProvider};
 use crate::db::TableDetails;
@@ -337,13 +336,13 @@ impl DatabaseClient for PostgreSQLClient {
     }
 
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        let explain_sql = format!("EXPLAIN (FORMAT JSON) {}", sql);
+        let explain_sql = format!("EXPLAIN (FORMAT JSON) {sql}");
         let raw_results = self.execute_query(&explain_sql).await?;
         self.format_explain_output(raw_results).await
     }
 
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        let explain_sql = format!("EXPLAIN (FORMAT JSON) {}", sql);
+        let explain_sql = format!("EXPLAIN (FORMAT JSON) {sql}");
         self.execute_query(&explain_sql).await
     }
 
@@ -394,10 +393,7 @@ impl DatabaseClient for PostgreSQLClient {
 
     async fn is_connected(&self) -> bool {
         // Try a simple query to check if connection is still alive
-        match sqlx::query("SELECT 1").fetch_one(&self.pool).await {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        (sqlx::query("SELECT 1").fetch_one(&self.pool).await).is_ok()
     }
 
     async fn close(&mut self) -> Result<(), DatabaseError> {
@@ -421,7 +417,9 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
     }
 
     // Match on PostgreSQL type names and convert appropriately
-    let result = match type_name {
+    
+
+    match type_name {
         "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" => {
             row.try_get::<String, _>(column_index)
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
@@ -481,9 +479,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
             row.try_get::<String, _>(column_index)
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
-    };
-
-    result
+    }
 }
 
 #[cfg(test)]
@@ -538,7 +534,7 @@ mod tests {
                 // Expected when no test database is available
             }
             Err(e) => {
-                panic!("Unexpected error: {:?}", e);
+                panic!("Unexpected error: {e:?}");
             }
         }
     }

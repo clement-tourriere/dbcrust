@@ -14,7 +14,6 @@ use dbcrust::cli::Args;
 use dbcrust::config::Config as DbCrustConfig;
 use nu_ansi_term::Color;
 use std::error::Error as StdError;
-use terminal_size;
 // For `std::io::stdout().flush()`
 
 
@@ -57,7 +56,7 @@ fn print_help(config: &DbCrustConfig) {
     println!("  \\pgpass     - Show PostgreSQL password file information (.pgpass)");
     println!("  \\myconf     - Show/manage MySQL configuration file (.my.cnf)");
     println!("  \\pragma     - Show/manage SQLite pragma settings");
-    println!("");
+    println!();
     println!("  Database-specific commands:");
     println!("  \\du         - List users (MySQL/PostgreSQL)");
     println!("  \\di         - List indexes (SQLite)");
@@ -90,28 +89,28 @@ fn print_help(config: &DbCrustConfig) {
     println!("  Example: --ssh-tunnel john:pass@jumphost.example.com:2222");
     println!("  Note: SSH tunnels are currently only supported for PostgreSQL connections");
     println!("  <SQL>       - Execute SQL query");
-    println!("");
+    println!();
     println!("Connection:");
     println!("  dbcrust [CONNECTION_URL] - Connect using a database connection URL");
     println!("  Supported databases: PostgreSQL, MySQL, SQLite");
-    println!("");
+    println!();
     println!(
         "  PostgreSQL Format: postgresql://[user[:password]@][host][:port][/dbname][?param1=value1&...]"
     );
     println!("  Example: dbcrust postgresql://user:pass@localhost/mydb");
     println!("  Example: dbcrust postgresql://user:pass@db.com/mydb?sslmode=require");
     println!("  Example: dbcrust user:pass@localhost/mydb");
-    println!("");
+    println!();
     println!(
         "  MySQL Format: mysql://[user[:password]@][host][:port][/dbname][?param1=value1&...]"
     );
     println!("  Example: dbcrust mysql://user:pass@localhost:3306/mydb");
     println!("  Example: dbcrust mysql://user:pass@db.com/mydb?charset=utf8mb4");
-    println!("");
+    println!();
     println!("  SQLite Format: sqlite:///path/to/database.db");
     println!("  Example: dbcrust sqlite:///home/user/mydb.db");
     println!("  Example: dbcrust sqlite://./relative/path/mydb.db");
-    println!("");
+    println!();
     println!("  Supported sslmode values:");
     println!("    disable    - only try a non-SSL connection");
     println!(
@@ -127,12 +126,12 @@ fn print_help(config: &DbCrustConfig) {
     println!(
         "    verify-full - only try an SSL connection, verify the server certificate is issued by a trusted CA and matches the hostname"
     );
-    println!("");
+    println!();
     println!("Non-interactive mode:");
     println!("  -c, --command <COMMAND> - Execute the given command string and exit");
     println!("  This option can be repeated to execute multiple commands");
     println!("  Example: dbcrust -c \"SELECT * FROM users;\" -c \"SELECT COUNT(*) FROM orders;\"");
-    println!("");
+    println!();
     println!("Vault Connection (PostgreSQL only):");
     println!("  dbcrust vault://<role_name>@<mount_path>/<vault_db_name>");
     println!("  All components are optional:");
@@ -142,12 +141,12 @@ fn print_help(config: &DbCrustConfig) {
     println!("  Example: dbcrust vault://my-role@database/postgres-prod");
     println!("  Example: dbcrust vault:///postgres-prod (uses default mount path)");
     println!("  Example: dbcrust vault://my-role@ (prompts for database name)");
-    println!("");
+    println!();
     println!("Shell Completions:");
     println!("  --generate-completion <SHELL> - Generate shell completions");
     println!("  Supported shells: bash, zsh, fish, powershell, elvish");
     println!("  Example: dbcrust --generate-completion bash > dbcrust.bash");
-    println!("");
+    println!();
     println!("Notes:");
     println!(
         "  SELECT queries have a default limit of {} rows (configurable in config.toml)",
@@ -209,7 +208,7 @@ fn handle_output(content: &str, config: &DbCrustConfig) {
             // Errors (including fallback to print!) are handled within page_output
         }
     } else {
-        print!("{}", content);
+        print!("{content}");
     }
 }
 
@@ -229,7 +228,7 @@ fn handle_explain_output(content: &str, config: &DbCrustConfig) {
             // Errors (including fallback to print!) are handled within page_output
         }
     } else {
-        print!("{}", content);
+        print!("{content}");
     }
 }
 

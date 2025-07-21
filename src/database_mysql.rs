@@ -1,5 +1,4 @@
-/// MySQL implementation of the database abstraction layer
-
+//! MySQL implementation of the database abstraction layer
 use async_trait::async_trait;
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
 use crate::db::TableDetails;
@@ -66,11 +65,10 @@ impl MetadataProvider for MySqlMetadataProvider {
                 r#"
                 SELECT TABLE_NAME
                 FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_SCHEMA = '{}'
+                WHERE TABLE_SCHEMA = '{schema_name}'
                   AND TABLE_TYPE IN ('BASE TABLE', 'VIEW')
                 ORDER BY TABLE_NAME
-                "#,
-                schema_name
+                "#
             )
         } else {
             r#"
@@ -113,11 +111,10 @@ impl MetadataProvider for MySqlMetadataProvider {
                 r#"
                 SELECT COLUMN_NAME
                 FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = '{}'
-                  AND TABLE_NAME = '{}'
+                WHERE TABLE_SCHEMA = '{schema_name}'
+                  AND TABLE_NAME = '{table}'
                 ORDER BY ORDINAL_POSITION
-                "#,
-                schema_name, table
+                "#
             )
         } else {
             format!(
@@ -125,10 +122,9 @@ impl MetadataProvider for MySqlMetadataProvider {
                 SELECT COLUMN_NAME
                 FROM INFORMATION_SCHEMA.COLUMNS
                 WHERE TABLE_SCHEMA = DATABASE()
-                  AND TABLE_NAME = '{}'
+                  AND TABLE_NAME = '{table}'
                 ORDER BY ORDINAL_POSITION
-                "#,
-                table
+                "#
             )
         };
 
@@ -163,11 +159,10 @@ impl MetadataProvider for MySqlMetadataProvider {
                 r#"
                 SELECT ROUTINE_NAME as function_name
                 FROM INFORMATION_SCHEMA.ROUTINES
-                WHERE ROUTINE_SCHEMA = '{}'
+                WHERE ROUTINE_SCHEMA = '{schema_name}'
                   AND ROUTINE_TYPE = 'FUNCTION'
                 ORDER BY ROUTINE_NAME
-                "#,
-                schema_name
+                "#
             )
         } else {
             // Return common MySQL built-in functions when no specific schema is requested
@@ -232,7 +227,7 @@ impl MetadataProvider for MySqlMetadataProvider {
     async fn get_table_details(&self, table: &str, schema: Option<&str>) -> Result<TableDetails, DatabaseError> {
         debug_log!("[MySqlMetadataProvider::get_table_details] Getting details for table: {}", table);
         
-        let schema_name = schema.unwrap_or_else(|| "DATABASE()");
+        let schema_name = schema.unwrap_or("DATABASE()");
         
         // First check if the table exists
         let table_exists_query = if schema.is_some() {
@@ -240,18 +235,16 @@ impl MetadataProvider for MySqlMetadataProvider {
                 r#"
                 SELECT TABLE_NAME
                 FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}'
-                "#,
-                schema_name, table
+                WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table}'
+                "#
             )
         } else {
             format!(
                 r#"
                 SELECT TABLE_NAME
                 FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}'
-                "#,
-                table
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}'
+                "#
             )
         };
 
@@ -260,7 +253,7 @@ impl MetadataProvider for MySqlMetadataProvider {
             .await?;
             
         if table_exists.is_none() {
-            return Err(DatabaseError::QueryError(format!("Table '{}' does not exist", table)));
+            return Err(DatabaseError::QueryError(format!("Table '{table}' does not exist")));
         }
 
         // Get column information
@@ -274,10 +267,9 @@ impl MetadataProvider for MySqlMetadataProvider {
                     COLUMN_DEFAULT,
                     COLLATION_NAME
                 FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}'
+                WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table}'
                 ORDER BY ORDINAL_POSITION
-                "#,
-                schema_name, table
+                "#
             )
         } else {
             format!(
@@ -289,10 +281,9 @@ impl MetadataProvider for MySqlMetadataProvider {
                     COLUMN_DEFAULT,
                     COLLATION_NAME
                 FROM INFORMATION_SCHEMA.COLUMNS
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}'
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}'
                 ORDER BY ORDINAL_POSITION
-                "#,
-                table
+                "#
             )
         };
 
@@ -349,11 +340,10 @@ impl MetadataProvider for MySqlMetadataProvider {
                     INDEX_NAME = 'PRIMARY' as is_primary,
                     INDEX_TYPE
                 FROM INFORMATION_SCHEMA.STATISTICS
-                WHERE TABLE_SCHEMA = '{}' AND TABLE_NAME = '{}'
+                WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table}'
                 GROUP BY INDEX_NAME, INDEX_TYPE, NON_UNIQUE
                 ORDER BY INDEX_NAME
-                "#,
-                schema_name, table
+                "#
             )
         } else {
             format!(
@@ -365,11 +355,10 @@ impl MetadataProvider for MySqlMetadataProvider {
                     INDEX_NAME = 'PRIMARY' as is_primary,
                     INDEX_TYPE
                 FROM INFORMATION_SCHEMA.STATISTICS
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}'
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{table}'
                 GROUP BY INDEX_NAME, INDEX_TYPE, NON_UNIQUE
                 ORDER BY INDEX_NAME
-                "#,
-                table
+                "#
             )
         };
 
@@ -408,7 +397,7 @@ impl MetadataProvider for MySqlMetadataProvider {
             
             let index_info = crate::db::IndexInfo {
                 name: index_name.clone(),
-                definition: format!("({})", columns_str),
+                definition: format!("({columns_str})"),
                 index_type: index_type.to_lowercase(),
                 is_primary,
                 is_unique,
@@ -428,12 +417,11 @@ impl MetadataProvider for MySqlMetadataProvider {
                     REFERENCED_TABLE_NAME as to_table,
                     REFERENCED_COLUMN_NAME as to_column
                 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                WHERE TABLE_SCHEMA = '{}' 
-                  AND TABLE_NAME = '{}'
+                WHERE TABLE_SCHEMA = '{schema_name}' 
+                  AND TABLE_NAME = '{table}'
                   AND REFERENCED_TABLE_NAME IS NOT NULL
                 ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
-                "#,
-                schema_name, table
+                "#
             )
         } else {
             format!(
@@ -445,11 +433,10 @@ impl MetadataProvider for MySqlMetadataProvider {
                     REFERENCED_COLUMN_NAME as to_column
                 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
                 WHERE TABLE_SCHEMA = DATABASE() 
-                  AND TABLE_NAME = '{}'
+                  AND TABLE_NAME = '{table}'
                   AND REFERENCED_TABLE_NAME IS NOT NULL
                 ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
-                "#,
-                table
+                "#
             )
         };
 
@@ -475,7 +462,7 @@ impl MetadataProvider for MySqlMetadataProvider {
             
             let fk_info = crate::db::ForeignKeyInfo {
                 name: constraint_name,
-                definition: format!("FOREIGN KEY ({}) REFERENCES {}({})", from_column, to_table, to_column),
+                definition: format!("FOREIGN KEY ({from_column}) REFERENCES {to_table}({to_column})"),
             };
             foreign_keys.push(fk_info);
         }
@@ -484,7 +471,7 @@ impl MetadataProvider for MySqlMetadataProvider {
             schema: schema.unwrap_or("default").to_string(),
             name: table.to_string(),
             full_name: if let Some(s) = schema {
-                format!("{}.{}", s, table)
+                format!("{s}.{table}")
             } else {
                 table.to_string()
             },
@@ -527,9 +514,9 @@ impl MySqlClient {
         let database = connection_info.database.clone().unwrap_or_else(|| "mysql".to_string());
         
         let mut database_url = if let Some(password) = &connection_info.password {
-            format!("mysql://{}:{}@{}:{}/{}", username, password, host, port, database)
+            format!("mysql://{username}:{password}@{host}:{port}/{database}")
         } else {
-            format!("mysql://{}@{}:{}/{}", username, host, port, database)
+            format!("mysql://{username}@{host}:{port}/{database}")
         };
 
         // Add query parameters
@@ -537,7 +524,7 @@ impl MySqlClient {
             let params: Vec<String> = connection_info
                 .options
                 .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
+                .map(|(k, v)| format!("{k}={v}"))
                 .collect();
             database_url.push('?');
             database_url.push_str(&params.join("&"));
@@ -814,7 +801,7 @@ impl DatabaseClient for MySqlClient {
         debug_log!("[MySqlClient::explain_query] Executing EXPLAIN for query");
         
         // Try EXPLAIN FORMAT=JSON first for better structured output
-        let json_explain_sql = format!("EXPLAIN FORMAT=JSON {}", sql);
+        let json_explain_sql = format!("EXPLAIN FORMAT=JSON {sql}");
         let json_result = sqlx::query(&json_explain_sql).fetch_all(&self.pool).await;
         
         match json_result {
@@ -832,7 +819,7 @@ impl DatabaseClient for MySqlClient {
         
         // Fallback to standard EXPLAIN format
         debug_log!("[MySqlClient::explain_query] Using standard EXPLAIN format");
-        let explain_sql = format!("EXPLAIN {}", sql);
+        let explain_sql = format!("EXPLAIN {sql}");
         self.execute_query(&explain_sql).await
     }
 
@@ -840,7 +827,7 @@ impl DatabaseClient for MySqlClient {
         debug_log!("[MySqlClient::explain_query_raw] Executing raw EXPLAIN for query");
         
         // Try EXPLAIN FORMAT=JSON first for raw structured output
-        let json_explain_sql = format!("EXPLAIN FORMAT=JSON {}", sql);
+        let json_explain_sql = format!("EXPLAIN FORMAT=JSON {sql}");
         let json_result = self.execute_query(&json_explain_sql).await;
         
         if json_result.is_ok() {
@@ -850,7 +837,7 @@ impl DatabaseClient for MySqlClient {
         
         // Fallback to standard EXPLAIN format if JSON fails
         debug_log!("[MySqlClient::explain_query_raw] JSON format failed, falling back to standard");
-        let explain_sql = format!("EXPLAIN {}", sql);
+        let explain_sql = format!("EXPLAIN {sql}");
         self.execute_query(&explain_sql).await
     }
 
@@ -938,7 +925,7 @@ impl DatabaseClient for MySqlClient {
         debug_log!("[MySqlClient::connect_to_database] Connecting to database: {}", database);
         
         // Execute USE statement to change database
-        let use_query = format!("USE `{}`", database);
+        let use_query = format!("USE `{database}`");
         sqlx::query(&use_query)
             .execute(&self.pool)
             .await?;
@@ -962,10 +949,7 @@ impl DatabaseClient for MySqlClient {
 
     async fn is_connected(&self) -> bool {
         // Try a simple query to check if connection is still alive
-        match sqlx::query("SELECT 1").fetch_one(&self.pool).await {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        (sqlx::query("SELECT 1").fetch_one(&self.pool).await).is_ok()
     }
 
     async fn close(&mut self) -> Result<(), DatabaseError> {
@@ -1091,8 +1075,7 @@ fn format_mysql_value(row: &MySqlRow, column_index: usize) -> Result<String, Dat
                 Ok(val)
             } else {
                 Err(DatabaseError::QueryError(format!(
-                    "Unable to format DECIMAL value at column {}", 
-                    column_index
+                    "Unable to format DECIMAL value at column {column_index}"
                 )))
             }
         }
@@ -1102,8 +1085,7 @@ fn format_mysql_value(row: &MySqlRow, column_index: usize) -> Result<String, Dat
                 Ok(val)
             } else {
                 Err(DatabaseError::QueryError(format!(
-                    "Unable to format JSON value at column {}", 
-                    column_index
+                    "Unable to format JSON value at column {column_index}"
                 )))
             }
         }

@@ -43,6 +43,7 @@ pub struct RecentConnection {
 
 /// Recent connections storage - stored in a separate file
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Default)]
 pub struct RecentConnectionsStorage {
     #[serde(default)]
     pub connections: Vec<RecentConnection>,
@@ -50,26 +51,13 @@ pub struct RecentConnectionsStorage {
 
 /// Saved sessions storage - stored in a separate file
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Default)]
 pub struct SavedSessionsStorage {
     #[serde(default)]
     pub sessions: HashMap<String, SavedSession>,
 }
 
-impl Default for RecentConnectionsStorage {
-    fn default() -> Self {
-        RecentConnectionsStorage {
-            connections: Vec::new(),
-        }
-    }
-}
 
-impl Default for SavedSessionsStorage {
-    fn default() -> Self {
-        SavedSessionsStorage {
-            sessions: HashMap::new(),
-        }
-    }
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SavedSession {
@@ -210,8 +198,7 @@ impl Default for Config {
             recent_connections_storage: {
                 // For tests, use empty storage to avoid loading user data
                 let is_test = std::env::var("RUST_TEST_MODE").is_ok() 
-                    || std::thread::current().name().map(|name| name.contains("test")).unwrap_or(false)
-                    || std::env::args().any(|arg| arg.contains("test"));
+                    || std::thread::current().name().map(|name| name.contains("test")).unwrap_or(false);
                 
                 if is_test {
                     RecentConnectionsStorage::default()
@@ -222,8 +209,7 @@ impl Default for Config {
             saved_sessions_storage: {
                 // For tests, use empty storage to avoid loading user data
                 let is_test = std::env::var("RUST_TEST_MODE").is_ok() 
-                    || std::thread::current().name().map(|name| name.contains("test")).unwrap_or(false)
-                    || std::env::args().any(|arg| arg.contains("test"));
+                    || std::thread::current().name().map(|name| name.contains("test")).unwrap_or(false);
                 
                 if is_test {
                     SavedSessionsStorage::default()
@@ -277,14 +263,13 @@ impl Config {
     pub fn get_config_directory() -> Result<PathBuf, Box<dyn Error>> {
         // Detect test mode using multiple strategies since cfg!(test) doesn't work across crate boundaries
         let is_test = std::env::var("RUST_TEST_MODE").is_ok() 
-            || std::thread::current().name().map(|name| name.contains("test")).unwrap_or(false)
-            || std::env::args().any(|arg| arg.contains("test"));
+            || std::thread::current().name().map(|name| name.contains("test")).unwrap_or(false);
             
         if is_test {
             // For tests, use a temp directory based on process ID
             let temp_dir = std::env::temp_dir();
             let pid = std::process::id();
-            let test_dir = temp_dir.join(format!("dbcrust_test_{}", pid));
+            let test_dir = temp_dir.join(format!("dbcrust_test_{pid}"));
             
             if !test_dir.exists() {
                 fs::create_dir_all(&test_dir)?;
@@ -328,13 +313,13 @@ impl Config {
                             match toml::from_str(&content) {
                                 Ok(storage) => storage,
                                 Err(e) => {
-                                    eprintln!("Error parsing recent connections file: {}", e);
+                                    eprintln!("Error parsing recent connections file: {e}");
                                     RecentConnectionsStorage::default()
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("Error reading recent connections file: {}", e);
+                            eprintln!("Error reading recent connections file: {e}");
                             RecentConnectionsStorage::default()
                         }
                     }
@@ -348,7 +333,7 @@ impl Config {
                         // Save the migrated connections to the new file
                         if let Ok(content) = toml::to_string_pretty(&storage) {
                             if let Err(e) = fs::write(&path, content) {
-                                eprintln!("Error saving migrated recent connections: {}", e);
+                                eprintln!("Error saving migrated recent connections: {e}");
                             }
                         }
                         storage
@@ -358,7 +343,7 @@ impl Config {
                 }
             }
             Err(e) => {
-                eprintln!("Error getting recent connections path: {}", e);
+                eprintln!("Error getting recent connections path: {e}");
                 RecentConnectionsStorage::default()
             }
         }
@@ -382,13 +367,13 @@ impl Config {
                             match toml::from_str(&content) {
                                 Ok(storage) => storage,
                                 Err(e) => {
-                                    eprintln!("Error parsing saved sessions file: {}", e);
+                                    eprintln!("Error parsing saved sessions file: {e}");
                                     SavedSessionsStorage::default()
                                 }
                             }
                         }
                         Err(e) => {
-                            eprintln!("Error reading saved sessions file: {}", e);
+                            eprintln!("Error reading saved sessions file: {e}");
                             SavedSessionsStorage::default()
                         }
                     }
@@ -402,7 +387,7 @@ impl Config {
                         // Save the migrated sessions to the new file
                         if let Ok(content) = toml::to_string_pretty(&storage) {
                             if let Err(e) = fs::write(&path, content) {
-                                eprintln!("Error saving migrated saved sessions: {}", e);
+                                eprintln!("Error saving migrated saved sessions: {e}");
                             }
                         }
                         storage
@@ -412,7 +397,7 @@ impl Config {
                 }
             }
             Err(e) => {
-                eprintln!("Error getting saved sessions path: {}", e);
+                eprintln!("Error getting saved sessions path: {e}");
                 SavedSessionsStorage::default()
             }
         }
@@ -509,7 +494,7 @@ impl Config {
 
                                 // Save the updated format immediately to migrate the file
                                 if let Err(e) = config.save() {
-                                    eprintln!("Error migrating config file: {}", e);
+                                    eprintln!("Error migrating config file: {e}");
                                 }
                             } else {
                                 // If using the new format, make sure legacy fields are in sync
@@ -526,7 +511,7 @@ impl Config {
                             config
                         }
                         Err(e) => {
-                            eprintln!("Error parsing config file ({}), attempting partial load", e);
+                            eprintln!("Error parsing config file ({e}), attempting partial load");
 
                             // Try to load the file with a more lenient approach
                             // First, parse it as a generic TOML Value
@@ -659,7 +644,7 @@ impl Config {
 
                                     // Save the updated config to fix the format
                                     if let Err(save_err) = config.save() {
-                                        eprintln!("Error saving updated config: {}", save_err);
+                                        eprintln!("Error saving updated config: {save_err}");
                                     } else {
                                         println!("Config file updated with new format");
                                     }
@@ -702,7 +687,7 @@ impl Config {
             ensure_config_dir(&config_path)?;
 
             let toml = toml::to_string(self).map_err(|e| {
-                io::Error::new(io::ErrorKind::Other, format!("Serialization error: {}", e))
+                io::Error::other(format!("Serialization error: {e}"))
             })?;
 
             let mut file = File::create(&config_path)?;
@@ -925,12 +910,12 @@ impl Config {
                     Command::new("cmd")
                         .args(["/C", command_str])
                         .output()
-                        .map_err(|e| format!("Failed to execute command '{}': {}", command_str, e))?
+                        .map_err(|e| format!("Failed to execute command '{command_str}': {e}"))?
                 } else {
                     Command::new("sh")
                         .args(["-c", command_str])
                         .output()
-                        .map_err(|e| format!("Failed to execute command '{}': {}", command_str, e))?
+                        .map_err(|e| format!("Failed to execute command '{command_str}': {e}"))?
                 };
                 
                 if !output.status.success() {
@@ -969,7 +954,7 @@ impl Config {
                         match self.resolve_command_in_tunnel_config(tunnel_config) {
                             Ok(resolved) => resolved,
                             Err(e) => {
-                                eprintln!("Error executing command in SSH tunnel pattern: {}", e);
+                                eprintln!("Error executing command in SSH tunnel pattern: {e}");
                                 return None;
                             }
                         }
@@ -1020,24 +1005,24 @@ impl Config {
                         // Include Docker container info if present
                         if let Some(docker_pos) = url.find(" # Docker: ") {
                             let container = &url[docker_pos + 11..]; // Skip " # Docker: "
-                            format!("{}@{}/{} (Docker: {})", user, host_port, database, container)
+                            format!("{user}@{host_port}/{database} (Docker: {container})")
                         } else {
-                            format!("{}@{}/{}", user, host_port, database)
+                            format!("{user}@{host_port}/{database}")
                         }
                     } else {
                         // No database in URL, just user@host:port
                         if let Some(docker_pos) = url.find(" # Docker: ") {
                             let container = &url[docker_pos + 11..];
-                            format!("{}@{} (Docker: {})", user, after_user, container)
+                            format!("{user}@{after_user} (Docker: {container})")
                         } else {
-                            format!("{}@{}", user, after_user)
+                            format!("{user}@{after_user}")
                         }
                     }
                 } else {
                     // No user in URL, show host:port/database or just the main part
                     if let Some(docker_pos) = url.find(" # Docker: ") {
                         let container = &url[docker_pos + 11..];
-                        format!("{} (Docker: {})", main_part, container)
+                        format!("{main_part} (Docker: {container})")
                     } else {
                         main_part.to_string()
                     }
@@ -1367,7 +1352,7 @@ mod tests {
         // Add more connections than the configured limit
         let limit = config.max_recent_connections;
         for i in 0..(limit + 5) {
-            let url = format!("postgresql://user@localhost:5432/testdb{}", i);
+            let url = format!("postgresql://user@localhost:5432/testdb{i}");
             let result = config.add_recent_connection_auto_display(
                 url,
                 DatabaseType::PostgreSQL,
@@ -1397,7 +1382,7 @@ mod tests {
         
         // Add 8 connections (more than the new limit of 5)
         for i in 0..8 {
-            let url = format!("postgresql://user@localhost:5432/testdb{}", i);
+            let url = format!("postgresql://user@localhost:5432/testdb{i}");
             let result = config.add_recent_connection_auto_display(
                 url,
                 DatabaseType::PostgreSQL,
@@ -1421,7 +1406,7 @@ mod tests {
         
         // Add connections in order
         for i in 0..3 {
-            let url = format!("postgresql://user@localhost:5432/testdb{}", i);
+            let url = format!("postgresql://user@localhost:5432/testdb{i}");
             let result = config.add_recent_connection_auto_display(
                 url,
                 DatabaseType::PostgreSQL,
@@ -1447,7 +1432,7 @@ mod tests {
         
         // Add some connections
         for i in 0..3 {
-            let url = format!("postgresql://user@localhost:5432/testdb{}", i);
+            let url = format!("postgresql://user@localhost:5432/testdb{i}");
             let result = config.add_recent_connection_auto_display(
                 url,
                 DatabaseType::PostgreSQL,

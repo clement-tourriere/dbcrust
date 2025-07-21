@@ -120,8 +120,8 @@ pub fn safe_format_query_results_psql(data: &[Vec<String>], query_context: Optio
         Ok(formatted) => Ok(formatted),
         Err(_) => {
             let context = query_context.unwrap_or("unknown query");
-            let error_msg = format!("Formatting panic occurred for query: {}", context);
-            eprintln!("{}", error_msg);
+            let error_msg = format!("Formatting panic occurred for query: {context}");
+            eprintln!("{error_msg}");
             
             // Write detailed analysis
             let analysis = analyze_format_crash(data, context);
@@ -148,7 +148,7 @@ pub fn format_query_results_psql(data: &[Vec<String>]) -> String {
             // Write detailed crash analysis
             let analysis = analyze_format_crash(data, "query_results_formatting");
             if let Err(e) = std::fs::write("dbcrust_format_crash.txt", &analysis) {
-                eprintln!("Failed to write crash analysis: {}", e);
+                eprintln!("Failed to write crash analysis: {e}");
             } else {
                 eprintln!("Crash analysis written to dbcrust_format_crash.txt");
             }
@@ -166,9 +166,9 @@ pub fn format_query_results_psql(data: &[Vec<String>]) -> String {
                 fallback.push_str("Header: ");
                 for (i, col) in data[0].iter().enumerate() {
                     if i > 0 { fallback.push_str(", "); }
-                    fallback.push_str(&format!("\"{}\"", col));
+                    fallback.push_str(&format!("\"{col}\""));
                 }
-                fallback.push_str("\n");
+                fallback.push('\n');
                 fallback.push_str("First few rows (unformatted):\n");
                 for (row_idx, row) in data.iter().skip(1).take(3).enumerate() {
                     fallback.push_str(&format!("Row {}: {:?}\n", row_idx + 1, row));
@@ -202,8 +202,7 @@ fn format_query_results_psql_internal(data: &[Vec<String>]) -> String {
         for i in header_cols..max_cols {
             extended_header.push(format!("column_{}", i + 1));
         }
-        eprintln!("Info: Some rows have more columns than header. Extended header from {} to {} columns.", 
-                 header_cols, max_cols);
+        eprintln!("Info: Some rows have more columns than header. Extended header from {header_cols} to {max_cols} columns.");
     }
     
     // Validate data consistency with the extended header
@@ -220,7 +219,7 @@ fn format_query_results_psql_internal(data: &[Vec<String>]) -> String {
     if has_inconsistencies {
         let analysis = analyze_format_crash(data, "data_consistency_info");
         if let Err(e) = std::fs::write("dbcrust_data_analysis.txt", &analysis) {
-            eprintln!("Failed to write data analysis file: {}", e);
+            eprintln!("Failed to write data analysis file: {e}");
         } else {
             eprintln!("Data structure analysis written to dbcrust_data_analysis.txt");
         }
@@ -305,7 +304,7 @@ fn format_query_results_psql_internal(data: &[Vec<String>]) -> String {
 #[allow(dead_code)]
 pub fn debug_data_structure(data: &[Vec<String>], context: &str) {
     if data.is_empty() {
-        eprintln!("DEBUG [{}]: Data is empty", context);
+        eprintln!("DEBUG [{context}]: Data is empty");
         return;
     }
 
@@ -326,7 +325,7 @@ pub fn debug_data_structure(data: &[Vec<String>], context: &str) {
         .collect();
     
     if !empty_rows.is_empty() {
-        eprintln!("DEBUG [{}]: Found empty rows at indices: {:?}", context, empty_rows);
+        eprintln!("DEBUG [{context}]: Found empty rows at indices: {empty_rows:?}");
     }
     
     eprintln!("DEBUG [{}]: Total rows: {}, Expected columns: {}", 
@@ -338,7 +337,7 @@ pub fn analyze_format_crash(data: &[Vec<String>], query: &str) -> String {
     let mut analysis = String::new();
     
     analysis.push_str("=== DBCRUST DATA STRUCTURE ANALYSIS ===\n");
-    analysis.push_str(&format!("Query: {}\n", query));
+    analysis.push_str(&format!("Query: {query}\n"));
     analysis.push_str(&format!("Timestamp: {}\n", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")));
     analysis.push_str("=======================================\n\n");
     
@@ -349,7 +348,7 @@ pub fn analyze_format_crash(data: &[Vec<String>], query: &str) -> String {
     
     let header = &data[0];
     analysis.push_str(&format!("Header row: {} columns\n", header.len()));
-    analysis.push_str(&format!("Header contents: {:?}\n\n", header));
+    analysis.push_str(&format!("Header contents: {header:?}\n\n"));
     
     if header.is_empty() {
         analysis.push_str("ISSUE: Header row is empty\n");
@@ -365,7 +364,7 @@ pub fn analyze_format_crash(data: &[Vec<String>], query: &str) -> String {
         if row.len() != header.len() {
             analysis.push_str(&format!("ROW {}: {} columns (MISMATCH! Expected {})\n", 
                                      row_idx, row.len(), header.len()));
-            analysis.push_str(&format!("  Contents: {:?}\n", row));
+            analysis.push_str(&format!("  Contents: {row:?}\n"));
         } else if row_idx < 5 {
             analysis.push_str(&format!("ROW {}: {} columns (OK)\n", row_idx, row.len()));
         }
@@ -386,7 +385,7 @@ pub fn analyze_format_crash(data: &[Vec<String>], query: &str) -> String {
     let max_cols = data.iter().map(|row| row.len()).max().unwrap_or(0);
     let min_cols = data.iter().map(|row| row.len()).min().unwrap_or(0);
     
-    analysis.push_str(&format!("Column count range: {} to {}\n", min_cols, max_cols));
+    analysis.push_str(&format!("Column count range: {min_cols} to {max_cols}\n"));
     
     if max_cols > header.len() {
         analysis.push_str("INFO: Some rows have more columns than header!\n");
@@ -414,124 +413,6 @@ pub fn analyze_format_crash(data: &[Vec<String>], query: &str) -> String {
     }
     
     analysis
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_format_with_inconsistent_columns() {
-        // Test case that reproduces the type of data inconsistency that could cause crashes
-        let mut test_data = Vec::new();
-        
-        // Header with 10 columns (like historical_scan_historicalscan table)
-        test_data.push(vec![
-            "id".to_string(),
-            "gg_created_at".to_string(),
-            "gg_updated_at".to_string(),
-            "type".to_string(),
-            "company_id".to_string(),
-            "status".to_string(),
-            "commit_search_query".to_string(),
-            "scan_informations".to_string(),
-            "platform_account_id".to_string(),
-            "recurrent".to_string(),
-        ]);
-        
-        // Normal row with correct number of columns
-        test_data.push(vec![
-            "1".to_string(),
-            "2023-01-01 00:00:00+00".to_string(),
-            "2023-01-01 00:00:00+00".to_string(),
-            "full".to_string(),
-            "123".to_string(),
-            "completed".to_string(),
-            "{}".to_string(),
-            "{}".to_string(),
-            "456".to_string(),
-            "true".to_string(),
-        ]);
-        
-        // Problematic row with fewer columns (could happen with corrupted data)
-        test_data.push(vec![
-            "2".to_string(),
-            "2023-01-02 00:00:00+00".to_string(),
-            "2023-01-02 00:00:00+00".to_string(),
-            "partial".to_string(),
-            "124".to_string(),
-            // Missing columns that could cause index out of bounds
-        ]);
-        
-        // Row with more columns than expected
-        test_data.push(vec![
-            "3".to_string(),
-            "2023-01-03 00:00:00+00".to_string(),
-            "2023-01-03 00:00:00+00".to_string(),
-            "full".to_string(),
-            "125".to_string(),
-            "completed".to_string(),
-            "{}".to_string(),
-            "{}".to_string(),
-            "789".to_string(),
-            "false".to_string(),
-            "extra_column".to_string(), // Extra column that shouldn't be there
-        ]);
-
-        // This should not panic, even with inconsistent data
-        let result = format_query_results_psql(&test_data);
-        
-        // Verify we get some result (even if it's a fallback)
-        assert!(!result.is_empty(), "Should return some formatted output");
-        assert!(result.contains("id"), "Should contain header information");
-        
-        // Verify that all actual data values are present in the output
-        assert!(result.contains("1"), "Should contain row 1 id");
-        assert!(result.contains("2"), "Should contain row 2 id");
-        assert!(result.contains("3"), "Should contain row 3 id");
-        assert!(result.contains("2023-01-01"), "Should contain row 1 timestamp");
-        assert!(result.contains("2023-01-02"), "Should contain row 2 timestamp");
-        assert!(result.contains("2023-01-03"), "Should contain row 3 timestamp");
-        assert!(result.contains("partial"), "Should contain row 2 type");
-        assert!(result.contains("extra_column"), "Should contain extra column value");
-        
-        // Verify that auto-generated column name appears for the extra column
-        assert!(result.contains("column_11"), "Should contain auto-generated column name");
-        
-        // Verify proper table structure with separators
-        assert!(result.contains(" | "), "Should contain column separators");
-        assert!(result.contains("---"), "Should contain header separator line");
-        
-        // Count the number of rows (should have 3 data rows plus header and separator)
-        let line_count = result.lines().count();
-        assert!(line_count >= 5, "Should have at least 5 lines (header, separator, 3 data rows)");
-        
-        println!("Enhanced test completed successfully. Output length: {}", result.len());
-        println!("Formatted output:\n{}", result);
-    }
-
-    #[test]
-    fn test_safe_formatting_functions() {
-        // Test our safe formatting function
-        assert_eq!(safe_format_with_width("test", 0, true), "test");
-        assert_eq!(safe_format_with_width("test", 10, true), "test      ");
-        assert_eq!(safe_format_with_width("test", 10, false), "      test");
-        assert_eq!(safe_format_with_width("toolongtext", 5, true), "toolongtext");
-    }
-
-    #[test]
-    fn test_empty_data_handling() {
-        let empty_data: Vec<Vec<String>> = Vec::new();
-        let result = format_query_results_psql(&empty_data);
-        assert_eq!(result, "");
-    }
-
-    #[test]
-    fn test_empty_header_handling() {
-        let data_with_empty_header = vec![vec![]];
-        let result = format_query_results_psql(&data_with_empty_header);
-        assert_eq!(result, "");
-    }
 }
 
 #[allow(dead_code)]
@@ -566,7 +447,7 @@ pub fn format_table_details(details: &TableDetails) -> String {
                 }
                 if let Some(ref default) = c.default_value {
                     if !default.is_empty() {
-                        modifiers.push(format!("DEFAULT {}", default));
+                        modifiers.push(format!("DEFAULT {default}"));
                     }
                 }
                 if modifiers.is_empty() {
@@ -609,7 +490,7 @@ pub fn format_table_details(details: &TableDetails) -> String {
             }
             if let Some(ref default) = col.default_value {
                 if !default.is_empty() {
-                    modifiers.push(format!("DEFAULT {}", default));
+                    modifiers.push(format!("DEFAULT {default}"));
                 }
             }
             let modifiers_str = if modifiers.is_empty() {
@@ -806,14 +687,14 @@ pub fn format_table_details(details: &TableDetails) -> String {
 
             // Add predicate (WHERE clause) if present
             let idx_line = if let Some(pred) = &idx.predicate {
-                format!("    {} WHERE {}", idx_desc, pred)
+                format!("    {idx_desc} WHERE {pred}")
             } else {
-                format!("    {}", idx_desc)
+                format!("    {idx_desc}")
             };
 
-            result.push_str(&format!("{}\n", idx_line));
+            result.push_str(&format!("{idx_line}\n"));
         }
-        result.push_str("\n"); // Add a blank line after the Indexes section if it's not empty
+        result.push('\n'); // Add a blank line after the Indexes section if it's not empty
     }
 
     // Check constraints
@@ -822,7 +703,7 @@ pub fn format_table_details(details: &TableDetails) -> String {
         for cc in &details.check_constraints {
             result.push_str(&format!("    \"{}\" {}\n", cc.name, cc.definition));
         }
-        result.push_str("\n"); // Add a blank line after the Check constraints section if it's not empty
+        result.push('\n'); // Add a blank line after the Check constraints section if it's not empty
     }
 
     // Foreign keys
@@ -832,7 +713,7 @@ pub fn format_table_details(details: &TableDetails) -> String {
         for fk in &details.foreign_keys {
             result.push_str(&format!("    \"{}\" {}\n", fk.name, fk.definition));
         }
-        result.push_str("\n"); // Add a blank line after the Foreign keys section if it's not empty
+        result.push('\n'); // Add a blank line after the Foreign keys section if it's not empty
     }
 
     // Referenced by
@@ -845,8 +726,126 @@ pub fn format_table_details(details: &TableDetails) -> String {
                 rf.schema, rf.table, rf.constraint_name, rf.definition
             ));
         }
-        result.push_str("\n"); // Add a blank line after the Referenced by section if it's not empty
+        result.push('\n'); // Add a blank line after the Referenced by section if it's not empty
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_with_inconsistent_columns() {
+        // Test case that reproduces the type of data inconsistency that could cause crashes
+        let mut test_data = Vec::new();
+        
+        // Header with 10 columns (like historical_scan_historicalscan table)
+        test_data.push(vec![
+            "id".to_string(),
+            "gg_created_at".to_string(),
+            "gg_updated_at".to_string(),
+            "type".to_string(),
+            "company_id".to_string(),
+            "status".to_string(),
+            "commit_search_query".to_string(),
+            "scan_informations".to_string(),
+            "platform_account_id".to_string(),
+            "recurrent".to_string(),
+        ]);
+        
+        // Normal row with correct number of columns
+        test_data.push(vec![
+            "1".to_string(),
+            "2023-01-01 00:00:00+00".to_string(),
+            "2023-01-01 00:00:00+00".to_string(),
+            "full".to_string(),
+            "123".to_string(),
+            "completed".to_string(),
+            "{}".to_string(),
+            "{}".to_string(),
+            "456".to_string(),
+            "true".to_string(),
+        ]);
+        
+        // Problematic row with fewer columns (could happen with corrupted data)
+        test_data.push(vec![
+            "2".to_string(),
+            "2023-01-02 00:00:00+00".to_string(),
+            "2023-01-02 00:00:00+00".to_string(),
+            "partial".to_string(),
+            "124".to_string(),
+            // Missing columns that could cause index out of bounds
+        ]);
+        
+        // Row with more columns than expected
+        test_data.push(vec![
+            "3".to_string(),
+            "2023-01-03 00:00:00+00".to_string(),
+            "2023-01-03 00:00:00+00".to_string(),
+            "full".to_string(),
+            "125".to_string(),
+            "completed".to_string(),
+            "{}".to_string(),
+            "{}".to_string(),
+            "789".to_string(),
+            "false".to_string(),
+            "extra_column".to_string(), // Extra column that shouldn't be there
+        ]);
+
+        // This should not panic, even with inconsistent data
+        let result = format_query_results_psql(&test_data);
+        
+        // Verify we get some result (even if it's a fallback)
+        assert!(!result.is_empty(), "Should return some formatted output");
+        assert!(result.contains("id"), "Should contain header information");
+        
+        // Verify that all actual data values are present in the output
+        assert!(result.contains("1"), "Should contain row 1 id");
+        assert!(result.contains("2"), "Should contain row 2 id");
+        assert!(result.contains("3"), "Should contain row 3 id");
+        assert!(result.contains("2023-01-01"), "Should contain row 1 timestamp");
+        assert!(result.contains("2023-01-02"), "Should contain row 2 timestamp");
+        assert!(result.contains("2023-01-03"), "Should contain row 3 timestamp");
+        assert!(result.contains("partial"), "Should contain row 2 type");
+        assert!(result.contains("extra_column"), "Should contain extra column value");
+        
+        // Verify that auto-generated column name appears for the extra column
+        assert!(result.contains("column_11"), "Should contain auto-generated column name");
+        
+        // Verify proper table structure with separators
+        assert!(result.contains(" | "), "Should contain column separators");
+        assert!(result.contains("---"), "Should contain header separator line");
+        
+        // Count the number of rows (should have 3 data rows plus header and separator)
+        let line_count = result.lines().count();
+        assert!(line_count >= 5, "Should have at least 5 lines (header, separator, 3 data rows)");
+        
+        println!("Enhanced test completed successfully. Output length: {}", result.len());
+        println!("Formatted output:\n{result}");
+    }
+
+    #[test]
+    fn test_safe_formatting_functions() {
+        // Test our safe formatting function
+        assert_eq!(safe_format_with_width("test", 0, true), "test");
+        assert_eq!(safe_format_with_width("test", 10, true), "test      ");
+        assert_eq!(safe_format_with_width("test", 10, false), "      test");
+        assert_eq!(safe_format_with_width("toolongtext", 5, true), "toolongtext");
+    }
+
+    #[test]
+    fn test_empty_data_handling() {
+        let empty_data: Vec<Vec<String>> = Vec::new();
+        let result = format_query_results_psql(&empty_data);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_empty_header_handling() {
+        let data_with_empty_header = vec![vec![]];
+        let result = format_query_results_psql(&data_with_empty_header);
+        assert_eq!(result, "");
+    }
 }
