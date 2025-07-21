@@ -1397,10 +1397,12 @@ mod tests {
             file_path: None,
             options: std::collections::HashMap::new(),
         };
-        completer
-            .config
-            .saved_sessions
-            .insert("dev_session".to_string(), session_details);
+        // Set up connection params and save session
+        completer.config.connection.host = session_details.host;
+        completer.config.connection.port = session_details.port;
+        completer.config.connection.user = session_details.user;
+        completer.config.connection.dbname = session_details.dbname;
+        completer.config.save_session("dev_session").unwrap();
         completer
     }
 

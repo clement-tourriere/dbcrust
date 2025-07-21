@@ -48,10 +48,25 @@ pub struct RecentConnectionsStorage {
     pub connections: Vec<RecentConnection>,
 }
 
+/// Saved sessions storage - stored in a separate file
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SavedSessionsStorage {
+    #[serde(default)]
+    pub sessions: HashMap<String, SavedSession>,
+}
+
 impl Default for RecentConnectionsStorage {
     fn default() -> Self {
         RecentConnectionsStorage {
             connections: Vec::new(),
+        }
+    }
+}
+
+impl Default for SavedSessionsStorage {
+    fn default() -> Self {
+        SavedSessionsStorage {
+            sessions: HashMap::new(),
         }
     }
 }
@@ -121,8 +136,6 @@ pub struct Config {
     #[serde(default)]
     pub named_queries: HashMap<String, String>,
     #[serde(default)]
-    pub saved_sessions: HashMap<String, SavedSession>,
-    #[serde(default)]
     pub ssh_tunnel_patterns: HashMap<String, String>,
     #[serde(default = "default_max_recent_connections")]
     pub max_recent_connections: usize,
@@ -161,6 +174,10 @@ pub struct Config {
     // Recent connections - not serialized with main config, stored separately
     #[serde(skip)]
     recent_connections_storage: RecentConnectionsStorage,
+    
+    // Saved sessions - not serialized with main config, stored separately
+    #[serde(skip)]
+    saved_sessions_storage: SavedSessionsStorage,
 }
 
 impl Default for Config {
@@ -175,7 +192,6 @@ impl Default for Config {
             column_selection_mode_default: false,
             column_selection_threshold: default_column_selection_threshold(),
             named_queries: HashMap::new(),
-            saved_sessions: HashMap::new(),
             ssh_tunnel_patterns: HashMap::new(),
             max_recent_connections: default_max_recent_connections(),
             pager_enabled: default_pager_enabled(),
@@ -192,6 +208,7 @@ impl Default for Config {
             save_password: connection.save_password,
             password: connection.password.clone(),
             recent_connections_storage: RecentConnectionsStorage::default(),
+            saved_sessions_storage: SavedSessionsStorage::default(),
         }
     }
 }
@@ -250,6 +267,11 @@ impl Config {
         Ok(Self::get_config_dir()?.join("recent.toml"))
     }
 
+    /// Get the path to the saved sessions file
+    pub fn get_saved_sessions_path() -> Result<PathBuf, Box<dyn Error>> {
+        Ok(Self::get_config_dir()?.join("sessions.toml"))
+    }
+
     /// Load recent connections from separate file
     fn load_recent_connections() -> RecentConnectionsStorage {
         match Self::get_recent_connections_path() {
@@ -304,6 +326,60 @@ impl Config {
         Ok(())
     }
 
+    /// Load saved sessions from separate file
+    fn load_saved_sessions() -> SavedSessionsStorage {
+        match Self::get_saved_sessions_path() {
+            Ok(path) => {
+                if path.exists() {
+                    match fs::read_to_string(&path) {
+                        Ok(content) => {
+                            match toml::from_str(&content) {
+                                Ok(storage) => storage,
+                                Err(e) => {
+                                    eprintln!("Error parsing saved sessions file: {}", e);
+                                    SavedSessionsStorage::default()
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error reading saved sessions file: {}", e);
+                            SavedSessionsStorage::default()
+                        }
+                    }
+                } else {
+                    // File doesn't exist, check if we need to migrate from old config format
+                    let migrated_sessions = Self::migrate_saved_sessions_if_needed();
+                    if !migrated_sessions.is_empty() {
+                        let storage = SavedSessionsStorage {
+                            sessions: migrated_sessions,
+                        };
+                        // Save the migrated sessions to the new file
+                        if let Ok(content) = toml::to_string_pretty(&storage) {
+                            if let Err(e) = fs::write(&path, content) {
+                                eprintln!("Error saving migrated saved sessions: {}", e);
+                            }
+                        }
+                        storage
+                    } else {
+                        SavedSessionsStorage::default()
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error getting saved sessions path: {}", e);
+                SavedSessionsStorage::default()
+            }
+        }
+    }
+
+    /// Save saved sessions to separate file
+    fn save_saved_sessions(&self) -> Result<(), Box<dyn Error>> {
+        let path = Self::get_saved_sessions_path()?;
+        let content = toml::to_string_pretty(&self.saved_sessions_storage)?;
+        fs::write(path, content)?;
+        Ok(())
+    }
+
     /// Migrate recent connections from main config file to separate file
     /// This reads the old config format and extracts recent_connections
     fn migrate_recent_connections_if_needed() -> Vec<RecentConnection> {
@@ -336,6 +412,38 @@ impl Config {
         Vec::new()
     }
 
+    /// Migrate saved sessions from main config file to separate file
+    /// This reads the old config format and extracts saved_sessions
+    fn migrate_saved_sessions_if_needed() -> HashMap<String, SavedSession> {
+        if let Some(config_path) = get_config_path() {
+            if let Ok(content) = fs::read_to_string(&config_path) {
+                // Check if the config file contains saved_sessions
+                if content.contains("[saved_sessions") || content.contains("saved_sessions") {
+                    // Try to parse it as a TOML value to extract just the saved sessions
+                    if let Ok(toml_value) = toml::from_str::<toml::Value>(&content) {
+                        if let Some(table) = toml_value.as_table() {
+                            if let Some(sessions_table) = table.get("saved_sessions") {
+                                if let Some(sessions) = sessions_table.as_table() {
+                                    let mut migrated_sessions = HashMap::new();
+                                    for (name, session_value) in sessions {
+                                        if let Ok(session) = session_value.clone().try_into::<SavedSession>() {
+                                            migrated_sessions.insert(name.clone(), session);
+                                        }
+                                    }
+                                    if !migrated_sessions.is_empty() {
+                                        println!("📦 Migrating {} saved sessions to separate file", migrated_sessions.len());
+                                        return migrated_sessions;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        HashMap::new()
+    }
+
     pub fn load() -> Self {
         if let Some(config_path) = get_config_path() {
             match fs::read_to_string(&config_path) {
@@ -366,8 +474,9 @@ impl Config {
                                 config.save_password = config.connection.save_password;
                                 config.password = config.connection.password.clone();
                             }
-                            // Load recent connections from separate file
+                            // Load recent connections and saved sessions from separate files
                             config.recent_connections_storage = Self::load_recent_connections();
+                            config.saved_sessions_storage = Self::load_saved_sessions();
                             config
                         }
                         Err(e) => {
@@ -500,55 +609,6 @@ impl Config {
                                             }
                                         }
 
-                                        // Extract saved sessions
-                                        if let Some(sessions) =
-                                            table.get("saved_sessions").and_then(|v| v.as_table())
-                                        {
-                                            for (name, value) in sessions {
-                                                if let Some(session) = value.as_table() {
-                                                    let mut session_config = SavedSession {
-                                                        host: "localhost".to_string(),
-                                                        port: 5432,
-                                                        user: "postgres".to_string(),
-                                                        dbname: "postgres".to_string(),
-                                                        ssh_tunnel: None,
-                                                        database_type: DatabaseType::PostgreSQL,
-                                                        file_path: None,
-                                                        options: HashMap::new(),
-                                                    };
-
-                                                    if let Some(host) =
-                                                        session.get("host").and_then(|v| v.as_str())
-                                                    {
-                                                        session_config.host = host.to_string();
-                                                    }
-
-                                                    if let Some(port) = session
-                                                        .get("port")
-                                                        .and_then(|v| v.as_integer())
-                                                    {
-                                                        session_config.port = port as u16;
-                                                    }
-
-                                                    if let Some(user) =
-                                                        session.get("user").and_then(|v| v.as_str())
-                                                    {
-                                                        session_config.user = user.to_string();
-                                                    }
-
-                                                    if let Some(dbname) = session
-                                                        .get("dbname")
-                                                        .and_then(|v| v.as_str())
-                                                    {
-                                                        session_config.dbname = dbname.to_string();
-                                                    }
-
-                                                    config
-                                                        .saved_sessions
-                                                        .insert(name.clone(), session_config);
-                                                }
-                                            }
-                                        }
                                     }
 
                                     // Save the updated config to fix the format
@@ -558,8 +618,9 @@ impl Config {
                                         println!("Config file updated with new format");
                                     }
 
-                                    // Load recent connections from separate file
+                                    // Load recent connections and saved sessions from separate files
                                     config.recent_connections_storage = Self::load_recent_connections();
+                                    config.saved_sessions_storage = Self::load_saved_sessions();
                                     config
                                 }
                                 Err(_) => {
@@ -568,6 +629,7 @@ impl Config {
                                     );
                                     let mut config = Config::default();
                                     config.recent_connections_storage = Self::load_recent_connections();
+                                    config.saved_sessions_storage = Self::load_saved_sessions();
                                     config
                                 }
                             }
@@ -577,12 +639,14 @@ impl Config {
                 Err(_) => {
                     let mut config = Config::default();
                     config.recent_connections_storage = Self::load_recent_connections();
+                    config.saved_sessions_storage = Self::load_saved_sessions();
                     config
                 },
             }
         } else {
             let mut config = Config::default();
             config.recent_connections_storage = Self::load_recent_connections();
+            config.saved_sessions_storage = Self::load_saved_sessions();
             config
         }
     }
@@ -640,8 +704,8 @@ impl Config {
             options: HashMap::new(),
         };
 
-        self.saved_sessions.insert(name.to_string(), session);
-        self.save()?;
+        self.saved_sessions_storage.sessions.insert(name.to_string(), session);
+        self.save_saved_sessions()?;
         Ok(())
     }
 
@@ -658,8 +722,8 @@ impl Config {
             options,
         };
 
-        self.saved_sessions.insert(name.to_string(), session);
-        self.save()?;
+        self.saved_sessions_storage.sessions.insert(name.to_string(), session);
+        self.save_saved_sessions()?;
         Ok(())
     }
 
@@ -695,25 +759,25 @@ impl Config {
             options: connection_info.options.clone(),
         };
 
-        self.saved_sessions.insert(name.to_string(), session);
-        self.save()?;
+        self.saved_sessions_storage.sessions.insert(name.to_string(), session);
+        self.save_saved_sessions()?;
         Ok(())
     }
 
     pub fn delete_session(&mut self, name: &str) -> Result<bool, Box<dyn Error>> {
-        let existed = self.saved_sessions.remove(name).is_some();
+        let existed = self.saved_sessions_storage.sessions.remove(name).is_some();
         if existed {
-            self.save()?;
+            self.save_saved_sessions()?;
         }
         Ok(existed)
     }
 
     pub fn get_session(&self, name: &str) -> Option<&SavedSession> {
-        self.saved_sessions.get(name)
+        self.saved_sessions_storage.sessions.get(name)
     }
 
     pub fn list_sessions(&self) -> Vec<(String, SavedSession)> {
-        self.saved_sessions
+        self.saved_sessions_storage.sessions
             .iter()
             .map(|(name, session)| (name.clone(), session.clone()))
             .collect()

@@ -309,7 +309,7 @@ impl BackslashCommandRegistry {
                 println!("  Show banner: {}", config.show_banner);
                 println!("  Multiline prompt indicator: '{}'", config.multiline_prompt_indicator);
                 println!("  Named queries: {}", config.named_queries.len());
-                println!("  Saved sessions: {}", config.saved_sessions.len());
+                println!("  Saved sessions: {}", config.list_sessions().len());
                 println!("  SSH tunnel patterns: {}", config.ssh_tunnel_patterns.len());
                 Ok(false)
             }
