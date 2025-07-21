@@ -12,7 +12,7 @@ def main(db_url=None):
     from dbcrust._internal import run_cli_loop
 
     # Prepare command arguments
-    cmd_args = ["dbcrust", "--no-banner"]
+    cmd_args = ["dbcrust"]
 
     # If db_url is provided, use it as the connection URL
     if db_url:

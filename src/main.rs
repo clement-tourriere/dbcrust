@@ -330,7 +330,14 @@ fn parse_vault_url(url_str: &str) -> Option<(Option<String>, String, Option<Stri
     Some((role_name, mount_path, vault_db_name))
 }
 
-async fn async_main() -> Result<(), Box<dyn StdError>> {
+/// Main async workflow that can be called from both main() and Python
+pub async fn async_main() -> Result<(), Box<dyn StdError>> {
+    let args = Args::parse();
+    async_main_with_args(args).await
+}
+
+/// Main async workflow with pre-parsed arguments (for Python integration)
+pub async fn async_main_with_args(args: Args) -> Result<(), Box<dyn StdError>> {
     // Initialize the logging system
     if let Err(e) = logging::init() {
         eprintln!("Warning: Failed to initialize logging: {}", e);
@@ -338,7 +345,6 @@ async fn async_main() -> Result<(), Box<dyn StdError>> {
     debug_log!("DbCrust started");
 
     let mut config = DbCrustConfig::load(); // Load config first for defaults and other settings
-    let args = Args::parse();
 
     // Handle shell completion generation if requested
     if let Some(shell) = args.completions {
@@ -884,7 +890,7 @@ async fn async_main() -> Result<(), Box<dyn StdError>> {
 }
 
 /// Handle database connection after successful connection
-async fn handle_database_connection(
+pub async fn handle_database_connection(
     mut database: Database,
     mut config: DbCrustConfig,
     args: Args,
@@ -974,7 +980,7 @@ async fn handle_database_connection(
 }
 
 /// Run the interactive mode for any database type
-async fn run_interactive_mode(
+pub async fn run_interactive_mode(
     database: Database,
     mut config: DbCrustConfig,
     args: Args,

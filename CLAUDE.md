@@ -53,8 +53,9 @@ maturin build --release
 
 ### Core Modules
 
-- **`src/main.rs`**: Application entry point with Tokio runtime and CLI orchestration
-- **`src/lib.rs`**: Public API and Python bindings (`PyDatabase`, `PyConfig`)
+- **`src/main.rs`**: Application entry point with exposed CLI functions for Python integration
+- **`src/lib.rs`**: Unified CLI interface and Python bindings using PyO3
+- **`src/backslash_commands.rs`**: Centralized command registry shared by Rust and Python CLIs
 - **`src/db.rs`**: Database operations layer using SQLx with async PostgreSQL operations
 - **`src/cli.rs`**: Command-line argument parsing with Clap, supports multiple connection methods
 - **`src/config.rs`**: TOML-based configuration system with session management
@@ -77,6 +78,137 @@ The client supports multiple connection approaches:
 2. Individual parameters: `-H host -p port -U user -d database`
 3. Vault URLs: `vaultdb://role@mount/database`
 4. SSH tunnel patterns in config for automatic tunnel usage
+5. Session URLs: `session://saved_session_name`
+6. Recent URLs: `recent://` (interactive selection)
+7. Docker URLs: `docker://container_name/database`
+
+## Unified CLI Architecture
+
+DBCrust implements a **single source of truth** architecture where the Rust and Python CLIs share identical functionality through PyO3 integration. This eliminates code duplication and ensures perfect feature parity.
+
+### Architecture Principles
+
+1. **Zero Duplication**: Python CLI calls Rust main logic directly, no separate implementations
+2. **Shared Command Registry**: Both CLIs use `BackslashCommandRegistry` for identical behavior
+3. **Complete Feature Parity**: All connection types, commands, and features work identically
+4. **Single Codebase**: New features automatically available in both CLIs
+
+### Implementation Structure
+
+```rust
+// Main entry points (src/main.rs)
+pub async fn async_main() -> Result<(), Box<dyn StdError>>           // Rust CLI entry
+pub async fn async_main_with_args(args: Args) -> Result<(), Box<dyn StdError>>  // Shared logic
+
+// Core functions exposed for Python (src/main.rs) 
+pub async fn handle_database_connection(args: &Args) -> Result<(Database, Option<DockerConnectionInfo>), Box<dyn StdError>>
+pub async fn run_interactive_mode(database: Database, args: &Args, config: &mut Config) -> Result<(), Box<dyn StdError>>
+
+// PyO3 interface (src/lib.rs)
+#[pyfunction]
+pub fn run_cli_loop(args: Vec<String>) -> PyResult<i32>              // Python CLI entry
+pub async fn run_main_cli_workflow(args: Args) -> Result<i32, Box<dyn StdError>>  // Unified workflow
+
+// Unified command handling (src/backslash_commands.rs)
+impl BackslashCommandRegistry {
+    pub fn execute(&self, command: &str, ...) -> Result<bool, Box<dyn Error>>  // Shared by both CLIs
+}
+```
+
+### Connection URL Handling
+
+Both CLIs support identical connection URL patterns:
+
+```bash
+# Standard database URLs
+dbcrust postgresql://user@host:5432/db
+dbcrust mysql://user@host:3306/db
+dbcrust sqlite:///path/to/file.db
+
+# Advanced connection types
+dbcrust session://production_db          # Saved session
+dbcrust recent://                         # Interactive recent selection
+dbcrust docker://my-container/db         # Docker container
+dbcrust vault://role@mount/database      # HashiCorp Vault
+
+# All work identically in Python
+python -m dbcrust session://production_db
+python -m dbcrust recent://
+```
+
+### Command Line Feature Parity
+
+All command-line flags and options work identically:
+
+```bash
+# Both CLIs support identical flags
+dbcrust --debug --no-banner --ssh-tunnel user@host postgresql://db
+python -m dbcrust --debug --no-banner --ssh-tunnel user@host postgresql://db
+
+# Command mode works identically
+dbcrust postgresql://db -c "\\dt"        # List tables
+python -m dbcrust postgresql://db -c "\\dt"  # Identical behavior
+```
+
+### Backslash Command Integration
+
+The `BackslashCommandRegistry` provides 40+ commands shared between CLIs:
+
+```rust
+// Adding new commands (benefits both CLIs automatically)
+impl BackslashCommandRegistry {
+    pub async fn execute(&self, input: &str, ...) -> Result<bool, Box<dyn Error>> {
+        match input {
+            "\\dt" => self.handle_list_tables(...).await,
+            "\\l" => self.handle_list_databases(...).await,
+            "\\s" => self.handle_session_list(...).await,
+            "\\new_command" => self.handle_new_command(...).await,  // Auto-available in both CLIs
+            // ... 40+ commands
+        }
+    }
+}
+```
+
+### Development Workflow for Unified Features
+
+When adding new features that affect the CLI:
+
+1. **Implement in Rust**: Add core functionality to appropriate module
+2. **Update BackslashCommandRegistry**: Add new commands if needed
+3. **Update Args struct**: Add command-line arguments if needed
+4. **Automatic Python Support**: Feature is automatically available in Python CLI
+5. **Test Both CLIs**: Use `tests/python_cli_parity.rs` to verify identical behavior
+
+### Testing the Unified Architecture
+
+Comprehensive test coverage ensures feature parity:
+
+```rust
+// Feature parity testing (tests/python_cli_parity.rs)
+#[rstest]
+#[case("postgresql://localhost/test")]
+#[case("session://test_session")]
+#[case("vault://role@mount/db")]
+fn test_python_cli_connection_url_support(#[case] connection_url: &str) {
+    // Verify Python CLI supports all connection URL types
+}
+
+// Command registry testing (tests/unified_command_handling.rs)
+#[test]
+fn test_command_registry_completeness() {
+    let registry = BackslashCommandRegistry::new();
+    let commands = registry.get_command_names();
+    assert!(commands.len() >= 40, "Should have 40+ commands");
+}
+```
+
+### Benefits of Unified Architecture
+
+1. **Eliminated Code Duplication**: Single implementation for all features
+2. **Guaranteed Feature Parity**: Impossible for CLIs to diverge
+3. **Reduced Maintenance**: New features automatically work in both CLIs
+4. **Consistent User Experience**: Identical behavior regardless of entry point
+5. **Simplified Testing**: Test once, verify both CLIs work
 
 ## Key Development Patterns
 
@@ -92,17 +224,27 @@ The client supports multiple connection approaches:
 - Add new fields with `#[serde(default)]` for backward compatibility
 - Store persistent state (sessions, named queries) in config
 
-### CLI Commands
-- Backslash commands (`\dt`, `\l`, etc.) handled in main loop
-- Add new commands to `BACKSLASH_COMMANDS` in completion.rs
-- Update help text in `print_help()` function
-- Follow PostgreSQL psql conventions where applicable
+### Unified CLI Command System
+- **Centralized Commands**: All backslash commands (`\dt`, `\l`, etc.) managed by `BackslashCommandRegistry`
+- **Perfect Feature Parity**: Rust and Python CLIs use identical command implementation
+- **Single Source of Truth**: Add new commands to `BackslashCommandRegistry::execute()` method
+- **Consistent Behavior**: Both CLIs support all 40+ commands with identical functionality
+- **Command Discovery**: Use `get_command_names()` and `get_command_info()` for dynamic help
 
-### Python Bindings
+### Unified Python CLI Architecture
+- **Single Codebase**: Python CLI calls Rust main logic directly via PyO3
+- **Complete Feature Parity**: Python CLI supports all connection types (session://, vault://, docker://, recent://)
+- **Shared Command Registry**: Both CLIs use `BackslashCommandRegistry` for 100% identical behavior
+- **Main CLI Wrapper**: `run_main_cli_workflow()` provides complete CLI functionality to Python
+- **Zero Duplication**: No separate Python command implementations - all logic shared with Rust
+- **Connection URL Support**: Full support for all URL types including SSH tunnels and Vault integration
+- **Compile with `python` feature flag for unified CLI bindings**
+
+### PyO3 Integration Patterns
 - Use `Arc<TokioMutex<Database>>` for thread-safe async access
-- PyO3 methods should handle runtime management properly
+- PyO3 methods handle Tokio runtime management automatically
 - Python client in `python/dbcrust/client.py` provides high-level interface
-- Compile with `python` feature flag for bindings
+- CLI entry point: `python/dbcrust/__main__.py` delegates to Rust via `run_cli_loop()`
 
 ### Testing Strategy
 - Use `rstest` for parameterized tests (as specified in Cursor rules)
