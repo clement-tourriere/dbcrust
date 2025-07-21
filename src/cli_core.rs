@@ -15,6 +15,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::io;
 use terminal_size;
+use url;
 
 /// Core CLI functionality shared between Rust and Python interfaces
 pub struct CliCore {
@@ -945,7 +946,77 @@ impl CliCore {
             .ok_or_else(|| CliError::ConnectionError("Invalid selection".to_string()))?;
 
         println!("🔗 Connecting to recent connection: {}", selected_connection.display_name);
-        Ok(selected_connection.connection_url.clone())
+        
+        // Reconstruct the connection URL with credentials (similar to session handling)
+        let reconstructed_url = self.reconstruct_recent_connection_with_credentials(selected_connection)?;
+        Ok(reconstructed_url)
+    }
+
+    /// Reconstruct a recent connection URL with credentials from credential stores
+    fn reconstruct_recent_connection_with_credentials(&self, connection: &crate::config::RecentConnection) -> Result<String, CliError> {
+        // Parse the original connection URL to extract components
+        let original_url = &connection.connection_url;
+        
+        // Handle special cases first
+        if original_url.starts_with("docker://") {
+            // Docker connections are handled specially - just return as-is
+            return Ok(original_url.clone());
+        }
+        
+        // Check if this was originally a Docker connection (based on display_name)
+        if connection.display_name.contains("Docker:") {
+            // Extract container name from display_name like "postgres@localhost:5432/postgres (Docker: ward-postgres-1)"
+            if let Some(docker_part) = connection.display_name.split("Docker:").nth(1) {
+                let container_name = docker_part.trim().trim_end_matches(')');
+                println!("🐳 Re-resolving Docker container for recent connection: {}", container_name);
+                return Ok(format!("docker://{}", container_name));
+            }
+        }
+        
+        if original_url.starts_with("sqlite://") {
+            // SQLite doesn't need credentials
+            return Ok(original_url.clone());
+        }
+        
+        // Parse the URL to extract connection components
+        let parsed_url = url::Url::parse(original_url)
+            .map_err(|e| CliError::ConnectionError(format!("Failed to parse recent connection URL '{}': {}", original_url, e)))?;
+        
+        let scheme = parsed_url.scheme();
+        let host = parsed_url.host_str().unwrap_or("localhost");
+        let port = parsed_url.port().unwrap_or(match scheme {
+            "postgresql" => 5432,
+            "mysql" => 3306,
+            _ => return Ok(original_url.clone()) // Unknown scheme, return as-is
+        });
+        let username = parsed_url.username();
+        let database = parsed_url.path().trim_start_matches('/');
+        
+        // Look up password from appropriate credential store
+        let reconstructed_url = match connection.database_type {
+            crate::database::DatabaseType::PostgreSQL => {
+                if let Some(password) = crate::pgpass::lookup_password(host, port, database, username) {
+                    format!("postgresql://{}:{}@{}:{}/{}", username, password, host, port, database)
+                } else {
+                    // No password found, return URL without password (will prompt)
+                    format!("postgresql://{}@{}:{}/{}", username, host, port, database)
+                }
+            }
+            crate::database::DatabaseType::MySQL => {
+                if let Some(password) = crate::myconf::lookup_mysql_password(host, port, database, username) {
+                    format!("mysql://{}:{}@{}:{}/{}", username, password, host, port, database)
+                } else {
+                    // No password found, return URL without password (will prompt)
+                    format!("mysql://{}@{}:{}/{}", username, host, port, database)
+                }
+            }
+            crate::database::DatabaseType::SQLite => {
+                // SQLite was already handled above
+                original_url.clone()
+            }
+        };
+        
+        Ok(reconstructed_url)
     }
 
     /// Handle vault:// URLs

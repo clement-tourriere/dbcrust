@@ -48,14 +48,15 @@ maturin build --release
 - Uses `mise.toml` for tool management (Node.js, Python tools)
 - Pre-commit hooks via `pipx:pre-commit`
 - Commitizen for conventional commits
+- **Strum crate**: Essential for automatic enum iteration and synchronization - never remove this dependency
 
 ## Architecture Overview
 
 ### Core Modules
 
-- **`src/main.rs`**: Application entry point with exposed CLI functions for Python integration
-- **`src/lib.rs`**: Unified CLI interface and Python bindings using PyO3
-- **`src/backslash_commands.rs`**: Centralized command registry shared by Rust and Python CLIs
+- **`src/main.rs`**: Application entry point with Tokio runtime and CLI orchestration
+- **`src/lib.rs`**: Public API and Python bindings (`PyDatabase`, `PyConfig`)
+- **`src/commands.rs`**: Type-safe command system using enum-based architecture with strum automation
 - **`src/db.rs`**: Database operations layer using SQLx with async PostgreSQL operations
 - **`src/cli.rs`**: Command-line argument parsing with Clap, supports multiple connection methods
 - **`src/config.rs`**: TOML-based configuration system with session management
@@ -224,18 +225,46 @@ fn test_command_registry_completeness() {
 - Add new fields with `#[serde(default)]` for backward compatibility
 - Store persistent state (sessions, named queries) in config
 
-### Unified CLI Command System
-- **Centralized Commands**: All backslash commands (`\dt`, `\l`, etc.) managed by `BackslashCommandRegistry`
+### Type-Safe Command System with Automatic Synchronization
+- **Enum-Based Commands**: All backslash commands (`\dt`, `\l`, etc.) managed by `Command` enum in `src/commands.rs`
+- **Strum-Powered Automation**: Uses `strum` derive macros (`EnumIter`, `Display`) for automatic code generation
+- **Zero Synchronization Issues**: Command shortcuts, descriptions, categories automatically derived from enums
+- **CommandShortcut Pattern**: Separate enum for shortcuts with automatic iteration via `CommandShortcut::iter()`
 - **Perfect Feature Parity**: Rust and Python CLIs use identical command implementation
-- **Single Source of Truth**: Add new commands to `BackslashCommandRegistry::execute()` method
-- **Consistent Behavior**: Both CLIs support all 40+ commands with identical functionality
-- **Command Discovery**: Use `get_command_names()` and `get_command_info()` for dynamic help
+- **Automatic Autocomplete**: `get_command_names()` automatically includes ALL commands via enum iteration
+- **Automatic Help Generation**: `get_commands_by_category()` automatically groups commands by category
+- **Single Source of Truth**: Add new commands to `Command` enum and `CommandShortcut` enum - everything else is automatic
+
+#### Critical Pattern: Always Use Enum/Traits for Lists
+**NEVER use hardcoded Vec/arrays for command lists, categories, or mappings.** Always use:
+```rust
+// ✅ CORRECT - Automatic synchronization via strum
+#[derive(Debug, Clone, PartialEq, EnumIter)]
+pub enum CommandShortcut { Q, H, L, Dt, /* ... */ }
+
+impl CommandShortcut {
+    pub fn command(&self) -> &'static str { /* mapping */ }
+    pub fn description(&self) -> &'static str { /* mapping */ }
+    pub fn category(&self) -> CommandCategory { /* mapping */ }
+}
+
+pub fn get_command_names() -> Vec<&'static str> {
+    CommandShortcut::iter().map(|s| s.command()).collect()
+}
+
+// ❌ WRONG - Hardcoded lists cause synchronization issues
+pub fn get_command_names() -> Vec<&'static str> {
+    vec!["\\q", "\\h", "\\l"] // Will miss new commands!
+}
+```
+
+This pattern ensures "thanks to the enum/traits, synchronization issues will not happen anymore."
 
 ### Unified Python CLI Architecture
 - **Single Codebase**: Python CLI calls Rust main logic directly via PyO3
 - **Complete Feature Parity**: Python CLI supports all connection types (session://, vault://, docker://, recent://)
-- **Shared Command Registry**: Both CLIs use `BackslashCommandRegistry` for 100% identical behavior
-- **Main CLI Wrapper**: `run_main_cli_workflow()` provides complete CLI functionality to Python
+- **Shared Command System**: Both CLIs use `Command` enum and `CliCore` for 100% identical behavior
+- **Main CLI Wrapper**: `run_command()` provides complete CLI functionality to Python
 - **Zero Duplication**: No separate Python command implementations - all logic shared with Rust
 - **Connection URL Support**: Full support for all URL types including SSH tunnels and Vault integration
 - **Compile with `python` feature flag for unified CLI bindings**
@@ -244,7 +273,7 @@ fn test_command_registry_completeness() {
 - Use `Arc<TokioMutex<Database>>` for thread-safe async access
 - PyO3 methods handle Tokio runtime management automatically
 - Python client in `python/dbcrust/client.py` provides high-level interface
-- CLI entry point: `python/dbcrust/__main__.py` delegates to Rust via `run_cli_loop()`
+- CLI entry point: `python/dbcrust/__main__.py` delegates to Rust via `run_command()`
 
 ### Testing Strategy
 - Use `rstest` for parameterized tests (as specified in Cursor rules)
