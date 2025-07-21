@@ -8,6 +8,20 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use crate::database::DatabaseType;
 use chrono::{DateTime, Utc};
+use clap::ValueEnum;
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, ValueEnum)]
+pub enum VerbosityLevel {
+    Quiet,    // Only essential info and SSH tunnels
+    Normal,   // Default - minimal connection info
+    Verbose,  // Current behavior - all connection steps
+}
+
+impl Default for VerbosityLevel {
+    fn default() -> Self {
+        VerbosityLevel::Normal
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SSHTunnelConfig {
@@ -141,6 +155,9 @@ pub struct Config {
     #[serde(default = "default_show_banner")]
     pub show_banner: bool,
 
+    #[serde(default = "default_verbosity_level")]
+    pub verbosity_level: VerbosityLevel,
+
     #[serde(default = "default_multiline_prompt_indicator")]
     pub multiline_prompt_indicator: String,
 
@@ -187,6 +204,7 @@ impl Default for Config {
             pager_threshold_lines: default_pager_threshold_lines(),
             debug_logging_enabled: default_debug_logging(),
             show_banner: default_show_banner(),
+            verbosity_level: default_verbosity_level(),
             multiline_prompt_indicator: default_multiline_prompt_indicator(),
             // Legacy fields initialized from connection
             host: connection.host.clone(),
@@ -249,12 +267,34 @@ fn default_show_banner() -> bool {
     false
 }
 
+fn default_verbosity_level() -> VerbosityLevel {
+    VerbosityLevel::Normal
+}
+
 fn default_multiline_prompt_indicator() -> String {
     String::new() // Empty string by default (no indicator)
 }
 
 fn default_database_type() -> DatabaseType {
     DatabaseType::PostgreSQL
+}
+
+// Global verbosity override for command-line arguments
+static VERBOSITY_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<VerbosityLevel>>> = std::sync::OnceLock::new();
+
+/// Set a global verbosity override that will be used instead of the config file setting
+pub fn set_global_verbosity_override(level: Option<VerbosityLevel>) {
+    if let Ok(mut override_val) = VERBOSITY_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None)).lock() {
+        *override_val = level;
+    }
+}
+
+/// Get the current verbosity override, if any
+pub fn get_global_verbosity_override() -> Option<VerbosityLevel> {
+    VERBOSITY_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|val| *val)
 }
 
 impl Config {
@@ -508,6 +548,12 @@ impl Config {
                             // Load recent connections and saved sessions from separate files
                             config.recent_connections_storage = Self::load_recent_connections();
                             config.saved_sessions_storage = Self::load_saved_sessions();
+                            
+                            // Apply global verbosity override if set
+                            if let Some(override_level) = get_global_verbosity_override() {
+                                config.verbosity_level = override_level;
+                            }
+                            
                             config
                         }
                         Err(e) => {
@@ -652,6 +698,12 @@ impl Config {
                                     // Load recent connections and saved sessions from separate files
                                     config.recent_connections_storage = Self::load_recent_connections();
                                     config.saved_sessions_storage = Self::load_saved_sessions();
+                                    
+                                    // Apply global verbosity override if set
+                                    if let Some(override_level) = get_global_verbosity_override() {
+                                        config.verbosity_level = override_level;
+                                    }
+                                    
                                     config
                                 }
                                 Err(_) => {
@@ -661,6 +713,12 @@ impl Config {
                                     let mut config = Config::default();
                                     config.recent_connections_storage = Self::load_recent_connections();
                                     config.saved_sessions_storage = Self::load_saved_sessions();
+                                    
+                                    // Apply global verbosity override if set
+                                    if let Some(override_level) = get_global_verbosity_override() {
+                                        config.verbosity_level = override_level;
+                                    }
+                                    
                                     config
                                 }
                             }
@@ -671,6 +729,12 @@ impl Config {
                     let mut config = Config::default();
                     config.recent_connections_storage = Self::load_recent_connections();
                     config.saved_sessions_storage = Self::load_saved_sessions();
+                    
+                    // Apply global verbosity override if set
+                    if let Some(override_level) = get_global_verbosity_override() {
+                        config.verbosity_level = override_level;
+                    }
+                    
                     config
                 },
             }
@@ -678,6 +742,12 @@ impl Config {
             let mut config = Config::default();
             config.recent_connections_storage = Self::load_recent_connections();
             config.saved_sessions_storage = Self::load_saved_sessions();
+            
+            // Apply global verbosity override if set
+            if let Some(override_level) = get_global_verbosity_override() {
+                config.verbosity_level = override_level;
+            }
+            
             config
         }
     }

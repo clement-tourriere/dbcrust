@@ -1,6 +1,6 @@
 use crate::commands::{CommandParser, CommandExecutor, CommandResult};
 use crate::cli::Args;
-use crate::config::Config as DbCrustConfig;
+use crate::config::{Config as DbCrustConfig, VerbosityLevel, set_global_verbosity_override};
 use crate::database::ConnectionInfo;
 use crate::db::Database;
 use crate::format::{format_query_results_expanded, format_query_results_psql};
@@ -99,6 +99,21 @@ impl CliCore {
             }
 
             cli_core.config = temp_config;
+        }
+
+        // Override verbosity level if provided via command line
+        if let Some(verbosity_str) = &args.verbosity {
+            let verbosity = match verbosity_str.to_lowercase().as_str() {
+                "quiet" => VerbosityLevel::Quiet,
+                "normal" => VerbosityLevel::Normal,
+                "verbose" => VerbosityLevel::Verbose,
+                _ => {
+                    eprintln!("Invalid verbosity level '{}', using normal", verbosity_str);
+                    VerbosityLevel::Normal
+                }
+            };
+            cli_core.config.verbosity_level = verbosity;
+            set_global_verbosity_override(Some(verbosity));
         }
 
         // Check if commands can be handled without database connection first
@@ -380,7 +395,13 @@ impl CliCore {
         self.database = Some(database);
         self.connection_info = connection_info;
         
-        println!("✓ Successfully connected to database");
+        // Show success message based on verbosity level
+        match self.config.verbosity_level {
+            VerbosityLevel::Quiet => {}, // No success message in quiet mode
+            VerbosityLevel::Normal | VerbosityLevel::Verbose => {
+                println!("✓ Successfully connected to database");
+            }
+        }
         Ok(())
     }
 
@@ -577,13 +598,8 @@ impl CliCore {
             .with_highlighter(Box::new(highlighter))
             .with_history(history);
 
-        let history_enabled = true; // History is already configured above
 
         println!("Connected! Type \\h for help or \\q to quit.");
-        println!("✨ Features enabled: {} | SQL syntax highlighting | {}",
-            if self.config.autocomplete_enabled { "Autocomplete" } else { "No autocomplete" },
-            if history_enabled { "Command history" } else { "No history" }
-        );
 
         // Main interactive loop
         loop {

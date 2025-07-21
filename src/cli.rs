@@ -40,6 +40,11 @@ pub struct Args {
     /// Don't display the banner
     #[arg(long)]
     pub no_banner: bool,
+
+    /// Control output verbosity
+    /// quiet: only essential info, normal: minimal info, verbose: all connection steps
+    #[arg(long, short)]
+    pub verbosity: Option<String>,
 }
 
 impl std::fmt::Debug for Args {

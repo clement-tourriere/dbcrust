@@ -1,4 +1,4 @@
-use crate::config::SSHTunnelConfig;
+use crate::config::{SSHTunnelConfig, VerbosityLevel};
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseType, create_database_client};
 use crate::database_postgresql::PostgreSQLClient;
 use crate::debug_log;
@@ -28,6 +28,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 macro_rules! status_log {
     ($($arg:tt)*) => {
         println!($($arg)*);
+    };
+}
+
+// Verbosity-aware logging macro
+macro_rules! verbose_log {
+    ($verbosity:expr, $min_level:expr, $($arg:tt)*) => {
+        match ($verbosity, $min_level) {
+            (VerbosityLevel::Quiet, VerbosityLevel::Quiet) |
+            (VerbosityLevel::Normal, VerbosityLevel::Quiet) |
+            (VerbosityLevel::Normal, VerbosityLevel::Normal) |
+            (VerbosityLevel::Verbose, _) => {
+                println!($($arg)*);
+            }
+            _ => {}
+        }
     };
 }
 
@@ -75,7 +90,9 @@ impl Database {
         }
         
         // Parse the connection info from URL
-        println!("  📋 Parsing connection URL...");
+        let config_start = std::time::Instant::now();
+        let config = crate::config::Config::load();
+        verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  📋 Parsing connection URL...");
         let connection_info = ConnectionInfo::parse_url(url)?;
         debug_log!("[Database::from_url] Parsed URL in {:?}", step_start.elapsed());
         
@@ -85,9 +102,7 @@ impl Database {
         }
         
         // For PostgreSQL/MySQL, check for SSH tunnel patterns
-        println!("  🔍 Checking for SSH tunnel patterns...");
-        let config_start = std::time::Instant::now();
-        let config = crate::config::Config::load();
+        verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  🔍 Checking for SSH tunnel patterns...");
         let ssh_tunnel_config = if let Some(ref host) = connection_info.host {
             config.get_ssh_tunnel_for_host(host)
         } else {
@@ -96,13 +111,14 @@ impl Database {
         debug_log!("[Database::from_url] Config check took {:?}", config_start.elapsed());
         
         if ssh_tunnel_config.is_some() {
-            println!("  ✓ SSH tunnel pattern found for host: {:?}", connection_info.host);
+            // SSH tunnel info should always be shown (even in quiet mode)
+            verbose_log!(config.verbosity_level, VerbosityLevel::Quiet, "  ✓ SSH tunnel pattern found for host: {:?}", connection_info.host);
             debug_log!("[Database::from_url] SSH tunnel configuration found for host: {:?}", connection_info.host);
         } else {
-            println!("  ⚠️  No SSH tunnel pattern found for host: {:?}", connection_info.host);
+            verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  ⚠️  No SSH tunnel pattern found for host: {:?}", connection_info.host);
         }
         
-        println!("  🔧 Creating database connection...");
+        verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  🔧 Creating database connection...");
         let conn_start = std::time::Instant::now();
         let result = Self::from_connection_info(connection_info, default_limit, expanded_display_default, ssh_tunnel_config).await;
         debug_log!("[Database::from_url] from_connection_info took {:?}", conn_start.elapsed());
@@ -293,18 +309,18 @@ impl Database {
     ) -> std::result::Result<Self, Box<dyn StdError>> {
         debug_log!("[Database::from_connection_info] Creating database from connection info");
         
-        println!("    📦 Loading configuration...");
         let config_start = std::time::Instant::now();
         let config = crate::config::Config::load();
+        verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "    📦 Loading configuration...");
         debug_log!("[Database::from_connection_info] Config loaded in {:?}", config_start.elapsed());
         
         // Create database client using the new abstraction layer
         // Skip this for SSH tunnel scenarios to avoid premature connection attempts
-        println!("    🔌 Creating database client...");
+        verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "    🔌 Creating database client...");
         let client_start = std::time::Instant::now();
         let database_client = if ssh_tunnel_config.is_some() {
             // Skip database client creation for SSH tunnel scenarios - use legacy path
-            println!("    ⏭️  Skipping database client for SSH tunnel scenario");
+            verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "    ⏭️  Skipping database client for SSH tunnel scenario");
             None
         } else {
             match create_database_client(connection_info.clone()).await {
@@ -364,7 +380,8 @@ impl Database {
                                     );
                                     
                                     // Now create the PostgreSQL pool using the tunnel connection
-                                    println!("    🔌 Creating PostgreSQL pool through SSH tunnel...");
+                                    // SSH tunnel info should always be shown
+                                    verbose_log!(config.verbosity_level, VerbosityLevel::Quiet, "    🔌 Creating PostgreSQL pool through SSH tunnel...");
                                     let tunnel_connect_options = sqlx::postgres::PgConnectOptions::new()
                                         .host("127.0.0.1")
                                         .port(local_port)
@@ -421,7 +438,7 @@ impl Database {
 
                 // Create pool if not already created through SSH tunnel
                 if pg_pool.is_none() {
-                    println!("    🔌 Creating PostgreSQL pool...");
+                    verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "    🔌 Creating PostgreSQL pool...");
                     pg_pool = Some(sqlx::postgres::PgPoolOptions::new()
                         .max_connections(10) // Increased pool size for autocompletion with large databases
                         .min_connections(0) // Don't pre-connect
