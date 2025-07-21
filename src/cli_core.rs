@@ -544,9 +544,9 @@ impl CliCore {
         let hinter = Box::new(DefaultHinter::default().with_style(Style::new().italic().fg(Color::LightGray)));
 
         // Set up history
-        let history_path = crate::config::get_config_dir()
+        let history_path = crate::config::Config::get_config_dir()
             .map(|dir| dir.join("history"))
-            .unwrap_or_else(|| {
+            .unwrap_or_else(|_| {
                 dirs::home_dir()
                     .expect("Could not determine home directory")
                     .join(".dbcrust_history")

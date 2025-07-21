@@ -294,6 +294,10 @@ This pattern ensures "thanks to the enum/traits, synchronization issues will not
 - Integration tests for CLI workflows
 - Do not use `cargo run` for testing (per Cursor rules)
 - Test database operations with mock or test database
+- **Test Isolation**: All tests use isolated temporary directories for config files
+  - `Config::get_config_directory()` automatically detects test mode and returns temp directories
+  - Tests never pollute real user config files (`~/.config/dbcrust/`)
+  - Each test run uses a unique process-based directory: `/tmp/dbcrust_test_{pid}/`
 
 ### Code Style
 - Modular design with single responsibility per module

@@ -42,7 +42,7 @@ pub fn init() -> io::Result<()> {
     let mut result = Ok(());
 
     INIT.call_once(|| {
-        if let Some(config_dir) = config::get_config_dir() {
+        if let Ok(config_dir) = config::Config::get_config_dir() {
             // Create config directory if it doesn't exist
             if let Some(parent) = config_dir.parent() {
                 if !parent.exists() {

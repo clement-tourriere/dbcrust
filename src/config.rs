@@ -207,8 +207,30 @@ impl Default for Config {
             dbname: connection.dbname.clone(),
             save_password: connection.save_password,
             password: connection.password.clone(),
-            recent_connections_storage: RecentConnectionsStorage::default(),
-            saved_sessions_storage: SavedSessionsStorage::default(),
+            recent_connections_storage: {
+                // For tests, use empty storage to avoid loading user data
+                let is_test = std::env::var("RUST_TEST_MODE").is_ok() 
+                    || std::thread::current().name().map(|name| name.contains("test")).unwrap_or(false)
+                    || std::env::args().any(|arg| arg.contains("test"));
+                
+                if is_test {
+                    RecentConnectionsStorage::default()
+                } else {
+                    Self::load_recent_connections()
+                }
+            },
+            saved_sessions_storage: {
+                // For tests, use empty storage to avoid loading user data
+                let is_test = std::env::var("RUST_TEST_MODE").is_ok() 
+                    || std::thread::current().name().map(|name| name.contains("test")).unwrap_or(false)
+                    || std::env::args().any(|arg| arg.contains("test"));
+                
+                if is_test {
+                    SavedSessionsStorage::default()
+                } else {
+                    Self::load_saved_sessions()
+                }
+            },
         }
     }
 }
@@ -250,26 +272,50 @@ fn default_database_type() -> DatabaseType {
 }
 
 impl Config {
-    /// Get the configuration directory path
-    pub fn get_config_dir() -> Result<PathBuf, Box<dyn Error>> {
-        if let Some(config_dir) = get_config_dir() {
-            if !config_dir.exists() {
-                fs::create_dir_all(&config_dir)?;
+    /// Get the configuration directory path - single source of truth for all config files
+    /// Returns a temp directory during tests, real config directory otherwise
+    pub fn get_config_directory() -> Result<PathBuf, Box<dyn Error>> {
+        // Detect test mode using multiple strategies since cfg!(test) doesn't work across crate boundaries
+        let is_test = std::env::var("RUST_TEST_MODE").is_ok() 
+            || std::thread::current().name().map(|name| name.contains("test")).unwrap_or(false)
+            || std::env::args().any(|arg| arg.contains("test"));
+            
+        if is_test {
+            // For tests, use a temp directory based on process ID
+            let temp_dir = std::env::temp_dir();
+            let pid = std::process::id();
+            let test_dir = temp_dir.join(format!("dbcrust_test_{}", pid));
+            
+            if !test_dir.exists() {
+                fs::create_dir_all(&test_dir)?;
             }
-            Ok(config_dir)
+            Ok(test_dir)
         } else {
-            Err("Failed to get configuration directory".into())
+            // For production, use the real config directory
+            if let Some(config_dir) = get_config_dir_impl() {
+                if !config_dir.exists() {
+                    fs::create_dir_all(&config_dir)?;
+                }
+                Ok(config_dir)
+            } else {
+                Err("Failed to get configuration directory".into())
+            }
         }
+    }
+
+    /// DEPRECATED: Use get_config_directory() instead
+    pub fn get_config_dir() -> Result<PathBuf, Box<dyn Error>> {
+        Self::get_config_directory()
     }
 
     /// Get the path to the recent connections file
     pub fn get_recent_connections_path() -> Result<PathBuf, Box<dyn Error>> {
-        Ok(Self::get_config_dir()?.join("recent.toml"))
+        Ok(Self::get_config_directory()?.join("recent.toml"))
     }
 
     /// Get the path to the saved sessions file
     pub fn get_saved_sessions_path() -> Result<PathBuf, Box<dyn Error>> {
-        Ok(Self::get_config_dir()?.join("sessions.toml"))
+        Ok(Self::get_config_directory()?.join("sessions.toml"))
     }
 
     /// Load recent connections from separate file
@@ -1054,38 +1100,15 @@ impl Config {
     }
 }
 
-#[cfg(test)]
-pub fn get_test_config_path() -> PathBuf {
-    let temp_dir = std::env::temp_dir();
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    let pid = std::process::id();
-    let test_dir = temp_dir.join(format!("dbcrust_test_{}_{}", pid, timestamp));
+// Removed get_test_config_path - now using Config::get_config_directory() for all paths
 
-    // Create directory if it doesn't exist
-    if !test_dir.exists() {
-        let _ = std::fs::create_dir_all(&test_dir);
-    }
-
-    test_dir.join("config.toml")
-}
-
-pub fn get_config_dir() -> Option<PathBuf> {
+#[allow(dead_code)]
+fn get_config_dir_impl() -> Option<PathBuf> {
     home_dir().map(|home| home.join(".config").join("dbcrust"))
 }
 
 fn get_config_path() -> Option<PathBuf> {
-    #[cfg(test)]
-    {
-        Some(get_test_config_path())
-    }
-
-    #[cfg(not(test))]
-    {
-        get_config_dir().map(|dir| dir.join("config.toml"))
-    }
+    Config::get_config_directory().ok().map(|dir| dir.join("config.toml"))
 }
 
 fn ensure_config_dir(config_path: &Path) -> io::Result<()> {

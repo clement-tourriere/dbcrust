@@ -3391,7 +3391,7 @@ fn log_type_error(message: &str) {
 
     // Only log if we haven't seen this message before
     if should_log {
-        if let Some(config_dir) = crate::config::get_config_dir() {
+        if let Ok(config_dir) = crate::config::Config::get_config_dir() {
             let log_path = config_dir.join("type_errors.log");
             if let Ok(file) = std::fs::OpenOptions::new()
                 .append(true)

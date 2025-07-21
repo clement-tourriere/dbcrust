@@ -1417,7 +1417,7 @@ mod tests {
     async fn test_complete_backslash_only() {
         let mut completer = create_test_completer().await;
         let suggestions = completer.complete("\\", 1);
-        assert_eq!(suggestions.len(), 21); // Should suggest all backslash commands from registry
+        assert_eq!(suggestions.len(), 38); // Should suggest all backslash commands from new enum system
         assert!(suggestions.iter().any(|s| s.value == "\\q"));
         assert!(suggestions.iter().any(|s| s.value == "\\dt"));
         assert!(suggestions.iter().any(|s| s.value == "\\h"));
@@ -1457,7 +1457,7 @@ mod tests {
         assert_eq!(suggestions[0].value, "\\dt");
         assert_eq!(
             suggestions[0].description,
-            Some("List tables in the current database".to_string())
+            Some("List tables".to_string())
         );
     }
 
