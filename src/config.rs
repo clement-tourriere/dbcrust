@@ -812,6 +812,16 @@ impl Config {
 
     /// Save session with database type information for multi-database support
     pub fn save_session_with_db_type(&mut self, name: &str, database_type: DatabaseType, file_path: Option<String>, options: HashMap<String, String>) -> Result<(), Box<dyn Error>> {
+        // Normalize SQLite file paths to absolute paths
+        let normalized_file_path = if database_type == DatabaseType::SQLite {
+            match file_path {
+                Some(path) => Some(Self::normalize_sqlite_path(&path)?),
+                None => None,
+            }
+        } else {
+            file_path
+        };
+
         let session = SavedSession {
             host: self.connection.host.clone(),
             port: self.connection.port,
@@ -819,7 +829,7 @@ impl Config {
             dbname: self.connection.dbname.clone(),
             ssh_tunnel: self.connection.ssh_tunnel.clone(),
             database_type,
-            file_path,
+            file_path: normalized_file_path,
             options,
         };
 
@@ -849,6 +859,16 @@ impl Config {
             )
         };
 
+        // Normalize SQLite file paths to absolute paths
+        let normalized_file_path = if connection_info.database_type == DatabaseType::SQLite {
+            match &connection_info.file_path {
+                Some(path) => Some(Self::normalize_sqlite_path(path)?),
+                None => None,
+            }
+        } else {
+            connection_info.file_path.clone()
+        };
+
         let session = SavedSession {
             host,
             port,
@@ -856,7 +876,7 @@ impl Config {
             dbname,
             ssh_tunnel: None, // SSH tunnel info not available in ConnectionInfo
             database_type: connection_info.database_type.clone(),
-            file_path: connection_info.file_path.clone(),
+            file_path: normalized_file_path,
             options: connection_info.options.clone(),
         };
 
@@ -1038,12 +1058,34 @@ impl Config {
         None
     }
 
+    // Helper function to convert SQLite file paths to absolute paths for storage
+    // This function expects relative paths (from sqlite:/// URLs) and converts them to absolute
+    fn normalize_sqlite_path(file_path: &str) -> Result<String, Box<dyn Error>> {
+        let path = Path::new(file_path);
+        
+        // Make the relative path absolute based on current directory
+        let current_dir = std::env::current_dir()?;
+        let absolute_path = current_dir.join(path);
+        
+        // Try to canonicalize, fall back to the absolute path if that fails (e.g., file doesn't exist)
+        match absolute_path.canonicalize() {
+            Ok(canonical) => Ok(canonical.to_string_lossy().to_string()),
+            Err(_) => Ok(absolute_path.to_string_lossy().to_string())
+        }
+    }
+
     // Helper function to generate display name from connection URL
     fn generate_display_name_from_url(url: &str, _database_type: &DatabaseType) -> String {
         // Extract meaningful parts from the URL for display
         if url.starts_with("sqlite://") {
             // For SQLite, show just the file path without the scheme
-            url.strip_prefix("sqlite://").unwrap_or(url).to_string()
+            let path = url.strip_prefix("sqlite://").unwrap_or(url);
+            // Handle absolute paths: sqlite:////Users/... becomes //Users/..., strip one slash
+            if path.starts_with("//") {
+                path[1..].to_string()
+            } else {
+                path.to_string()
+            }
         } else if url.starts_with("session://") {
             // For session URLs, show the session name
             url.strip_prefix("session://").unwrap_or(url).to_string()
@@ -1112,8 +1154,20 @@ impl Config {
         database_type: DatabaseType, 
         success: bool
     ) -> Result<(), Box<dyn Error>> {
+        // Normalize SQLite URLs to use absolute paths
+        let normalized_url = if database_type == DatabaseType::SQLite && connection_url.starts_with("sqlite:///") && !connection_url.starts_with("sqlite:////") {
+            // sqlite:///path (3 slashes) = relative path that needs normalization
+            let relative_path = connection_url.strip_prefix("sqlite:///").unwrap_or("");
+            let normalized_path = Self::normalize_sqlite_path(relative_path)?;
+            format!("sqlite:///{}", normalized_path)
+        } else {
+            // sqlite:////path (4 slashes) = absolute path, keep as is
+            // or non-SQLite URLs, keep as is
+            connection_url
+        };
+
         let connection = RecentConnection {
-            connection_url,
+            connection_url: normalized_url,
             display_name,
             timestamp: Utc::now(),
             database_type,
@@ -1140,8 +1194,20 @@ impl Config {
         database_type: DatabaseType,
         success: bool
     ) -> Result<(), Box<dyn Error>> {
-        let display_name = Self::generate_display_name_from_url(&connection_url, &database_type);
-        self.add_recent_connection(connection_url, display_name, database_type, success)
+        // Normalize SQLite URLs to use absolute paths
+        let normalized_url = if database_type == DatabaseType::SQLite && connection_url.starts_with("sqlite:///") && !connection_url.starts_with("sqlite:////") {
+            // sqlite:///path (3 slashes) = relative path that needs normalization
+            let relative_path = connection_url.strip_prefix("sqlite:///").unwrap_or("");
+            let normalized_path = Self::normalize_sqlite_path(relative_path)?;
+            format!("sqlite:///{}", normalized_path)
+        } else {
+            // sqlite:////path (4 slashes) = absolute path, keep as is
+            // or non-SQLite URLs, keep as is
+            connection_url
+        };
+
+        let display_name = Self::generate_display_name_from_url(&normalized_url, &database_type);
+        self.add_recent_connection(normalized_url, display_name, database_type, success)
     }
     
     pub fn get_recent_connections(&self) -> &Vec<RecentConnection> {
@@ -1624,6 +1690,98 @@ mod tests {
         let recent = config.get_recent_connections();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].connection_url, "postgresql://user@localhost:5432/testdb");
+    }
+
+    #[rstest]
+    fn test_sqlite_path_normalization() {
+        let mut config = get_test_config();
+        
+        // Test that relative paths get converted to absolute paths for saved sessions
+        let result = config.save_session_with_db_type(
+            "sqlite_relative",
+            DatabaseType::SQLite,
+            Some("test.db".to_string()),
+            HashMap::new()
+        );
+        assert!(result.is_ok());
+        
+        let session = config.get_session("sqlite_relative").unwrap();
+        assert!(session.file_path.as_ref().unwrap().starts_with("/"));
+        assert!(session.file_path.as_ref().unwrap().ends_with("test.db"));
+        
+        // Test that absolute paths are preserved/canonicalized for saved sessions
+        let temp_dir = std::env::temp_dir();
+        let abs_path = temp_dir.join("absolute_test.db");
+        let abs_path_str = abs_path.to_string_lossy().to_string();
+        
+        let result = config.save_session_with_db_type(
+            "sqlite_absolute", 
+            DatabaseType::SQLite,
+            Some(abs_path_str.clone()),
+            HashMap::new()
+        );
+        assert!(result.is_ok());
+        
+        let session = config.get_session("sqlite_absolute").unwrap();
+        assert!(session.file_path.as_ref().unwrap().starts_with("/"));
+        
+        // Test recent connections path normalization
+        let result = config.add_recent_connection_auto_display(
+            "sqlite://relative_test.db".to_string(),
+            DatabaseType::SQLite,
+            true
+        );
+        assert!(result.is_ok());
+        
+        // Test the problematic case from the user's report: sqlite:///test_data/test_sample.db (3 slashes = relative)
+        let result = config.add_recent_connection_auto_display(
+            "sqlite:///test_data/test_sample.db".to_string(),
+            DatabaseType::SQLite,
+            true
+        );
+        assert!(result.is_ok());
+        
+        // Test absolute path case: sqlite:////absolute/path (4 slashes = absolute, should be kept as is)
+        let result = config.add_recent_connection_auto_display(
+            "sqlite:////tmp/absolute_test.db".to_string(),
+            DatabaseType::SQLite,
+            true
+        );
+        assert!(result.is_ok());
+        
+        let recent = config.get_recent_connections();
+        
+        // Find the sqlite:///test_data/test_sample.db connection (3 slashes = relative, should be normalized to 4 slashes)
+        let sqlite_relative = recent.iter()
+            .find(|r| r.database_type == DatabaseType::SQLite && r.connection_url.contains("test_sample.db"))
+            .unwrap();
+        assert!(sqlite_relative.connection_url.starts_with("sqlite:///"));
+        // Should be normalized to absolute path with 4 slashes total: sqlite:////absolute/path
+        let path_part = sqlite_relative.connection_url.strip_prefix("sqlite://").unwrap();
+        assert!(path_part.starts_with("//"));  // This indicates 4 slashes total
+        assert!(path_part.ends_with("test_data/test_sample.db"));
+        
+        // Find the sqlite:////tmp/absolute_test.db connection (4 slashes = absolute, should be unchanged)
+        let sqlite_absolute = recent.iter()
+            .find(|r| r.database_type == DatabaseType::SQLite && r.connection_url.contains("absolute_test.db"))
+            .unwrap();
+        assert_eq!(sqlite_absolute.connection_url, "sqlite:////tmp/absolute_test.db"); // Should be unchanged
+        
+        // Test that non-SQLite databases are not affected
+        let result = config.save_session_with_db_type(
+            "postgres_test",
+            DatabaseType::PostgreSQL,
+            None,
+            HashMap::new()
+        );
+        assert!(result.is_ok());
+        
+        let result = config.add_recent_connection_auto_display(
+            "postgresql://user@localhost:5432/test".to_string(),
+            DatabaseType::PostgreSQL,
+            true
+        );
+        assert!(result.is_ok());
     }
 
     #[rstest]
