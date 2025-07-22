@@ -72,6 +72,13 @@ maturin build --release
 - **`src/script.rs`**: External editor integration for multiline SQL editing
 - **`src/pgpass.rs`**: `.pgpass` file integration for password management
 
+### Display & User Interface Features
+
+- **Interactive Column Selection**: Visual checkbox interface for selecting columns from large result sets
+- **Intelligent Auto-Triggering**: Configurable threshold-based column selection activation
+- **Session Persistence**: Column selections saved per table structure throughout the session
+- **Ctrl-C Support**: Proper interrupt handling that returns to REPL without exiting
+
 ## Connection Methods
 
 The client supports multiple connection approaches:
@@ -305,6 +312,7 @@ This pattern ensures "thanks to the enum/traits, synchronization issues will not
 - Async/await throughout with proper error propagation
 - Follow Rust naming conventions and use clippy for linting
 - **MANDATORY**: ALL user interactions MUST use the `inquire` crate - NEVER use manual stdin/stdout prompting or `println!` for interactive input
+  - **Example**: Column selection uses `inquire::MultiSelect` for interactive column choosing with proper Ctrl-C handling
 
 ### Feature Development Patterns
 
@@ -337,6 +345,8 @@ When implementing serious/new features, follow this systematic approach:
 #### 4. Documentation & Examples
 - **Code Documentation**: Add rustdoc comments for public APIs
 - **User Documentation**: Update CLAUDE.md with usage examples
+- **User Guide Documentation**: Update `docs/` directory (especially `docs/reference/backslash-commands.md` for new commands)
+- **Configuration Documentation**: Update `docs/configuration.md` for new config options
 - **Configuration Examples**: Show TOML configuration snippets
 - **CLI Examples**: Demonstrate command-line usage patterns
 
@@ -461,6 +471,115 @@ Vault connections use the format:
 - `vaultdb://role@mount/database`
 - Components are optional and will prompt interactively
 - Configure with environment variables or CLI args
+
+## Column Selection & Display Management
+
+DBCrust provides intelligent column selection for queries that return many columns, helping users focus on relevant data with an interactive interface.
+
+### Automatic Column Selection
+
+The system automatically triggers column selection when query results exceed a configurable threshold:
+
+**Configuration:**
+```toml
+# In ~/.config/dbcrust/config.toml
+column_selection_threshold = 10  # Default: 10 columns
+```
+
+**Auto-Trigger Behavior:**
+- When a query returns more columns than the threshold, column selection interface appears
+- User can interactively select which columns to display
+- Selected columns are remembered for the same table structure (session persistence)
+
+### Manual Column Selection Mode
+
+Users can manually enable column selection mode for all queries:
+
+**Commands:**
+```bash
+# Toggle column selection mode on/off
+\cs
+
+# Set column selection threshold (saves to config)
+\csthreshold <number>
+
+# Clear all saved column selections
+\clrcs
+
+# Reset all view settings including column selections
+\resetview
+```
+
+### Interactive Column Selection Interface
+
+The column selection uses `inquire::MultiSelect` for a user-friendly experience:
+
+**Features:**
+- **Visual Interface**: Checkbox-style selection with arrow key navigation
+- **Multi-Selection**: Use Space bar to select/deselect columns
+- **Keyboard Controls**:
+  - Arrow keys: Navigate between columns
+  - Space: Toggle column selection
+  - Enter: Confirm selection and display results
+  - **Ctrl-C: Abort query and return to REPL** (doesn't exit the application)
+- **Help Message**: Clear instructions displayed during selection
+- **Empty Selection**: Selecting no columns displays all columns
+
+### Session Persistence
+
+Column selections are automatically saved and reused:
+
+**Behavior:**
+- Selections are saved per table based on column structure (headers)
+- Subsequent queries on the same table automatically use saved selections
+- Persistence lasts throughout the session until cleared or reset
+- Each unique column structure gets its own saved selection
+
+**Key Generation:**
+- Uses column header names joined with ':' as the key
+- Same query structure = same saved selection
+- Different column order or names = separate selection
+
+### Configuration Integration
+
+Column selection settings are stored in the main configuration:
+
+```toml
+# Default column selection mode (false = only auto-trigger)
+column_selection_mode_default = false
+
+# Threshold for auto-triggering column selection
+column_selection_threshold = 10
+```
+
+### Use Cases
+
+**Large Table Analysis:**
+```sql
+-- Query returns 20+ columns, auto-triggers column selection
+SELECT * FROM users_detailed;
+-- Interactive interface appears, user selects relevant columns
+-- Next time: automatically uses saved selection
+```
+
+**Manual Mode for Focused Work:**
+```bash
+# Enable column selection for all queries
+\cs
+-- Now even small result sets will prompt for column selection
+
+# Disable when done
+\cs
+```
+
+**Configuration for Team Workflows:**
+```bash
+# Set higher threshold for experienced users
+\csthreshold 25
+
+# Set lower threshold for analysis work
+\csthreshold 5
+```
 
 ## Session Management & Connection History
 

@@ -1044,8 +1044,9 @@ impl CommandExecutor for Command {
             }
 
             Command::ClearColumnViews => {
-                // Column views might be handled by named queries or other mechanisms
-                Ok(CommandResult::Output("Column views functionality not implemented yet.".to_string()))
+                let mut db = database.lock().unwrap();
+                db.clear_column_views();
+                Ok(CommandResult::Output("Column views cleared.".to_string()))
             }
 
             Command::ResetView => {
@@ -1056,6 +1057,7 @@ impl CommandExecutor for Command {
                 if db.is_expanded_display() {
                     db.toggle_expanded_display();
                 }
+                db.reset_column_view();
                 config.explain_mode_default = false;
                 config.expanded_display_default = false;
                 config.save().map_err(|e| CommandError::DatabaseError(e.into()))?;

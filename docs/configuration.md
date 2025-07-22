@@ -33,6 +33,10 @@ number_format = "human"  # "raw" or "human" (with commas)
 max_column_width = 50
 truncate_long_values = true
 
+# Column Selection Settings
+column_selection_mode_default = false  # Enable column selection for all queries
+column_selection_threshold = 10        # Auto-trigger when result has more than N columns
+
 [editor]
 command = "code --wait"
 temp_dir = "/tmp"
@@ -159,6 +163,13 @@ Controls how query results and tables are displayed.
 | `number_format` | string | `"human"` | Number formatting (`"raw"` or `"human"`) |
 | `max_column_width` | integer | `50` | Maximum column width before truncation |
 | `truncate_long_values` | boolean | `true` | Truncate long text values |
+| `column_selection_mode_default` | boolean | `false` | Enable column selection for ALL queries |
+| `column_selection_threshold` | integer | `10` | Auto-trigger column selection when results exceed N columns |
+
+**Column Selection Configuration:**
+
+- **`column_selection_mode_default`**: When `true`, every query triggers column selection regardless of column count
+- **`column_selection_threshold`**: Automatically shows column selection interface when queries return more columns than this number
 
 **Example:**
 ```toml
@@ -168,7 +179,17 @@ date_format = "%d/%m/%Y %H:%M"
 number_format = "human"
 max_column_width = 80
 truncate_long_values = false
+
+# Column selection settings
+column_selection_mode_default = false  # Only auto-trigger
+column_selection_threshold = 15        # Higher threshold for experienced users
 ```
+
+**Column Selection Behavior:**
+
+- **Auto-Trigger Mode** (default): Column selection appears when query results have more columns than the threshold
+- **Always-On Mode** (`column_selection_mode_default = true`): Column selection appears for every query
+- **Runtime Control**: Use `\cs` to toggle mode and `\csthreshold N` to change threshold temporarily
 
 ### [editor] - External Editor
 

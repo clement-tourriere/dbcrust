@@ -21,6 +21,10 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
     | `\x` | Toggle expanded display | `\x` |
     | `\e` | Toggle EXPLAIN mode | `\e` |
     | `\ecopy` | Copy last EXPLAIN to clipboard | `\ecopy` |
+    | `\cs` | Toggle column selection mode | `\cs` |
+    | `\csthreshold <n>` | Set column selection threshold | `\csthreshold 15` |
+    | `\clrcs` | Clear saved column selections | `\clrcs` |
+    | `\resetview` | Reset all view settings | `\resetview` |
 
 === "File Operations"
 
@@ -215,6 +219,140 @@ Copies the last EXPLAIN plan in JSON format to your clipboard.
 **Output:**
 ```
 EXPLAIN plan copied to clipboard (JSON format)
+```
+
+#### `\cs` - Toggle Column Selection Mode
+
+Enables or disables interactive column selection for all queries. When enabled, all queries will prompt for column selection regardless of the number of columns.
+
+```sql
+\cs  -- Toggle column selection mode on/off
+```
+
+**Output:**
+```
+Column selection is now enabled.
+```
+
+!!! info "Auto-Trigger vs Manual Mode"
+    - **Auto-Trigger**: Column selection appears automatically when queries return more than the configured threshold (default: 10 columns)
+    - **Manual Mode** (`\cs` enabled): Column selection appears for ALL queries, regardless of column count
+
+#### `\csthreshold <number>` - Set Column Selection Threshold
+
+Configures the number of columns that triggers automatic column selection. This setting is saved to your configuration file.
+
+```sql
+-- Set threshold to 15 columns
+\csthreshold 15
+
+-- Set threshold to 5 columns for detailed work
+\csthreshold 5
+```
+
+**Output:**
+```
+Column selection threshold set to: 15
+```
+
+**Default threshold:** 10 columns
+
+#### Interactive Column Selection Interface
+
+When column selection is triggered (either automatically or via `\cs` mode), an interactive interface appears:
+
+**Features:**
+- **Visual Selection**: Checkbox-style interface with arrow key navigation
+- **Multi-Select**: Use spacebar to select/deselect multiple columns
+- **Keyboard Controls**:
+  - ↑/↓ Arrow keys: Navigate between columns  
+  - Space: Toggle column selection
+  - Enter: Confirm selection and show results
+  - **Ctrl+C: Abort query and return to prompt** (doesn't exit DBCrust)
+
+**Example Usage:**
+```sql
+-- This query has 11 columns, exceeds default threshold of 10
+SELECT * FROM users_detailed;
+```
+
+**Interactive Interface:**
+```
+? Select columns to display: 
+❯ ◯ id
+  ◯ username  
+  ◯ email
+  ◯ first_name
+  ◯ last_name
+  ◯ created_at
+  ◯ updated_at
+  ◯ last_login
+  ◯ is_active
+  ◯ phone
+  ◯ address
+[↑↓ to move, space to select, enter to confirm, ctrl+c to abort]
+```
+
+After selection (e.g., selecting id, username, email):
+```
+Showing 3 of 11 columns
+╭────┬──────────┬──────────────────────╮
+│ id │ username │ email                │
+├────┼──────────┼──────────────────────┤
+│ 1  │ john_doe │ john@example.com     │
+│ 2  │ jane_doe │ jane@example.com     │
+╰────┴──────────┴──────────────────────╯
+```
+
+#### Session Persistence
+
+Column selections are automatically remembered during your session:
+
+**Behavior:**
+- Selections saved per table structure (based on column names)
+- Subsequent queries on same table use saved selection automatically
+- Persists until you clear selections or reset views
+
+**Example:**
+```sql
+-- First time: interactive selection appears
+SELECT * FROM users_detailed;  
+-- [Select id, username, email]
+
+-- Second time: uses saved selection automatically
+SELECT * FROM users_detailed WHERE created_at > '2024-01-01';
+-- Shows only id, username, email columns
+```
+
+#### `\clrcs` - Clear Column Selections
+
+Removes all saved column selections, returning to fresh selection state for all tables.
+
+```sql
+\clrcs
+```
+
+**Output:**
+```
+Column views cleared.
+```
+
+After clearing, the next query on any table will prompt for column selection again.
+
+#### `\resetview` - Reset All View Settings
+
+Resets all display settings to defaults, including:
+- Column selections (clears all saved selections)
+- Expanded display mode (`\x`)
+- EXPLAIN mode (`\e`)
+
+```sql
+\resetview
+```
+
+**Output:**
+```
+View settings reset to defaults.
 ```
 
 ### File Operations
@@ -534,6 +672,23 @@ SELECT * FROM users LIMIT 5;
     \i /home/user/scripts/setup.sql     -- Absolute
     \i ../migrations/001_create.sql     -- Relative
     \w ~/backups/current_query.sql      -- Home directory
+    ```
+
+!!! tip "Column Selection Shortcuts"
+    
+    Efficient column selection workflows:
+    
+    ```sql
+    -- Temporarily adjust threshold for current session
+    \csthreshold 5          -- Lower threshold for detailed analysis
+    
+    -- Enable manual mode for exploration
+    \cs                     -- Now all queries show column selection
+    
+    -- Clear and reset when done
+    \clrcs                  -- Clear saved selections
+    \cs                     -- Disable manual mode
+    \csthreshold 10         -- Reset to default threshold
     ```
 
 !!! tip "Error Recovery"

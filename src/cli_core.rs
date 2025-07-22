@@ -489,6 +489,11 @@ impl CliCore {
                         }
                     }
                     Err(e) => {
+                        // Check if this is a column selection abort
+                        if e.to_string().contains("Column selection aborted") {
+                            // Just return to REPL without error message
+                            return Ok(());
+                        }
                         eprintln!("Error executing query: {e}");
                     }
                 }
@@ -691,7 +696,7 @@ impl CliCore {
                     }
 
                     // Handle SQL queries
-                    match self.execute_sql_interactive(line, &db_arc).await {
+                    match self.execute_sql_interactive(line, &db_arc, &interrupt_flag).await {
                         Ok(_) => {}
                         Err(e) => {
                             eprintln!("SQL error: {e}");
@@ -777,11 +782,21 @@ impl CliCore {
         &mut self,
         sql: &str,
         db_arc: &Arc<Mutex<Database>>,
+        interrupt_flag: &Arc<AtomicBool>,
     ) -> Result<(), CliError> {
         let results = {
             let mut db_guard = db_arc.lock().unwrap();
-            db_guard.execute_query(sql).await
-                .map_err(|e| CliError::CommandError(e.to_string()))?
+            match db_guard.execute_query_with_interrupt(sql, interrupt_flag).await {
+                Ok(results) => results,
+                Err(e) => {
+                    // Check if this is a column selection abort
+                    if e.to_string().contains("Column selection aborted") {
+                        // Return Ok to go back to REPL without error
+                        return Ok(());
+                    }
+                    return Err(CliError::CommandError(e.to_string()));
+                }
+            }
         };
 
         if !results.is_empty() {

@@ -18,11 +18,22 @@ use sqlx::types::{Decimal, Uuid};
 use sqlx::{Column, Executor, Row, Statement, TypeInfo};
 use std::collections::HashMap;
 use std::error::Error as StdError;
+
+#[derive(Debug)]
+pub struct ColumnSelectionAborted;
+
+impl std::fmt::Display for ColumnSelectionAborted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Column selection aborted by user")
+    }
+}
+
+impl StdError for ColumnSelectionAborted {}
 use std::io::prelude::*;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 
 // Status logging macro that always shows important status messages
 macro_rules! status_log {
@@ -1295,6 +1306,14 @@ impl Database {
         &mut self,
         query: &str,
     ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        self.execute_query_with_interrupt(query, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).await
+    }
+
+    pub async fn execute_query_with_interrupt(
+        &mut self,
+        query: &str,
+        interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
         // Check if we should EXPLAIN this query (applies to all database types)
         if self.explain_mode && is_query_explainable(query) {
             debug_log!("EXPLAIN mode is enabled, executing EXPLAIN query");
@@ -1305,7 +1324,7 @@ impl Database {
         if let Some(ref database_client) = self.database_client {
             debug_log!("Using new database abstraction layer for execute_query");
             match database_client.execute_query(query).await {
-                Ok(results) => return Ok(results),
+                Ok(results) => return self.apply_column_selection_if_needed(results, interrupt_flag),
                 Err(e) => {
                     debug_log!("Database client execute_query failed: {}. Falling back to legacy implementation.", e);
                     // For non-PostgreSQL databases, return the error instead of falling back
@@ -1323,7 +1342,7 @@ impl Database {
         if self.pool.is_none() {
             // Mock response for execute_query
             if query.to_lowercase().contains("select * from users") {
-                return Ok(vec![
+                let results = vec![
                     vec!["id".to_string(), "name".to_string(), "email".to_string()],
                     vec![
                         "1".to_string(),
@@ -1335,16 +1354,18 @@ impl Database {
                         "Bob".to_string(),
                         "bob@example.com".to_string(),
                     ],
-                ]);
+                ];
+                return self.apply_column_selection_if_needed(results, interrupt_flag);
             } else if query.to_lowercase().contains("select * from orders") {
-                return Ok(vec![
+                let results = vec![
                     vec![
                         "order_id".to_string(),
                         "item_name".to_string(),
                         "quantity".to_string(),
                     ],
                     vec!["101".to_string(), "Laptop".to_string(), "1".to_string()],
-                ]);
+                ];
+                return self.apply_column_selection_if_needed(results, interrupt_flag);
             }
             // Default mock for other queries, e.g. DDL or unknown SELECTs
             return Ok(vec![vec!["Mocked_execute_query_success".to_string()]]);
@@ -1517,6 +1538,43 @@ impl Database {
                 }
                 results.push(data_row);
             }
+            // Apply column selection if needed
+            self.apply_column_selection_if_needed(results, interrupt_flag)
+        }
+    }
+    
+    /// Apply column selection based on threshold or cs mode
+    pub fn apply_column_selection_if_needed(
+        &mut self,
+        results: Vec<Vec<String>>,
+        interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        // Don't apply column selection if results are empty or only contain header
+        if results.len() <= 1 {
+            return Ok(results);
+        }
+        
+        let column_count = results[0].len();
+        
+        // Check if we should apply column selection
+        let should_apply = self.column_select_mode || self.should_auto_enable_column_selection(column_count);
+        
+        if should_apply {
+            debug_log!("Applying column selection: cs_mode={}, columns={}, threshold={}", 
+                      self.column_select_mode, column_count, self.column_selection_threshold);
+            match self.interactive_column_selection(&results, interrupt_flag) {
+                Ok(filtered) => Ok(filtered),
+                Err(e) if e.is::<ColumnSelectionAborted>() => {
+                    // Re-throw the abort error to propagate it up
+                    Err(e)
+                }
+                Err(e) => {
+                    // For other errors, log and return original results
+                    eprintln!("Column selection error: {}", e);
+                    Ok(results)
+                }
+            }
+        } else {
             Ok(results)
         }
     }
@@ -2830,7 +2888,7 @@ impl Database {
     pub fn interactive_column_selection(
         &mut self,
         data: &[Vec<String>],
-        interrupt_flag: &Arc<AtomicBool>,
+        _interrupt_flag: &Arc<AtomicBool>,
     ) -> Result<Vec<Vec<String>>, Box<dyn StdError>> {
         // For testing purposes, we'll add a special case that provides a mocked input
         // This is only used in tests and won't affect normal operation
@@ -2879,108 +2937,73 @@ impl Database {
             return Ok(filtered_data);
         }
 
-        // Display column selection interface
-        println!();
-        println!(
-            "Select columns to display (enter column numbers separated by spaces, or 'all' for all columns)"
-        );
-        println!(
-            "-----------------------------------------------------------------------------------"
-        );
+        // Use inquire for interactive column selection
+        use inquire::MultiSelect;
+        
+        let column_options: Vec<&String> = header.iter().collect();
+        
+        match MultiSelect::new("Select columns to display:", column_options)
+            .with_help_message("Use Space to select/deselect, Enter to confirm, Ctrl-C to abort")
+            .prompt()
+        {
+            Ok(selected_columns) => {
+                if selected_columns.is_empty() {
+                    // If nothing selected, show all columns
+                    println!("No columns selected, showing all {} columns", header.len());
+                    return Ok(data.to_vec());
+                }
+                
+                // Find indices of selected columns
+                let selected_indices: Vec<usize> = selected_columns
+                    .iter()
+                    .filter_map(|&col| header.iter().position(|h| h == col))
+                    .collect();
+                    
+                println!("Showing {} of {} columns", selected_indices.len(), header.len());
+                
+                // Create the filtered dataset
+                let mut filtered_data = Vec::new();
 
-        for (i, col) in header.iter().enumerate() {
-            println!("  {}. {}", i + 1, col);
+                // Create a new header with only the selected columns
+                let filtered_header: Vec<String> = selected_indices
+                    .iter()
+                    .map(|&idx| header[idx].clone())
+                    .collect();
+
+                // Save for future use with the same set of columns
+                self.save_column_view(&view_key, filtered_header.clone());
+
+                filtered_data.push(filtered_header);
+
+                // Add each data row with only the selected columns
+                for row in data.iter().skip(1) {
+                    let filtered_row: Vec<String> = selected_indices
+                        .iter()
+                        .map(|&idx| {
+                            if idx < row.len() {
+                                row[idx].clone()
+                            } else {
+                                // Handle case where row has fewer columns than expected
+                                String::new()
+                            }
+                        })
+                        .collect();
+                    filtered_data.push(filtered_row);
+                }
+
+                return Ok(filtered_data);
+            }
+            Err(inquire::InquireError::OperationCanceled) => {
+                // User pressed Ctrl-C - return the abort error
+                println!("Column selection aborted");
+                return Err(Box::new(ColumnSelectionAborted));
+            }
+            Err(e) => {
+                // Other errors - show all columns
+                eprintln!("Column selection error: {}, showing all columns", e);
+                return Ok(data.to_vec());
+            }
         }
-        println!(
-            "-----------------------------------------------------------------------------------"
-        );
-        print!(
-            "Select columns (1-{}) [Press Enter for all columns]: ",
-            header.len()
-        );
-        std::io::stdout().flush()?;
-
-        // Signal that we're handling user input that might be interrupted
-        interrupt_flag.store(true, Ordering::SeqCst);
-
-        // Read user input (Ctrl-C will be handled separately)
-        let mut input = String::new();
-        let res = std::io::stdin().read_line(&mut input);
-
-        // We're done with the critical section that might be interrupted
-        interrupt_flag.store(false, Ordering::SeqCst);
-
-        // Check if we got a result or if Ctrl-C was pressed
-        if res.is_err() {
-            println!("\nInput error, showing all columns");
-            return Ok(data.to_vec());
-        }
-
-        let input = input.trim();
-
-        // User wants all columns or entered nothing
-        if input.is_empty() || input.to_lowercase() == "all" {
-            println!("Showing all {} columns", header.len());
-            return Ok(data.to_vec());
-        }
-
-        // Parse selected column indices
-        let selected_indices: Vec<usize> = input
-            .split_whitespace()
-            .filter_map(|s| {
-                s.parse::<usize>().ok().and_then(|i| {
-                    if i >= 1 && i <= header.len() {
-                        Some(i - 1) // Convert 1-based to 0-based index
-                    } else {
-                        None
-                    }
-                })
-            })
-            .collect();
-
-        // Handle case where no valid indices were provided
-        if selected_indices.is_empty() {
-            println!("No valid columns selected, showing all columns");
-            return Ok(data.to_vec());
-        }
-
-        println!(
-            "Showing {} of {} columns",
-            selected_indices.len(),
-            header.len()
-        );
-
-        // Create the filtered dataset
-        let mut filtered_data = Vec::new();
-
-        // Create a new header with only the selected columns
-        let filtered_header: Vec<String> = selected_indices
-            .iter()
-            .map(|&idx| header[idx].clone())
-            .collect();
-
-        // Save for future use with the same set of columns
-        self.save_column_view(&view_key, filtered_header.clone());
-
-        filtered_data.push(filtered_header);
-
-        // Add each data row with only the selected columns
-        for row in data.iter().skip(1) {
-            let filtered_row: Vec<String> = selected_indices
-                .iter()
-                .map(|&idx| {
-                    if idx < row.len() {
-                        row[idx].clone()
-                    } else {
-                        // Handle case where row has fewer columns than expected
-                        String::new()
-                    }
-                })
-                .collect();
-            filtered_data.push(filtered_row);
-        }
-
-        Ok(filtered_data)
     }
 
     pub fn clear_column_views(&mut self) {
