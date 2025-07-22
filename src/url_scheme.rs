@@ -41,7 +41,7 @@ impl ParsedUrl {
     pub fn is_special_scheme(&self) -> bool {
         matches!(
             self.scheme,
-            UrlScheme::Session | UrlScheme::Recent | UrlScheme::Vault | UrlScheme::VaultDB
+            UrlScheme::Session | UrlScheme::Recent | UrlScheme::Vault
         )
     }
 
@@ -78,8 +78,6 @@ pub enum UrlScheme {
     Recent,
     #[strum(serialize = "vault")]
     Vault,
-    #[strum(serialize = "vaultdb")]
-    VaultDB,
 }
 
 impl UrlScheme {
@@ -97,7 +95,7 @@ impl UrlScheme {
             Self::Docker => "Docker container database",
             Self::Session => "Saved session connection",
             Self::Recent => "Recent connection from history",
-            Self::Vault | Self::VaultDB => "HashiCorp Vault dynamic credentials",
+            Self::Vault => "HashiCorp Vault dynamic credentials",
         }
     }
 
@@ -128,7 +126,7 @@ impl UrlScheme {
         // For special schemes, don't parse with url crate
         if matches!(
             scheme,
-            Self::Session | Self::Recent | Self::Vault | Self::VaultDB | Self::Docker
+            Self::Session | Self::Recent | Self::Vault | Self::Docker
         ) {
             return Ok(ParsedUrl::new(scheme, full_url, None));
         }
@@ -155,7 +153,6 @@ impl UrlScheme {
             "session" => Ok(Self::Session),
             "recent" => Ok(Self::Recent),
             "vault" => Ok(Self::Vault),
-            "vaultdb" => Ok(Self::VaultDB),
             _ => Err(UrlSchemeError::UnsupportedScheme(scheme.to_string())),
         }
     }
@@ -171,7 +168,7 @@ impl UrlScheme {
             Self::Postgres | Self::Docker => Some("PostgreSQL"),
             Self::MySQL => Some("MySQL"),
             Self::SQLite => Some("SQLite"),
-            Self::Session | Self::Recent | Self::Vault | Self::VaultDB => None, // Resolved later
+            Self::Session | Self::Recent | Self::Vault => None, // Resolved later
         }
     }
 
@@ -399,7 +396,7 @@ mod tests {
     #[test]
     fn test_url_scheme_iteration() {
         let schemes: Vec<_> = UrlScheme::iter().collect();
-        assert_eq!(schemes.len(), 8); // All 8 schemes (removed PostgreSQL duplicate)
+        assert_eq!(schemes.len(), 7); // All 7 schemes
 
         // Verify all schemes have proper string representation
         for scheme in schemes {
@@ -421,9 +418,8 @@ mod tests {
         assert_eq!(suggestions[0], "docker://");
 
         let suggestions = UrlSchemeManager::get_scheme_suggestions("va");
-        assert_eq!(suggestions.len(), 2);
+        assert_eq!(suggestions.len(), 1);
         assert!(suggestions.contains(&"vault://".to_string()));
-        assert!(suggestions.contains(&"vaultdb://".to_string()));
     }
 
     #[test]

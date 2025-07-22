@@ -164,7 +164,19 @@ impl CliCore {
             crate::cli::Shell::Elvish => CompletionShell::Elvish,
         };
 
-        generate_completion_with_url_schemes(shell_type, &mut cmd, "dbcrust", &mut io::stdout())
+        // Detect the actual binary name from command line arguments
+        let binary_name = std::env::args()
+            .next()
+            .map(|path| {
+                std::path::Path::new(&path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("dbcrust")
+                    .to_string()
+            })
+            .unwrap_or_else(|| "dbcrust".to_string());
+
+        generate_completion_with_url_schemes(shell_type, &mut cmd, &binary_name, &mut io::stdout())
             .map_err(|e| CliError::CommandError(format!("Failed to generate completion: {}", e)))?;
         Ok(())
     }

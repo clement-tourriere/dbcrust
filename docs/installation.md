@@ -169,11 +169,12 @@ Enable intelligent shell autocompletion with URL scheme support and contextual s
 === "Bash"
 
     ```bash
-    # Install completion script
-    dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
+    # Create completions directory if it doesn't exist
+    mkdir -p ~/.local/share/bash-completion/completions
     
-    # Or add to your ~/.bashrc for dynamic loading
-    source <(dbcrust --completions bash)
+    # Install completion scripts for both binaries
+    dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
+    dbc --completions bash > ~/.local/share/bash-completion/completions/dbc
     
     # Reload your shell
     source ~/.bashrc
@@ -183,14 +184,18 @@ Enable intelligent shell autocompletion with URL scheme support and contextual s
 
     ```bash
     # Create completions directory if it doesn't exist
-    mkdir -p ~/.local/share/zsh/site-functions
+    mkdir -p ~/.zfunc
     
-    # Install completion script
-    dbcrust --completions zsh > ~/.local/share/zsh/site-functions/_dbcrust
+    # Install completion scripts
+    dbcrust --completions zsh > ~/.zfunc/_dbcrust
+    dbc --completions zsh > ~/.zfunc/_dbc
     
-    # Add to your .zshrc if not already present
-    echo 'fpath=(~/.local/share/zsh/site-functions $fpath)' >> ~/.zshrc
-    echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
+    # Add these lines to your .zshrc (before oh-my-zsh if you use it):
+    fpath+=~/.zfunc
+    autoload -U compinit && compinit
+    
+    # If you use oh-my-zsh, make sure these lines come BEFORE:
+    # source $ZSH/oh-my-zsh.sh
     
     # Reload your shell
     source ~/.zshrc
@@ -199,11 +204,12 @@ Enable intelligent shell autocompletion with URL scheme support and contextual s
 === "Fish"
 
     ```bash
-    # Install completion script
+    # Install completion scripts for both binaries
     dbcrust --completions fish > ~/.config/fish/completions/dbcrust.fish
+    dbc --completions fish > ~/.config/fish/completions/dbc.fish
     
-    # Reload fish completions
-    fish -c "complete --erase --command dbcrust; source ~/.config/fish/completions/dbcrust.fish"
+    # Reload fish shell for completions to take effect
+    exec fish
     ```
 
 === "PowerShell"
@@ -213,20 +219,26 @@ Enable intelligent shell autocompletion with URL scheme support and contextual s
     $CompletionDir = Split-Path $PROFILE.CurrentUserAllHosts -Parent | Join-Path -ChildPath "Completions"
     New-Item -ItemType Directory -Force -Path $CompletionDir
     
-    # Generate completion script
+    # Generate completion scripts for both binaries
     dbcrust --completions powershell > "$CompletionDir/dbcrust.ps1"
+    dbc --completions powershell > "$CompletionDir/dbc.ps1"
     
     # Add to your PowerShell profile
     Add-Content $PROFILE.CurrentUserAllHosts ". `$PSScriptRoot/Completions/dbcrust.ps1"
+    Add-Content $PROFILE.CurrentUserAllHosts ". `$PSScriptRoot/Completions/dbc.ps1"
     ```
 
 !!! success "Smart Autocompletion Features"
-    Once installed, you'll get:
+    Once installed, you'll get intelligent completions for both `dbcrust` and `dbc` commands:
     
-    - **URL schemes**: `dbc pos[TAB]` → `postgres://`
-    - **Docker containers**: `dbc docker://post[TAB]` → `docker://postgres-dev`
-    - **Saved sessions**: `dbc session://prod[TAB]` → `session://production_db`
+    - **URL schemes**: `dbc pos[TAB]` → `dbc postgres://`
+    - **Docker containers**: `dbc docker://[TAB]` → lists running database containers
+    - **Saved sessions**: `dbc session://[TAB]` → lists your saved sessions
     - **File completion**: `dbc sqlite://[TAB]` → delegates to shell file completion
+    - **Command flags**: `dbc --[TAB]` → shows all available options
+    
+    !!! tip "Zsh Users"
+        For oh-my-zsh users, make sure to add the `fpath` and `compinit` lines **before** sourcing oh-my-zsh in your `.zshrc`
     
     See [URL Schemes & Autocompletion](/dbcrust/reference/url-schemes/) for complete documentation.
 
