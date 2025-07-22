@@ -343,6 +343,42 @@ impl CliCore {
         // Handle vault URLs
         if full_url_str.starts_with("vault://") || full_url_str.starts_with("vaultdb://") {
             let (database, connection_info) = self.handle_vault_connection(&full_url_str).await?;
+            
+            // Track vault connection in history with vault metadata
+            // Reconstruct the complete vault URL from metadata (like saved sessions do)
+            let complete_vault_url = if let Some(ref conn_info) = connection_info {
+                if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
+                    conn_info.options.get("vault_mount"),
+                    conn_info.options.get("vault_database"), 
+                    conn_info.options.get("vault_role")
+                ) {
+                    if vault_role.is_empty() {
+                        format!("vault://{vault_mount}/{vault_database}")
+                    } else {
+                        format!("vault://{}@{vault_mount}/{vault_database}", vault_role)
+                    }
+                } else {
+                    full_url_str.to_string()
+                }
+            } else {
+                full_url_str.to_string()
+            };
+            
+            let options = if let Some(ref conn_info) = connection_info {
+                conn_info.options.clone()
+            } else {
+                std::collections::HashMap::new()
+            };
+            
+            if let Err(e) = self.config.add_recent_connection_with_options(
+                complete_vault_url,
+                crate::database::DatabaseType::PostgreSQL, // Vault connections are typically PostgreSQL
+                true,
+                options,
+            ) {
+                debug_log!("Failed to add vault connection to history: {}", e);
+            }
+            
             self.database = Some(database);
             self.connection_info = connection_info;
             return Ok(());
@@ -1017,6 +1053,27 @@ impl CliCore {
         if original_url.starts_with("docker://") {
             // Docker connections are handled specially - just return as-is
             return Ok(original_url.clone());
+        }
+        
+        if original_url.starts_with("vault://") || original_url.starts_with("vaultdb://") {
+            // Check if we have vault metadata stored (like saved sessions do)
+            if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
+                connection.options.get("vault_mount"),
+                connection.options.get("vault_database"), 
+                connection.options.get("vault_role")
+            ) {
+                // This is a Vault connection with stored metadata, reconstruct vault:// URL for fresh credentials
+                println!("🔐 Re-obtaining Vault credentials for recent connection: {vault_database}");
+                if vault_role.is_empty() {
+                    return Ok(format!("vault://{vault_mount}/{vault_database}"));
+                } else {
+                    return Ok(format!("vault://{}@{vault_mount}/{vault_database}", vault_role));
+                }
+            } else {
+                // Fallback: use original vault URL
+                println!("🔐 Re-obtaining Vault credentials for recent connection");
+                return Ok(original_url.clone());
+            }
         }
         
         // Check if this was originally a Docker connection (based on display_name)

@@ -53,6 +53,9 @@ pub struct RecentConnection {
     pub timestamp: DateTime<Utc>,
     pub database_type: DatabaseType,
     pub success: bool,
+    // Additional connection options (includes vault metadata for vault connections)
+    #[serde(default)]
+    pub options: HashMap<String, String>,
 }
 
 /// Recent connections storage - stored in a separate file
@@ -1172,6 +1175,7 @@ impl Config {
             timestamp: Utc::now(),
             database_type,
             success,
+            options: HashMap::new(),
         };
         
         // Add to the beginning of the list (most recent first)
@@ -1208,6 +1212,37 @@ impl Config {
 
         let display_name = Self::generate_display_name_from_url(&normalized_url, &database_type);
         self.add_recent_connection(normalized_url, display_name, database_type, success)
+    }
+    
+    /// Add a recent connection with vault metadata (for vault connections)
+    pub fn add_recent_connection_with_options(
+        &mut self,
+        connection_url: String,
+        database_type: DatabaseType,
+        success: bool,
+        options: HashMap<String, String>
+    ) -> Result<(), Box<dyn Error>> {
+        let display_name = Self::generate_display_name_from_url(&connection_url, &database_type);
+        
+        let connection = RecentConnection {
+            connection_url,
+            display_name,
+            timestamp: Utc::now(),
+            database_type,
+            success,
+            options,
+        };
+        
+        // Add to the beginning of the list (most recent first)
+        self.recent_connections_storage.connections.insert(0, connection);
+        
+        // Keep only the configured number of recent connections
+        if self.recent_connections_storage.connections.len() > self.max_recent_connections {
+            self.recent_connections_storage.connections.truncate(self.max_recent_connections);
+        }
+        
+        self.save_recent_connections()?;
+        Ok(())
     }
     
     pub fn get_recent_connections(&self) -> &Vec<RecentConnection> {
