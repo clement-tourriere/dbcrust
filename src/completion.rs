@@ -2,6 +2,7 @@ use crate::config::{Config, SavedSession};
 use crate::db::Database;
 use crate::debug_log;
 use crate::commands::CommandParser;
+use crate::sql_context::{parse_sql_context, SqlContext, get_context_suggestions};
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Span, Suggestion};
 use sqlx::Row;
@@ -1048,6 +1049,123 @@ impl Completer for SqlCompleter {
             return completions;
         }
 
+        // Check for dot completion first (existing functionality)
+        // If we have a dot, let the existing dot completion logic handle it
+        let has_dot_completion = word_start > 0 && line.chars().nth(word_start - 1) == Some('.');
+        
+        // SQL CONTEXT ANALYSIS - Only apply if not doing dot completion
+        if !has_dot_completion {
+            let sql_context = parse_sql_context(line, pos);
+            
+            // Handle context-aware completions
+            match &sql_context {
+            SqlContext::SelectClause { from_tables } => {
+                // After SELECT, suggest columns from FROM tables, * and aggregate functions
+                let context_suggestions = get_context_suggestions(&sql_context);
+                for suggestion in context_suggestions {
+                    if suggestion.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                        completions.push(Suggestion {
+                            value: suggestion.to_string(),
+                            description: Some("SQL suggestion".to_string()),
+                            span: Span { start: word_start, end: pos },
+                            append_whitespace: true,
+                            extra: None,
+                            style: Some(Style::new().fg(Color::Magenta)),
+                        });
+                    }
+                }
+                
+                // Also suggest column names from FROM tables
+                for table in from_tables {
+                    let columns = self.fetch_columns(table);
+                    for column in columns {
+                        if column.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                            completions.push(Suggestion {
+                                value: column.clone(),
+                                description: Some(format!("Column from {}", table)),
+                                span: Span { start: word_start, end: pos },
+                                append_whitespace: true,
+                                extra: None,
+                                style: Some(Style::new().fg(Color::Green)),
+                            });
+                        }
+                    }
+                }
+                
+                if !completions.is_empty() {
+                    return completions;
+                }
+            }
+            SqlContext::WhereClause { from_tables } | 
+            SqlContext::OrderByClause { from_tables } | 
+            SqlContext::GroupByClause { from_tables } => {
+                // After WHERE/ORDER BY/GROUP BY, suggest column names from FROM tables
+                for table in from_tables {
+                    let columns = self.fetch_columns(table);
+                    for column in columns {
+                        if column.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                            completions.push(Suggestion {
+                                value: column.clone(),
+                                description: Some(format!("Column from {}", table)),
+                                span: Span { start: word_start, end: pos },
+                                append_whitespace: true,
+                                extra: None,
+                                style: Some(Style::new().fg(Color::Green)),
+                            });
+                        }
+                    }
+                }
+                
+                if !completions.is_empty() {
+                    return completions;
+                }
+            }
+            SqlContext::HavingClause { from_tables } => {
+                // After HAVING, suggest aggregate functions and column names
+                let context_suggestions = get_context_suggestions(&sql_context);
+                for suggestion in context_suggestions {
+                    if suggestion.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                        completions.push(Suggestion {
+                            value: suggestion.to_string(),
+                            description: Some("Aggregate function".to_string()),
+                            span: Span { start: word_start, end: pos },
+                            append_whitespace: true,
+                            extra: None,
+                            style: Some(Style::new().fg(Color::Magenta)),
+                        });
+                    }
+                }
+                
+                // Also suggest column names
+                for table in from_tables {
+                    let columns = self.fetch_columns(table);
+                    for column in columns {
+                        if column.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                            completions.push(Suggestion {
+                                value: column.clone(),
+                                description: Some(format!("Column from {}", table)),
+                                span: Span { start: word_start, end: pos },
+                                append_whitespace: true,
+                                extra: None,
+                                style: Some(Style::new().fg(Color::Green)),
+                            });
+                        }
+                    }
+                }
+                
+                if !completions.is_empty() {
+                    return completions;
+                }
+            }
+            SqlContext::FromClause | SqlContext::JoinClause => {
+                // For FROM and JOIN, use default table suggestion behavior (below)
+            }
+            SqlContext::General => {
+                // Use default behavior for general context
+            }
+            }
+        }
+
         // NEW LOGIC for column and tables-in-schema completion:
         if word_start > 0 && line.chars().nth(word_start - 1) == Some('.') {
             let dot_position = word_start - 1; // Position of the dot
@@ -1584,5 +1702,135 @@ mod tests {
         let line = "SELECT * FROM my_u";
         let suggestions = completer.complete(line, line.len());
         assert!(suggestions.iter().any(|s| s.value == "my_users"));
+    }
+
+    // Tests for context-aware SQL completion
+
+    #[tokio::test]
+    async fn test_context_aware_select_suggests_columns_and_star() {
+        let mut completer = create_test_completer().await;
+        let line = "SELECT ";
+        let suggestions = completer.complete(line, line.len());
+        
+        // Should suggest * and aggregate functions, not tables
+        assert!(suggestions.iter().any(|s| s.value == "*"), 
+            "Should suggest * after SELECT. Got: {:?}", suggestions);
+        assert!(suggestions.iter().any(|s| s.value == "COUNT("), 
+            "Should suggest COUNT( after SELECT. Got: {:?}", suggestions);
+        
+        // Should NOT suggest table names in SELECT context
+        assert!(!suggestions.iter().any(|s| s.value == "users"), 
+            "Should NOT suggest table 'users' after SELECT");
+        assert!(!suggestions.iter().any(|s| s.value == "orders"), 
+            "Should NOT suggest table 'orders' after SELECT");
+    }
+
+    #[tokio::test]
+    async fn test_context_aware_select_with_from_suggests_columns() {
+        let mut completer = create_test_completer().await;
+        let line = "SELECT  FROM users";
+        let suggestions = completer.complete(line, 7); // Position after "SELECT "
+        
+        // Should suggest columns from users table
+        assert!(suggestions.iter().any(|s| s.value == "id"), 
+            "Should suggest 'id' column from users table. Got: {:?}", suggestions);
+        assert!(suggestions.iter().any(|s| s.value == "name"), 
+            "Should suggest 'name' column from users table. Got: {:?}", suggestions);
+        
+        // Should also suggest * and aggregate functions
+        assert!(suggestions.iter().any(|s| s.value == "*"), 
+            "Should suggest * in SELECT context. Got: {:?}", suggestions);
+    }
+
+    #[tokio::test]
+    async fn test_context_aware_where_suggests_columns() {
+        let mut completer = create_test_completer().await;
+        let line = "SELECT * FROM users WHERE ";
+        let suggestions = completer.complete(line, line.len());
+        
+        // Should suggest columns from users table
+        assert!(suggestions.iter().any(|s| s.value == "id"), 
+            "Should suggest 'id' column in WHERE clause. Got: {:?}", suggestions);
+        assert!(suggestions.iter().any(|s| s.value == "name"), 
+            "Should suggest 'name' column in WHERE clause. Got: {:?}", suggestions);
+        
+        // Should NOT suggest table names or * in WHERE context
+        assert!(!suggestions.iter().any(|s| s.value == "users"), 
+            "Should NOT suggest table 'users' in WHERE clause");
+        assert!(!suggestions.iter().any(|s| s.value == "*"), 
+            "Should NOT suggest '*' in WHERE clause");
+    }
+
+    #[tokio::test]
+    async fn test_context_aware_where_with_multiple_tables() {
+        let mut completer = create_test_completer().await;
+        let line = "SELECT * FROM users u, orders o WHERE ";
+        let suggestions = completer.complete(line, line.len());
+        
+        // Should suggest columns from both users and orders tables
+        assert!(suggestions.iter().any(|s| s.value == "id"), 
+            "Should suggest 'id' column. Got: {:?}", suggestions);
+        assert!(suggestions.iter().any(|s| s.value == "name"), 
+            "Should suggest 'name' column from users. Got: {:?}", suggestions);
+        
+        // The suggestions should include columns from both tables
+        let column_suggestions: Vec<String> = suggestions.iter()
+            .filter(|s| s.description.as_ref().map_or(false, |d| d.contains("Column from")))
+            .map(|s| s.value.clone())
+            .collect();
+        assert!(!column_suggestions.is_empty(), "Should have column suggestions from both tables");
+    }
+
+    #[tokio::test] 
+    async fn test_context_aware_order_by_suggests_columns() {
+        let mut completer = create_test_completer().await;
+        let line = "SELECT * FROM users ORDER BY ";
+        let suggestions = completer.complete(line, line.len());
+        
+        // Should suggest columns from users table
+        assert!(suggestions.iter().any(|s| s.value == "id"), 
+            "Should suggest 'id' column in ORDER BY. Got: {:?}", suggestions);
+        assert!(suggestions.iter().any(|s| s.value == "name"), 
+            "Should suggest 'name' column in ORDER BY. Got: {:?}", suggestions);
+        
+        // Should NOT suggest table names 
+        assert!(!suggestions.iter().any(|s| s.value == "users"), 
+            "Should NOT suggest table 'users' in ORDER BY clause");
+    }
+
+    #[tokio::test]
+    async fn test_context_aware_from_still_suggests_tables() {
+        let mut completer = create_test_completer().await;
+        let line = "SELECT * FROM ";
+        let suggestions = completer.complete(line, line.len());
+        
+        // Should suggest table names in FROM context (existing behavior preserved)
+        assert!(suggestions.iter().any(|s| s.value == "users"), 
+            "Should suggest 'users' table in FROM clause. Got: {:?}", suggestions);
+        assert!(suggestions.iter().any(|s| s.value == "orders"), 
+            "Should suggest 'orders' table in FROM clause. Got: {:?}", suggestions);
+        
+        // Should NOT suggest * or aggregate functions in FROM context
+        assert!(!suggestions.iter().any(|s| s.value == "*"), 
+            "Should NOT suggest '*' in FROM clause");
+        assert!(!suggestions.iter().any(|s| s.value == "COUNT("), 
+            "Should NOT suggest 'COUNT(' in FROM clause");
+    }
+
+    #[tokio::test]
+    async fn test_backwards_compatibility_general_context() {
+        let mut completer = create_test_completer().await;
+        
+        // Test at beginning of line - should suggest keywords and tables (existing behavior)
+        let line = "";
+        let suggestions = completer.complete(line, 0);
+        // Empty line should return empty suggestions (existing behavior)
+        assert!(suggestions.is_empty());
+        
+        // Test with partial keyword
+        let line = "SEL";
+        let suggestions = completer.complete(line, 3);
+        assert!(suggestions.iter().any(|s| s.value == "SELECT"), 
+            "Should suggest SELECT keyword for 'SEL'. Got: {:?}", suggestions);
     }
 }

@@ -458,6 +458,165 @@ DBCrust caches autocompletion data for performance. If you notice slow completio
 2. **Session completions** read from disk but are very fast
 3. **Scheme completions** are instant (hardcoded)
 
+## 🧠 Interactive SQL Autocompletion
+
+Once connected to a database, DBCrust provides advanced SQL autocompletion within the interactive session. This is separate from shell completion and works by understanding SQL syntax context.
+
+### Context-Aware SQL Completion
+
+DBCrust analyzes your SQL statement in real-time to provide relevant suggestions based on the SQL clause you're in:
+
+#### SELECT Context Intelligence
+
+```sql
+-- After SELECT keyword, suggests columns, aggregates, and wildcards
+SELECT [TAB]
+-- Suggestions: *, COUNT(, SUM(, AVG(, MAX(, MIN(, DISTINCT
+
+-- When FROM clause is present, also suggests actual columns
+SELECT [TAB] FROM users
+-- Suggestions: *, id, name, email, created_at, status, COUNT(, SUM(, ...
+```
+
+#### WHERE Clause Precision  
+
+```sql
+-- After WHERE, suggests ONLY column names (no functions or tables)
+SELECT * FROM users WHERE [TAB]
+-- Suggestions: id, name, email, created_at, status, active
+-- NOT suggested: users, orders, *, COUNT(
+
+-- Understands multiple tables in FROM clause  
+SELECT * FROM users u JOIN orders o ON u.id = o.user_id WHERE [TAB]
+-- Suggestions: columns from BOTH users and orders tables
+```
+
+#### FROM Clause Behavior
+
+```sql
+-- After FROM, suggests table names (preserves existing behavior)
+SELECT * FROM [TAB]
+-- Suggestions: users, orders, products, categories
+-- NOT suggested: column names, functions, or wildcards
+```
+
+### Advanced SQL Context Support
+
+#### ORDER BY and GROUP BY
+
+```sql
+-- Suggests column names from tables in FROM clause
+SELECT * FROM users ORDER BY [TAB]
+-- Suggestions: id, name, email, created_at, status
+
+SELECT COUNT(*) FROM orders GROUP BY [TAB]
+-- Suggestions: status, user_id, product_id, created_at
+```
+
+#### HAVING Clause
+
+```sql
+-- Suggests both aggregate functions AND column names
+SELECT status, COUNT(*) FROM users GROUP BY status HAVING [TAB]
+-- Suggestions: COUNT(, SUM(, AVG(, MAX(, MIN(, status
+```
+
+#### Complex Query Support
+
+```sql
+-- Handles complex multi-table scenarios
+SELECT u.name, o.total 
+FROM users u 
+  LEFT JOIN orders o ON u.id = o.user_id 
+  JOIN products p ON o.product_id = p.id 
+WHERE [TAB]
+-- Suggests: u.id, u.name, u.email, o.id, o.total, o.status, p.name, p.price
+```
+
+### Schema-Based Completions
+
+#### Table Names
+
+```sql
+-- Prefix matching for table names
+SELECT * FROM us[TAB]
+-- Suggestions: users, user_sessions, user_preferences
+```
+
+#### Column Names with Dot Notation
+
+```sql
+-- After table.dot, suggests columns from that specific table
+SELECT users.[TAB] FROM users
+-- Suggestions: id, name, email, created_at, status, active
+
+-- Works with table aliases
+SELECT u.[TAB] FROM users u
+-- Suggestions: id, name, email, created_at, status, active
+```
+
+#### SQL Keywords
+
+```sql
+-- Keyword expansion
+SEL[TAB] → SELECT
+FR[TAB] → FROM  
+WH[TAB] → WHERE
+
+-- Full statement completion
+SEL[TAB] name FR[TAB] users WH[TAB] active = true
+-- Expands to: SELECT name FROM users WHERE active = true
+```
+
+### Backslash Command Completion
+
+DBCrust also provides completion for backslash commands:
+
+#### Named Queries
+
+```sql
+-- After \n, suggests named query names
+\n [TAB]
+-- Suggestions: active_users, monthly_report, user_orders
+
+-- After \nd, suggests named queries to delete
+\nd [TAB] 
+-- Suggestions: old_report, unused_query
+```
+
+#### Session Management
+
+```sql
+-- After \s, suggests saved session names
+\s [TAB]
+-- Suggestions: production, staging, development, local
+
+-- After \sd, suggests sessions to delete
+\sd [TAB]
+-- Suggestions: old_staging, temp_connection
+```
+
+### Performance & Caching
+
+- **Real-time Context Analysis**: SQL parsing happens instantly with no noticeable delay
+- **Schema Caching**: Table and column metadata is cached for fast repeated access
+- **Smart Invalidation**: Cache automatically refreshes when database schema changes
+- **Background Loading**: Schema data loads proactively for better responsiveness
+
+### Technical Features
+
+- **Multi-Database Support**: Works with PostgreSQL, MySQL, and SQLite
+- **Case-Insensitive Matching**: Completions work regardless of case
+- **Backwards Compatible**: All existing completion behavior is preserved
+- **Error Recovery**: Completion works even with partial or incomplete SQL statements
+
+!!! tip "Completion Best Practices"
+    
+    - **Use TAB frequently** - completion works at any point in your SQL statement
+    - **Trust the context** - suggestions are filtered to be relevant to your current clause
+    - **Mix with schema exploration** - use `\dt` to see tables, then use completion for columns
+    - **Leverage named queries** - save complex queries and use `\n [TAB]` to find them quickly
+
 ---
 
 <div align="center">

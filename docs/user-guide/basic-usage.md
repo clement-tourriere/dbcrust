@@ -107,40 +107,126 @@ HAVING COUNT(o.id) > 5;
 
 ## 🧠 Smart Autocompletion
 
-DBCrust provides intelligent autocompletion that understands your database schema:
+DBCrust provides intelligent, context-aware autocompletion that understands both your database schema and SQL syntax context:
 
-### Table Completion
+### SQL Context-Aware Completion
+
+DBCrust automatically detects what SQL clause you're in and suggests appropriate completions:
+
+#### SELECT Clause Suggestions
+
+```sql
+SELECT [TAB]
+-- Suggests: *, COUNT(, SUM(, AVG(, MAX(, MIN(, DISTINCT
+
+SELECT * FROM users; SELECT [TAB]  
+-- When FROM tables are present, also suggests actual column names:
+-- id, name, email, created_at, status (from users table)
+```
+
+#### WHERE Clause Intelligence
+
+```sql
+-- After WHERE, suggests only column names (no tables or functions)
+SELECT * FROM users WHERE [TAB]
+-- Suggests: id, name, email, created_at, status, active
+-- Does NOT suggest: users, orders, COUNT(, * 
+
+-- Works with complex queries and multiple tables
+SELECT * FROM users u JOIN orders o ON u.id = o.user_id WHERE [TAB]
+-- Suggests columns from BOTH users and orders tables
+```
+
+#### FROM Clause Behavior
+
+```sql
+-- After FROM, suggests table names (existing behavior preserved)
+SELECT * FROM [TAB]
+-- Suggests: users, orders, products, categories
+-- Does NOT suggest: *, COUNT(, column names
+```
+
+### Traditional Schema-Based Completion
+
+#### Table Name Completion
 
 ```sql
 SELECT * FROM us[TAB]
 -- Suggests: users, user_sessions, user_preferences
 ```
 
-### Column Completion
+#### Column Completion with Dot Notation
 
 ```sql
-SELECT id, na[TAB] FROM users
--- Suggests: name, nationality, notes
+-- After table.dot, suggests columns from that specific table
+SELECT users.[TAB] FROM users
+-- Suggests: id, name, email, created_at, status
+
+-- Works with aliases too
+SELECT u.[TAB] FROM users u
+-- Suggests: id, name, email, created_at, status
 ```
 
-### SQL Keywords
+#### SQL Keywords
 
 ```sql
 SEL[TAB] name FR[TAB] users WH[TAB] active = true
 -- Expands to: SELECT name FROM users WHERE active = true
 ```
 
-### Context-Aware Suggestions
+### Advanced Context Examples
+
+#### ORDER BY and GROUP BY
 
 ```sql
--- After WHERE, suggests columns from current table
-SELECT * FROM users WHERE [TAB]
--- Suggests: id, name, email, created_at, status, etc.
+-- After ORDER BY, suggests columns from FROM tables
+SELECT * FROM users ORDER BY [TAB]
+-- Suggests: id, name, email, created_at, status
 
--- After JOIN, suggests table names
-SELECT * FROM users JOIN [TAB]
--- Suggests: orders, user_sessions, profiles, etc.
+-- Same for GROUP BY
+SELECT COUNT(*) FROM users GROUP BY [TAB]  
+-- Suggests: status, created_at, department_id
 ```
+
+#### HAVING Clause
+
+```sql
+-- After HAVING, suggests aggregate functions AND column names
+SELECT status, COUNT(*) FROM users GROUP BY status HAVING [TAB]
+-- Suggests: COUNT(, SUM(, AVG(, MAX(, MIN( and column names
+```
+
+#### Multiple Table Support
+
+```sql
+-- Autocompletion understands complex FROM clauses
+SELECT * FROM users u, orders o, products p WHERE [TAB]
+-- Suggests columns from users, orders, AND products tables
+
+-- Works with JOINs too
+SELECT * FROM users u 
+  LEFT JOIN orders o ON u.id = o.user_id 
+  JOIN products p ON o.product_id = p.id 
+WHERE [TAB]
+-- Suggests: u.id, u.name, o.status, o.total, p.name, p.price, etc.
+```
+
+!!! tip "Context-Aware Benefits"
+    
+    The new context-aware completion eliminates irrelevant suggestions:
+    
+    - **No more table suggestions after SELECT** - only columns, aggregates, and *
+    - **No more * or functions after WHERE** - only relevant column names  
+    - **Smarter FROM clause parsing** - extracts tables from complex queries
+    - **Backwards compatible** - all existing completion still works perfectly
+
+!!! note "Performance"
+    
+    Context analysis is lightweight and fast:
+    
+    - **Real-time parsing** - no noticeable delay
+    - **Cached schema info** - table/column data cached for speed  
+    - **Smart filtering** - only relevant completions shown
 
 ## 📊 Result Display Options
 

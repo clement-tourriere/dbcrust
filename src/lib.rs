@@ -25,6 +25,7 @@ pub mod pgpass;
 pub mod prompt;
 pub mod script;
 pub mod shell_completion; // Custom shell completion with URL schemes
+pub mod sql_context; // SQL context analysis for better autocompletion
 pub mod ssh_tunnel; // Add the SSH tunnel module
 pub mod url_scheme; // URL scheme autocompletion support
 pub mod vault_client; // Add backslash commands module
