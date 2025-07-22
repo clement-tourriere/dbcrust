@@ -248,12 +248,21 @@ Enable intelligent shell autocompletion for URL schemes and contextual suggestio
 === "Zsh"
 
     ```bash
-    # Install completion script
-    mkdir -p ~/.local/share/zsh/site-functions
-    dbcrust --completions zsh > ~/.local/share/zsh/site-functions/_dbcrust
+    # Create completions directory if it doesn't exist
+    mkdir -p ~/.zfunc
     
-    # Add to .zshrc if needed
-    echo 'fpath=(~/.local/share/zsh/site-functions $fpath)' >> ~/.zshrc
+    # Install completion scripts for both binaries
+    dbcrust --completions zsh > ~/.zfunc/_dbcrust
+    dbc --completions zsh > ~/.zfunc/_dbc
+    
+    # Add these lines to your .zshrc (before oh-my-zsh if you use it):
+    fpath+=~/.zfunc
+    autoload -U compinit && compinit
+    
+    # If you use oh-my-zsh, make sure these lines come BEFORE:
+    # source $ZSH/oh-my-zsh.sh
+    
+    # Reload your shell
     source ~/.zshrc
     ```
 

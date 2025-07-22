@@ -410,10 +410,13 @@ Choose the right scheme for your use case:
 ```bash
 # Check if completion script is installed
 ls ~/.local/share/bash-completion/completions/dbcrust  # Bash
+ls ~/.zfunc/_dbcrust                                     # Zsh
 ls ~/.config/fish/completions/dbcrust.fish             # Fish
 
-# Regenerate completion script
+# Regenerate completion scripts
 dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
+dbcrust --completions zsh > ~/.zfunc/_dbcrust           # Zsh
+dbc --completions zsh > ~/.zfunc/_dbc                   # Zsh (dbc binary)
 
 # Test basic completion
 type _dbcrust  # Should show function definition
