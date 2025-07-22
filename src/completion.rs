@@ -923,6 +923,33 @@ impl Completer for SqlCompleter {
                     }
                     return completions;
                 }
+                // For \n <query_name> type completion (named queries)
+                if line.starts_with("\\n ") {
+                    let prefix = &line[3..]; // Skip "\n "
+                    let arg_word_start = prefix[..pos.saturating_sub(3)]
+                        .rfind(char::is_whitespace)
+                        .map_or(0, |idx| idx + 1)
+                        + 3; // Adjust back to line based index
+                    let current_arg_word = &line[arg_word_start..pos];
+
+                    let named_queries = self.get_named_queries();
+                    for (name, query) in named_queries {
+                        if name.starts_with(current_arg_word) {
+                            completions.push(Suggestion {
+                                value: name.clone(),
+                                description: Some(format!("Named query: {query}")),
+                                span: Span {
+                                    start: arg_word_start,
+                                    end: pos,
+                                },
+                                append_whitespace: true,
+                                extra: None,
+                                style: None,
+                            });
+                        }
+                    }
+                    return completions;
+                }
                 // For other commands that take arguments like \w <filename>, \i <filename>,
                 // \ns <name> <query>, \nd <name>, \s <session_name>, \ss <session_name>, \sd <session_name>
                 // We will rely on the existing named query/session completion logic below for some cases.
@@ -932,34 +959,6 @@ impl Completer for SqlCompleter {
                 // Completing the backslash command itself (e.g., user typed "\d")
                 return self.complete_backslash_commands(line, pos);
             }
-        }
-
-        // Check if we're completing a named query execution command (e.g., "\n query_name")
-        if let Some(prefix) = line.strip_prefix("\\n ") {
-            // Skip "\n "
-            let arg_word_start = prefix[..pos.saturating_sub(3)]
-                .rfind(char::is_whitespace)
-                .map_or(0, |idx| idx + 1)
-                + 3; // Adjust back to line based index
-            let current_arg_word = &line[arg_word_start..pos];
-
-            let named_queries = self.get_named_queries();
-            for (name, query) in named_queries {
-                if name.starts_with(current_arg_word) {
-                    completions.push(Suggestion {
-                        value: name.clone(),
-                        description: Some(format!("Named query: {query}")),
-                        span: Span {
-                            start: arg_word_start,
-                            end: pos,
-                        },
-                        append_whitespace: true,
-                        extra: None,
-                        style: None,
-                    });
-                }
-            }
-            return completions;
         }
 
         // Check if we're completing a named query deletion command
@@ -1516,23 +1515,23 @@ mod tests {
     // fully implemented in the enum-based command system yet. The completion logic for these 
     // commands exists but the actual command handlers need to be added to the Command enum.
     
-    // #[tokio::test]
-    // async fn test_complete_named_query_execution() {
-    //     let mut completer = create_test_completer().await;
-    //     let line = "\\n my";
-    //     let suggestions = completer.complete(line, line.len());
-    //     assert!(suggestions.iter().any(|s| s.value == "my_users"));
-    //     assert!(suggestions.iter().any(|s| s.value == "my_orders"));
-    // }
+    #[tokio::test]
+    async fn test_complete_named_query_execution() {
+        let mut completer = create_test_completer().await;
+        let line = "\\n my";
+        let suggestions = completer.complete(line, line.len());
+        assert!(suggestions.iter().any(|s| s.value == "my_users"));
+        assert!(suggestions.iter().any(|s| s.value == "my_orders"));
+    }
 
-    // #[tokio::test]
-    // async fn test_complete_named_query_delete() {
-    //     let mut completer = create_test_completer().await;
-    //     let line = "\\nd my_u";
-    //     let suggestions = completer.complete(line, line.len());
-    //     assert_eq!(suggestions.len(), 1);
-    //     assert_eq!(suggestions[0].value, "my_users");
-    // }
+    #[tokio::test]
+    async fn test_complete_named_query_delete() {
+        let mut completer = create_test_completer().await;
+        let line = "\\nd my_u";
+        let suggestions = completer.complete(line, line.len());
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].value, "my_users");
+    }
 
     // #[tokio::test]
     // async fn test_complete_session_connect() {
