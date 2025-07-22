@@ -415,7 +415,6 @@ pub fn analyze_format_crash(data: &[Vec<String>], query: &str) -> String {
     analysis
 }
 
-#[allow(dead_code)]
 pub fn format_table_details(details: &TableDetails) -> String {
     let mut result = String::new();
 

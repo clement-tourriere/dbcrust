@@ -594,13 +594,7 @@ impl CommandExecutor for Command {
                     Some(name) => {
                         match db.get_table_details(name).await {
                             Ok(details) => {
-                                let output = format!("Table: {}\nColumns: {}\nIndexes: {}\nForeign Keys: {}\nCheck Constraints: {}",
-                                    details.full_name,
-                                    details.columns.len(),
-                                    details.indexes.len(),
-                                    details.foreign_keys.len(),
-                                    details.check_constraints.len()
-                                );
+                                let output = crate::format::format_table_details(&details);
                                 Ok(CommandResult::Output(output))
                             }
                             Err(e) => Ok(CommandResult::Error(format!("Failed to describe table '{name}': {e}"))),
