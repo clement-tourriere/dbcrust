@@ -25,9 +25,11 @@ DBCrust offers multiple installation methods to fit your workflow. Choose the on
 
     ```bash
     # Try DBCrust immediately without installation
-    uvx dbcrust postgresql://user:pass@localhost/mydb
+    uvx dbcrust postgres://user:pass@localhost/mydb
     
-    # Works with any database URL
+    # Works with any database URL and URL scheme
+    uvx dbcrust docker://
+    uvx dbcrust session://production_db
     uvx dbcrust mysql://user:pass@localhost/mydb
     uvx dbcrust sqlite:///path/to/database.db
     ```
@@ -160,30 +162,73 @@ pip install target/wheels/dbcrust-*.whl
 
 ## 🔧 Post-Installation Setup
 
-### Shell Completions
+### Shell Autocompletion
 
-Enable tab completion for your shell:
+Enable intelligent shell autocompletion with URL scheme support and contextual suggestions:
 
 === "Bash"
 
     ```bash
-    # Add to ~/.bashrc
-    eval "$(dbcrust --generate-completion bash)"
+    # Install completion script
+    dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
+    
+    # Or add to your ~/.bashrc for dynamic loading
+    source <(dbcrust --completions bash)
+    
+    # Reload your shell
+    source ~/.bashrc
     ```
 
 === "Zsh"
 
     ```bash
-    # Add to ~/.zshrc
-    eval "$(dbcrust --generate-completion zsh)"
+    # Create completions directory if it doesn't exist
+    mkdir -p ~/.local/share/zsh/site-functions
+    
+    # Install completion script
+    dbcrust --completions zsh > ~/.local/share/zsh/site-functions/_dbcrust
+    
+    # Add to your .zshrc if not already present
+    echo 'fpath=(~/.local/share/zsh/site-functions $fpath)' >> ~/.zshrc
+    echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
+    
+    # Reload your shell
+    source ~/.zshrc
     ```
 
 === "Fish"
 
     ```bash
-    # Add to ~/.config/fish/config.fish
-    dbcrust --generate-completion fish | source
+    # Install completion script
+    dbcrust --completions fish > ~/.config/fish/completions/dbcrust.fish
+    
+    # Reload fish completions
+    fish -c "complete --erase --command dbcrust; source ~/.config/fish/completions/dbcrust.fish"
     ```
+
+=== "PowerShell"
+
+    ```powershell
+    # Create completions directory
+    $CompletionDir = Split-Path $PROFILE.CurrentUserAllHosts -Parent | Join-Path -ChildPath "Completions"
+    New-Item -ItemType Directory -Force -Path $CompletionDir
+    
+    # Generate completion script
+    dbcrust --completions powershell > "$CompletionDir/dbcrust.ps1"
+    
+    # Add to your PowerShell profile
+    Add-Content $PROFILE.CurrentUserAllHosts ". `$PSScriptRoot/Completions/dbcrust.ps1"
+    ```
+
+!!! success "Smart Autocompletion Features"
+    Once installed, you'll get:
+    
+    - **URL schemes**: `dbc pos[TAB]` → `postgres://`
+    - **Docker containers**: `dbc docker://post[TAB]` → `docker://postgres-dev`
+    - **Saved sessions**: `dbc session://prod[TAB]` → `session://production_db`
+    - **File completion**: `dbc sqlite://[TAB]` → delegates to shell file completion
+    
+    See [URL Schemes & Autocompletion](/dbcrust/reference/url-schemes/) for complete documentation.
 
 ### Configuration Directory
 
@@ -397,6 +442,6 @@ If you encounter issues:
 
 <div align="center">
     <strong>Installation complete? Let's get started!</strong><br>
-    <a href="quick-start.md" class="md-button md-button--primary">Quick Start Guide</a>
-    <a href="user-guide/basic-usage.md" class="md-button">User Guide</a>
+    <a href="/dbcrust/quick-start/" class="md-button md-button--primary">Quick Start Guide</a>
+    <a href="/dbcrust/user-guide/basic-usage/" class="md-button">User Guide</a>
 </div>

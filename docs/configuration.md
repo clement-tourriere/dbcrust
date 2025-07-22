@@ -507,6 +507,6 @@ Some configuration changes can be applied without restarting:
 
 <div align="center">
     <strong>Need more configuration help?</strong><br>
-    <a href="../troubleshooting.md" class="md-button md-button--primary">Troubleshooting</a>
-    <a href="../user-guide/basic-usage.md" class="md-button">User Guide</a>
+    <a href="/dbcrust/reference/url-schemes/" class="md-button md-button--primary">URL Schemes Guide</a>
+    <a href="/dbcrust/user-guide/basic-usage/" class="md-button">User Guide</a>
 </div>

@@ -550,6 +550,6 @@ SELECT * FROM users LIMIT 5;
 
 <div align="center">
     <strong>Master backslash commands?</strong><br>
-    <a href="cli-commands.md" class="md-button md-button--primary">CLI Commands</a>
-    <a href="../user-guide/commands.md" class="md-button">Interactive Guide</a>
+    <a href="/dbcrust/reference/url-schemes/" class="md-button md-button--primary">URL Schemes Guide</a>
+    <a href="/dbcrust/user-guide/basic-usage/" class="md-button">User Guide</a>
 </div>

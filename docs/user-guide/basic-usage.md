@@ -10,14 +10,27 @@ DBCrust follows a simple pattern: `dbcrust [OPTIONS] <CONNECTION_URL>`
 
 ```bash
 # Basic connection
-dbcrust postgresql://user:password@localhost:5432/database
+dbcrust postgres://user:password@localhost:5432/database
+
+# With smart URL scheme completion
+dbc pos[TAB] → postgres://
+dbc docker://my[TAB] → docker://my-postgres-container
+dbc session://prod[TAB] → session://production_db
 
 # With options
-dbcrust --ssh-tunnel jumphost.com postgresql://user@db.internal/app
+dbcrust --ssh-tunnel jumphost.com postgres://user@db.internal/app
 
 # Short alias
-dbc postgresql://user:password@localhost/database
+dbc postgres://user:password@localhost/database
 ```
+
+!!! tip "Shell Autocompletion"
+    Set up shell completion for smart URL scheme suggestions:
+    ```bash
+    dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
+    ```
+    
+    See [URL Schemes & Autocompletion](/dbcrust/reference/url-schemes/) for complete setup instructions.
 
 ### Interactive vs Non-Interactive Mode
 
@@ -465,6 +478,6 @@ exit
 
 <div align="center">
     <strong>Master the basics? Let's explore advanced features!</strong><br>
-    <a href="connections.md" class="md-button md-button--primary">Database Connections</a>
-    <a href="commands.md" class="md-button">Interactive Commands</a>
+    <a href="/dbcrust/reference/url-schemes/" class="md-button md-button--primary">URL Schemes & Autocompletion</a>
+    <a href="/dbcrust/reference/backslash-commands/" class="md-button">Command Reference</a>
 </div>

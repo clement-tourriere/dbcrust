@@ -152,7 +152,8 @@ impl CliCore {
 
     /// Handle shell completion generation
     fn handle_shell_completion(&self, shell: crate::cli::Shell) -> Result<(), CliError> {
-        use clap_complete::{generate, Shell as CompletionShell};
+        use crate::shell_completion::generate_completion_with_url_schemes;
+        use clap_complete::Shell as CompletionShell;
         
         let mut cmd = Args::command();
         let shell_type = match shell {
@@ -163,7 +164,8 @@ impl CliCore {
             crate::cli::Shell::Elvish => CompletionShell::Elvish,
         };
 
-        generate(shell_type, &mut cmd, "dbcrust", &mut io::stdout());
+        generate_completion_with_url_schemes(shell_type, &mut cmd, "dbcrust", &mut io::stdout())
+            .map_err(|e| CliError::CommandError(format!("Failed to generate completion: {}", e)))?;
         Ok(())
     }
 

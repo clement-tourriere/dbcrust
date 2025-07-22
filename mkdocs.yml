@@ -109,4 +109,5 @@ nav:
   - Python API:
     - Overview: python-api/overview.md
   - Reference:
+    - URL Schemes & Autocompletion: reference/url-schemes.md
     - Backslash Commands: reference/backslash-commands.md

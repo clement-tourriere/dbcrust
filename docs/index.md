@@ -33,6 +33,13 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     FROM us[TAB] → users, user_sessions, user_preferences
     WHERE st[TAB] → status, state, start_date
     ```
+
+    **Smart URL Scheme Completion**
+    ```bash
+    dbc pos[TAB] → postgres://
+    dbc docker://my[TAB] → docker://my-postgres-container
+    dbc session://prod[TAB] → session://production_db
+    ```
     
     **Beautiful Query Visualization**
     ```
@@ -71,8 +78,8 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     #   2. mysql-test (mysql:8.0)
     #   3. redis-cache (redis:7)
     
-    # Direct container access
-    dbcrust docker://postgres-dev
+    # Direct container access with autocompletion
+    dbcrust docker://post[TAB] → docker://postgres-dev
     ```
     
     **OrbStack Support**
@@ -188,7 +195,8 @@ dbcrust postgresql://backup-user@replica.db.internal/app \
 - **History search** with fuzzy matching
 - **External editor** support for complex queries
 - **Session management** with saved sessions and connection history
-- **recent://** for interactive reconnection to any past connection
+- **Smart URL schemes** with `docker://`, `session://`, `recent://`, `vault://`
+- **Shell autocompletion** for connection URLs and contextual suggestions
 
 ### Intelligent Features
 
@@ -222,7 +230,7 @@ dbcrust postgresql://backup-user@replica.db.internal/app \
 
   Comprehensive guides and API reference
 
-  [:octicons-arrow-right-24: Explore docs](quick-start.md)
+  [:octicons-arrow-right-24: Explore docs](/dbcrust/quick-start/)
 
 - :material-github:{ .lg .middle } **Source Code**
 
@@ -254,8 +262,8 @@ dbcrust postgresql://backup-user@replica.db.internal/app \
 
 <div align="center">
     <strong>Ready to supercharge your database workflow?</strong><br>
-    <a href="quick-start.md" class="md-button md-button--primary">Get Started in 2 Minutes</a>
-    <a href="user-guide/basic-usage.md" class="md-button">Learn More</a>
+    <a href="/dbcrust/quick-start/" class="md-button md-button--primary">Get Started in 2 Minutes</a>
+    <a href="/dbcrust/user-guide/basic-usage/" class="md-button">Learn More</a>
 </div>
 
 *Built with ❤️ using [Rust](https://www.rust-lang.org/), [SQLx](https://github.com/launchbadge/sqlx),

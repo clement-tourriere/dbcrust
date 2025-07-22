@@ -38,19 +38,26 @@ Get up and running with DBCrust in under 2 minutes! This guide will have you que
 
 ## 🔌 First Connection
 
-DBCrust supports standard database URLs for all major databases:
+DBCrust supports 8 different URL schemes with intelligent shell autocompletion. Type a partial scheme and press **TAB** for suggestions:
+
+```bash
+dbc pos[TAB] → postgres://
+dbc doc[TAB] → docker://
+dbc ses[TAB] → session://
+```
 
 === "PostgreSQL"
 
     ```bash
-    # Standard connection
+    # Standard connection (both schemes work)
+    dbcrust postgres://username:password@localhost:5432/database_name
     dbcrust postgresql://username:password@localhost:5432/database_name
     
     # With SSL (recommended)
-    dbcrust postgresql://username:password@localhost:5432/database_name?sslmode=require
+    dbcrust postgres://username:password@localhost:5432/database_name?sslmode=require
     
-    # Short alias
-    dbc postgresql://username:password@localhost:5432/database_name
+    # Short alias with autocompletion
+    dbc pos[TAB] → postgres://
     ```
 
 === "MySQL"
@@ -82,11 +89,33 @@ DBCrust supports standard database URLs for all major databases:
     # Interactive container selection
     dbcrust docker://
     
-    # Specific container
-    dbcrust docker://postgres-container
+    # Smart container autocompletion (shows running containers)
+    dbcrust docker://post[TAB] → docker://postgres-dev
+    dbcrust docker://my[TAB]   → docker://mysql-test
     
     # With credentials
     dbcrust docker://user:pass@container-name/database
+    ```
+
+=== "Saved Sessions"
+
+    ```bash
+    # Interactive session selection
+    dbcrust session://
+    
+    # Smart session autocompletion (shows your saved sessions)
+    dbcrust session://prod[TAB] → session://production_db
+    dbcrust session://dev[TAB]  → session://development
+    ```
+
+=== "Recent Connections"
+
+    ```bash
+    # Interactive recent connection selection
+    dbcrust recent://
+    # → 1. postgres://user@localhost:5432/mydb
+    #   2. docker://postgres-dev/testdb
+    #   3. mysql://root@server:3306/app
     ```
 
 ## 🎯 Essential Commands
@@ -201,6 +230,49 @@ For complex queries, use your favorite editor:
 \i scripts/monthly_report.sql
 ```
 
+## 🚀 Shell Autocompletion Setup
+
+Enable intelligent shell autocompletion for URL schemes and contextual suggestions:
+
+=== "Bash"
+
+    ```bash
+    # Install completion script
+    dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
+    source ~/.bashrc
+    
+    # Test autocompletion
+    dbc pos[TAB]  # Should complete to postgres://
+    ```
+
+=== "Zsh"
+
+    ```bash
+    # Install completion script
+    mkdir -p ~/.local/share/zsh/site-functions
+    dbcrust --completions zsh > ~/.local/share/zsh/site-functions/_dbcrust
+    
+    # Add to .zshrc if needed
+    echo 'fpath=(~/.local/share/zsh/site-functions $fpath)' >> ~/.zshrc
+    source ~/.zshrc
+    ```
+
+=== "Fish"
+
+    ```bash
+    # Install completion script
+    dbcrust --completions fish > ~/.config/fish/completions/dbcrust.fish
+    
+    # Reload fish completions
+    fish -c "complete --erase --command dbcrust; source ~/.config/fish/completions/dbcrust.fish"
+    ```
+
+!!! tip "Smart Completions"
+    Once set up, autocompletion provides:
+    - **URL schemes**: `dbc doc[TAB]` → `docker://`
+    - **Container names**: `dbc docker://post[TAB]` → `docker://postgres-dev`
+    - **Session names**: `dbc session://prod[TAB]` → `session://production_db`
+
 ## 🔧 Quick Configuration
 
 DBCrust works great out of the box, but you can customize it:
@@ -248,10 +320,10 @@ dbcrust.run_cli("postgresql://user:pass@localhost/mydb")
 
 Now that you're up and running:
 
-1. **[Installation Guide](installation.md)** - Detailed installation options
-2. **[User Guide](user-guide/basic-usage.md)** - Complete feature walkthrough  
-3. **[Python API](python-api/overview.md)** - Integration with your Python projects
-4. **Advanced Features** - SSH tunnels, Vault, Docker (coming soon)
+1. **[URL Schemes & Autocompletion](/dbcrust/reference/url-schemes/)** - Master all connection methods
+2. **[Installation Guide](/dbcrust/installation/)** - Detailed installation options
+3. **[User Guide](/dbcrust/user-guide/basic-usage/)** - Complete feature walkthrough  
+4. **[Python API](/dbcrust/python-api/overview/)** - Integration with your Python projects
 
 ## 🆘 Common Issues
 
@@ -286,6 +358,6 @@ Now that you're up and running:
 
 <div align="center">
     <strong>Ready for advanced features?</strong><br>
-    <a href="user-guide/basic-usage.md" class="md-button md-button--primary">Explore User Guide</a>
-    <a href="reference/cli-commands.md" class="md-button">Command Reference</a>
+    <a href="/dbcrust/user-guide/basic-usage/" class="md-button md-button--primary">Explore User Guide</a>
+    <a href="/dbcrust/reference/backslash-commands/" class="md-button">Command Reference</a>
 </div>

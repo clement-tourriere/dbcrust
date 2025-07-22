@@ -431,15 +431,15 @@ query("\\d users")  # Describe table structure
 
 For more information, see:
 
-- **[Quick Start](../quick-start.md)** - Get started with DBCrust
-- **[User Guide](../user-guide/basic-usage.md)** - Complete feature walkthrough
-- **[Installation](../installation.md)** - Setup instructions
-- **[Configuration](../configuration.md)** - Configuration options
+- **[Quick Start](/dbcrust/quick-start/)** - Get started with DBCrust
+- **[User Guide](/dbcrust/user-guide/basic-usage/)** - Complete feature walkthrough
+- **[Installation](/dbcrust/installation/)** - Setup instructions
+- **[Configuration](/dbcrust/configuration/)** - Configuration options
 
 ---
 
 <div align="center">
     <strong>Ready to integrate DBCrust into your Python workflow?</strong><br>
-    <a href="../quick-start.md" class="md-button md-button--primary">Get Started</a>
-    <a href="../user-guide/basic-usage.md" class="md-button">User Guide</a>
+    <a href="/dbcrust/quick-start/" class="md-button md-button--primary">Get Started</a>
+    <a href="/dbcrust/user-guide/basic-usage/" class="md-button">User Guide</a>
 </div>

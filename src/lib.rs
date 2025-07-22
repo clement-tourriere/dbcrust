@@ -24,7 +24,9 @@ pub mod performance_analyzer; // Performance analysis for EXPLAIN queries
 pub mod pgpass;
 pub mod prompt;
 pub mod script;
+pub mod shell_completion; // Custom shell completion with URL schemes
 pub mod ssh_tunnel; // Add the SSH tunnel module
+pub mod url_scheme; // URL scheme autocompletion support
 pub mod vault_client; // Add backslash commands module
 
 // Note: main.rs functions are not directly accessible as modules in lib.rs
