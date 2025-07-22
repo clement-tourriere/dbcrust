@@ -5,7 +5,7 @@ dbcrust - Multi-database interactive client with tab completion
 from dbcrust._internal import PyDatabase, PyConfig, run_command, run_cli_loop
 
 from .client import PostgresClient
-from .__main__ import main as _run_cli_main
+from .__main__ import main as _run_cli_main, run_with_url
 
 def run_cli(db_url=None):
     """
@@ -23,4 +23,4 @@ def run_cli(db_url=None):
     """
     return _run_cli_main(db_url)
 
-__all__ = ["PyDatabase", "PyConfig", "PostgresClient", "run_cli", "run_command", "run_cli_loop"] 
+__all__ = ["PyDatabase", "PyConfig", "PostgresClient", "run_cli", "run_with_url", "run_command", "run_cli_loop"] 

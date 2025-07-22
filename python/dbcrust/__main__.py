@@ -6,6 +6,27 @@ import sys
 import os
 
 
+def run_with_url(db_url, additional_args=None):
+    """Run dbcrust programmatically with just a database URL and optional additional arguments"""
+    
+    # Import the Rust CLI function
+    from dbcrust._internal import run_command
+
+    # Prepare command arguments
+    cmd_args = ["dbcrust", db_url]
+    
+    # Add any additional arguments if provided
+    if additional_args:
+        cmd_args.extend(additional_args)
+
+    # Run the CLI using the shared Rust library
+    try:
+        return run_command(cmd_args)
+    except Exception as e:
+        print(f"Error running dbcrust: {e}", file=sys.stderr)
+        return 1
+
+
 def main(db_url=None):
     """Run the dbcrust CLI using the shared Rust library"""
 
@@ -27,12 +48,12 @@ def main(db_url=None):
     # Prepare command arguments
     cmd_args = [binary_name]
 
-    # If db_url is provided, use it as the connection URL
+    # If db_url is provided programmatically, only add it and skip sys.argv
     if db_url:
         cmd_args.append(db_url)
-
-    # Add any additional command line arguments
-    cmd_args.extend(sys.argv[1:])
+    else:
+        # Only add sys.argv arguments when no db_url is provided programmatically
+        cmd_args.extend(sys.argv[1:])
 
     # Run the CLI using the shared Rust library
     try:

@@ -48,7 +48,7 @@ pip install dbcrust
 
 ## 📚 API Patterns
 
-DBCrust provides three main patterns for Python integration:
+DBCrust provides four main patterns for Python integration:
 
 ### 1. Direct Command Execution
 
@@ -75,7 +75,30 @@ databases = dbcrust.run_command(
 )
 ```
 
-### 2. Interactive CLI Integration
+### 2. Programmatic Execution with Arguments
+
+Execute commands with additional CLI arguments for automation scripts:
+
+```python
+import dbcrust
+
+# Execute with additional CLI options
+result = dbcrust.run_with_url(
+    "postgresql://postgres@localhost/myapp",
+    ["--debug", "--no-banner", "-c", "\\dt"]
+)
+
+# Useful for automation where you need CLI flags
+dbcrust.run_with_url(
+    "postgresql://postgres@localhost/myapp",
+    ["-o", "json", "-c", "SELECT * FROM users LIMIT 5"]
+)
+
+# Clean programmatic calls without sys.argv conflicts
+dbcrust.run_with_url("session://production")
+```
+
+### 3. Interactive CLI Integration
 
 Launch the full interactive CLI from Python:
 
@@ -89,7 +112,7 @@ dbcrust.run_cli("postgresql://postgres@localhost/myapp")
 dbcrust.run_cli()
 ```
 
-### 3. Database Client Classes
+### 4. Database Client Classes
 
 Use rich client objects for specific database types:
 

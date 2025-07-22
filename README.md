@@ -173,7 +173,7 @@ dbcrust vault:///
 
 ## Python API
 
-DBCrust provides powerful Python integration with two main approaches:
+DBCrust provides powerful Python integration with three main approaches:
 
 ### 1. Direct Command Execution
 
@@ -193,7 +193,25 @@ mysql_result = dbcrust.run_command("mysql://user:pass@localhost/mydb", "SHOW TAB
 sqlite_result = dbcrust.run_command("sqlite:///path/to/database.db", "SELECT * FROM users")
 ```
 
-### 2. Interactive CLI from Python
+### 2. Programmatic Execution with CLI Arguments
+
+```python
+import dbcrust
+
+# Execute with additional CLI options - perfect for automation
+result = dbcrust.run_with_url(
+    "postgresql://user:pass@localhost/mydb", 
+    ["--debug", "-c", "\\dt"]
+)
+
+# Use saved sessions without sys.argv conflicts
+dbcrust.run_with_url("session://production", ["-o", "json", "-c", "SELECT version()"])
+
+# Clean programmatic calls for integration
+dbcrust.run_with_url("docker://postgres-container/mydb")
+```
+
+### 3. Interactive CLI from Python
 
 ```python
 import dbcrust
@@ -205,7 +223,7 @@ dbcrust.run_cli("postgresql://user:pass@localhost/mydb")
 dbcrust.run_cli()
 ```
 
-### 3. PostgresClient Class
+### 4. PostgresClient Class
 
 ```python
 from dbcrust import PostgresClient

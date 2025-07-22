@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Example script demonstrating the dbcrust PostgreSQL client.
+Example script demonstrating the dbcrust PostgreSQL client and CLI integration.
 """
 import getpass
+import dbcrust
 from dbcrust import PostgresClient
 
 def main():
@@ -55,5 +56,47 @@ def main():
     
     print("Goodbye!")
 
+def demonstrate_cli_integration():
+    """Demonstrate different ways to use dbcrust from Python"""
+    
+    print("\n=== DBCrust Python API Demo ===\n")
+    
+    # Example 1: Direct command execution
+    print("1. Direct Command Execution:")
+    try:
+        # This would work with a real database
+        connection_url = "postgresql://postgres@localhost/postgres"
+        result = dbcrust.run_command(connection_url, "SELECT version()")
+        print(f"Database version: {result}")
+    except Exception as e:
+        print(f"Connection failed (expected): {e}")
+    
+    print("\n2. Programmatic Execution with CLI Arguments:")
+    try:
+        # Execute with additional CLI flags - perfect for automation
+        result = dbcrust.run_with_url(
+            "postgresql://postgres@localhost/postgres",
+            ["--debug", "--no-banner", "-c", "\\dt"]
+        )
+        print(f"Tables: {result}")
+    except Exception as e:
+        print(f"Connection failed (expected): {e}")
+    
+    print("\n3. Clean programmatic calls for integration:")
+    try:
+        # No sys.argv conflicts - perfect for calling from other CLIs
+        dbcrust.run_with_url("session://my_saved_session")
+    except Exception as e:
+        print(f"Session not found (expected): {e}")
+    
+    print("\n4. Interactive CLI (commented out - would launch interactive mode):")
+    print("# dbcrust.run_cli('postgresql://postgres@localhost/postgres')")
+    
+    print("\nDemo completed!")
+
 if __name__ == "__main__":
-    main() 
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "demo":
+        demonstrate_cli_integration()
+    else:
+        main() 
