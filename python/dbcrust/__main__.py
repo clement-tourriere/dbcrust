@@ -3,6 +3,7 @@
 Entry point for running dbcrust from Python
 """
 import sys
+import os
 
 
 def main(db_url=None):
@@ -11,8 +12,20 @@ def main(db_url=None):
     # Import the Rust CLI function
     from dbcrust._internal import run_command
 
+    # Detect the binary name that was used to invoke this script
+    # This handles both 'dbcrust' and 'dbc' entry points
+    script_name = os.path.basename(sys.argv[0])
+    if script_name in ['dbc', 'dbcrust']:
+        binary_name = script_name
+    elif script_name.endswith('.py') or script_name == 'python3' or script_name == 'python':
+        # Running as python -m dbcrust - default to dbcrust
+        binary_name = "dbcrust"
+    else:
+        # Fallback
+        binary_name = "dbcrust"
+
     # Prepare command arguments
-    cmd_args = ["dbcrust"]
+    cmd_args = [binary_name]
 
     # If db_url is provided, use it as the connection URL
     if db_url:

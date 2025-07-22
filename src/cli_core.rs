@@ -69,6 +69,11 @@ impl CliCore {
 
     /// Main entry point for CLI execution - replaces async_main_with_args
     pub async fn run_with_args(args: Args) -> Result<i32, CliError> {
+        Self::run_with_args_and_original(args, None).await
+    }
+
+    /// Main entry point with original args for shell completion generation
+    pub async fn run_with_args_and_original(args: Args, original_args: Option<Vec<String>>) -> Result<i32, CliError> {
         // Initialize the logging system
         if let Err(e) = logging::init() {
             eprintln!("Warning: Failed to initialize logging: {e}");
@@ -79,7 +84,19 @@ impl CliCore {
 
         // Handle shell completion generation if requested
         if let Some(shell) = args.completions {
-            cli_core.handle_shell_completion(shell)?;
+            // Pass the binary name from the original args if available
+            let binary_name = original_args
+                .as_ref()
+                .and_then(|args| args.first())
+                .map(|arg| {
+                    std::path::Path::new(arg)
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("dbcrust")
+                        .to_string()
+                })
+                .unwrap_or_else(|| "dbcrust".to_string());
+            cli_core.handle_shell_completion(shell, &binary_name)?;
             return Ok(0);
         }
 
@@ -151,7 +168,7 @@ impl CliCore {
     }
 
     /// Handle shell completion generation
-    fn handle_shell_completion(&self, shell: crate::cli::Shell) -> Result<(), CliError> {
+    fn handle_shell_completion(&self, shell: crate::cli::Shell, binary_name: &str) -> Result<(), CliError> {
         use crate::shell_completion::generate_completion_with_url_schemes;
         use clap_complete::Shell as CompletionShell;
         
@@ -164,19 +181,7 @@ impl CliCore {
             crate::cli::Shell::Elvish => CompletionShell::Elvish,
         };
 
-        // Detect the actual binary name from command line arguments
-        let binary_name = std::env::args()
-            .next()
-            .map(|path| {
-                std::path::Path::new(&path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("dbcrust")
-                    .to_string()
-            })
-            .unwrap_or_else(|| "dbcrust".to_string());
-
-        generate_completion_with_url_schemes(shell_type, &mut cmd, &binary_name, &mut io::stdout())
+        generate_completion_with_url_schemes(shell_type, &mut cmd, binary_name, &mut io::stdout())
             .map_err(|e| CliError::CommandError(format!("Failed to generate completion: {}", e)))?;
         Ok(())
     }

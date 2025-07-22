@@ -321,6 +321,9 @@ async fn run_main_cli_workflow(args: Vec<String>) -> Result<(), Box<dyn std::err
     use crate::cli::Args;
     use clap::Parser;
 
+    // Store the original args for shell completion generation
+    let original_args = args.clone();
+
     // Parse arguments
     let args = match Args::try_parse_from(args) {
         Ok(args) => args,
@@ -337,7 +340,7 @@ async fn run_main_cli_workflow(args: Vec<String>) -> Result<(), Box<dyn std::err
     };
 
     // Use CliCore for all functionality - this provides 100% feature parity
-    match crate::cli_core::CliCore::run_with_args(args).await {
+    match crate::cli_core::CliCore::run_with_args_and_original(args, Some(original_args)).await {
         Ok(_exit_code) => Ok(()),
         Err(e) => Err(format!("CLI execution failed: {}", e).into()),
     }
