@@ -20,27 +20,6 @@ fn safe_format_with_width(text: &str, width: usize, left_align: bool) -> String 
     }
 }
 
-#[allow(dead_code)]
-pub fn format_tables(data: &[(String, String)]) -> Table {
-    let mut table = Table::new();
-    table.add_row(Row::new(vec![Cell::new("Schema"), Cell::new("Table Name")]));
-    for (table_name, schema) in data {
-        table.add_row(Row::new(vec![Cell::new(schema), Cell::new(table_name)]));
-    }
-    table
-}
-
-#[allow(dead_code)]
-pub fn format_query_results(data: &[Vec<String>]) -> Table {
-    let mut table = Table::new();
-    if let Some(header) = data.first() {
-        table.add_row(Row::new(header.iter().map(|h| Cell::new(h)).collect()));
-        for row in data.iter().skip(1) {
-            table.add_row(Row::new(row.iter().map(|c| Cell::new(c)).collect()));
-        }
-    }
-    table
-}
 
 #[allow(dead_code)]
 pub fn format_query_results_expanded(data: &[Vec<String>]) -> Vec<Table> {
@@ -80,58 +59,6 @@ pub fn format_query_results_expanded(data: &[Vec<String>]) -> Vec<Table> {
     tables
 }
 
-/// Safe wrapper around format_query_results_psql that catches panics and provides debugging
-#[allow(dead_code)]
-pub fn safe_format_query_results_psql(data: &[Vec<String>], query_context: Option<&str>) -> Result<String, String> {
-    // Pre-flight check for obvious issues
-    if data.is_empty() {
-        return Ok(String::new());
-    }
-    
-    let header = &data[0];
-    if header.is_empty() {
-        return Ok(String::new());
-    }
-    
-    // Check for data consistency issues
-    let expected_cols = header.len();
-    let mut has_issues = false;
-    for (row_idx, row) in data.iter().enumerate() {
-        if row.len() != expected_cols {
-            has_issues = true;
-            eprintln!("Data consistency issue detected in row {}: {} columns, expected {}", 
-                     row_idx, row.len(), expected_cols);
-        }
-    }
-    
-    if has_issues {
-        let context = query_context.unwrap_or("unknown query");
-        let analysis = analyze_format_crash(data, context);
-        let _ = std::fs::write("dbcrust_crash_analysis.txt", &analysis);
-        eprintln!("Inconsistent data detected. Analysis written to dbcrust_crash_analysis.txt");
-    }
-    
-    // Use panic catching to handle format! macro errors
-    let result = std::panic::catch_unwind(|| {
-        format_query_results_psql(data)
-    });
-    
-    match result {
-        Ok(formatted) => Ok(formatted),
-        Err(_) => {
-            let context = query_context.unwrap_or("unknown query");
-            let error_msg = format!("Formatting panic occurred for query: {context}");
-            eprintln!("{error_msg}");
-            
-            // Write detailed analysis
-            let analysis = analyze_format_crash(data, context);
-            let _ = std::fs::write("dbcrust_crash_analysis.txt", &analysis);
-            
-            // Return a fallback representation
-            Ok(format!("ERROR: Formatting failed. {} rows returned. Analysis written to dbcrust_crash_analysis.txt", data.len()))
-        }
-    }
-}
 
 #[allow(dead_code)]
 pub fn format_query_results_psql(data: &[Vec<String>]) -> String {
@@ -299,37 +226,6 @@ fn format_query_results_psql_internal(data: &[Vec<String>]) -> String {
     ));
 
     result
-}
-
-#[allow(dead_code)]
-pub fn debug_data_structure(data: &[Vec<String>], context: &str) {
-    if data.is_empty() {
-        eprintln!("DEBUG [{context}]: Data is empty");
-        return;
-    }
-
-    let header = &data[0];
-    eprintln!("DEBUG [{}]: Header has {} columns: {:?}", context, header.len(), header);
-    
-    for (row_idx, row) in data.iter().enumerate().skip(1) {
-        if row.len() != header.len() {
-            eprintln!("DEBUG [{}]: Row {} has {} columns (expected {}): {:?}", 
-                     context, row_idx, row.len(), header.len(), row);
-        }
-    }
-    
-    // Check for any completely empty rows
-    let empty_rows: Vec<usize> = data.iter().enumerate()
-        .filter(|(_, row)| row.is_empty())
-        .map(|(idx, _)| idx)
-        .collect();
-    
-    if !empty_rows.is_empty() {
-        eprintln!("DEBUG [{context}]: Found empty rows at indices: {empty_rows:?}");
-    }
-    
-    eprintln!("DEBUG [{}]: Total rows: {}, Expected columns: {}", 
-             context, data.len(), header.len());
 }
 
 #[allow(dead_code)]
