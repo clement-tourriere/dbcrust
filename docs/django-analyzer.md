@@ -581,4 +581,283 @@ def send_performance_metrics(results):
     monitoring_client.send_metrics('django.orm.performance', metrics)
 ```
 
-The Django ORM Query Analyzer is a powerful tool for identifying and fixing performance issues in Django applications. By integrating it into your development workflow, you can catch and resolve performance problems before they impact your users.
+## Django Management Command
+
+DBCrust provides a Django management command that works like Django's built-in `dbshell` command but launches DBCrust instead of the default database client. This gives you access to all of DBCrust's advanced features with automatic Django database configuration.
+
+### Installation and Setup
+
+1. **Add to INSTALLED_APPS:**
+
+```python
+# settings.py
+INSTALLED_APPS = [
+    # ... your other apps
+    'dbcrust',
+]
+```
+
+2. **Verify Installation:**
+
+```bash
+python manage.py dbcrust --help
+```
+
+### Basic Usage
+
+The management command automatically reads your Django database configuration and launches DBCrust:
+
+#### Connect to Default Database
+
+```bash
+# Launch DBCrust with your default database
+python manage.py dbcrust
+
+# Same as above but explicit
+python manage.py dbcrust --database default
+```
+
+#### Connect to Specific Database
+
+```bash
+# Connect to a specific database alias
+python manage.py dbcrust --database analytics
+python manage.py dbcrust --database cache
+```
+
+#### List Available Databases
+
+```bash
+# See all configured databases
+python manage.py dbcrust --list-databases
+```
+
+**Example Output:**
+```
+📊 Available Database Configurations:
+
+  🔹 default
+     Type: PostgreSQL
+     Status: ✅ Supported
+     Details: Host: localhost:5432, Database: myapp, User: postgres
+
+  🔹 analytics
+     Type: MySQL
+     Status: ✅ Supported
+     Details: Host: mysql.example.com:3306, Database: analytics_db, User: analytics_user
+
+  🔹 cache
+     Type: SQLite
+     Status: ✅ Supported
+     Details: File: /path/to/cache.db
+```
+
+### Command Options
+
+#### Information Commands
+
+```bash
+# Show connection information
+python manage.py dbcrust --show-url --database default
+
+# Check DBCrust version
+python manage.py dbcrust --dbcrust-version
+
+# Show what command would be executed
+python manage.py dbcrust --dry-run --database default
+```
+
+#### Debug Options
+
+```bash
+# Enable debug output
+python manage.py dbcrust --debug --database default
+
+# Pass additional arguments to DBCrust
+python manage.py dbcrust --debug -- --no-banner -c "\\dt"
+```
+
+### Database Support
+
+The management command supports all Django database backends that are compatible with DBCrust:
+
+| Django Backend | DBCrust Support | URL Format |
+|---|---|---|
+| `postgresql` | ✅ Full | `postgres://user:pass@host:port/db` |
+| `mysql` | ✅ Full | `mysql://user:pass@host:port/db` |
+| `sqlite3` | ✅ Full | `sqlite:///path/to/db.sqlite3` |
+| `oracle` | ❌ Not supported | - |
+
+### Configuration Examples
+
+#### PostgreSQL with SSL
+
+```python
+# settings.py
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'myapp_production',
+        'USER': 'myapp_user',
+        'PASSWORD': 'secure_password',
+        'HOST': 'db.example.com',
+        'PORT': '5432',
+        'OPTIONS': {
+            'sslmode': 'require',
+            'connect_timeout': 10,
+        }
+    }
+}
+```
+
+```bash
+# Launches DBCrust with SSL connection
+python manage.py dbcrust
+```
+
+#### Multiple Databases
+
+```python
+# settings.py
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'main_db',
+        'USER': 'postgres',
+        'HOST': 'localhost',
+        'PORT': '5432',
+    },
+    'analytics': {
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'analytics_db',
+        'USER': 'analytics_user',
+        'PASSWORD': 'analytics_pass',
+        'HOST': 'mysql.example.com',
+        'PORT': '3306',
+    },
+    'cache': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'cache.db',
+    }
+}
+```
+
+```bash
+# Connect to different databases
+python manage.py dbcrust --database default    # PostgreSQL
+python manage.py dbcrust --database analytics  # MySQL
+python manage.py dbcrust --database cache      # SQLite
+```
+
+### Integration with Django Workflows
+
+#### Development Database Shell
+
+Replace your regular database shell workflow:
+
+```bash
+# Instead of Django's dbshell
+python manage.py dbshell
+
+# Use DBCrust for enhanced features
+python manage.py dbcrust
+```
+
+#### Development Scripts
+
+```bash
+# Run SQL scripts during development
+python manage.py dbcrust -- -c "\\dt"                    # List tables
+python manage.py dbcrust -- -c "SELECT COUNT(*) FROM users;"  # Run query
+python manage.py dbcrust -- -f migration.sql             # Execute file
+```
+
+#### Production Debugging
+
+```bash
+# Safe read-only analysis in production
+python manage.py dbcrust --database replica -- --read-only
+
+# Quick table inspection
+python manage.py dbcrust --dry-run --show-url --database production
+```
+
+### Error Handling
+
+The management command provides helpful error messages:
+
+#### DBCrust Not Found
+
+```bash
+❌ DBCrust binary not found. Please ensure DBCrust is installed and in your PATH.
+Install with: pip install dbcrust
+Or with uv: uv add dbcrust
+```
+
+#### Unsupported Database
+
+```bash
+❌ Database configuration error: Database engine 'django.db.backends.oracle' is not supported by DBCrust
+```
+
+#### Missing Database
+
+```bash
+❌ Database configuration error: Database alias 'nonexistent' not found. Available: default, analytics
+```
+
+### Advanced Usage
+
+#### Custom Connection Parameters
+
+```bash
+# Debug connection issues
+python manage.py dbcrust --debug --show-url
+
+# Pass through DBCrust-specific options
+python manage.py dbcrust -- --ssh-tunnel user@jumphost.com --vault-role myapp
+```
+
+#### Integration with Scripts
+
+```python
+# management/commands/analyze_performance.py
+from django.core.management.base import BaseCommand
+from django.core.management import call_command
+import subprocess
+import sys
+
+class Command(BaseCommand):
+    def handle(self, *args, **options):
+        # Launch DBCrust for performance analysis
+        try:
+            call_command('dbcrust', database='analytics', 
+                        dbcrust_args=['-c', '\\timing on', '-c', 'SELECT * FROM slow_query_log;'])
+        except Exception as e:
+            self.stderr.write(f"Performance analysis failed: {e}")
+```
+
+#### Docker Integration
+
+```python
+# For containerized Django applications
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'myapp',
+        'USER': 'postgres',
+        'PASSWORD': 'postgres',
+        'HOST': 'db',  # Docker service name
+        'PORT': '5432',
+    }
+}
+```
+
+```bash
+# Inside Docker container
+docker exec -it myapp-web python manage.py dbcrust
+```
+
+---
+
+The Django ORM Query Analyzer is a powerful tool for identifying and fixing performance issues in Django applications. Combined with the Django management command, you have seamless integration between Django's configuration and DBCrust's advanced database analysis capabilities. By integrating both tools into your development workflow, you can catch and resolve performance problems before they impact your users.

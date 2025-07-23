@@ -23,4 +23,7 @@ def run_cli(db_url=None):
     """
     return _run_cli_main(db_url)
 
+# Django app configuration
+default_app_config = 'dbcrust.apps.DbcrustConfig'
+
 __all__ = ["PyDatabase", "PyConfig", "PostgresClient", "run_cli", "run_with_url", "run_command", "run_cli_loop"] 
