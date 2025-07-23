@@ -332,7 +332,7 @@ impl CliCore {
 
         // Normalize URL if it doesn't have a scheme
         let mut full_url_str = if !connection_url.contains("://") {
-            format!("postgresql://{connection_url}")
+            format!("postgres://{connection_url}")
         } else {
             connection_url
         };
@@ -341,7 +341,7 @@ impl CliCore {
         full_url_str = self.handle_special_url_schemes(full_url_str).await?;
 
         // Handle vault URLs
-        if full_url_str.starts_with("vault://") || full_url_str.starts_with("vaultdb://") {
+        if full_url_str.starts_with("vault://") {
             let (database, connection_info) = self.handle_vault_connection(&full_url_str).await?;
             
             // Track vault connection in history with vault metadata
@@ -425,7 +425,7 @@ impl CliCore {
                 let sanitized_url = crate::password_sanitizer::sanitize_connection_url(&resolved_url);
                 (resolved_info.database_type.clone(), sanitized_url)
             } else {
-                let database_type = if full_url_str.starts_with("postgresql://") {
+                let database_type = if full_url_str.starts_with("postgres://") || full_url_str.starts_with("postgresql://") {
                     crate::database::DatabaseType::PostgreSQL
                 } else if full_url_str.starts_with("mysql://") {
                     crate::database::DatabaseType::MySQL
@@ -976,12 +976,12 @@ impl CliCore {
                             &session.user,
                         ) {
                             format!(
-                                "postgresql://{}:{}@{}:{}/{}",
+                                "postgres://{}:{}@{}:{}/{}",
                                 session.user, password, session.host, session.port, session.dbname
                             )
                         } else {
                             format!(
-                                "postgresql://{}@{}:{}/{}",
+                                "postgres://{}@{}:{}/{}",
                                 session.user, session.host, session.port, session.dbname
                             )
                         }
@@ -1080,7 +1080,7 @@ impl CliCore {
             return Ok(original_url.clone());
         }
         
-        if original_url.starts_with("vault://") || original_url.starts_with("vaultdb://") {
+        if original_url.starts_with("vault://") {
             // Check if we have vault metadata stored (like saved sessions do)
             if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
                 connection.options.get("vault_mount"),
@@ -1134,10 +1134,10 @@ impl CliCore {
         let reconstructed_url = match connection.database_type {
             crate::database::DatabaseType::PostgreSQL => {
                 if let Some(password) = crate::pgpass::lookup_password(host, port, database, username) {
-                    format!("postgresql://{username}:{password}@{host}:{port}/{database}")
+                    format!("postgres://{username}:{password}@{host}:{port}/{database}")
                 } else {
                     // No password found, return URL without password (will prompt)
-                    format!("postgresql://{username}@{host}:{port}/{database}")
+                    format!("postgres://{username}@{host}:{port}/{database}")
                 }
             }
             crate::database::DatabaseType::MySQL => {

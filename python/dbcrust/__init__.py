@@ -17,7 +17,7 @@ def run_cli(db_url=None):
     
     Examples:
         >>> import dbcrust
-        >>> dbcrust.run_cli("postgresql://user:pass@localhost/mydb")
+        >>> dbcrust.run_cli("postgres://user:pass@localhost/mydb")
         >>> dbcrust.run_cli("mysql://user:pass@localhost/mydb")
         >>> dbcrust.run_cli("sqlite:///path/to/database.db")
     """

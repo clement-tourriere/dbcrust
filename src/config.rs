@@ -1092,7 +1092,7 @@ impl Config {
         } else if url.starts_with("session://") {
             // For session URLs, show the session name
             url.strip_prefix("session://").unwrap_or(url).to_string()
-        } else if url.starts_with("vault://") || url.starts_with("vaultdb://") {
+        } else if url.starts_with("vault://") {
             // For vault URLs, show the vault path
             url.to_string()
         } else {
@@ -1482,7 +1482,7 @@ mod tests {
         
         // Add a recent connection
         let result = config.add_recent_connection_auto_display(
-            "postgresql://user@localhost:5432/testdb".to_string(),
+            "postgres://user@localhost:5432/testdb".to_string(),
             DatabaseType::PostgreSQL,
             true
         );
@@ -1491,7 +1491,7 @@ mod tests {
         // Verify it was added
         let recent = config.get_recent_connections();
         assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].connection_url, "postgresql://user@localhost:5432/testdb");
+        assert_eq!(recent[0].connection_url, "postgres://user@localhost:5432/testdb");
         assert_eq!(recent[0].database_type, DatabaseType::PostgreSQL);
         assert!(recent[0].success);
         // No session_name field in the new separated architecture
@@ -1523,7 +1523,7 @@ mod tests {
         // Add more connections than the configured limit
         let limit = config.max_recent_connections;
         for i in 0..(limit + 5) {
-            let url = format!("postgresql://user@localhost:5432/testdb{i}");
+            let url = format!("postgres://user@localhost:5432/testdb{i}");
             let result = config.add_recent_connection_auto_display(
                 url,
                 DatabaseType::PostgreSQL,
@@ -1553,7 +1553,7 @@ mod tests {
         
         // Add 8 connections (more than the new limit of 5)
         for i in 0..8 {
-            let url = format!("postgresql://user@localhost:5432/testdb{i}");
+            let url = format!("postgres://user@localhost:5432/testdb{i}");
             let result = config.add_recent_connection_auto_display(
                 url,
                 DatabaseType::PostgreSQL,
@@ -1577,7 +1577,7 @@ mod tests {
         
         // Add connections in order
         for i in 0..3 {
-            let url = format!("postgresql://user@localhost:5432/testdb{i}");
+            let url = format!("postgres://user@localhost:5432/testdb{i}");
             let result = config.add_recent_connection_auto_display(
                 url,
                 DatabaseType::PostgreSQL,
@@ -1603,7 +1603,7 @@ mod tests {
         
         // Add some connections
         for i in 0..3 {
-            let url = format!("postgresql://user@localhost:5432/testdb{i}");
+            let url = format!("postgres://user@localhost:5432/testdb{i}");
             let result = config.add_recent_connection_auto_display(
                 url,
                 DatabaseType::PostgreSQL,
@@ -1703,7 +1703,7 @@ mod tests {
         assert!(result.is_ok());
         
         let result = config.add_recent_connection_auto_display(
-            "postgresql://user@localhost:5432/testdb".to_string(),
+            "postgres://user@localhost:5432/testdb".to_string(),
             DatabaseType::PostgreSQL,
             true
         );
@@ -1724,7 +1724,7 @@ mod tests {
         // Verify recent connections are in separate storage
         let recent = config.get_recent_connections();
         assert_eq!(recent.len(), 1);
-        assert_eq!(recent[0].connection_url, "postgresql://user@localhost:5432/testdb");
+        assert_eq!(recent[0].connection_url, "postgres://user@localhost:5432/testdb");
     }
 
     #[rstest]
@@ -1812,7 +1812,7 @@ mod tests {
         assert!(result.is_ok());
         
         let result = config.add_recent_connection_auto_display(
-            "postgresql://user@localhost:5432/test".to_string(),
+            "postgres://user@localhost:5432/test".to_string(),
             DatabaseType::PostgreSQL,
             true
         );
@@ -1825,7 +1825,7 @@ mod tests {
         
         // Add connections for each database type
         let result1 = config.add_recent_connection_auto_display(
-            "postgresql://user@localhost:5432/pgdb".to_string(),
+            "postgres://user@localhost:5432/pgdb".to_string(),
             DatabaseType::PostgreSQL,
             true
         );
@@ -1861,7 +1861,7 @@ mod tests {
         
         // Add successful connection
         let result1 = config.add_recent_connection_auto_display(
-            "postgresql://user@localhost:5432/testdb".to_string(),
+            "postgres://user@localhost:5432/testdb".to_string(),
             DatabaseType::PostgreSQL,
             true
         );
@@ -1869,7 +1869,7 @@ mod tests {
         
         // Add failed connection
         let result2 = config.add_recent_connection_auto_display(
-            "postgresql://user@badhost:5432/testdb".to_string(),
+            "postgres://user@badhost:5432/testdb".to_string(),
             DatabaseType::PostgreSQL,
             false
         );
@@ -1885,7 +1885,7 @@ mod tests {
     #[rstest]
     fn test_generate_display_name_docker_connections() {
         // Test Docker connection with complete resolved URL
-        let docker_url = "postgresql://user@container.orb.local:5432/myapp # Docker: tt2-postgres";
+        let docker_url = "postgres://user@container.orb.local:5432/myapp # Docker: tt2-postgres";
         let display_name = Config::generate_display_name_from_url(docker_url, &DatabaseType::PostgreSQL);
         assert_eq!(display_name, "user@container.orb.local:5432/myapp (Docker: tt2-postgres)");
         
@@ -1898,7 +1898,7 @@ mod tests {
     #[rstest]
     fn test_generate_display_name_standard_connections() {
         // Test standard PostgreSQL connection
-        let pg_url = "postgresql://user@host.example.com:5432/database";
+        let pg_url = "postgres://user@host.example.com:5432/database";
         let pg_display_name = Config::generate_display_name_from_url(pg_url, &DatabaseType::PostgreSQL);
         assert_eq!(pg_display_name, "user@host.example.com:5432/database");
         
@@ -1918,7 +1918,7 @@ mod tests {
         let mut config = get_test_config();
         
         // Simulate a Docker connection that gets resolved to a complete URL
-        let resolved_docker_url = "postgresql://postgres@myapp-postgres.orb.local:5432/myapp # Docker: myapp-postgres";
+        let resolved_docker_url = "postgres://postgres@myapp-postgres.orb.local:5432/myapp # Docker: myapp-postgres";
         
         let result = config.add_recent_connection_auto_display(
             resolved_docker_url.to_string(),

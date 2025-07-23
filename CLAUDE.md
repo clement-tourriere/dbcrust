@@ -20,7 +20,7 @@ cargo build --release
 cargo run --release -- [CONNECTION_OPTIONS]
 
 # Run with connection URL
-cargo run --release -- postgresql://user@host/database
+cargo run --release -- postgres://user@host/database
 
 # Run specific tests
 cargo test
@@ -82,9 +82,9 @@ maturin build --release
 ## Connection Methods
 
 The client supports multiple connection approaches:
-1. Connection URLs: `postgresql://user:pass@host:port/db?sslmode=require`
+1. Connection URLs: `postgres://user:pass@host:port/db?sslmode=require`
 2. Individual parameters: `-H host -p port -U user -d database`
-3. Vault URLs: `vaultdb://role@mount/database`
+3. Vault URLs: `vault://role@mount/database`
 4. SSH tunnel patterns in config for automatic tunnel usage
 5. Session URLs: `session://saved_session_name`
 6. Recent URLs: `recent://` (interactive selection)
@@ -129,7 +129,7 @@ Both CLIs support identical connection URL patterns:
 
 ```bash
 # Standard database URLs
-dbcrust postgresql://user@host:5432/db
+dbcrust postgres://user@host:5432/db
 dbcrust mysql://user@host:3306/db
 dbcrust sqlite:///path/to/file.db
 
@@ -150,12 +150,12 @@ All command-line flags and options work identically:
 
 ```bash
 # Both CLIs support identical flags
-dbcrust --debug --no-banner --ssh-tunnel user@host postgresql://db
-python -m dbcrust --debug --no-banner --ssh-tunnel user@host postgresql://db
+dbcrust --debug --no-banner --ssh-tunnel user@host postgres://db
+python -m dbcrust --debug --no-banner --ssh-tunnel user@host postgres://db
 
 # Command mode works identically
-dbcrust postgresql://db -c "\\dt"        # List tables
-python -m dbcrust postgresql://db -c "\\dt"  # Identical behavior
+dbcrust postgres://db -c "\\dt"        # List tables
+python -m dbcrust postgres://db -c "\\dt"  # Identical behavior
 ```
 
 ### Type-Safe Command Integration
@@ -202,7 +202,7 @@ Comprehensive test coverage ensures feature parity:
 ```rust
 // Feature parity testing (tests/python_cli_parity.rs)
 #[rstest]
-#[case("postgresql://localhost/test")]
+#[case("postgres://localhost/test")]
 #[case("session://test_session")]
 #[case("vault://role@mount/db")]
 fn test_python_cli_connection_url_support(#[case] connection_url: &str) {
@@ -468,7 +468,7 @@ Configure automatic SSH tunnels in `config.toml`:
 ## Vault Integration
 
 Vault connections use the format:
-- `vaultdb://role@mount/database`
+- `vault://role@mount/database`
 - Components are optional and will prompt interactively
 - Configure with environment variables or CLI args
 
@@ -661,7 +661,7 @@ created_at = "2024-01-15T10:30:00Z"
 
 # Connection history (automatic tracking)
 [[recent_connections]]
-connection_url = "postgresql://user@localhost:5432/testdb"
+connection_url = "postgres://user@localhost:5432/testdb"
 display_name = "user@localhost:5432/testdb"
 timestamp = "2024-01-15T14:22:33Z"
 database_type = "PostgreSQL"

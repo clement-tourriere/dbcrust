@@ -251,7 +251,7 @@ impl ConnectionInfo {
                 }
             },
             DatabaseType::PostgreSQL => {
-                let mut url = "postgresql://".to_string();
+                let mut url = "postgres://".to_string();
                 
                 // Build standard PostgreSQL URL with resolved connection details
                 if let Some(ref username) = self.username {
@@ -386,7 +386,7 @@ mod tests {
         };
         
         let url = conn_info.to_url();
-        assert_eq!(url, "postgresql://user@localhost:5432/testdb");
+        assert_eq!(url, "postgres://user@localhost:5432/testdb");
     }
 
     #[rstest]
@@ -405,7 +405,7 @@ mod tests {
         };
         
         let url = conn_info.to_url();
-        assert_eq!(url, "postgresql://postgres@container.orb.local:5432/myapp # Docker: myapp-postgres");
+        assert_eq!(url, "postgres://postgres@container.orb.local:5432/myapp # Docker: myapp-postgres");
     }
 
     #[rstest]
@@ -447,7 +447,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case("postgresql://user:pass@localhost:5432/mydb", DatabaseType::PostgreSQL, Some("localhost"), Some(5432), Some("user"), Some("mydb"))]
+    #[case("postgres://user:pass@localhost:5432/mydb", DatabaseType::PostgreSQL, Some("localhost"), Some(5432), Some("user"), Some("mydb"))]
     #[case("postgres://user@localhost/mydb", DatabaseType::PostgreSQL, Some("localhost"), None, Some("user"), Some("mydb"))]
     #[case("sqlite:///path/to/database.db", DatabaseType::SQLite, None, None, None, None)]
     #[case("mysql://user:pass@localhost:3306/mydb", DatabaseType::MySQL, Some("localhost"), Some(3306), Some("user"), Some("mydb"))]
@@ -469,7 +469,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case("postgresql://localhost/db", true)]
+    #[case("postgres://localhost/db", true)]
     #[case("mysql://localhost/db", true)]
     #[case("sqlite:///path/to/db", false)]
     fn test_ssh_tunnel_support(#[case] url: &str, #[case] expected: bool) {
@@ -478,7 +478,7 @@ mod tests {
     }
 
     #[rstest]
-    #[case("postgresql://localhost/db", Some(5432))]
+    #[case("postgres://localhost/db", Some(5432))]
     #[case("mysql://localhost/db", Some(3306))]
     #[case("sqlite:///path/to/db", None)]
     fn test_default_ports(#[case] url: &str, #[case] expected: Option<u16>) {

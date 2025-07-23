@@ -65,7 +65,7 @@ def demonstrate_cli_integration():
     print("1. Direct Command Execution:")
     try:
         # This would work with a real database
-        connection_url = "postgresql://postgres@localhost/postgres"
+        connection_url = "postgres://postgres@localhost/postgres"
         result = dbcrust.run_command(connection_url, "SELECT version()")
         print(f"Database version: {result}")
     except Exception as e:
@@ -75,7 +75,7 @@ def demonstrate_cli_integration():
     try:
         # Execute with additional CLI flags - perfect for automation
         result = dbcrust.run_with_url(
-            "postgresql://postgres@localhost/postgres",
+            "postgres://postgres@localhost/postgres",
             ["--debug", "--no-banner", "-c", "\\dt"]
         )
         print(f"Tables: {result}")
@@ -90,7 +90,7 @@ def demonstrate_cli_integration():
         print(f"Session not found (expected): {e}")
     
     print("\n4. Interactive CLI (commented out - would launch interactive mode):")
-    print("# dbcrust.run_cli('postgresql://postgres@localhost/postgres')")
+    print("# dbcrust.run_cli('postgres://postgres@localhost/postgres')")
     
     print("\nDemo completed!")
 

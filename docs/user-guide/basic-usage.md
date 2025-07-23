@@ -38,7 +38,7 @@ dbc postgres://user:password@localhost/database
 
     ```bash
     # Start interactive session
-    dbcrust postgresql://user:pass@localhost/mydb
+    dbcrust postgres://user:pass@localhost/mydb
     
     # You'll see the prompt
     mydb=#
@@ -48,11 +48,11 @@ dbc postgres://user:password@localhost/database
 
     ```bash
     # Execute single query
-    dbcrust postgresql://user:pass@localhost/mydb \
+    dbcrust postgres://user:pass@localhost/mydb \
       --query "SELECT COUNT(*) FROM users"
     
     # Execute file
-    dbcrust postgresql://user:pass@localhost/mydb \
+    dbcrust postgres://user:pass@localhost/mydb \
       --file report.sql
     ```
 
@@ -61,7 +61,7 @@ dbc postgres://user:password@localhost/database
 When you enter interactive mode, you'll see a rich prompt with context:
 
 ```
-postgresql://localhost:5432/myapp as postgres
+postgres://localhost:5432/myapp as postgres
 myapp=# 
 ```
 
@@ -370,7 +370,7 @@ dbcrust recent://
 !!! tip "Full URL Storage"
     Connection history stores complete URLs including Docker containers:
     - `docker://user@my-postgres-container/myapp`
-    - `postgresql://user@host:5432/database`
+    - `postgres://user@host:5432/database`
     - `mysql://user@host:3306/database`
 
 ## 📁 File Operations
@@ -535,8 +535,8 @@ exit
     
     ```bash
     # In ~/.bashrc or ~/.zshrc
-    alias dbp='dbcrust postgresql://postgres@localhost/production'
-    alias dbd='dbcrust postgresql://postgres@localhost/development'
+    alias dbp='dbcrust postgres://postgres@localhost/production'
+    alias dbd='dbcrust postgres://postgres@localhost/development'
     ```
 
 !!! tip "Quick Data Exploration"

@@ -573,7 +573,7 @@ mod tests {
 
         // Test invalid URL
         assert_eq!(
-            DockerClient::parse_docker_url("postgresql://user:pass@host/db"),
+            DockerClient::parse_docker_url("postgres://user:pass@host/db"),
             None
         );
     }

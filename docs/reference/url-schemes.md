@@ -20,7 +20,7 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     dbcrust postgres://username:password@localhost:5432/database_name?sslmode=require
     
     # Alternative scheme (auto-converted to postgres://)
-    dbcrust postgresql://username:password@localhost:5432/database_name
+    dbcrust postgres://username:password@localhost:5432/database_name
     ```
 
     !!! note "PostgreSQL Scheme Normalization"
@@ -142,7 +142,7 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
 
 === "HashiCorp Vault"
 
-    **Schemes:** `vault://` or `vaultdb://`
+    **Schemes:** `vault://` or `vaultdb://` (deprecated)
 
     ```bash
     # Full vault URL
@@ -152,8 +152,8 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     dbcrust vault://
     # → Prompts for role, mount, and database
     
-    # Alternative scheme
-    dbcrust vaultdb://app-role@database/postgres-prod
+    # Alternative scheme (deprecated)
+    dbcrust vault://app-role@database/postgres-prod
     ```
 
     **Configuration:**
@@ -230,7 +230,7 @@ dbc pos[TAB] → postgres://
 dbc doc[TAB] → docker://  
 dbc ses[TAB] → session://
 dbc rec[TAB] → recent://
-dbc va[TAB]  → vault:// vaultdb://
+dbc va[TAB]  → vault://
 ```
 
 #### Contextual Completions
@@ -285,7 +285,7 @@ DBCrust provides smart contextual completions based on the URL scheme:
 ```bash
 # Scheme completion
 dbc [TAB]
-# → postgres:// mysql:// sqlite:// docker:// session:// recent:// vault:// vaultdb://
+# → postgres:// mysql:// sqlite:// docker:// session:// recent:// vault://
 
 # Docker container completion  
 dbc docker://[TAB]

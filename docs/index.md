@@ -57,7 +57,7 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     **SSH Tunneling Made Simple**
     ```bash
     # Automatic tunnel detection
-    dbcrust postgresql://user@db.internal.company.com/prod
+    dbcrust postgres://user@db.internal.company.com/prod
     # → Automatically routes through configured jumphost
     ```
     
@@ -85,7 +85,7 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     **OrbStack Support**
     ```bash
     # Works with OrbStack DNS
-    dbcrust postgresql://user@postgres.myproject.orb.local/db
+    dbcrust postgres://user@postgres.myproject.orb.local/db
     ```
 
 === "🐍 Python Integration"
@@ -96,12 +96,12 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     
     # Execute queries directly
     result = dbcrust.run_command(
-        "postgresql://user@localhost/db", 
+        "postgres://user@localhost/db", 
         "SELECT * FROM users LIMIT 10"
     )
     
     # Launch interactive CLI
-    dbcrust.run_cli("postgresql://user@localhost/db")
+    dbcrust.run_cli("postgres://user@localhost/db")
     ```
     
     **Rich Client Class**
@@ -119,7 +119,7 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
 
     ```bash
     # Run immediately without installation
-    uvx dbcrust postgresql://user:pass@localhost/mydb
+    uvx dbcrust postgres://user:pass@localhost/mydb
     
     # Or install globally
     uv tool install dbcrust
@@ -130,7 +130,7 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
 
     ```bash
     pip install dbcrust
-    dbcrust postgresql://user:pass@localhost/mydb
+    dbcrust postgres://user:pass@localhost/mydb
     ```
 
 === "From Source"
@@ -182,7 +182,7 @@ dbcrust vault://readonly@prod/postgres-main \
   --query "SELECT version(), current_database(), current_user"
 
 # Backup verification
-dbcrust postgresql://backup-user@replica.db.internal/app \
+dbcrust postgres://backup-user@replica.db.internal/app \
   --ssh-tunnel jumphost.company.com \
   --query "SELECT MAX(created_at) FROM critical_table"
 ```

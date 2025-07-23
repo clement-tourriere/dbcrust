@@ -3659,7 +3659,7 @@ mod tests {
         use crate::config::Config;
         
         // Create a URL that would trigger SSH tunnel
-        let test_url = "postgresql://user:pass@test.internal.example.com:5432/testdb";
+        let test_url = "postgres://user:pass@test.internal.example.com:5432/testdb";
         
         // Manually create and test the flow that from_url should follow
         let connection_info = ConnectionInfo::parse_url(test_url).unwrap();

@@ -11,7 +11,7 @@ import dbcrust
 
 # Same API works with any database
 postgres_result = dbcrust.run_command(
-    "postgresql://user@localhost/db", 
+    "postgres://user@localhost/db", 
     "SELECT COUNT(*) FROM users"
 )
 
@@ -59,18 +59,18 @@ import dbcrust
 
 # Execute SQL queries
 result = dbcrust.run_command(
-    "postgresql://postgres@localhost/myapp",
+    "postgres://postgres@localhost/myapp",
     "SELECT name, email FROM users WHERE created_at > current_date - interval '7 days'"
 )
 
 # Execute backslash commands
 tables = dbcrust.run_command(
-    "postgresql://postgres@localhost/myapp",
+    "postgres://postgres@localhost/myapp",
     "\\dt"
 )
 
 databases = dbcrust.run_command(
-    "postgresql://postgres@localhost/myapp", 
+    "postgres://postgres@localhost/myapp", 
     "\\l"
 )
 ```
@@ -84,13 +84,13 @@ import dbcrust
 
 # Execute with additional CLI options
 result = dbcrust.run_with_url(
-    "postgresql://postgres@localhost/myapp",
+    "postgres://postgres@localhost/myapp",
     ["--debug", "--no-banner", "-c", "\\dt"]
 )
 
 # Useful for automation where you need CLI flags
 dbcrust.run_with_url(
-    "postgresql://postgres@localhost/myapp",
+    "postgres://postgres@localhost/myapp",
     ["-o", "json", "-c", "SELECT * FROM users LIMIT 5"]
 )
 
@@ -106,7 +106,7 @@ Launch the full interactive CLI from Python:
 import dbcrust
 
 # Launch interactive CLI
-dbcrust.run_cli("postgresql://postgres@localhost/myapp")
+dbcrust.run_cli("postgres://postgres@localhost/myapp")
 
 # Or let user choose connection interactively
 dbcrust.run_cli()
@@ -156,7 +156,7 @@ ORDER BY month, status
 """
 
 result = dbcrust.run_command(
-    "postgresql://analyst@warehouse/analytics",
+    "postgres://analyst@warehouse/analytics",
     query
 )
 
@@ -204,7 +204,7 @@ def database_health_check(connection_url):
     }
 
 # Run health check
-health = database_health_check("postgresql://admin@prod-db/main")
+health = database_health_check("postgres://admin@prod-db/main")
 print(f"Health check completed at {health['timestamp']}")
 ```
 
@@ -257,7 +257,7 @@ def sync_user_data():
         """
         
         dbcrust.run_command(
-            "postgresql://writer@data-warehouse/analytics",
+            "postgres://writer@data-warehouse/analytics",
             query
         )
     
@@ -280,7 +280,7 @@ class TestUserQueries:
         """Setup test database"""
         # Create test data
         dbcrust.run_command(
-            "postgresql://test@localhost/test_db",
+            "postgres://test@localhost/test_db",
             """
             INSERT INTO users (name, email, status) VALUES 
             ('Alice', 'alice@test.com', 'active'),
@@ -288,11 +288,11 @@ class TestUserQueries:
             ('Charlie', 'charlie@test.com', 'active')
             """
         )
-        yield "postgresql://test@localhost/test_db"
+        yield "postgres://test@localhost/test_db"
         
         # Cleanup
         dbcrust.run_command(
-            "postgresql://test@localhost/test_db",
+            "postgres://test@localhost/test_db",
             "TRUNCATE users"
         )
     
@@ -316,14 +316,14 @@ import dbcrust
 
 # Automatic SSH tunneling (configured in ~/.config/dbcrust/config.toml)
 result = dbcrust.run_command(
-    "postgresql://user@db.internal.company.com/prod",
+    "postgres://user@db.internal.company.com/prod",
     "SELECT COUNT(*) FROM orders"
     # SSH tunnel automatically established
 )
 
 # Manual SSH tunnel
 result = dbcrust.run_command(
-    "postgresql://user@internal-db/prod",
+    "postgres://user@internal-db/prod",
     "SELECT COUNT(*) FROM orders",
     ssh_tunnel="user@jumphost.company.com:2222"
 )
@@ -388,7 +388,7 @@ def safe_query(connection_url, query):
 
 # Use safe query execution
 data = safe_query(
-    "postgresql://user@localhost/db",
+    "postgres://user@localhost/db",
     "SELECT * FROM users LIMIT 10"
 )
 
@@ -413,7 +413,7 @@ def dbcrust_to_dataframe(connection_url, query):
 
 # Use in data analysis
 df = dbcrust_to_dataframe(
-    "postgresql://analyst@warehouse/sales",
+    "postgres://analyst@warehouse/sales",
     """
     SELECT 
         product_category,
@@ -438,7 +438,7 @@ print(monthly_revenue)
 import dbcrust
 
 # Set up connection for the session
-CONNECTION = "postgresql://analyst@warehouse/analytics"
+CONNECTION = "postgres://analyst@warehouse/analytics"
 
 def query(sql):
     """Convenience function for notebook queries"""

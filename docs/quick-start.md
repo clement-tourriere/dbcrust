@@ -10,7 +10,7 @@ Get up and running with DBCrust in under 2 minutes! This guide will have you que
 
     ```bash
     # Run immediately without installation
-    uvx dbcrust postgresql://postgres:password@localhost/mydb
+    uvx dbcrust postgres://postgres:password@localhost/mydb
     ```
 
     Or install globally for repeated use:
@@ -51,7 +51,7 @@ dbc ses[TAB] → session://
     ```bash
     # Standard connection (both schemes work)
     dbcrust postgres://username:password@localhost:5432/database_name
-    dbcrust postgresql://username:password@localhost:5432/database_name
+    dbcrust postgres://username:password@localhost:5432/database_name
     
     # With SSL (recommended)
     dbcrust postgres://username:password@localhost:5432/database_name?sslmode=require
@@ -316,13 +316,13 @@ import dbcrust
 
 # Execute a query and get results
 result = dbcrust.run_command(
-    "postgresql://user:pass@localhost/mydb",
+    "postgres://user:pass@localhost/mydb",
     "SELECT COUNT(*) FROM orders WHERE created_at >= current_date"
 )
 print(result)
 
 # Launch interactive CLI from Python
-dbcrust.run_cli("postgresql://user:pass@localhost/mydb")
+dbcrust.run_cli("postgres://user:pass@localhost/mydb")
 ```
 
 ## 📚 What's Next?
@@ -360,7 +360,7 @@ Now that you're up and running:
     
     Try disabling SSL first to test basic connectivity:
     ```bash
-    dbcrust postgresql://user:pass@localhost/db?sslmode=disable
+    dbcrust postgres://user:pass@localhost/db?sslmode=disable
     ```
 
 ---

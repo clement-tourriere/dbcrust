@@ -569,7 +569,7 @@ Shows your recent connection history with full URLs (excluding passwords).
 ```
 Recent Connections:
   [1] ✓ docker://postgres@myapp-postgres/myapp_dev - 2024-01-15 14:22 (PostgreSQL)
-  [2] ✓ postgresql://user@localhost:5432/testdb - 2024-01-15 14:15 (PostgreSQL)
+  [2] ✓ postgres://user@localhost:5432/testdb - 2024-01-15 14:15 (PostgreSQL)
   [3] ✗ mysql://root@badhost:3306/db - 2024-01-15 14:10 (MySQL)
   [4] ✓ sqlite:///home/user/data.db - 2024-01-15 13:55 (SQLite)
 

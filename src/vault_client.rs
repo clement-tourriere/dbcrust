@@ -532,7 +532,7 @@ mod tests {
         assert_eq!(result, Some((None, "database".to_string(), None)));
 
         // Test invalid URL
-        let result = parse_vault_url("postgresql://user@host/db");
+        let result = parse_vault_url("postgres://user@host/db");
         assert_eq!(result, None);
 
         // Test minimal vault URL

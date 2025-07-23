@@ -110,14 +110,14 @@ DBCrust automatically tracks recent connections in a separate file to avoid mixi
 ```toml
 # Recent connections (automatically tracked)
 [[connections]]
-connection_url = "postgresql://postgres@myapp-postgres.orb.local:5432/myapp # Docker: myapp-postgres"
+connection_url = "postgres://postgres@myapp-postgres.orb.local:5432/myapp # Docker: myapp-postgres"
 display_name = "postgres@myapp-postgres.orb.local:5432/myapp (Docker: myapp-postgres)"
 timestamp = "2024-01-15T14:22:33Z"
 database_type = "PostgreSQL"
 success = true
 
 [[connections]]
-connection_url = "postgresql://user@localhost:5432/testdb"
+connection_url = "postgres://user@localhost:5432/testdb"
 display_name = "user@localhost:5432/testdb"
 timestamp = "2024-01-15T14:20:15Z"
 database_type = "PostgreSQL"
@@ -317,7 +317,7 @@ Many configuration options can be overridden with environment variables:
 
 ```bash
 # Database connection
-export DBCRUST_DATABASE_URL="postgresql://user@host/db"
+export DBCRUST_DATABASE_URL="postgres://user@host/db"
 
 # SSH tunnel
 export DBCRUST_SSH_TUNNEL="user@jumphost.com:2222"

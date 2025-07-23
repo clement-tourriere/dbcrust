@@ -17,6 +17,7 @@ use tempfile::NamedTempFile;
 /// # Returns
 /// * `Ok(String)` - The edited script content
 /// * `Err(Box<dyn Error>)` - Any error that occurred during the process
+#[allow(dead_code)] // Called indirectly through Command::EditMultiline (\ed command)
 pub fn edit_multiline_script(current_script: &str) -> Result<String, Box<dyn Error>> {
     // Create a temporary file
     let mut temp_file = NamedTempFile::new()?;

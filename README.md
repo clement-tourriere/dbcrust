@@ -27,14 +27,14 @@ an intuitive interface for PostgreSQL, MySQL, and SQLite with features that boos
 
 ```bash
 # Quick run with uv (no installation needed)
-uvx dbcrust postgresql://user:pass@localhost/mydb
+uvx dbcrust postgres://user:pass@localhost/mydb
 
 # Or install globally
 uv tool install dbcrust
-dbcrust postgresql://user:pass@localhost/mydb
+dbcrust postgres://user:pass@localhost/mydb
 
 # Short alias also available
-dbc postgresql://user:pass@localhost/mydb
+dbc postgres://user:pass@localhost/mydb
 
 # Multi-database support
 dbcrust mysql://user:pass@localhost/mydb
@@ -59,7 +59,7 @@ dbcrust docker://   # Interactive container selection
 uv tool install dbcrust
 
 # Or run directly without installation
-uvx dbcrust postgresql://user:pass@localhost/mydb
+uvx dbcrust postgres://user:pass@localhost/mydb
 ```
 
 ### Install from PyPI
@@ -86,7 +86,7 @@ cargo install --path .
 
 ```bash
 # PostgreSQL
-dbcrust postgresql://postgres:pass@localhost/myapp
+dbcrust postgres://postgres:pass@localhost/myapp
 
 # MySQL  
 dbcrust mysql://root:pass@localhost:3306/myapp
@@ -153,11 +153,11 @@ Index Scan
 
 ```bash
 # Connect through SSH tunnel
-dbcrust postgresql://user:pass@db.internal.com/myapp \
+dbcrust postgres://user:pass@db.internal.com/myapp \
   --ssh-tunnel jumphost.example.com
 
 # With SSH credentials
-dbcrust postgresql://user:pass@db.internal.com/myapp \
+dbcrust postgres://user:pass@db.internal.com/myapp \
   --ssh-tunnel user:pass@jumphost.example.com:2222
 ```
 
@@ -181,12 +181,12 @@ DBCrust provides powerful Python integration with three main approaches:
 import dbcrust
 
 # Execute SQL queries
-result = dbcrust.run_command("postgresql://user:pass@localhost/mydb", "SELECT * FROM users LIMIT 10")
+result = dbcrust.run_command("postgres://user:pass@localhost/mydb", "SELECT * FROM users LIMIT 10")
 print(result)
 
 # Execute backslash commands
-tables = dbcrust.run_command("postgresql://user:pass@localhost/mydb", "\\dt")
-databases = dbcrust.run_command("postgresql://user:pass@localhost/mydb", "\\l")
+tables = dbcrust.run_command("postgres://user:pass@localhost/mydb", "\\dt")
+databases = dbcrust.run_command("postgres://user:pass@localhost/mydb", "\\l")
 
 # Multi-database support
 mysql_result = dbcrust.run_command("mysql://user:pass@localhost/mydb", "SHOW TABLES")
@@ -200,7 +200,7 @@ import dbcrust
 
 # Execute with additional CLI options - perfect for automation
 result = dbcrust.run_with_url(
-    "postgresql://user:pass@localhost/mydb", 
+    "postgres://user:pass@localhost/mydb", 
     ["--debug", "-c", "\\dt"]
 )
 
@@ -217,7 +217,7 @@ dbcrust.run_with_url("docker://postgres-container/mydb")
 import dbcrust
 
 # Launch interactive CLI
-dbcrust.run_cli("postgresql://user:pass@localhost/mydb")
+dbcrust.run_cli("postgres://user:pass@localhost/mydb")
 
 # Or without specifying URL (will prompt for connection)
 dbcrust.run_cli()

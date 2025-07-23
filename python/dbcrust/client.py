@@ -118,7 +118,7 @@ class PostgresClient:
         # Build connection URL from current connection parameters
         # Note: This is a simplified approach - in production you'd want to handle
         # SSL parameters, connection options, etc.
-        connection_url = f"postgresql://{self.db.user}@{self.db.host}:{self.db.port}/{self.db.current_database}"
+        connection_url = f"postgres://{self.db.user}@{self.db.host}:{self.db.port}/{self.db.current_database}"
         
         # Format arguments as a list for the Rust function
         args = ["dbcrust", connection_url, "-c", command]

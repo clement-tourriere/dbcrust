@@ -139,7 +139,7 @@ cd dbcrust
 cargo build
 
 # Run directly
-cargo run -- postgresql://user:pass@localhost/mydb
+cargo run -- postgres://user:pass@localhost/mydb
 
 # Run tests
 cargo test
@@ -260,7 +260,7 @@ Optional environment variables for convenience:
 
 ```bash
 # Default database URL
-export DBCRUST_DATABASE_URL="postgresql://user:pass@localhost/mydb"
+export DBCRUST_DATABASE_URL="postgres://user:pass@localhost/mydb"
 
 # Default SSH tunnel
 export DBCRUST_SSH_TUNNEL="jumphost.example.com"
@@ -280,7 +280,7 @@ docker pull ghcr.io/clement-tourriere/dbcrust:latest
 
 # Run with database connection
 docker run -it --rm \
-  -e DATABASE_URL="postgresql://user:pass@host.docker.internal/db" \
+  -e DATABASE_URL="postgres://user:pass@host.docker.internal/db" \
   ghcr.io/clement-tourriere/dbcrust:latest
 
 # Mount config directory
