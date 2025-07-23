@@ -325,14 +325,36 @@ print(result)
 dbcrust.run_cli("postgres://user:pass@localhost/mydb")
 ```
 
+### Django ORM Performance Analysis
+
+For Django developers, DBCrust includes a powerful ORM analyzer:
+
+```python
+from dbcrust.django import analyzer
+
+# Detect N+1 queries and optimization opportunities
+with analyzer.analyze() as analysis:
+    books = Book.objects.all()
+    for book in books:
+        print(book.author.name)  # Will detect N+1 query
+
+results = analysis.get_results()
+print(results.summary)  # Shows performance insights
+```
+
+Perfect for catching performance issues during development!
+
+[**Learn more about Django ORM Analysis →**](/dbcrust/django-analyzer/)
+
 ## 📚 What's Next?
 
 Now that you're up and running:
 
-1. **[URL Schemes & Autocompletion](/dbcrust/reference/url-schemes/)** - Master all connection methods
-2. **[Installation Guide](/dbcrust/installation/)** - Detailed installation options
-3. **[User Guide](/dbcrust/user-guide/basic-usage/)** - Complete feature walkthrough  
-4. **[Python API](/dbcrust/python-api/overview/)** - Integration with your Python projects
+1. **[Django ORM Analyzer](/dbcrust/django-analyzer/)** - Performance analysis for Django applications
+2. **[URL Schemes & Autocompletion](/dbcrust/reference/url-schemes/)** - Master all connection methods
+3. **[Installation Guide](/dbcrust/installation/)** - Detailed installation options
+4. **[User Guide](/dbcrust/user-guide/basic-usage/)** - Complete feature walkthrough  
+5. **[Python API](/dbcrust/python-api/overview/)** - Integration with your Python projects
 
 ## 🆘 Common Issues
 

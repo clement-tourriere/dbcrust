@@ -29,6 +29,7 @@ sqlite_result = dbcrust.run_command(
 ### Rich Feature Set
 
 - **Smart Autocompletion** - Tab completion in Jupyter notebooks
+- **Django ORM Analyzer** - Detect N+1 queries and optimization opportunities
 - **Query Analysis** - EXPLAIN plans accessible in Python
 - **Secure Connections** - SSH tunnels and Vault integration
 - **Performance** - Rust-powered speed with Python convenience
@@ -133,6 +134,56 @@ results = client.execute("SELECT * FROM users LIMIT 10")
 tables = client.list_tables()
 databases = client.list_databases()
 ```
+
+## 🔍 Django ORM Performance Analysis
+
+DBCrust includes a powerful Django ORM analyzer that automatically detects performance issues in your Django applications:
+
+```python
+from dbcrust.django import analyzer
+
+# Analyze Django ORM queries for performance issues
+with analyzer.analyze() as analysis:
+    # Your Django ORM code here
+    books = Book.objects.all()
+    for book in books:
+        print(book.author.name)  # Will detect N+1 query
+
+# Get detailed analysis results
+results = analysis.get_results()
+print(results.summary)
+```
+
+**Key Features:**
+- **N+1 Query Detection** - Automatically identifies N+1 query patterns
+- **Missing Optimizations** - Detects missing `select_related()` and `prefetch_related()`
+- **Transaction Safety** - Optional rollback mode for safe analysis
+- **EXPLAIN Integration** - Combines with DBCrust for database-level insights
+- **Actionable Recommendations** - Provides specific code suggestions
+
+**Example Output:**
+```
+Django Query Analysis Summary
+============================
+Total Queries: 15
+Total Duration: 245.67ms
+
+Performance Issues Detected:
+  🔴 N Plus One: 1
+  🟡 Missing Select Related: 2
+  🟡 Large Result Set: 1
+
+🚨 CRITICAL (1 issues):
+   - Fix N+1 Query Problem
+```
+
+**Perfect for:**
+- Development debugging
+- Performance testing in CI/CD
+- Production monitoring
+- Code review automation
+
+[**📖 Complete Django Analyzer Guide →**](/dbcrust/django-analyzer/)
 
 ## 🎯 Common Use Cases
 
@@ -454,6 +505,7 @@ query("\\d users")  # Describe table structure
 
 For more information, see:
 
+- **[Django ORM Analyzer](/dbcrust/django-analyzer/)** - Complete Django performance analysis guide
 - **[Quick Start](/dbcrust/quick-start/)** - Get started with DBCrust
 - **[User Guide](/dbcrust/user-guide/basic-usage/)** - Complete feature walkthrough
 - **[Installation](/dbcrust/installation/)** - Setup instructions

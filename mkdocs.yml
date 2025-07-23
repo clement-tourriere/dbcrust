@@ -108,6 +108,7 @@ nav:
     - Basic Usage: user-guide/basic-usage.md
   - Python API:
     - Overview: python-api/overview.md
+  - Django Analyzer: django-analyzer.md
   - Reference:
     - URL Schemes & Autocompletion: reference/url-schemes.md
     - Backslash Commands: reference/backslash-commands.md

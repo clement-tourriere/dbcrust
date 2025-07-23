@@ -16,6 +16,7 @@ an intuitive interface for PostgreSQL, MySQL, and SQLite with features that boos
 
 - **Multi-Database Support** - PostgreSQL, MySQL, SQLite in one tool
 - **Smart Autocompletion** - Context-aware suggestions for tables, columns, and SQL keywords
+- **Django ORM Analyzer** - Detect N+1 queries and optimization opportunities in Django applications
 - **Query Visualization** - Beautiful EXPLAIN output with execution plans
 - **Enterprise Security** - SSH tunneling, HashiCorp Vault integration, and encrypted connections
 - **Docker Integration** - Connect to databases in Docker containers with automatic port detection and OrbStack DNS
@@ -248,6 +249,40 @@ tables = client.list_tables()
 # Use the new run_command method
 result = client.run_command("SELECT COUNT(*) FROM users")
 ```
+
+### 5. Django ORM Performance Analysis
+
+For Django developers, DBCrust includes a powerful ORM analyzer that detects performance issues:
+
+```python
+from dbcrust.django import analyzer
+
+# Analyze Django ORM queries for performance issues
+with analyzer.analyze() as analysis:
+    # Your Django ORM code here
+    books = Book.objects.all()
+    for book in books:
+        print(book.author.name)  # Will detect N+1 query
+
+# Get detailed analysis results
+results = analysis.get_results()
+print(results.summary)
+```
+
+**Features:**
+- **N+1 Query Detection** - Automatically identifies repeated query patterns
+- **Missing Optimizations** - Detects missing `select_related()` and `prefetch_related()`
+- **Transaction Safety** - Optional rollback mode for safe analysis
+- **EXPLAIN Integration** - Combines with DBCrust for database-level insights
+- **Actionable Recommendations** - Provides specific code suggestions
+
+**Perfect for:**
+- Development debugging and optimization
+- Performance testing in CI/CD pipelines
+- Production monitoring and analysis
+- Code review automation
+
+[**📖 Complete Django Analyzer Documentation →**](https://clement-tourriere.github.io/dbcrust/django-analyzer/)
 
 ## Command Reference
 
