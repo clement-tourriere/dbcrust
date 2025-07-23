@@ -37,10 +37,8 @@ truncate_long_values = true
 column_selection_mode_default = false  # Enable column selection for all queries
 column_selection_threshold = 10        # Auto-trigger when result has more than N columns
 
-[editor]
-command = "code --wait"
-temp_dir = "/tmp"
-syntax_highlighting = true
+# Editor settings are controlled via $EDITOR environment variable
+# export EDITOR="code --wait"
 
 [history]
 max_entries = 10000
@@ -195,36 +193,40 @@ column_selection_threshold = 15        # Higher threshold for experienced users
 
 Configuration for external editor integration (`\ed` command).
 
-| Setting | Type | Default | Description |
-|---------|------|---------|-------------|
-| `command` | string | `$EDITOR` | Editor command to use |
-| `temp_dir` | string | `"/tmp"` | Directory for temporary files |
-| `syntax_highlighting` | boolean | `true` | Enable SQL syntax highlighting |
+The editor integration uses your system's `$EDITOR` environment variable to determine which editor to launch. Temporary files are automatically created in the system temp directory.
 
-**Example:**
-```toml
-[editor]
-command = "vim"
-temp_dir = "~/.cache/dbcrust"
-syntax_highlighting = true
-```
+**How it works:**
+- Uses `$EDITOR` environment variable (falls back to vim/nano/notepad)
+- Creates temporary files in system temp directory
+- Syntax highlighting is handled by your editor, not DBCrust
 
-**Popular editor configurations:**
-```toml
-# VS Code
-command = "code --wait"
+**Popular editor configurations via environment variable:**
+```bash
+# VS Code (waits for editor to close)
+export EDITOR="code --wait"
 
 # Vim/Neovim
-command = "vim"
+export EDITOR="vim"
 
 # Nano
-command = "nano"
+export EDITOR="nano"
 
-# Sublime Text
-command = "subl --wait"
+# Sublime Text (waits for editor to close)
+export EDITOR="subl --wait"
 
 # Emacs
-command = "emacs"
+export EDITOR="emacs"
+```
+
+**Using the editor:**
+```sql
+-- Edit current query in external editor
+\ed
+
+-- Load script from file
+\i filename.sql
+
+-- Empty Enter executes last edited/loaded script
 ```
 
 ### [history] - History and Session Management

@@ -416,7 +416,7 @@ Opens your default editor to write or edit a query.
 1. Opens `$EDITOR` (vim, nano, code, etc.)
 2. Edit your query
 3. Save and close
-4. Query executes automatically
+4. Script is loaded and ready - press Enter to execute
 
 **Editor integration:**
 ```bash
@@ -425,6 +425,8 @@ export EDITOR="code --wait"  # VS Code
 export EDITOR="vim"          # Vim
 export EDITOR="nano"         # Nano
 ```
+
+**Workflow tip:** After using `\ed` or `\i`, press Enter on an empty line to re-execute the last loaded script.
 
 ### Named Queries
 

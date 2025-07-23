@@ -814,16 +814,33 @@ impl CommandExecutor for Command {
                 match std::fs::read_to_string(filename) {
                     Ok(content) => {
                         *last_script = content.clone();
-                        Ok(CommandResult::Output(format!("Script loaded from '{filename}'. Use \\ed to edit or execute directly.")))
+                        let line_count = content.lines().count();
+                        Ok(CommandResult::Output(format!(
+                            "Script loaded from '{filename}' ({} lines). Press Enter to execute, \\ed to edit, or \\w to save elsewhere.", 
+                            line_count
+                        )))
                     }
                     Err(e) => Ok(CommandResult::Error(format!("Failed to load script from '{filename}': {e}"))),
                 }
             }
 
             Command::EditMultiline => {
-                // For CLI mode, this would typically launch an external editor
-                // For now, provide guidance on how to use multiline input
-                Ok(CommandResult::Output("Multiline edit mode: Use Alt+Enter to add newlines, then Enter to execute.".to_string()))
+                // Launch external editor with current script content
+                match crate::script::edit_multiline_script(last_script) {
+                    Ok(edited_content) => {
+                        *last_script = edited_content.clone();
+                        if edited_content.trim().is_empty() {
+                            Ok(CommandResult::Output("Editor closed with empty content.".to_string()))
+                        } else {
+                            let line_count = edited_content.lines().count();
+                            Ok(CommandResult::Output(format!(
+                                "Script edited ({} lines). Execute it by pressing Enter, or save with \\w filename", 
+                                line_count
+                            )))
+                        }
+                    }
+                    Err(e) => Ok(CommandResult::Error(format!("Editor error: {}", e)))
+                }
             }
 
             Command::ListUsers => {

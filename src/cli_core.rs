@@ -670,7 +670,17 @@ impl CliCore {
                 Signal::Success(buffer) => {
                     let line = buffer.trim();
                     
+                    // If empty input but we have a last_script, execute it
                     if line.is_empty() {
+                        if !last_script.is_empty() {
+                            println!("Executing last script ({} lines)...", last_script.lines().count());
+                            match self.execute_sql_interactive(&last_script, &db_arc, &interrupt_flag).await {
+                                Ok(_) => {}
+                                Err(e) => {
+                                    eprintln!("SQL error: {e}");
+                                }
+                            }
+                        }
                         continue;
                     }
 
