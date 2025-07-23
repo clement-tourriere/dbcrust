@@ -124,7 +124,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/f1/2a/8c3ac3d8bc94e6de8
 
 [[package]]
 name = "dbcrust"
-version = "0.8.0"
+version = "0.9.0"
 source = { editable = "." }
 
 [package.dev-dependencies]

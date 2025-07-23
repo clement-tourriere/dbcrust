@@ -104,6 +104,20 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     dbcrust.run_cli("postgres://user@localhost/db")
     ```
     
+    **Django ORM Analyzer**
+    ```python
+    from dbcrust.django import analyzer
+    
+    # Detect N+1 queries and optimization opportunities
+    with analyzer.analyze() as analysis:
+        books = Book.objects.all()
+        for book in books:
+            print(book.author.name)  # Will detect N+1
+    
+    results = analysis.get_results()
+    print(results.summary)  # Performance insights
+    ```
+    
     **Rich Client Class**
     ```python
     from dbcrust import PostgresClient
