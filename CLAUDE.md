@@ -245,6 +245,40 @@ fn test_command_enum_completeness() {
 - Add new fields with `#[serde(default)]` for backward compatibility
 - Store persistent state (sessions, named queries) in config
 
+#### Dedicated Storage Files Pattern
+**ARCHITECTURAL DECISION**: For user data that represents separate concerns (sessions, connection history, credentials, etc.), use dedicated storage files rather than mixing everything in the main `config.toml`.
+
+**Pattern to follow:**
+- **Main config**: `~/.config/dbcrust/config.toml` - application settings and preferences only
+- **Recent connections**: `~/.config/dbcrust/recent_connections.toml` - connection history
+- **Saved sessions**: `~/.config/dbcrust/saved_sessions.toml` - named connection configurations  
+- **Vault credentials**: `~/.config/dbcrust/vault_credentials.enc` - encrypted cached credentials
+- **Future data types**: Follow this pattern with dedicated files
+
+**Benefits:**
+- **Separation of concerns**: Settings vs. user data are separate
+- **Security**: Sensitive data can have different encryption/permissions
+- **Performance**: Avoid loading large user data when only reading settings
+- **Maintainability**: Easier to backup, migrate, or clear specific data types
+- **Conflict prevention**: Reduces risk of concurrent write conflicts
+
+**Implementation pattern:**
+```rust
+// In config.rs - storage structs are separate from main config
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct NewFeatureStorage {
+    pub data: HashMap<String, NewFeatureData>,
+}
+
+// Main config only holds transient/settings data, not user data
+pub struct Config {
+    pub app_settings: bool,
+    // User data stored separately, loaded on demand
+    #[serde(skip)]
+    new_feature_storage: NewFeatureStorage,
+}
+```
+
 ### Type-Safe Command System with Automatic Synchronization
 - **Enum-Based Commands**: All backslash commands (`\dt`, `\l`, etc.) managed by `Command` enum in `src/commands.rs`
 - **Strum-Powered Automation**: Uses `strum` derive macros (`EnumIter`, `Display`) for automatic code generation

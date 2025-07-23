@@ -74,6 +74,29 @@ pub struct SavedSessionsStorage {
     pub sessions: HashMap<String, SavedSession>,
 }
 
+/// Cached Vault credentials - stored in encrypted file
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CachedVaultCredentials {
+    pub username: String,
+    pub password: String,           // Encrypted at rest in the file
+    pub lease_id: String,
+    pub lease_duration: u64,        // Original TTL in seconds
+    pub issue_time: DateTime<Utc>,
+    pub expire_time: DateTime<Utc>,
+    pub renewable: bool,
+    pub mount_path: String,
+    pub database_name: String,
+    pub role_name: String,
+}
+
+/// Vault credential storage - stored in a separate encrypted file
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct VaultCredentialStorage {
+    // Key: "mount_path/database_name/role_name"
+    #[serde(default)]
+    pub cached_credentials: HashMap<String, CachedVaultCredentials>,
+}
+
 
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -164,6 +187,14 @@ pub struct Config {
     #[serde(default = "default_multiline_prompt_indicator")]
     pub multiline_prompt_indicator: String,
 
+    // Vault credential caching settings
+    #[serde(default = "default_vault_cache_enabled")]
+    pub vault_credential_cache_enabled: bool,
+    #[serde(default = "default_vault_renewal_threshold")]
+    pub vault_cache_renewal_threshold: f64,     // 0.25 = 25%
+    #[serde(default = "default_vault_min_ttl")]
+    pub vault_cache_min_ttl_seconds: u64,       // 300 = 5 minutes
+
     // Legacy fields - support deserializing from old config format
     // These will be skipped during serialization
     #[serde(skip_serializing, default)]
@@ -186,6 +217,10 @@ pub struct Config {
     // Saved sessions - not serialized with main config, stored separately
     #[serde(skip)]
     saved_sessions_storage: SavedSessionsStorage,
+    
+    // Vault credentials - not serialized with main config, stored separately in encrypted file
+    #[serde(skip)]
+    vault_credential_storage: VaultCredentialStorage,
 }
 
 impl Default for Config {
@@ -209,6 +244,9 @@ impl Default for Config {
             show_banner: default_show_banner(),
             verbosity_level: default_verbosity_level(),
             multiline_prompt_indicator: default_multiline_prompt_indicator(),
+            vault_credential_cache_enabled: default_vault_cache_enabled(),
+            vault_cache_renewal_threshold: default_vault_renewal_threshold(),
+            vault_cache_min_ttl_seconds: default_vault_min_ttl(),
             // Legacy fields initialized from connection
             host: connection.host.clone(),
             port: connection.port,
@@ -236,6 +274,17 @@ impl Default for Config {
                     SavedSessionsStorage::default()
                 } else {
                     Self::load_saved_sessions()
+                }
+            },
+            vault_credential_storage: {
+                // For tests, use empty storage to avoid loading user data
+                let is_test = std::env::var("RUST_TEST_MODE").is_ok() 
+                    || std::thread::current().name().map(|name| name.contains("test")).unwrap_or(false);
+                
+                if is_test {
+                    VaultCredentialStorage::default()
+                } else {
+                    Self::load_vault_credentials()
                 }
             },
         }
@@ -276,6 +325,18 @@ fn default_verbosity_level() -> VerbosityLevel {
 
 fn default_multiline_prompt_indicator() -> String {
     String::new() // Empty string by default (no indicator)
+}
+
+fn default_vault_cache_enabled() -> bool {
+    true
+}
+
+fn default_vault_renewal_threshold() -> f64 {
+    0.25 // Renew when 25% of TTL remains
+}
+
+fn default_vault_min_ttl() -> u64 {
+    300 // Don't cache credentials with less than 5 minutes TTL
 }
 
 fn default_database_type() -> DatabaseType {
@@ -344,6 +405,11 @@ impl Config {
     /// Get the path to the saved sessions file
     pub fn get_saved_sessions_path() -> Result<PathBuf, Box<dyn Error>> {
         Ok(Self::get_config_directory()?.join("sessions.toml"))
+    }
+
+    /// Get the path to the vault credentials file (encrypted)
+    pub fn get_vault_credentials_path() -> Result<PathBuf, Box<dyn Error>> {
+        Ok(Self::get_config_directory()?.join("vault_credentials.enc"))
     }
 
     /// Load recent connections from separate file
@@ -454,6 +520,76 @@ impl Config {
         Ok(())
     }
 
+    /// Load vault credentials from encrypted file
+    fn load_vault_credentials() -> VaultCredentialStorage {
+        match Self::get_vault_credentials_path() {
+            Ok(path) => {
+                if path.exists() {
+                    match fs::read(&path) {
+                        Ok(encrypted_data) => {
+                            match crate::vault_encryption::decrypt_data(&encrypted_data) {
+                                Ok(decrypted_data) => {
+                                    match toml::from_slice::<VaultCredentialStorage>(&decrypted_data) {
+                                        Ok(storage) => storage,
+                                        Err(e) => {
+                                            eprintln!("Error parsing vault credentials file: {e}");
+                                            VaultCredentialStorage::default()
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("Error decrypting vault credentials file: {e}");
+                                    VaultCredentialStorage::default()
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error reading vault credentials file: {e}");
+                            VaultCredentialStorage::default()
+                        }
+                    }
+                } else {
+                    VaultCredentialStorage::default()
+                }
+            }
+            Err(e) => {
+                eprintln!("Error getting vault credentials path: {e}");
+                VaultCredentialStorage::default()
+            }
+        }
+    }
+
+    /// Save vault credentials to encrypted file
+    fn save_vault_credentials(&self) -> Result<(), Box<dyn Error>> {
+        let path = Self::get_vault_credentials_path()?;
+        
+        // Ensure the parent directory exists
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        
+        // Serialize to TOML
+        let content = toml::to_string_pretty(&self.vault_credential_storage)?;
+        
+        // Encrypt the content
+        let encrypted_data = crate::vault_encryption::encrypt_data(content.as_bytes())
+            .map_err(|e| Box::new(e) as Box<dyn Error>)?;
+        
+        // Write encrypted data to file
+        fs::write(&path, encrypted_data)?;
+        
+        // Set restrictive file permissions (600 - owner read/write only)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path)?.permissions();
+            perms.set_mode(0o600);
+            fs::set_permissions(&path, perms)?;
+        }
+        
+        Ok(())
+    }
+
     /// Migrate recent connections from main config file to separate file
     /// This reads the old config format and extracts recent_connections
     fn migrate_recent_connections_if_needed() -> Vec<RecentConnection> {
@@ -548,9 +684,10 @@ impl Config {
                                 config.save_password = config.connection.save_password;
                                 config.password = config.connection.password.clone();
                             }
-                            // Load recent connections and saved sessions from separate files
+                            // Load recent connections, saved sessions, and vault credentials from separate files
                             config.recent_connections_storage = Self::load_recent_connections();
                             config.saved_sessions_storage = Self::load_saved_sessions();
+                            config.vault_credential_storage = Self::load_vault_credentials();
                             
                             // Apply global verbosity override if set
                             if let Some(override_level) = get_global_verbosity_override() {
@@ -745,6 +882,7 @@ impl Config {
             let mut config = Config::default();
             config.recent_connections_storage = Self::load_recent_connections();
             config.saved_sessions_storage = Self::load_saved_sessions();
+            config.vault_credential_storage = Self::load_vault_credentials();
             
             // Apply global verbosity override if set
             if let Some(override_level) = get_global_verbosity_override() {
@@ -1253,6 +1391,129 @@ impl Config {
         self.recent_connections_storage.connections.clear();
         self.save_recent_connections()?;
         Ok(())
+    }
+
+    // Vault credential caching methods
+
+    /// Generate cache key for vault credentials
+    pub fn vault_cache_key(mount_path: &str, database_name: &str, role_name: &str) -> String {
+        format!("{}/{}/{}", mount_path, database_name, role_name)
+    }
+
+    /// Get cached vault credentials if valid and not expired
+    pub fn get_cached_vault_credentials(&self, mount_path: &str, database_name: &str, role_name: &str) -> Option<&CachedVaultCredentials> {
+        if !self.vault_credential_cache_enabled {
+            return None;
+        }
+
+        let key = Self::vault_cache_key(mount_path, database_name, role_name);
+        let credentials = self.vault_credential_storage.cached_credentials.get(&key)?;
+        
+        let now = chrono::Utc::now();
+        
+        // Check if credentials are expired
+        if now >= credentials.expire_time {
+            return None;
+        }
+        
+        // Check if remaining TTL is above minimum threshold
+        let remaining_seconds = (credentials.expire_time - now).num_seconds() as u64;
+        if remaining_seconds < self.vault_cache_min_ttl_seconds {
+            return None;
+        }
+        
+        Some(credentials)
+    }
+
+    /// Cache vault credentials
+    pub fn cache_vault_credentials(&mut self, mount_path: &str, database_name: &str, role_name: &str, credentials: CachedVaultCredentials) -> Result<(), Box<dyn Error>> {
+        if !self.vault_credential_cache_enabled {
+            return Ok(());
+        }
+
+        let key = Self::vault_cache_key(mount_path, database_name, role_name);
+        
+        // Clean up expired credentials before adding new ones
+        self.cleanup_expired_vault_credentials();
+        
+        // Add the new credentials
+        self.vault_credential_storage.cached_credentials.insert(key, credentials);
+        
+        // Limit cache size (LRU eviction based on issue_time)
+        const MAX_CACHE_SIZE: usize = 50;
+        if self.vault_credential_storage.cached_credentials.len() > MAX_CACHE_SIZE {
+            // Find oldest credential by issue_time and remove it
+            if let Some((oldest_key, _)) = self.vault_credential_storage.cached_credentials
+                .iter()
+                .min_by_key(|(_, creds)| creds.issue_time)
+                .map(|(k, v)| (k.clone(), v.clone()))
+            {
+                self.vault_credential_storage.cached_credentials.remove(&oldest_key);
+            }
+        }
+        
+        self.save_vault_credentials()
+    }
+
+    /// Check if credentials need renewal (TTL below threshold)
+    pub fn vault_credentials_need_renewal(&self, mount_path: &str, database_name: &str, role_name: &str) -> bool {
+        if !self.vault_credential_cache_enabled {
+            return false;
+        }
+
+        let key = Self::vault_cache_key(mount_path, database_name, role_name);
+        if let Some(credentials) = self.vault_credential_storage.cached_credentials.get(&key) {
+            let now = chrono::Utc::now();
+            let remaining_seconds = (credentials.expire_time - now).num_seconds() as u64;
+            let total_ttl = credentials.lease_duration;
+            
+            // Renew if below threshold percentage of original TTL
+            let renewal_threshold_seconds = (total_ttl as f64 * self.vault_cache_renewal_threshold) as u64;
+            
+            credentials.renewable && remaining_seconds < renewal_threshold_seconds
+        } else {
+            false
+        }
+    }
+
+    /// Clean up expired vault credentials
+    pub fn cleanup_expired_vault_credentials(&mut self) -> usize {
+        let now = chrono::Utc::now();
+        let initial_count = self.vault_credential_storage.cached_credentials.len();
+        
+        self.vault_credential_storage.cached_credentials.retain(|_, creds| {
+            now < creds.expire_time
+        });
+        
+        let removed_count = initial_count - self.vault_credential_storage.cached_credentials.len();
+        
+        // Save if we removed any credentials
+        if removed_count > 0 {
+            if let Err(e) = self.save_vault_credentials() {
+                eprintln!("Error saving vault credentials after cleanup: {}", e);
+            }
+        }
+        
+        removed_count
+    }
+
+    /// Clear all cached vault credentials
+    pub fn clear_vault_credentials(&mut self) -> Result<(), Box<dyn Error>> {
+        self.vault_credential_storage.cached_credentials.clear();
+        self.save_vault_credentials()
+    }
+
+    /// Get all cached vault credentials (for display/debugging)
+    pub fn list_cached_vault_credentials(&self) -> Vec<(String, &CachedVaultCredentials)> {
+        self.vault_credential_storage.cached_credentials
+            .iter()
+            .map(|(k, v)| (k.clone(), v))
+            .collect()
+    }
+
+    /// Force refresh vault credentials storage from file
+    pub fn reload_vault_credentials(&mut self) {
+        self.vault_credential_storage = Self::load_vault_credentials();
     }
 }
 

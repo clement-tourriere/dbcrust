@@ -1205,8 +1205,8 @@ impl CliCore {
             }
         };
 
-        // Get dynamic credentials from Vault
-        let credentials = crate::vault_client::get_dynamic_credentials(&mount_path, &db_name, &role_name)
+        // Get dynamic credentials from Vault (with caching)
+        let (credentials, _lease_info) = crate::vault_client::get_dynamic_credentials_with_caching(&mount_path, &db_name, &role_name, &mut self.config)
             .await
             .map_err(|e| CliError::ConnectionError(format!("Failed to get Vault credentials: {e}")))?;
 

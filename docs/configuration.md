@@ -7,9 +7,10 @@ DBCrust stores its configuration in a TOML file located at `~/.config/dbcrust/co
 ```bash
 # Default configuration directory
 ~/.config/dbcrust/
-├── config.toml          # Main configuration file
-├── recent.toml          # Recent connections storage
-└── history.txt          # Command history
+├── config.toml             # Main configuration file
+├── recent.toml             # Recent connections storage
+├── vault_credentials.enc   # Encrypted vault credentials cache
+└── history.txt             # Command history
 ```
 
 ## 🔧 Configuration Structure
@@ -56,6 +57,11 @@ addr = "https://vault.company.com"
 mount_point = "database"
 auth_method = "token"  # "token", "userpass", "ldap"
 timeout = 30
+
+# Vault Credential Caching
+vault_credential_cache_enabled = true          # Enable/disable credential caching
+vault_cache_renewal_threshold = 0.25           # Renew when 25% of TTL remaining
+vault_cache_min_ttl_seconds = 300              # Minimum TTL required (5 minutes)
 
 [security]
 verify_ssl = true
@@ -273,7 +279,7 @@ Define patterns for automatic SSH tunnel creation based on hostname.
 
 ### [vault] - HashiCorp Vault Integration
 
-Configuration for dynamic database credentials via Vault.
+Configuration for dynamic database credentials via Vault, including intelligent credential caching.
 
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
@@ -281,6 +287,9 @@ Configuration for dynamic database credentials via Vault.
 | `mount_point` | string | `"database"` | Database secrets engine mount point |
 | `auth_method` | string | `"token"` | Authentication method |
 | `timeout` | integer | `30` | Request timeout in seconds |
+| `vault_credential_cache_enabled` | boolean | `true` | Enable credential caching between sessions |
+| `vault_cache_renewal_threshold` | float | `0.25` | Renew when remaining TTL < 25% of original |
+| `vault_cache_min_ttl_seconds` | integer | `300` | Minimum TTL required (5 minutes) |
 
 **Example:**
 ```toml
@@ -289,7 +298,26 @@ addr = "https://vault.company.com"
 mount_point = "database"
 auth_method = "userpass"
 timeout = 60
+
+# Credential Caching (improves performance)
+vault_credential_cache_enabled = true
+vault_cache_renewal_threshold = 0.25  # Renew when 25% TTL remaining
+vault_cache_min_ttl_seconds = 300     # Require at least 5 minutes TTL
 ```
+
+**Credential Caching Behavior:**
+
+- **Automatic**: Credentials are cached on first `vault://` connection
+- **Persistent**: Cache survives between DBCrust sessions  
+- **Secure**: All credentials encrypted with AES-256-GCM using your Vault token
+- **Smart Renewal**: Automatically refreshes credentials approaching expiration
+- **File Location**: `~/.config/dbcrust/vault_credentials.enc`
+
+**Cache Management Commands:**
+- `\vc` - Show cache status and remaining TTL
+- `\vcc` - Clear all cached credentials
+- `\vcr [role]` - Force refresh credentials
+- `\vce` - Show expired credentials
 
 ### [security] - Security Settings
 

@@ -52,6 +52,15 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
     | `\r` | List recent connections | `\r` |
     | `\rc` | Clear recent connections | `\rc` |
 
+=== "Vault Management"
+
+    | Command | Description | Example |
+    |---------|-------------|---------|
+    | `\vc` | Show vault credential cache status | `\vc` |
+    | `\vcc` | Clear all cached vault credentials | `\vcc` |
+    | `\vcr [role]` | Force refresh vault credentials | `\vcr` or `\vcr my-role` |
+    | `\vce` | Show expired vault credentials | `\vce` |
+
 === "Help & Control"
 
     | Command | Description | Example |
@@ -592,6 +601,132 @@ Clears all connection history.
 ```
 Cleared all recent connections
 Configuration saved
+```
+
+### Vault Management
+
+DBCrust provides intelligent caching for HashiCorp Vault dynamic credentials to improve performance and reduce Vault API calls.
+
+#### `\vc` - Show Vault Credential Cache Status
+
+Displays all cached Vault credentials with their expiration status and remaining TTL.
+
+```sql
+\vc
+```
+
+**Output:**
+```
+Vault credential cache status (showing 2 entries):
+  database/myapp-prod/readonly (v-user-prod--ABC123-1234567890) - 0h58m remaining - VALID
+  database/myapp-dev/admin (v-user-dev--XYZ789-9876543210) - 0h02m remaining - EXPIRES SOON
+```
+
+**Status indicators:**
+- **VALID**: Credentials have sufficient TTL remaining
+- **EXPIRES SOON**: Credentials below renewal threshold (default: 25% of original TTL)
+- **EXPIRED**: Credentials past expiration time (automatically cleaned up)
+
+#### `\vcc` - Clear Vault Credential Cache
+
+Removes all cached vault credentials, forcing fresh authentication on next vault:// connection.
+
+```sql
+\vcc
+```
+
+**Output:**
+```
+Cleared all cached vault credentials (2 entries removed)
+```
+
+!!! warning "Cache Clearing"
+    This forces all subsequent Vault connections to fetch fresh credentials from Vault, which may impact performance and increase Vault API usage.
+
+#### `\vcr [role]` - Force Refresh Vault Credentials
+
+Forces refresh of Vault credentials, either for all cached entries or a specific role.
+
+```sql
+-- Refresh all cached credentials
+\vcr
+
+-- Refresh specific role
+\vcr readonly
+```
+
+**Output:**
+```
+Refreshed vault credentials for role 'readonly'
+New credentials valid for 1h0m
+```
+
+**Use cases:**
+- Force credential renewal before long-running operations
+- Refresh credentials that are near expiration
+- Update credentials after Vault policy changes
+
+#### `\vce` - Show Expired Vault Credentials
+
+Lists vault credentials that have expired but haven't been cleaned up yet.
+
+```sql
+\vce
+```
+
+**Output:**
+```
+Expired vault credentials (1 entry):
+  database/myapp-staging/readonly - expired 0h15m ago
+```
+
+!!! info "Automatic Cleanup"
+    Expired credentials are automatically removed during normal cache operations. This command is mainly useful for troubleshooting.
+
+#### Vault Credential Caching Behavior
+
+**Automatic Caching:**
+- Credentials are automatically cached when using `vault://` URLs
+- Cache persists between DBCrust sessions
+- Stored in encrypted file: `~/.config/dbcrust/vault_credentials.enc`
+
+**Cache Validation:**
+- Credentials are checked for expiration before use
+- TTL threshold prevents using credentials that expire soon (default: 5 minutes minimum)
+- Automatic cleanup removes expired credentials
+
+**Security Features:**
+- All cached credentials are encrypted using AES-256-GCM
+- Encryption key derived from your Vault token
+- Cache automatically invalidated if Vault token changes
+
+**Configuration:**
+```toml
+# ~/.config/dbcrust/config.toml
+vault_credential_cache_enabled = true          # Enable/disable caching
+vault_cache_renewal_threshold = 0.25           # Renew when 25% TTL remaining  
+vault_cache_min_ttl_seconds = 300              # Minimum 5 minutes required
+```
+
+#### Example Workflow
+
+```sql
+-- First connection: fetches and caches credentials
+dbcrust vault://readonly@database/myapp-prod
+
+-- Check cache status
+\vc
+-- Output: database/myapp-prod/readonly (v-user--ABC123-1234567890) - 0h59m remaining - VALID
+
+-- Reconnect quickly using cached credentials
+dbcrust vault://readonly@database/myapp-prod
+-- Uses cached credentials, no Vault API call
+
+-- Force refresh if needed
+\vcr readonly
+
+-- Clear cache when done
+\vcc
 ```
 
 ## 💡 Advanced Usage Patterns

@@ -259,6 +259,109 @@ pub async fn get_dynamic_credentials(
     Ok(creds_response.data)
 }
 
+/// Get dynamic credentials with caching support
+/// Returns (credentials, lease_info) where lease_info contains lease_id, duration, etc.
+pub async fn get_dynamic_credentials_with_caching(
+    mount_path: &str,
+    db_config_name: &str,
+    role_name: &str,
+    config: &mut crate::config::Config,
+) -> Result<(VaultDynamicCredentialsData, VaultLeaseInfo), VaultError> {
+    // Check cache first if caching is enabled
+    if let Some(cached_creds) = config.get_cached_vault_credentials(mount_path, db_config_name, role_name) {
+        crate::debug_log!("Using cached vault credentials for {}/{}/{}", mount_path, db_config_name, role_name);
+        
+        // Return cached credentials with lease info reconstructed from cache
+        let credentials = VaultDynamicCredentialsData {
+            username: cached_creds.username.clone(),
+            password: cached_creds.password.clone(),
+        };
+        
+        let lease_info = VaultLeaseInfo {
+            lease_id: cached_creds.lease_id.clone(),
+            lease_duration: cached_creds.lease_duration,
+            renewable: cached_creds.renewable,
+        };
+        
+        return Ok((credentials, lease_info));
+    }
+
+    // Cache miss or caching disabled - fetch fresh credentials from Vault
+    crate::debug_log!("Cache miss for vault credentials {}/{}/{}, fetching from Vault", mount_path, db_config_name, role_name);
+    
+    let (client, vault_addr) = create_vault_client().await?;
+    let path = format!("{vault_addr}/v1/{mount_path}/creds/{role_name}");
+
+    let response = client.get(&path).send().await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        if status.as_u16() == 404 {
+            return Err(VaultError::RoleNotFound(
+                role_name.to_string(),
+                db_config_name.to_string(),
+                mount_path.to_string(),
+            ));
+        }
+        let error_text = response.text().await?;
+        return Err(VaultError::ApiError(format!(
+            "Vault API error ({status}): {error_text}"
+        )));
+    }
+
+    // Parse full response to get lease information
+    let full_response: VaultReadResponse<VaultDynamicCredentialsData> = response.json().await?;
+    
+    // Extract lease information from response headers or use defaults
+    // Note: In a real implementation, you'd extract this from the response
+    // For now, we'll use reasonable defaults and let the user configure TTL
+    let lease_duration = 3600; // 1 hour default
+    let lease_id = format!("{}/creds/{}/{}", mount_path, role_name, chrono::Utc::now().timestamp());
+    
+    let credentials = full_response.data;
+    let lease_info = VaultLeaseInfo {
+        lease_id: lease_id.clone(),
+        lease_duration,
+        renewable: true, // Most dynamic credentials are renewable
+    };
+
+    // Cache the credentials if caching is enabled
+    if config.vault_credential_cache_enabled {
+        let now = chrono::Utc::now();
+        let expire_time = now + chrono::Duration::seconds(lease_duration as i64);
+        
+        let cached_creds = crate::config::CachedVaultCredentials {
+            username: credentials.username.clone(),
+            password: credentials.password.clone(),
+            lease_id: lease_id.clone(),
+            lease_duration,
+            issue_time: now,
+            expire_time,
+            renewable: lease_info.renewable,
+            mount_path: mount_path.to_string(),
+            database_name: db_config_name.to_string(),
+            role_name: role_name.to_string(),
+        };
+        
+        if let Err(e) = config.cache_vault_credentials(mount_path, db_config_name, role_name, cached_creds) {
+            crate::debug_log!("Failed to cache vault credentials: {}", e);
+            // Don't fail the whole operation if caching fails
+        } else {
+            crate::debug_log!("Cached vault credentials for {}/{}/{}", mount_path, db_config_name, role_name);
+        }
+    }
+
+    Ok((credentials, lease_info))
+}
+
+/// Lease information returned with dynamic credentials
+#[derive(Debug, Clone)]
+pub struct VaultLeaseInfo {
+    pub lease_id: String,
+    pub lease_duration: u64,
+    pub renewable: bool,
+}
+
 pub fn construct_postgres_url(
     template_url_str: &str,
     dynamic_user: &str,

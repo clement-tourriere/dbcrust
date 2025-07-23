@@ -81,6 +81,8 @@ inquire = { version = "0.7.5", default-features = false, features = ["crossterm"
 arboard = { version = "3.4", default-features = false }
 bollard = { version = "0.19", default-features = true }
 strum = { version = "0.27", features = ["derive"], default-features = false }
+aes-gcm = { version = "0.10", default-features = false, features = ["std", "aes", "getrandom"] }
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
 
 [features]
 default = []

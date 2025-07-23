@@ -29,6 +29,7 @@ pub mod sql_context; // SQL context analysis for better autocompletion
 pub mod ssh_tunnel; // Add the SSH tunnel module
 pub mod url_scheme; // URL scheme autocompletion support
 pub mod vault_client; // Add backslash commands module
+pub mod vault_encryption; // Vault credential encryption utilities
 
 // Note: main.rs functions are not directly accessible as modules in lib.rs
 // We'll create PyO3 wrappers that call the main functionality directly

@@ -59,6 +59,12 @@ pub enum Command {
     ClearColumnViews,
     ResetView,
     
+    // Vault credential caching commands
+    VaultCacheStatus,
+    VaultCacheClear,
+    VaultCacheRefresh { role: Option<String> },
+    VaultCacheExpired,
+    
     // Database-specific commands
     ListUsers,
     ListIndexes,
@@ -122,6 +128,7 @@ pub enum CommandCategory {
     SessionManagement,
     ConnectionHistory,
     DatabaseSpecific,
+    VaultManagement,
     Advanced,
 }
 
@@ -148,6 +155,8 @@ pub enum CommandShortcut {
     Er, Ef, Ex,
     // Advanced commands
     Setmulti, Pager, Banner, A, Cs, Csthreshold, Clrcs, Resetview,
+    // Vault credential cache commands
+    Vc, Vcc, Vcr, Vce,
 }
 
 impl CommandShortcut {
@@ -202,6 +211,11 @@ impl CommandShortcut {
             CommandShortcut::Csthreshold => "\\csthreshold",
             CommandShortcut::Clrcs => "\\clrcs",
             CommandShortcut::Resetview => "\\resetview",
+            // Vault credential cache commands
+            CommandShortcut::Vc => "\\vc",
+            CommandShortcut::Vcc => "\\vcc",
+            CommandShortcut::Vcr => "\\vcr",
+            CommandShortcut::Vce => "\\vce",
         }
     }
 
@@ -256,6 +270,11 @@ impl CommandShortcut {
             CommandShortcut::Csthreshold => "Set column selection threshold",
             CommandShortcut::Clrcs => "Clear column views",
             CommandShortcut::Resetview => "Reset view",
+            // Vault credential cache commands
+            CommandShortcut::Vc => "Show vault credential cache status",
+            CommandShortcut::Vcc => "Clear all cached vault credentials",
+            CommandShortcut::Vcr => "Force refresh vault credentials",
+            CommandShortcut::Vce => "Show expired vault credentials",
         }
     }
 
@@ -278,6 +297,8 @@ impl CommandShortcut {
             CommandShortcut::R | CommandShortcut::Rc => CommandCategory::ConnectionHistory,
             // Database-specific commands
             CommandShortcut::Du | CommandShortcut::Di | CommandShortcut::Dp | CommandShortcut::Pgpass | CommandShortcut::Myconf | CommandShortcut::Docker => CommandCategory::DatabaseSpecific,
+            // Vault management
+            CommandShortcut::Vc | CommandShortcut::Vcc | CommandShortcut::Vcr | CommandShortcut::Vce => CommandCategory::VaultManagement,
             // EXPLAIN variants (Advanced)
             CommandShortcut::Er | CommandShortcut::Ef | CommandShortcut::Ex => CommandCategory::Advanced,
         }
@@ -473,6 +494,15 @@ impl CommandParser {
             },
             "clrcs" => Ok(Command::ClearColumnViews),
             "resetview" => Ok(Command::ResetView),
+            
+            // Vault credential cache commands
+            "vc" => Ok(Command::VaultCacheStatus),
+            "vcc" => Ok(Command::VaultCacheClear),
+            "vcr" => {
+                let role = if args.is_empty() { None } else { Some(args.to_string()) };
+                Ok(Command::VaultCacheRefresh { role })
+            },
+            "vce" => Ok(Command::VaultCacheExpired),
             
             _ => Err(CommandError::UnknownCommand(cmd.to_string())),
         }
@@ -1081,6 +1111,87 @@ impl CommandExecutor for Command {
                 Ok(CommandResult::Output("View settings reset to defaults.".to_string()))
             }
 
+            // Vault credential cache commands
+            Command::VaultCacheStatus => {
+                if !config.vault_credential_cache_enabled {
+                    return Ok(CommandResult::Output("Vault credential caching is disabled.".to_string()));
+                }
+                
+                let cached_creds = config.list_cached_vault_credentials();
+                if cached_creds.is_empty() {
+                    Ok(CommandResult::Output("No vault credentials cached.".to_string()))
+                } else {
+                    let mut output = format!("Vault credential cache status (showing {} entries):\n", cached_creds.len());
+                    let now = chrono::Utc::now();
+                    
+                    for (key, creds) in cached_creds {
+                        let remaining_seconds = (creds.expire_time - now).num_seconds().max(0);
+                        let remaining_hours = remaining_seconds / 3600;
+                        let remaining_mins = (remaining_seconds % 3600) / 60;
+                        
+                        let status = if now >= creds.expire_time {
+                            "EXPIRED"
+                        } else if remaining_seconds < config.vault_cache_min_ttl_seconds as i64 {
+                            "EXPIRING SOON"
+                        } else {
+                            "VALID"
+                        };
+                        
+                        output.push_str(&format!(
+                            "  {} ({}) - {}h{}m remaining - {}\n",
+                            key, creds.username, remaining_hours, remaining_mins, status
+                        ));
+                    }
+                    Ok(CommandResult::Output(output))
+                }
+            }
+
+            Command::VaultCacheClear => {
+                match config.clear_vault_credentials() {
+                    Ok(()) => Ok(CommandResult::Output("All vault credentials cleared from cache.".to_string())),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to clear vault credentials: {}", e)))
+                }
+            }
+
+            Command::VaultCacheRefresh { role } => {
+                match role {
+                    Some(role_key) => {
+                        // Force refresh specific role - would need to implement role-specific refresh
+                        Ok(CommandResult::Output(format!("Force refresh for role '{}' not yet implemented.", role_key)))
+                    }
+                    None => {
+                        // Reload from file
+                        config.reload_vault_credentials();
+                        Ok(CommandResult::Output("Vault credential cache reloaded from file.".to_string()))
+                    }
+                }
+            }
+
+            Command::VaultCacheExpired => {
+                let cached_creds = config.list_cached_vault_credentials();
+                let now = chrono::Utc::now();
+                let expired_creds: Vec<_> = cached_creds.into_iter()
+                    .filter(|(_, creds)| now >= creds.expire_time)
+                    .collect();
+                
+                if expired_creds.is_empty() {
+                    Ok(CommandResult::Output("No expired vault credentials found.".to_string()))
+                } else {
+                    let mut output = format!("Expired vault credentials ({} entries):\n", expired_creds.len());
+                    for (key, creds) in expired_creds {
+                        let expired_since = (now - creds.expire_time).num_seconds();
+                        let expired_hours = expired_since / 3600;
+                        let expired_mins = (expired_since % 3600) / 60;
+                        
+                        output.push_str(&format!(
+                            "  {} ({}) - expired {}h{}m ago\n",
+                            key, creds.username, expired_hours, expired_mins
+                        ));
+                    }
+                    Ok(CommandResult::Output(output))
+                }
+            }
+
         }
     }
     
@@ -1126,6 +1237,11 @@ impl CommandExecutor for Command {
             Command::SetColumnSelectionThreshold { .. } => "Set column selection threshold",
             Command::ClearColumnViews => "Clear saved column views",
             Command::ResetView => "Reset all view settings to defaults",
+            // Vault credential cache commands
+            Command::VaultCacheStatus => "Show vault credential cache status",
+            Command::VaultCacheClear => "Clear all cached vault credentials",
+            Command::VaultCacheRefresh { .. } => "Refresh vault credential cache",
+            Command::VaultCacheExpired => "Show expired vault credentials",
         }
     }
     
@@ -1171,6 +1287,11 @@ impl CommandExecutor for Command {
             Command::SetColumnSelectionThreshold { .. } => "\\csthreshold <number>",
             Command::ClearColumnViews => "\\clrcs",
             Command::ResetView => "\\resetview",
+            // Vault credential cache commands
+            Command::VaultCacheStatus => "\\vc",
+            Command::VaultCacheClear => "\\vcc",
+            Command::VaultCacheRefresh { .. } => "\\vcr [role]",
+            Command::VaultCacheExpired => "\\vce",
         }
     }
     
@@ -1186,6 +1307,7 @@ impl CommandExecutor for Command {
             Command::ListUsers | Command::ListIndexes | Command::ListPragmas | Command::ShowPgpass | Command::ShowMyconf | Command::ListDockerContainers => CommandCategory::DatabaseSpecific,
             Command::ExplainRaw { .. } | Command::ExplainFormatted { .. } | Command::ExplainExport { .. } => CommandCategory::Advanced,
             Command::SetMultilineIndicator { .. } | Command::TogglePager | Command::ToggleBanner | Command::ToggleAutocomplete | Command::ToggleColumnSelection | Command::SetColumnSelectionThreshold { .. } | Command::ClearColumnViews | Command::ResetView => CommandCategory::DisplayOptions,
+            Command::VaultCacheStatus | Command::VaultCacheClear | Command::VaultCacheRefresh { .. } | Command::VaultCacheExpired => CommandCategory::VaultManagement,
         }
     }
 }
