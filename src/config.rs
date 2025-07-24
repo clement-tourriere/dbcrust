@@ -538,7 +538,13 @@ impl Config {
                                     }
                                 }
                                 Err(e) => {
-                                    eprintln!("Error decrypting vault credentials file: {e}");
+                                    // Delete the corrupted file since vault token has likely changed
+                                    if let Err(remove_err) = fs::remove_file(&path) {
+                                        eprintln!("Error decrypting vault credentials file: {e}");
+                                        eprintln!("Failed to remove corrupted vault credentials file: {remove_err}");
+                                    } else {
+                                        crate::debug_log!("Removed corrupted vault credentials file due to decryption failure: {e}");
+                                    }
                                     VaultCredentialStorage::default()
                                 }
                             }
