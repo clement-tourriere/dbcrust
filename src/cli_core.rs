@@ -294,14 +294,18 @@ impl CliCore {
         }
         
         println!("Welcome to DBCrust! No database connected yet.");
-        println!("Use \\h for help, or connect to a database:");
-        println!("  session://name    - Connect to a saved session");
-        println!("  recent://         - Connect to a recent connection");
-        println!("  \\s               - List saved sessions"); 
-        println!("  \\r               - List recent connections");
         println!();
-        println!("Full interactive mode not yet implemented in CliCore.");
-        println!("Please provide a connection URL to start interactive mode with database.");
+        println!("To connect to a database, provide a connection URL:");
+        println!("  dbc postgres://user@host:5432/database");
+        println!("  dbc session://saved_session_name");
+        println!("  dbc recent://                        # Interactive recent connection selection");
+        println!();
+        println!("Examples:");
+        println!("  dbc postgres://user@localhost/mydb");
+        println!("  dbc sqlite:///path/to/file.db");
+        println!("  dbc docker://postgres-container");
+        println!();
+        println!("For more help: dbc --help");
         Ok(())
     }
 
