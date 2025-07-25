@@ -808,6 +808,30 @@ impl Database {
             return Ok(());
         }
 
+        // Try using the new database abstraction layer first
+        if let Some(ref mut database_client) = self.database_client {
+            debug_log!("Using new database abstraction layer for connect_to_db");
+            match database_client.connect_to_database(dbname).await {
+                Ok(()) => {
+                    // Update the stored database name
+                    self.current_dbname = dbname.to_string();
+                    debug_log!("Successfully switched to database '{}' using database client", dbname);
+                    return Ok(());
+                }
+                Err(e) => {
+                    debug_log!("Database client connect_to_database failed: {}. Falling back to legacy implementation.", e);
+                    // For non-PostgreSQL databases, return the error instead of falling back
+                    if database_client.get_connection_info().database_type != crate::database::DatabaseType::PostgreSQL {
+                        return Err(Box::new(e));
+                    }
+                    // Fall through to legacy implementation for PostgreSQL
+                }
+            }
+        }
+
+        // Fallback to legacy PostgreSQL implementation
+        debug_log!("Using legacy PostgreSQL implementation for connect_to_db");
+
         let password_to_use =
             if self.password.is_none() || self.password.as_ref().is_none_or(|p| p.is_empty()) {
                 pgpass::lookup_password(&self.original_host, self.original_port, dbname, &self.user)
