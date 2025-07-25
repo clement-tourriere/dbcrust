@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fmt;
 use thiserror::Error;
 use url::Url;
+use percent_encoding;
 
 /// Supported database types
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -178,14 +179,31 @@ impl ConnectionInfo {
                 connection_info.username = if url.username().is_empty() { 
                     None 
                 } else { 
-                    Some(url.username().to_string()) 
+                    // URL-decode the username to handle special characters
+                    let decoded_username = percent_encoding::percent_decode_str(url.username())
+                        .decode_utf8()
+                        .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to decode username '{}': {}", url.username(), e)))?
+                        .to_string();
+                    Some(decoded_username)
                 };
-                connection_info.password = url.password().map(|p| p.to_string());
+                connection_info.password = url.password().map(|p| {
+                    // URL-decode the password to handle special characters
+                    percent_encoding::percent_decode_str(p)
+                        .decode_utf8()
+                        .map(|decoded| decoded.to_string())
+                        .unwrap_or_else(|_| p.to_string()) // Fallback to original if decode fails
+                });
                 
                 // Database name is the path without leading slash
                 let path = url.path();
                 if !path.is_empty() && path != "/" {
-                    connection_info.database = Some(path.trim_start_matches('/').to_string());
+                    let db_name = path.trim_start_matches('/');
+                    // URL-decode the database name to handle special characters like %3A (colon)
+                    let decoded_db_name = percent_encoding::percent_decode_str(db_name)
+                        .decode_utf8()
+                        .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to decode database name '{}': {}", db_name, e)))?
+                        .to_string();
+                    connection_info.database = Some(decoded_db_name);
                 }
             }
         }
@@ -496,5 +514,28 @@ mod tests {
     fn test_unsupported_scheme() {
         let result = ConnectionInfo::parse_url("oracle://localhost/db");
         assert!(matches!(result, Err(DatabaseError::UnsupportedScheme(_))));
+    }
+
+    #[test]
+    fn test_url_decoding_database_name() {
+        // Test URL with encoded database name (colon becomes %3A)
+        let url = "postgres://user:pass@host:5432/tt2%3Amain";
+        let conn_info = ConnectionInfo::parse_url(url).unwrap();
+        
+        // Verify that %3A was decoded to :
+        assert_eq!(conn_info.database.as_deref(), Some("tt2:main"));
+        assert_eq!(conn_info.username.as_deref(), Some("user"));
+        println!("Decoded database name: {:?}", conn_info.database);
+    }
+
+    #[test]
+    fn test_url_decoding_username() {
+        // Test URL with encoded username containing special characters
+        let url = "postgres://user%40domain:pass@host:5432/db";
+        let conn_info = ConnectionInfo::parse_url(url).unwrap();
+        
+        // Verify that %40 was decoded to @
+        assert_eq!(conn_info.username.as_deref(), Some("user@domain"));
+        assert_eq!(conn_info.database.as_deref(), Some("db"));
     }
 }

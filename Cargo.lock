@@ -555,6 +555,7 @@ dependencies = [
  "hex",
  "inquire",
  "nu-ansi-term",
+ "percent-encoding",
  "prettytable-rs",
  "pyo3",
  "rand 0.9.1",
