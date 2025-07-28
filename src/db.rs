@@ -1883,12 +1883,24 @@ impl Database {
                 Ok(results) => {
                     debug_log!("[execute_explain_query_raw] Database abstraction layer returned {} rows", results.len());
                     
-                    // Store the JSON plan for copying (for PostgreSQL)
-                    if database_client.get_connection_info().database_type == crate::database::DatabaseType::PostgreSQL
-                        && results.len() > 1 && !results[1].is_empty() {
-                            // Store the JSON plan from the second row (first row is header)
-                            self.last_json_plan = Some(results[1][0].clone());
+                    // Store the JSON plan for copying (for PostgreSQL and MySQL)
+                    match database_client.get_connection_info().database_type {
+                        crate::database::DatabaseType::PostgreSQL => {
+                            if results.len() > 1 && !results[1].is_empty() {
+                                // Store the JSON plan from the second row (first row is header)
+                                self.last_json_plan = Some(results[1][0].clone());
+                            }
                         }
+                        crate::database::DatabaseType::MySQL => {
+                            if results.len() > 1 && !results[1].is_empty() {
+                                // Store the JSON plan from the second row (first row is header)
+                                self.last_json_plan = Some(results[1][0].clone());
+                            }
+                        }
+                        _ => {
+                            // SQLite doesn't use JSON explain plans
+                        }
+                    }
                     
                     return Ok(results);
                 },
@@ -1942,19 +1954,24 @@ impl Database {
             debug_log!("[execute_explain_query_formatted] Using database abstraction layer for formatted EXPLAIN");
             
             // First get the raw JSON for copying, then get formatted output for display
-            if database_client.get_connection_info().database_type == crate::database::DatabaseType::PostgreSQL {
-                match database_client.explain_query_raw(query).await {
-                    Ok(raw_results) => {
-                        debug_log!("[execute_explain_query_formatted] Got raw results for JSON storage");
-                        // Store the JSON plan from the raw results
-                        if raw_results.len() > 1 && !raw_results[1].is_empty() {
-                            self.last_json_plan = Some(raw_results[1][0].clone());
-                            debug_log!("[execute_explain_query_formatted] Stored JSON plan ({} characters)", raw_results[1][0].len());
+            match database_client.get_connection_info().database_type {
+                crate::database::DatabaseType::PostgreSQL | crate::database::DatabaseType::MySQL => {
+                    match database_client.explain_query_raw(query).await {
+                        Ok(raw_results) => {
+                            debug_log!("[execute_explain_query_formatted] Got raw results for JSON storage");
+                            // Store the JSON plan from the raw results
+                            if raw_results.len() > 1 && !raw_results[1].is_empty() {
+                                self.last_json_plan = Some(raw_results[1][0].clone());
+                                debug_log!("[execute_explain_query_formatted] Stored JSON plan ({} characters)", raw_results[1][0].len());
+                            }
+                        }
+                        Err(e) => {
+                            debug_log!("[execute_explain_query_formatted] Failed to get raw JSON: {}", e);
                         }
                     }
-                    Err(e) => {
-                        debug_log!("[execute_explain_query_formatted] Failed to get raw JSON: {}", e);
-                    }
+                }
+                crate::database::DatabaseType::SQLite => {
+                    // SQLite doesn't support JSON explain plans for \ecopy
                 }
             }
             
@@ -2525,19 +2542,24 @@ impl Database {
             debug_log!("[execute_explain_query] Using database abstraction layer for EXPLAIN");
             
             // First get the raw JSON for copying, then get formatted output for display
-            if database_client.get_connection_info().database_type == crate::database::DatabaseType::PostgreSQL {
-                match database_client.explain_query_raw(query).await {
-                    Ok(raw_results) => {
-                        debug_log!("[execute_explain_query] Got raw results for JSON storage");
-                        // Store the JSON plan from the raw results
-                        if raw_results.len() > 1 && !raw_results[1].is_empty() {
-                            self.last_json_plan = Some(raw_results[1][0].clone());
-                            debug_log!("[execute_explain_query] Stored JSON plan ({} characters)", raw_results[1][0].len());
+            match database_client.get_connection_info().database_type {
+                crate::database::DatabaseType::PostgreSQL | crate::database::DatabaseType::MySQL => {
+                    match database_client.explain_query_raw(query).await {
+                        Ok(raw_results) => {
+                            debug_log!("[execute_explain_query] Got raw results for JSON storage");
+                            // Store the JSON plan from the raw results
+                            if raw_results.len() > 1 && !raw_results[1].is_empty() {
+                                self.last_json_plan = Some(raw_results[1][0].clone());
+                                debug_log!("[execute_explain_query] Stored JSON plan ({} characters)", raw_results[1][0].len());
+                            }
                         }
-                    }
-                    Err(e) => {
-                        debug_log!("[execute_explain_query] Failed to get raw JSON: {}", e);
-                    }
+                        Err(e) => {
+                            debug_log!("[execute_explain_query] Failed to get raw JSON: {}", e);
+                        }
+                    }   
+                }
+                crate::database::DatabaseType::SQLite => {
+                    // SQLite doesn't support JSON explain plans for \ecopy
                 }
             }
             
@@ -2619,24 +2641,20 @@ impl Database {
     ) -> std::result::Result<String, Box<dyn StdError>> {
         if let JsonValue::Array(plans) = plan_data {
             if let Some(plan) = plans.first() {
-                if let Some(plan_obj) = plan.as_object() {
+                if let Some(_plan_obj) = plan.as_object() {
                     let mut output = String::new();
 
-                    if let Some(JsonValue::Number(exec_time)) = plan_obj.get("Execution Time") {
-                        if let Some(exec_time) = exec_time.as_f64() {
-                            output.push_str(&format!("○ Execution Time: {exec_time:.2} ms\n"));
-                        }
+                    // Use PerformanceAnalyzer for consistent rich formatting across all connection types
+                    let performance_metrics = crate::performance_analyzer::PerformanceAnalyzer::analyze_postgresql_plan(plan_data);
+                    let performance_summary = crate::performance_analyzer::PerformanceAnalyzer::format_metrics_with_colors(&performance_metrics);
+                    
+                    for line in performance_summary {
+                        output.push_str(&line);
+                        output.push('\n');
                     }
-
-                    if let Some(JsonValue::Number(planning_time)) = plan_obj.get("Planning Time") {
-                        if let Some(planning_time) = planning_time.as_f64() {
-                            output.push_str(&format!("○ Planning Time: {planning_time:.2} ms\n"));
-                        }
-                    }
-
-                    if let Some(plan_node) = plan_obj.get("Plan") {
-                        output.push_str(&format_plan_node(plan_node, 0, true)?);
-                    }
+                    
+                    output.push('\n');
+                    output.push_str("💡 Use \\ecopy to copy the raw JSON plan to clipboard\n");
 
                     return Ok(output);
                 }
@@ -3498,147 +3516,6 @@ pub struct CheckConstraintInfo {
     pub definition: String,
 }
 
-// Helper function to recursively format a plan node
-fn format_plan_node(
-    node: &JsonValue,
-    depth: usize,
-    is_last: bool,
-) -> std::result::Result<String, Box<dyn StdError>> {
-    if let Some(node_obj) = node.as_object() {
-        let mut output = String::new();
-
-        // Create the prefix based on depth and position
-        let prefix = if depth == 0 {
-            "".to_string()
-        } else if is_last {
-            format!("{:indent$}└─⌠ ", "", indent = (depth - 1) * 2)
-        } else {
-            format!("{:indent$}├─⌠ ", "", indent = (depth - 1) * 2)
-        };
-
-        // Node type
-        let node_type = node_obj
-            .get("Node Type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown");
-
-        // Add node header
-        output.push_str(&format!("{prefix}{node_type}\n"));
-
-        // Node details prefix
-        let detail_prefix = if depth == 0 {
-            "│ ".to_string()
-        } else {
-            format!("{:indent$}│ ", "", indent = depth * 2)
-        };
-
-        // Add node description
-        let description = get_node_description(node_type);
-        if !description.is_empty() {
-            output.push_str(&format!("{detail_prefix}{description}.\n"));
-        }
-
-        // Add node statistics
-        if let Some(JsonValue::Number(actual_time)) = node_obj.get("Actual Total Time") {
-            if let Some(time_val) = actual_time.as_f64() {
-                output.push_str(&format!(
-                    "{detail_prefix}○ Duration: {time_val:.2} ms\n"
-                ));
-            }
-        }
-
-        if let Some(JsonValue::Number(total_cost)) = node_obj.get("Total Cost") {
-            if let Some(cost) = total_cost.as_f64() {
-                output.push_str(&format!("{detail_prefix}○ Cost: {cost:.0}\n"));
-            }
-        }
-
-        if let Some(JsonValue::Number(rows)) = node_obj.get("Plan Rows") {
-            if let Some(rows) = rows.as_u64() {
-                output.push_str(&format!("{detail_prefix}○ Rows: {rows}\n"));
-            }
-        }
-
-        // Special handling for Join details
-        if node_type.contains("Join") {
-            if let Some(JsonValue::String(join_type)) = node_obj.get("Join Type") {
-                output.push_str(&format!("{detail_prefix}  {join_type} join\n"));
-            }
-        }
-
-        // Add relation info if available
-        if let Some(JsonValue::String(relation)) = node_obj.get("Relation Name") {
-            output.push_str(&format!("{detail_prefix}  on {relation}\n"));
-        }
-
-        // Add scan info
-        if node_type.contains("Scan") {
-            if let Some(JsonValue::String(index_name)) = node_obj.get("Index Name") {
-                output.push_str(&format!("{detail_prefix}  using {index_name}\n"));
-            }
-
-            if let Some(JsonValue::String(filter)) = node_obj.get("Filter") {
-                output.push_str(&format!("{detail_prefix}  filter {filter}\n"));
-            }
-        }
-
-        // Output columns if available
-        if let Some(JsonValue::Array(output_list)) = node_obj.get("Output") {
-            let columns: Vec<String> = output_list
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| s.to_string())
-                .collect();
-
-            if !columns.is_empty() {
-                // Create a proper prefix that doesn't slice through UTF-8 characters
-                let column_prefix = if detail_prefix.len() >= 2 {
-                    // Remove the last character without breaking UTF-8 boundaries
-                    let chars: Vec<char> = detail_prefix.chars().collect();
-                    chars[..chars.len() - 1].iter().collect::<String>()
-                } else {
-                    detail_prefix.clone()
-                };
-
-                output.push_str(&format!("{}├► {}\n", column_prefix, columns.join(" + ")));
-            }
-        }
-
-        // Process child nodes
-        if let Some(JsonValue::Array(plans)) = node_obj.get("Plans") {
-            for (i, plan) in plans.iter().enumerate() {
-                let is_last_child = i == plans.len() - 1;
-                output.push_str(&format_plan_node(plan, depth + 1, is_last_child)?);
-            }
-        }
-
-        Ok(output)
-    } else {
-        Err("Invalid plan node format".into())
-    }
-}
-
-// Helper function to get a description for a node type
-fn get_node_description(node_type: &str) -> String {
-    match node_type {
-        "Seq Scan" => "Reads a table sequentially from beginning to end".to_string(),
-        "Index Scan" => "Finds relevant records based on an Index. Index Scans perform 2 read operations: one to read the index and another to read the actual value from the table".to_string(),
-        "Index Only Scan" => "Like an Index Scan, but data is returned directly from the index without consulting the table".to_string(),
-        "Bitmap Heap Scan" => "Uses a bitmap to find interesting data pages before reading them".to_string(),
-        "Bitmap Index Scan" => "Scans an index to produce a bitmap of page locations".to_string(),
-        "Nested Loop" => "Merges two record sets by looping through every record in the first set and trying to find a match in the second set. All matching records are returned".to_string(),
-        "Hash Join" => "Builds a hash table from the smaller dataset using the join key. Then scans the larger dataset and looks up records in the hash table to find matches".to_string(),
-        "Merge Join" => "Merges two pre-sorted record sets based on a join condition".to_string(),
-        "Aggregate" => "Groups records together based on a GROUP BY or aggregate function (e.g. sum())".to_string(),
-        "Sort" => "Sorts a record set based on the specified sort key".to_string(),
-        "Limit" => "Takes only the first N rows from its input".to_string(),
-        "Hash" => "Builds an in-memory hash table for use by Hash Join operations".to_string(),
-        "Materialize" => "Stores the result of its input in memory".to_string(),
-        "Unique" => "Removes duplicate rows".to_string(),
-        "Result" => "Returns result".to_string(),
-        _ => "".to_string(),
-    }
-}
 
 // Helper function to determine if a query can be explained
 fn is_query_explainable(query: &str) -> bool {

@@ -967,7 +967,19 @@ impl CommandExecutor for Command {
                         }
                     }
                     None => {
-                        Ok(CommandResult::Error("No EXPLAIN JSON plan available. Run an EXPLAIN query first.".to_string()))
+                        // Check if we have a database client to provide a more specific error message
+                        if let Some(database_client) = db.get_database_client() {
+                            match database_client.get_connection_info().database_type {
+                                crate::database::DatabaseType::SQLite => {
+                                    Ok(CommandResult::Error("\\ecopy is not supported for SQLite databases. SQLite EXPLAIN queries don't produce JSON plans.".to_string()))
+                                }
+                                _ => {
+                                    Ok(CommandResult::Error("No EXPLAIN JSON plan available. Run an EXPLAIN query first with \\ef or \\er.".to_string()))
+                                }
+                            }
+                        } else {
+                            Ok(CommandResult::Error("No EXPLAIN JSON plan available. Run an EXPLAIN query first with \\ef or \\er.".to_string()))
+                        }
                     }
                 }
             }

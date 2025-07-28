@@ -607,6 +607,8 @@ impl MySqlClient {
                     }
                     
                     results.push(vec!["".to_string()]);
+                    results.push(vec!["💡 Use \\ecopy to copy the raw JSON plan to clipboard".to_string()]);
+                    results.push(vec!["".to_string()]);
                     results.push(vec!["Detailed Plan Steps:".to_string()]);
                     results.push(vec!["".to_string()]);
                     
