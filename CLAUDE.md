@@ -4,11 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-DBCrust is a high-performance PostgreSQL interactive client written in Rust with Python bindings. It features advanced CLI capabilities including autocomplete, SSH tunneling, HashiCorp Vault integration, and rich output formatting.
+DBCrust is a high-performance PostgreSQL interactive client written in Rust with Python bindings. It features advanced
+CLI capabilities including autocomplete, SSH tunneling, HashiCorp Vault integration, and rich output formatting.
 
 ## Build System & Development Commands
 
 ### Core Build Commands
+
 ```bash
 # Build the project (development)
 cargo build
@@ -33,6 +35,7 @@ cargo install --path .
 ```
 
 ### Python Integration
+
 ```bash
 # Build Python package
 pip install -e ./python
@@ -45,6 +48,7 @@ maturin build --release
 ```
 
 ### Development Tools
+
 - Uses `mise.toml` for tool management (Node.js, Python tools)
 - Pre-commit hooks via `pipx:pre-commit`
 - Commitizen for conventional commits
@@ -82,6 +86,7 @@ maturin build --release
 ## Connection Methods
 
 The client supports multiple connection approaches:
+
 1. Connection URLs: `postgres://user:pass@host:port/db?sslmode=require`
 2. Individual parameters: `-H host -p port -U user -d database`
 3. Vault URLs: `vault://role@mount/database`
@@ -92,7 +97,8 @@ The client supports multiple connection approaches:
 
 ## Unified CLI Architecture
 
-DBCrust implements a **single source of truth** architecture where the Rust and Python CLIs share identical functionality through PyO3 integration. This eliminates code duplication and ensures perfect feature parity.
+DBCrust implements a **single source of truth** architecture where the Rust and Python CLIs share identical
+functionality through PyO3 integration. This eliminates code duplication and ensures perfect feature parity.
 
 ### Architecture Principles
 
@@ -214,7 +220,7 @@ fn test_python_cli_connection_url_support(#[case] connection_url: &str) {
 fn test_command_enum_completeness() {
     let all_commands = Command::all_variants();
     assert!(all_commands.len() >= 40, "Should have 40+ commands");
-    
+
     // Test that all commands can be parsed
     for cmd in all_commands {
         let parsed = CommandParser::parse(&cmd.to_string());
@@ -234,28 +240,34 @@ fn test_command_enum_completeness() {
 ## Key Development Patterns
 
 ### Database Operations
+
 - All database operations are async using SQLx
 - Use `Database` struct methods for new database functionality
 - Handle PostgreSQL-specific types (JSON, arrays, etc.) in formatting layer
 - Implement graceful error handling with user-friendly messages
 
 ### Configuration Management
+
 - Configuration uses serde with TOML format
 - Layered config: defaults → file → CLI args
 - Add new fields with `#[serde(default)]` for backward compatibility
 - Store persistent state (sessions, named queries) in config
 
 #### Dedicated Storage Files Pattern
-**ARCHITECTURAL DECISION**: For user data that represents separate concerns (sessions, connection history, credentials, etc.), use dedicated storage files rather than mixing everything in the main `config.toml`.
+
+**ARCHITECTURAL DECISION**: For user data that represents separate concerns (sessions, connection history, credentials,
+etc.), use dedicated storage files rather than mixing everything in the main `config.toml`.
 
 **Pattern to follow:**
+
 - **Main config**: `~/.config/dbcrust/config.toml` - application settings and preferences only
 - **Recent connections**: `~/.config/dbcrust/recent_connections.toml` - connection history
-- **Saved sessions**: `~/.config/dbcrust/saved_sessions.toml` - named connection configurations  
+- **Saved sessions**: `~/.config/dbcrust/saved_sessions.toml` - named connection configurations
 - **Vault credentials**: `~/.config/dbcrust/vault_credentials.enc` - encrypted cached credentials
 - **Future data types**: Follow this pattern with dedicated files
 
 **Benefits:**
+
 - **Separation of concerns**: Settings vs. user data are separate
 - **Security**: Sensitive data can have different encryption/permissions
 - **Performance**: Avoid loading large user data when only reading settings
@@ -263,6 +275,7 @@ fn test_command_enum_completeness() {
 - **Conflict prevention**: Reduces risk of concurrent write conflicts
 
 **Implementation pattern:**
+
 ```rust
 // In config.rs - storage structs are separate from main config
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -280,6 +293,7 @@ pub struct Config {
 ```
 
 ### Type-Safe Command System with Automatic Synchronization
+
 - **Enum-Based Commands**: All backslash commands (`\dt`, `\l`, etc.) managed by `Command` enum in `src/commands.rs`
 - **Strum-Powered Automation**: Uses `strum` derive macros (`EnumIter`, `Display`) for automatic code generation
 - **Zero Synchronization Issues**: Command shortcuts, descriptions, categories automatically derived from enums
@@ -287,10 +301,13 @@ pub struct Config {
 - **Perfect Feature Parity**: Rust and Python CLIs use identical command implementation
 - **Automatic Autocomplete**: `get_command_names()` automatically includes ALL commands via enum iteration
 - **Automatic Help Generation**: `get_commands_by_category()` automatically groups commands by category
-- **Single Source of Truth**: Add new commands to `Command` enum and `CommandShortcut` enum - everything else is automatic
+- **Single Source of Truth**: Add new commands to `Command` enum and `CommandShortcut` enum - everything else is
+  automatic
 
 #### Critical Pattern: Always Use Enum/Traits for Lists
+
 **NEVER use hardcoded Vec/arrays for command lists, categories, or mappings.** Always use:
+
 ```rust
 // ✅ CORRECT - Automatic synchronization via strum
 #[derive(Debug, Clone, PartialEq, EnumIter)]
@@ -315,6 +332,7 @@ pub fn get_command_names() -> Vec<&'static str> {
 This pattern ensures "thanks to the enum/traits, synchronization issues will not happen anymore."
 
 ### Unified Python CLI Architecture
+
 - **Single Codebase**: Python CLI calls Rust main logic directly via PyO3
 - **Complete Feature Parity**: Python CLI supports all connection types (session://, vault://, docker://, recent://)
 - **Shared Command System**: Both CLIs use `Command` enum and `CliCore` for 100% identical behavior
@@ -324,35 +342,41 @@ This pattern ensures "thanks to the enum/traits, synchronization issues will not
 - **Compile with `python` feature flag for unified CLI bindings**
 
 ### PyO3 Integration Patterns
+
 - Use `Arc<TokioMutex<Database>>` for thread-safe async access
 - PyO3 methods handle Tokio runtime management automatically
 - Python client in `python/dbcrust/client.py` provides high-level interface
 - CLI entry point: `python/dbcrust/__main__.py` delegates to Rust via `run_command()`
 
 ### Testing Strategy
+
 - Use `rstest` for parameterized tests (as specified in Cursor rules)
 - Unit tests in individual modules
 - Integration tests for CLI workflows
 - Do not use `cargo run` for testing (per Cursor rules)
 - Test database operations with mock or test database
 - **Test Isolation**: All tests use isolated temporary directories for config files
-  - `Config::get_config_directory()` automatically detects test mode and returns temp directories
-  - Tests never pollute real user config files (`~/.config/dbcrust/`)
-  - Each test run uses a unique process-based directory: `/tmp/dbcrust_test_{pid}/`
+    - `Config::get_config_directory()` automatically detects test mode and returns temp directories
+    - Tests never pollute real user config files (`~/.config/dbcrust/`)
+    - Each test run uses a unique process-based directory: `/tmp/dbcrust_test_{pid}/`
 
 ### Code Style
+
 - Modular design with single responsibility per module
 - Use `thiserror` for custom error types
 - Async/await throughout with proper error propagation
 - Follow Rust naming conventions and use clippy for linting
-- **MANDATORY**: ALL user interactions MUST use the `inquire` crate - NEVER use manual stdin/stdout prompting or `println!` for interactive input
-  - **Example**: Column selection uses `inquire::MultiSelect` for interactive column choosing with proper Ctrl-C handling
+- **MANDATORY**: ALL user interactions MUST use the `inquire` crate - NEVER use manual stdin/stdout prompting or
+  `println!` for interactive input
+    - **Example**: Column selection uses `inquire::MultiSelect` for interactive column choosing with proper Ctrl-C
+      handling
 
 ### Feature Development Patterns
 
 When implementing serious/new features, follow this systematic approach:
 
 #### 1. Planning & Design Phase
+
 - **Requirements Gathering**: Clearly define user needs and edge cases
 - **Architecture Review**: Identify which modules need modification/creation
 - **Data Structure Design**: Plan configuration storage, serialization needs
@@ -360,15 +384,18 @@ When implementing serious/new features, follow this systematic approach:
 - **Backward Compatibility**: Ensure config changes use `#[serde(default)]`
 
 #### 2. Implementation Phase
+
 - **Core Data Structures**: Implement structs with proper serde annotations
 - **Configuration Integration**: Add new fields to Config with defaults
 - **Business Logic**: Implement core functionality in dedicated modules
 - **CLI Integration**: Add command-line arguments and help text
 - **Interactive Commands**: Add backslash commands following psql conventions
-- **User Interactions**: ALL user prompts MUST use `inquire` crate (Select, Confirm, Text, etc.) - NEVER manual stdin/stdout
+- **User Interactions**: ALL user prompts MUST use `inquire` crate (Select, Confirm, Text, etc.) - NEVER manual
+  stdin/stdout
 - **Error Handling**: Use `thiserror` for custom error types with user-friendly messages
 
 #### 3. Testing Strategy (Critical)
+
 - **Unit Tests**: Test individual functions and data structures
 - **Integration Tests**: Test complete workflows in `tests/` directory
 - **Edge Case Testing**: Test boundary conditions, invalid inputs, error cases
@@ -377,14 +404,17 @@ When implementing serious/new features, follow this systematic approach:
 - **Test Coverage**: Aim for comprehensive coverage of new functionality
 
 #### 4. Documentation & Examples
+
 - **Code Documentation**: Add rustdoc comments for public APIs
 - **User Documentation**: Update CLAUDE.md with usage examples
-- **User Guide Documentation**: Update `docs/` directory (especially `docs/reference/backslash-commands.md` for new commands)
+- **User Guide Documentation**: Update `docs/` directory (especially `docs/reference/backslash-commands.md` for new
+  commands)
 - **Configuration Documentation**: Update `docs/configuration.md` for new config options
 - **Configuration Examples**: Show TOML configuration snippets
 - **CLI Examples**: Demonstrate command-line usage patterns
 
 #### 5. Validation Checklist
+
 - [ ] All tests pass: `cargo test`
 - [ ] Code compiles without warnings: `cargo build`
 - [ ] Linting passes: `cargo clippy`
@@ -443,13 +473,13 @@ pub struct Cli {
 
 // 5. Add backslash command
 "\nf" => {
-    // Handle \nf command for new feature
-    match args.trim() {
-        "" => println!("New feature status: {}", config.new_feature.enabled),
-        "on" => config.new_feature.enabled = true,
-        "off" => config.new_feature.enabled = false,
-        _ => eprintln!("Usage: \\nf [on|off]"),
-    }
+// Handle \nf command for new feature
+match args.trim() {
+"" => println ! ("New feature status: {}", config.new_feature.enabled),
+"on" => config.new_feature.enabled = true,
+"off" => config.new_feature.enabled = false,
+_ => eprintln ! ("Usage: \\nf [on|off]"),
+}
 }
 
 // 6. Comprehensive testing
@@ -475,16 +505,17 @@ mod tests {
     fn test_config_serialization_with_new_feature() {
         let mut config = Config::default();
         config.new_feature.enabled = true;
-        
+
         let serialized = toml::to_string(&config).unwrap();
         let deserialized: Config = toml::from_str(&serialized).unwrap();
-        
+
         assert_eq!(config.new_feature.enabled, deserialized.new_feature.enabled);
     }
 }
 ```
 
 This pattern ensures features are:
+
 - Well-tested and reliable
 - Properly integrated with the configuration system
 - Backward compatible
@@ -494,6 +525,7 @@ This pattern ensures features are:
 ## SSH Tunnel Configuration
 
 Configure automatic SSH tunnels in `config.toml`:
+
 ```toml
 [ssh_tunnel_patterns]
 "^db\\.internal\\..*\\.com$" = "user@jumphost.example.com:2222"
@@ -502,25 +534,29 @@ Configure automatic SSH tunnels in `config.toml`:
 ## Vault Integration
 
 Vault connections use the format:
+
 - `vault://role@mount/database`
 - Components are optional and will prompt interactively
 - Configure with environment variables or CLI args
 
 ## Column Selection & Display Management
 
-DBCrust provides intelligent column selection for queries that return many columns, helping users focus on relevant data with an interactive interface.
+DBCrust provides intelligent column selection for queries that return many columns, helping users focus on relevant data
+with an interactive interface.
 
 ### Automatic Column Selection
 
 The system automatically triggers column selection when query results exceed a configurable threshold:
 
 **Configuration:**
+
 ```toml
 # In ~/.config/dbcrust/config.toml
 column_selection_threshold = 10  # Default: 10 columns
 ```
 
 **Auto-Trigger Behavior:**
+
 - When a query returns more columns than the threshold, column selection interface appears
 - User can interactively select which columns to display
 - Selected columns are remembered for the same table structure (session persistence)
@@ -530,6 +566,7 @@ column_selection_threshold = 10  # Default: 10 columns
 Users can manually enable column selection mode for all queries:
 
 **Commands:**
+
 ```bash
 # Toggle column selection mode on/off
 \cs
@@ -549,13 +586,14 @@ Users can manually enable column selection mode for all queries:
 The column selection uses `inquire::MultiSelect` for a user-friendly experience:
 
 **Features:**
+
 - **Visual Interface**: Checkbox-style selection with arrow key navigation
 - **Multi-Selection**: Use Space bar to select/deselect columns
 - **Keyboard Controls**:
-  - Arrow keys: Navigate between columns
-  - Space: Toggle column selection
-  - Enter: Confirm selection and display results
-  - **Ctrl-C: Abort query and return to REPL** (doesn't exit the application)
+    - Arrow keys: Navigate between columns
+    - Space: Toggle column selection
+    - Enter: Confirm selection and display results
+    - **Ctrl-C: Abort query and return to REPL** (doesn't exit the application)
 - **Help Message**: Clear instructions displayed during selection
 - **Empty Selection**: Selecting no columns displays all columns
 
@@ -564,12 +602,14 @@ The column selection uses `inquire::MultiSelect` for a user-friendly experience:
 Column selections are automatically saved and reused:
 
 **Behavior:**
+
 - Selections are saved per table based on column structure (headers)
 - Subsequent queries on the same table automatically use saved selections
 - Persistence lasts throughout the session until cleared or reset
 - Each unique column structure gets its own saved selection
 
 **Key Generation:**
+
 - Uses column header names joined with ':' as the key
 - Same query structure = same saved selection
 - Different column order or names = separate selection
@@ -586,14 +626,17 @@ column_selection_threshold = 10
 ### Use Cases
 
 **Large Table Analysis:**
+
 ```sql
 -- Query returns 20+ columns, auto-triggers column selection
-SELECT * FROM users_detailed;
+SELECT *
+FROM users_detailed;
 -- Interactive interface appears, user selects relevant columns
 -- Next time: automatically uses saved selection
 ```
 
 **Manual Mode for Focused Work:**
+
 ```bash
 # Enable column selection for all queries
 \cs
@@ -604,6 +647,7 @@ SELECT * FROM users_detailed;
 ```
 
 **Configuration for Team Workflows:**
+
 ```bash
 # Set higher threshold for experienced users
 \csthreshold 25
@@ -614,18 +658,21 @@ SELECT * FROM users_detailed;
 
 ## Session Management & Connection History
 
-DBCrust includes comprehensive session management and connection history tracking as separate but complementary features.
+DBCrust includes comprehensive session management and connection history tracking as separate but complementary
+features.
 
 ### Saved Sessions
 
 Named sessions allow you to save connection parameters with memorable names for quick reconnection.
 
 **Features:**
+
 - **Named Sessions**: Save connection parameters with memorable names
 - **Password Security**: No password storage - integrates with credential stores
 - **Database Support**: PostgreSQL (.pgpass), MySQL (.my.cnf), SQLite (no auth)
 
 **Session Commands:**
+
 ```bash
 # List saved sessions only
 \s
@@ -641,6 +688,7 @@ Named sessions allow you to save connection parameters with memorable names for 
 ```
 
 **Command Line Session Access:**
+
 ```bash
 # Connect using saved session
 dbcrust session://production_db
@@ -651,15 +699,18 @@ dbcrust session://staging_db -c "SELECT version()"
 
 ### Connection History
 
-Connection history automatically tracks recent database connections with full URLs (except passwords) for easy reconnection.
+Connection history automatically tracks recent database connections with full URLs (except passwords) for easy
+reconnection.
 
 **Features:**
+
 - **Automatic Tracking**: All successful/failed connections are recorded
 - **Full URL Storage**: Complete connection details including containers (docker://user@container/db)
 - **Interactive Selection**: Use `recent://` for guided reconnection
 - **Display Names**: Human-readable connection descriptions
 
 **History Commands:**
+
 ```bash
 # List recent connections
 \r
@@ -669,6 +720,7 @@ Connection history automatically tracks recent database connections with full UR
 ```
 
 **Interactive Recent Connection Access:**
+
 ```bash
 # Interactive selection from recent connections
 dbcrust recent://
@@ -738,28 +790,28 @@ pub struct RecentConnection {
     pub connection_url: String,     // Full URL without password
     pub display_name: String,       // Human-readable description  
     pub timestamp: DateTime<Utc>,   // When connection occurred
-    pub database_type: DatabaseType,// PostgreSQL, MySQL, SQLite
+    pub database_type: DatabaseType, // PostgreSQL, MySQL, SQLite
     pub success: bool,              // Connection success/failure
 }
 
 // Track connections automatically (with auto-generated display name)
 config.add_recent_connection_auto_display(
-    sanitized_url,
-    database_type,
-    true // success
-)?;
+sanitized_url,
+database_type,
+true // success
+) ?;
 
 // Save named session
 config.save_session_with_db_type(
-    "session_name",
-    DatabaseType::PostgreSQL,
-    None, // file_path for SQLite
-    custom_params
-)?;
+"session_name",
+DatabaseType::PostgreSQL,
+None, // file_path for SQLite
+custom_params
+) ?;
 
 // Recent connection history management
 let recent = config.get_recent_connections();
-config.clear_recent_connections()?;
+config.clear_recent_connections() ?;
 ```
 
 ## Important Notes
@@ -769,4 +821,3 @@ config.clear_recent_connections()?;
 - Reedline for modern CLI experience
 - Conditional compilation for Python bindings
 - Configuration stored in `~/.config/dbcrust/config.toml`
-- Debug logs accessible via `--show-debug-logs` flag
