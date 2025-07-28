@@ -23,6 +23,11 @@ class DetectedPattern:
     recommendation: str
     code_suggestion: Optional[str] = None
     estimated_impact: Optional[str] = None
+    # Enhanced context
+    specific_fields: List[str] = None  # Specific field names for select_related/prefetch_related
+    code_locations: List[str] = None  # Where the issue occurs in code
+    table_context: Dict[str, str] = None  # Table -> Model mapping context
+    query_examples: List[str] = None  # Example problematic SQL queries
 
 
 class PatternDetector:
@@ -65,14 +70,30 @@ class PatternDetector:
                 # Try to identify the parent table and related table
                 parent_table, related_table = self._identify_related_tables(queries)
                 
+                # Extract enhanced context
+                specific_fields = self._extract_foreign_key_fields(queries)
+                code_locations = self._extract_code_locations(queries)
+                table_context = self._build_table_context(queries)
+                query_examples = [q.sql for q in queries[:2]]  # Show first 2 examples
+                
+                # Determine if this needs select_related or prefetch_related
+                optimization_type = "select_related" if len(queries) < 10 else "prefetch_related"
+                
+                # Format field suggestions without backslashes in f-string
+                field_suggestions = ', '.join(f"'{f}'" for f in specific_fields)
+                
                 self.detected_patterns.append(DetectedPattern(
                     pattern_type="n_plus_one",
                     severity="critical",
-                    description=f"N+1 query pattern detected: {len(queries)} separate queries for related objects",
+                    description=f"N+1 query pattern: {len(queries)} queries on {related_table or 'related table'} - use {optimization_type}({field_suggestions})",
                     affected_queries=queries,
-                    recommendation=f"Use select_related() or prefetch_related() to fetch related objects in a single query",
-                    code_suggestion=self._generate_n_plus_one_suggestion(parent_table, related_table, queries),
-                    estimated_impact=f"Could reduce {len(queries)} queries to 1-2 queries"
+                    recommendation=f"Use {optimization_type}({field_suggestions}) to fetch related objects in a single query",
+                    code_suggestion=self._generate_enhanced_n_plus_one_suggestion(parent_table, related_table, queries, specific_fields),
+                    estimated_impact=f"Reduce {len(queries)} queries to 1-2 queries",
+                    specific_fields=specific_fields,
+                    code_locations=code_locations,
+                    table_context=table_context,
+                    query_examples=query_examples
                 ))
     
     def _detect_missing_select_related(self):
@@ -87,14 +108,28 @@ class PatternDetector:
                 query2.query_type == 'SELECT' and
                 self._is_foreign_key_lookup(query1, query2)):
                 
+                # Extract specific field names and context
+                specific_fields = self._extract_foreign_key_fields([query1, query2])
+                code_locations = self._extract_code_locations([query1, query2])
+                table_context = self._build_table_context([query1, query2])
+                query_examples = [query1.sql, query2.sql]
+                
+                # Format field suggestions without backslashes in f-string
+                field_suggestions = ', '.join(f"'{f}'" for f in specific_fields)
+                tables_list = ', '.join(table_context.keys())
+                
                 self.detected_patterns.append(DetectedPattern(
                     pattern_type="missing_select_related",
                     severity="high",
-                    description="Sequential queries detected that could use select_related()",
+                    description=f"Sequential queries on {tables_list} could use select_related({field_suggestions})",
                     affected_queries=[query1, query2],
-                    recommendation="Use select_related() to fetch related objects in a single query",
-                    code_suggestion=self._generate_select_related_suggestion(query1, query2),
-                    estimated_impact="Reduce 2 queries to 1 query"
+                    recommendation=f"Use select_related({field_suggestions}) to fetch related objects in a single query",
+                    code_suggestion=self._generate_contextual_select_related_suggestion(query1, query2, specific_fields),
+                    estimated_impact="Reduce 2 queries to 1 query",
+                    specific_fields=specific_fields,
+                    code_locations=code_locations,
+                    table_context=table_context,
+                    query_examples=query_examples
                 ))
     
     def _detect_missing_prefetch_related(self):
@@ -107,14 +142,28 @@ class PatternDetector:
             related_queries = self._find_related_queries_after(main_query)
             
             if len(related_queries) >= 2 and self._is_many_to_many_pattern(main_query, related_queries):
+                # Extract enhanced context
+                all_queries = [main_query] + related_queries
+                specific_fields = self._extract_prefetch_fields(main_query, related_queries)
+                code_locations = self._extract_code_locations(all_queries)
+                table_context = self._build_table_context(all_queries)
+                query_examples = [q.sql for q in all_queries[:2]]
+                
+                # Format field suggestions without backslashes in f-string
+                field_suggestions = ', '.join(f"'{f}'" for f in specific_fields)
+                
                 self.detected_patterns.append(DetectedPattern(
                     pattern_type="missing_prefetch_related",
                     severity="high",
-                    description=f"Multiple queries for related objects detected ({len(related_queries)} queries)",
-                    affected_queries=[main_query] + related_queries,
-                    recommendation="Use prefetch_related() for many-to-many or reverse foreign key relationships",
-                    code_suggestion=self._generate_prefetch_related_suggestion(main_query, related_queries),
-                    estimated_impact=f"Reduce {len(related_queries) + 1} queries to 2 queries"
+                    description=f"Multiple queries for related objects: {len(related_queries)} queries - use prefetch_related({field_suggestions})",
+                    affected_queries=all_queries,
+                    recommendation=f"Use prefetch_related({field_suggestions}) for many-to-many or reverse foreign key relationships",
+                    code_suggestion=self._generate_contextual_prefetch_related_suggestion(main_query, related_queries, specific_fields),
+                    estimated_impact=f"Reduce {len(related_queries) + 1} queries to 2 queries",
+                    specific_fields=specific_fields,
+                    code_locations=code_locations,
+                    table_context=table_context,
+                    query_examples=query_examples
                 ))
     
     def _detect_inefficient_count(self):
@@ -139,14 +188,28 @@ class PatternDetector:
             if query.query_type == 'SELECT' and self._fetches_all_fields(query):
                 field_count = self._estimate_field_count(query)
                 if field_count > 10:  # Arbitrary threshold
+                    # Extract enhanced context
+                    code_locations = self._extract_code_locations([query])
+                    table_context = self._build_table_context([query])
+                    query_examples = [query.sql]
+                    
+                    # Try to suggest actual field names from the SQL
+                    suggested_fields = self._extract_commonly_used_fields(query)
+                    fields_str = ', '.join(f"'{f}'" for f in suggested_fields)
+                    field_suggestion = f"queryset.only({fields_str})"
+                    
                     self.detected_patterns.append(DetectedPattern(
                         pattern_type="missing_only",
                         severity="low",
-                        description=f"Query fetching all fields ({field_count}+) when only few might be needed",
+                        description=f"Query fetching all fields ({field_count}+) from {', '.join(table_context.keys())} - consider using only()",
                         affected_queries=[query],
                         recommendation="Use .only() or .defer() to limit fields fetched",
-                        code_suggestion="queryset.only('id', 'name', 'needed_field')",
-                        estimated_impact="Reduce data transfer and memory usage"
+                        code_suggestion=field_suggestion,
+                        estimated_impact="Reduce data transfer and memory usage",
+                        specific_fields=suggested_fields,
+                        code_locations=code_locations,
+                        table_context=table_context,
+                        query_examples=query_examples
                     ))
     
     def _detect_large_result_sets(self):
@@ -356,3 +419,200 @@ class PatternDetector:
             return f"queryset.prefetch_related('{field_name}_set')"
         
         return "queryset.prefetch_related('related_set')"
+    
+    # Enhanced context extraction methods
+    
+    def _extract_foreign_key_fields(self, queries: List[CapturedQuery]) -> List[str]:
+        """Extract specific foreign key field names from queries."""
+        fields = []
+        for query in queries:
+            # Look for WHERE clauses with foreign key patterns
+            sql_upper = query.sql.upper()
+            
+            # Pattern: WHERE table_field_id = ?
+            import re
+            patterns = [
+                r'WHERE\s+"?(\w+)"?\."?(\w+)_ID"?\s*=',  # table.field_id = 
+                r'WHERE\s+"?(\w+_ID)"?\s*=',              # field_id =
+                r'INNER\s+JOIN\s+"?(\w+)"?\s+ON.*"?(\w+)"?\."?(\w+)_ID"?'  # JOIN patterns
+            ]
+            
+            for pattern in patterns:
+                matches = re.findall(pattern, sql_upper, re.IGNORECASE)
+                for match in matches:
+                    if isinstance(match, tuple):
+                        # Extract field name (remove _id suffix)
+                        for part in match:
+                            if part.endswith('_ID'):
+                                field = part[:-3].lower()
+                                if field not in fields:
+                                    fields.append(field)
+                    else:
+                        if match.endswith('_ID'):
+                            field = match[:-3].lower()
+                            if field not in fields:
+                                fields.append(field)
+        
+        # If no specific fields found, try to infer from table names
+        if not fields:
+            for query in queries[1:]:  # Skip first query
+                for table in query.table_names:
+                    if table not in [t for q in queries[:1] for t in q.table_names]:
+                        # This is a related table, convert to field name
+                        field = table.rstrip('s')  # Remove plural
+                        if field not in fields:
+                            fields.append(field)
+        
+        return fields or ['related_field']
+    
+    def _extract_code_locations(self, queries: List[CapturedQuery]) -> List[str]:
+        """Extract code locations from stack traces."""
+        locations = []
+        for query in queries:
+            if query.stack_trace:
+                # Find the most relevant frame (skip Django internals)
+                for frame in reversed(query.stack_trace):
+                    if not any(skip in frame for skip in [
+                        'django/', 'site-packages/', '__pycache__',
+                        'dbcrust/django/', 'query_collector.py'
+                    ]):
+                        # Extract filename and line number
+                        if ':' in frame:
+                            location = frame.split(' in ')[0]  # Get "file:line" part
+                            if location not in locations:
+                                locations.append(location)
+                        break
+        return locations
+    
+    def _build_table_context(self, queries: List[CapturedQuery]) -> Dict[str, str]:
+        """Build table to model name mapping context."""
+        context = {}
+        for query in queries:
+            for table in query.table_names:
+                # Convert table name to likely model name
+                model_name = ''.join(word.capitalize() for word in table.split('_'))
+                context[table] = model_name
+        return context
+    
+    def _generate_contextual_select_related_suggestion(self, query1: CapturedQuery, 
+                                                     query2: CapturedQuery, 
+                                                     specific_fields: List[str]) -> str:
+        """Generate contextual select_related suggestion with specific fields."""
+        if specific_fields and specific_fields != ['related_field']:
+            fields_str = ', '.join(f"'{field}'" for field in specific_fields)
+            return f"queryset.select_related({fields_str})"
+        else:
+            return "queryset.select_related('related_field')  # Update with actual field name"
+    
+    def _generate_enhanced_n_plus_one_suggestion(self, parent_table: Optional[str], 
+                                               related_table: Optional[str], 
+                                               queries: List[CapturedQuery],
+                                               specific_fields: List[str]) -> str:
+        """Generate enhanced N+1 suggestion with specific context."""
+        if len(queries) < 10:
+            # Use select_related for smaller sets
+            if specific_fields and specific_fields != ['related_field']:
+                fields_str = ', '.join(f"'{field}'" for field in specific_fields)
+                return f"Model.objects.select_related({fields_str})"
+            else:
+                return "Model.objects.select_related('related_field')"
+        else:
+            # Use prefetch_related for larger sets
+            if specific_fields and specific_fields != ['related_field']:
+                fields_str = ', '.join(f"'{field}'" for field in specific_fields)
+                return f"Model.objects.prefetch_related({fields_str})"
+            else:
+                return "Model.objects.prefetch_related('related_set')"
+    
+    def _extract_prefetch_fields(self, main_query: CapturedQuery, 
+                               related_queries: List[CapturedQuery]) -> List[str]:
+        """Extract specific field names for prefetch_related."""
+        fields = []
+        
+        # Try to identify the relationship from table names
+        main_tables = set(main_query.table_names)
+        
+        for query in related_queries:
+            for table in query.table_names:
+                if table not in main_tables:
+                    # This is likely a related table
+                    # Convert table name to field name
+                    if table.endswith('_set') or '_' in table:
+                        # Handle many-to-many through tables
+                        field = table.replace('_', '')
+                        if field.endswith('s'):
+                            field = field[:-1] + '_set'
+                    else:
+                        # Simple case: table name to field name
+                        field = table.rstrip('s') + '_set'
+                    
+                    if field not in fields:
+                        fields.append(field)
+        
+        # If no fields found, extract from SQL patterns
+        if not fields:
+            for query in related_queries:
+                # Look for JOIN or IN patterns that indicate relationships
+                sql_upper = query.sql.upper()
+                if 'JOIN' in sql_upper or 'IN (' in sql_upper:
+                    # Try to extract related field name from WHERE clauses
+                    import re
+                    matches = re.findall(r'WHERE\s+"?(\w+)"?\."?(\w+_ID)"?', sql_upper)
+                    for table, field_id in matches:
+                        field = field_id[:-3].lower() + '_set'
+                        if field not in fields:
+                            fields.append(field)
+        
+        return fields or ['related_set']
+    
+    def _generate_contextual_prefetch_related_suggestion(self, main_query: CapturedQuery, 
+                                                       related_queries: List[CapturedQuery],
+                                                       specific_fields: List[str]) -> str:
+        """Generate contextual prefetch_related suggestion."""
+        if specific_fields and specific_fields != ['related_set']:
+            fields_str = ', '.join(f"'{field}'" for field in specific_fields)
+            return f"queryset.prefetch_related({fields_str})"
+        else:
+            return "queryset.prefetch_related('related_set')  # Update with actual field name"
+    
+    def _extract_commonly_used_fields(self, query: CapturedQuery) -> List[str]:
+        """Extract commonly used fields that should be included in only()."""
+        # Common fields that are usually needed
+        common_fields = ['id', 'name', 'title', 'slug', 'status', 'created_at', 'updated_at']
+        
+        # Try to extract field names from the SQL SELECT clause
+        sql_upper = query.sql.upper()
+        actual_fields = []
+        
+        # Look for explicit field selections in the SQL
+        import re
+        
+        # Pattern to match field selections like "table"."field"
+        field_matches = re.findall(r'"[^"]*"\."([^"]*)"', query.sql)
+        for field in field_matches:
+            if field and field.lower() not in ['id'] and len(field) < 50:  # Reasonable field name
+                clean_field = field.lower().replace('_', '_')
+                if clean_field not in actual_fields:
+                    actual_fields.append(clean_field)
+        
+        # If we found actual fields, use a smart subset
+        if actual_fields:
+            # Always include id, then add other fields up to a reasonable limit
+            result_fields = ['id']
+            
+            # Add common fields that exist in the actual fields
+            for field in common_fields[1:]:  # Skip 'id' since we already added it
+                if field in actual_fields and field not in result_fields:
+                    result_fields.append(field)
+                if len(result_fields) >= 5:  # Limit to 5 fields
+                    break
+            
+            # If we still have room, add other actual fields
+            for field in actual_fields:
+                if field not in result_fields and len(result_fields) < 5:
+                    result_fields.append(field)
+            
+            return result_fields
+        else:
+            # Fallback to common fields
+            return common_fields[:4]  # Return first 4 common fields

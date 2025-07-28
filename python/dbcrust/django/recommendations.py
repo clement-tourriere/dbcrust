@@ -85,7 +85,7 @@ can fetch all the data in 1-2 queries instead.""",
     @staticmethod
     def _select_related_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for missing select_related."""
-        return [
+        recommendations = [
             Recommendation(
                 title="Use select_related() for Foreign Key Relationships",
                 description="Optimize foreign key lookups with select_related()",
@@ -103,8 +103,12 @@ OneToOne relationships where you know you'll need the related object.""",
                 ],
                 difficulty="easy",
                 impact="high"
-            ),
-            Recommendation(
+            )
+        ]
+        
+        # Only add chained select_related recommendation if we detect multi-level relationships
+        if pattern.specific_fields and any('__' in field for field in pattern.specific_fields):
+            recommendations.append(Recommendation(
                 title="Chain Multiple select_related() Calls",
                 description="Follow foreign keys through multiple relationships",
                 code_before="""# Multiple queries for nested relationships
@@ -121,8 +125,9 @@ underscores. This creates more complex joins but eliminates multiple queries."""
                 ],
                 difficulty="medium",
                 impact="high"
-            )
-        ]
+            ))
+        
+        return recommendations
     
     @staticmethod
     def _prefetch_related_recommendations(pattern: DetectedPattern) -> List[Recommendation]:

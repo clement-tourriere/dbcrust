@@ -88,6 +88,51 @@ class AnalysisResult:
                 DjangoRecommendations.format_recommendations_summary(self.recommendations)
             ])
         
+        # Add detailed pattern analysis with specific context
+        if self.detected_patterns:
+            summary_lines.extend([
+                f"",
+                f"🔍 Detailed Analysis with Specific Recommendations:",
+                f"=" * 60
+            ])
+            
+            for i, pattern in enumerate(self.detected_patterns, 1):
+                summary_lines.extend([
+                    f"",
+                    f"{i}. {pattern.pattern_type.replace('_', ' ').title()} - {pattern.severity.upper()}"
+                ])
+                
+                # Show specific fields if available
+                if pattern.specific_fields:
+                    fields_str = ', '.join(f"'{f}'" for f in pattern.specific_fields)
+                    summary_lines.append(f"   💡 Suggested fields: {fields_str}")
+                
+                # Show code locations
+                if pattern.code_locations:
+                    summary_lines.append(f"   📍 Code locations:")
+                    for location in pattern.code_locations[:3]:  # Show up to 3 locations
+                        summary_lines.append(f"      - {location}")
+                
+                # Show table context
+                if pattern.table_context:
+                    tables = ', '.join(pattern.table_context.keys())
+                    summary_lines.append(f"   🗃️  Tables involved: {tables}")
+                
+                # Show specific recommendation
+                if pattern.code_suggestion:
+                    summary_lines.append(f"   ⚡ Quick fix: {pattern.code_suggestion}")
+                
+                # Show impact
+                if pattern.estimated_impact:
+                    summary_lines.append(f"   📈 Impact: {pattern.estimated_impact}")
+                
+                # Show example queries (first one only, truncated)
+                if pattern.query_examples:
+                    example = pattern.query_examples[0]
+                    if len(example) > 100:
+                        example = example[:100] + "..."
+                    summary_lines.append(f"   🔍 Example query: {example}")
+        
         return "\n".join(summary_lines)
     
     def to_dict(self) -> Dict[str, Any]:
