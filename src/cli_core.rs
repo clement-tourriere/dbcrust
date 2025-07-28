@@ -3,7 +3,7 @@ use crate::commands::{CommandExecutor, CommandParser, CommandResult};
 use crate::config::{set_global_verbosity_override, Config as DbCrustConfig, VerbosityLevel};
 use crate::database::ConnectionInfo;
 use crate::db::Database;
-use crate::format::{format_query_results_expanded, format_query_results_psql};
+use crate::format::{format_query_results_expanded, format_query_results_psql_with_info};
 use crate::prompt::DbPrompt;
 use crate::{debug_log, logging};
 use clap::CommandFactory;
@@ -580,17 +580,17 @@ impl CliCore {
                     .as_mut()
                     .ok_or_else(|| CliError::CommandError("No database connection".to_string()))?;
 
-                match database.execute_query(command_trimmed).await {
-                    Ok(results) => {
-                        if !results.is_empty() {
+                match database.execute_query_with_info(command_trimmed).await {
+                    Ok(results_with_info) => {
+                        if !results_with_info.data.is_empty() {
                             let is_expanded = database.is_expanded_display();
                             if is_expanded {
-                                let tables = format_query_results_expanded(&results);
+                                let tables = format_query_results_expanded(&results_with_info.data);
                                 for table in tables {
                                     println!("{table}");
                                 }
                             } else {
-                                let formatted_output = format_query_results_psql(&results);
+                                let formatted_output = format_query_results_psql_with_info(&results_with_info.data, results_with_info.column_info.as_ref());
                                 println!("{formatted_output}");
                             }
                         }
@@ -917,13 +917,13 @@ impl CliCore {
         db_arc: &Arc<Mutex<Database>>,
         interrupt_flag: &Arc<AtomicBool>,
     ) -> Result<(), CliError> {
-        let results = {
+        let results_with_info = {
             let mut db_guard = db_arc.lock().unwrap();
             match db_guard
-                .execute_query_with_interrupt(sql, interrupt_flag)
+                .execute_query_with_interrupt_and_info(sql, interrupt_flag)
                 .await
             {
-                Ok(results) => results,
+                Ok(results_with_info) => results_with_info,
                 Err(e) => {
                     // Check if this is a column selection abort
                     if e.to_string().contains("Column selection aborted") {
@@ -935,19 +935,19 @@ impl CliCore {
             }
         };
 
-        if !results.is_empty() {
+        if !results_with_info.data.is_empty() {
             let is_expanded = {
                 let db_guard = db_arc.lock().unwrap();
                 db_guard.is_expanded_display()
             };
 
             if is_expanded {
-                let tables = format_query_results_expanded(&results);
+                let tables = format_query_results_expanded(&results_with_info.data);
                 for table in tables {
                     println!("{table}");
                 }
             } else {
-                let formatted_output = format_query_results_psql(&results);
+                let formatted_output = format_query_results_psql_with_info(&results_with_info.data, results_with_info.column_info.as_ref());
                 println!("{formatted_output}");
             }
         }

@@ -1,4 +1,4 @@
-use crate::db::TableDetails;
+use crate::db::{TableDetails, ColumnFilteringInfo};
 use prettytable::{Cell, Row, Table};
 use chrono;
 
@@ -62,9 +62,14 @@ pub fn format_query_results_expanded(data: &[Vec<String>]) -> Vec<Table> {
 
 #[allow(dead_code)]
 pub fn format_query_results_psql(data: &[Vec<String>]) -> String {
+    format_query_results_psql_with_info(data, None)
+}
+
+#[allow(dead_code)]
+pub fn format_query_results_psql_with_info(data: &[Vec<String>], column_info: Option<&ColumnFilteringInfo>) -> String {
     // Use panic catching to handle any formatting errors gracefully
     let result = std::panic::catch_unwind(|| {
-        format_query_results_psql_internal(data)
+        format_query_results_psql_internal(data, column_info)
     });
     
     match result {
@@ -107,7 +112,8 @@ pub fn format_query_results_psql(data: &[Vec<String>]) -> String {
     }
 }
 
-fn format_query_results_psql_internal(data: &[Vec<String>]) -> String {
+
+fn format_query_results_psql_internal(data: &[Vec<String>], column_info: Option<&ColumnFilteringInfo>) -> String {
     if data.is_empty() {
         return String::new();
     }
@@ -224,6 +230,19 @@ fn format_query_results_psql_internal(data: &[Vec<String>]) -> String {
         row_count,
         if row_count == 1 { "row" } else { "rows" }
     ));
+
+    // Add column indicator if columns are filtered
+    if let Some(info) = column_info {
+        if info.is_filtered() {
+            result.push_str(&format!(
+                "📊 Displaying {} of {} columns: {}\n",
+                info.displayed_columns,
+                info.total_columns,
+                info.filtered_column_names.join(", ")
+            ));
+            result.push_str("💡 Use \\clrcs to clear column selections or \\resetview to reset all view settings\n");
+        }
+    }
 
     result
 }
@@ -742,5 +761,41 @@ mod tests {
         let data_with_empty_header = vec![vec![]];
         let result = format_query_results_psql(&data_with_empty_header);
         assert_eq!(result, "");
+    }
+
+
+    #[test]
+    fn test_column_filtering_info_display() {
+        use crate::db::ColumnFilteringInfo;
+        
+        let test_data = vec![
+            vec!["col1".to_string(), "col2".to_string()],
+            vec!["val1".to_string(), "val2".to_string()],
+        ];
+        
+        // Test with column filtering info
+        let column_info = ColumnFilteringInfo::new(
+            5,  // total columns
+            2,  // displayed columns  
+            vec!["col1".to_string(), "col2".to_string()],
+        );
+        
+        let result = format_query_results_psql_with_info(&test_data, Some(&column_info));
+        
+        // Verify the column indicator is present and appears after row count
+        assert!(result.contains("📊 Displaying 2 of 5 columns"), "Should contain column indicator");
+        assert!(result.contains("col1, col2"), "Should contain column names");
+        assert!(result.contains("(1 row)"), "Should contain row count");
+        assert!(result.contains("💡 Use \\clrcs to clear"), "Should contain help message");
+        
+        // Verify order: row count should come before column indicator
+        let row_pos = result.find("(1 row)").unwrap();
+        let col_pos = result.find("📊 Displaying").unwrap();
+        assert!(row_pos < col_pos, "Row count should appear before column indicator");
+        
+        // Test without column filtering info
+        let result_no_info = format_query_results_psql_with_info(&test_data, None);
+        assert!(!result_no_info.contains("📊"), "Should not contain column indicator when no filtering");
+        assert!(result_no_info.contains("(1 row)"), "Should still contain row count");
     }
 }

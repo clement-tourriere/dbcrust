@@ -39,6 +39,35 @@ pub struct PoolStats {
     pub idle_connections: u32,
     pub acquire_timeout_seconds: u64,
 }
+
+/// Column filtering metadata to track when results are filtered
+#[derive(Debug, Clone)]
+pub struct ColumnFilteringInfo {
+    pub total_columns: usize,
+    pub displayed_columns: usize,
+    pub filtered_column_names: Vec<String>,
+}
+
+impl ColumnFilteringInfo {
+    pub fn new(total_columns: usize, displayed_columns: usize, filtered_column_names: Vec<String>) -> Self {
+        Self {
+            total_columns,
+            displayed_columns,
+            filtered_column_names,
+        }
+    }
+
+    pub fn is_filtered(&self) -> bool {
+        self.displayed_columns < self.total_columns
+    }
+}
+
+/// Query results with optional column filtering information
+#[derive(Debug)]
+pub struct QueryResultsWithInfo {
+    pub data: Vec<Vec<String>>,
+    pub column_info: Option<ColumnFilteringInfo>,
+}
 use std::io::prelude::*;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -1399,22 +1428,45 @@ impl Database {
         self.execute_query_with_interrupt(query, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).await
     }
 
+    pub async fn execute_query_with_info(
+        &mut self,
+        query: &str,
+    ) -> std::result::Result<QueryResultsWithInfo, Box<dyn StdError>> {
+        self.execute_query_with_interrupt_and_info(query, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).await
+    }
+
     pub async fn execute_query_with_interrupt(
         &mut self,
         query: &str,
         interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        // Use the new method that returns metadata and extract just the data
+        match self.execute_query_with_interrupt_and_info(query, interrupt_flag).await {
+            Ok(results_with_info) => Ok(results_with_info.data),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub async fn execute_query_with_interrupt_and_info(
+        &mut self,
+        query: &str,
+        interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::result::Result<QueryResultsWithInfo, Box<dyn StdError>> {
         // Check if we should EXPLAIN this query (applies to all database types)
         if self.explain_mode && is_query_explainable(query) {
             debug_log!("EXPLAIN mode is enabled, executing EXPLAIN query");
-            return self.execute_explain_query(query).await;
+            let results = self.execute_explain_query(query).await?;
+            return Ok(QueryResultsWithInfo {
+                data: results,
+                column_info: None,
+            });
         }
         
         // Try using the new database abstraction layer first
         if let Some(ref database_client) = self.database_client {
             debug_log!("Using new database abstraction layer for execute_query");
             match database_client.execute_query(query).await {
-                Ok(results) => return self.apply_column_selection_if_needed(results, interrupt_flag),
+                Ok(results) => return self.apply_column_selection_if_needed_with_info(results, interrupt_flag),
                 Err(e) => {
                     debug_log!("Database client execute_query failed: {}. Falling back to legacy implementation.", e);
                     // For non-PostgreSQL databases, return the error instead of falling back
@@ -1445,7 +1497,7 @@ impl Database {
                         "bob@example.com".to_string(),
                     ],
                 ];
-                return self.apply_column_selection_if_needed(results, interrupt_flag);
+                return self.apply_column_selection_if_needed_with_info(results, interrupt_flag);
             } else if query.to_lowercase().contains("select * from orders") {
                 let results = vec![
                     vec![
@@ -1455,10 +1507,13 @@ impl Database {
                     ],
                     vec!["101".to_string(), "Laptop".to_string(), "1".to_string()],
                 ];
-                return self.apply_column_selection_if_needed(results, interrupt_flag);
+                return self.apply_column_selection_if_needed_with_info(results, interrupt_flag);
             }
             // Default mock for other queries, e.g. DDL or unknown SELECTs
-            return Ok(vec![vec!["Mocked_execute_query_success".to_string()]]);
+            return Ok(QueryResultsWithInfo {
+                data: vec![vec!["Mocked_execute_query_success".to_string()]],
+                column_info: None,
+            });
         }
 
         let pool_ref = self.pool.as_ref().ok_or_else(|| {
@@ -1496,15 +1551,24 @@ impl Database {
                         .map(|c| c.name().to_string())
                         .collect();
                     if column_names.is_empty() {
-                        Ok(vec![]) // No columns, e.g., for DDL like CREATE TABLE
+                        Ok(QueryResultsWithInfo {
+                            data: vec![],
+                            column_info: None,
+                        }) // No columns, e.g., for DDL like CREATE TABLE
                     } else {
-                        Ok(vec![column_names]) // Only header if result set is empty
+                        Ok(QueryResultsWithInfo {
+                            data: vec![column_names],
+                            column_info: None,
+                        }) // Only header if result set is empty
                     }
                 }
                 Err(_) => {
                     // If prepare fails (e.g. for some types of statements that can't be prepared or have syntax errors)
                     // or if the query itself was a non-SELECT that affects 0 rows and returns nothing.
-                    Ok(vec![])
+                    Ok(QueryResultsWithInfo {
+                        data: vec![],
+                        column_info: None,
+                    })
                 }
             }
         } else {
@@ -1638,7 +1702,7 @@ impl Database {
                 results.push(data_row);
             }
             // Apply column selection if needed
-            self.apply_column_selection_if_needed(results, interrupt_flag)
+            self.apply_column_selection_if_needed_with_info(results, interrupt_flag)
         }
     }
     
@@ -1648,9 +1712,25 @@ impl Database {
         results: Vec<Vec<String>>,
         interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        // Use the new method that returns metadata and extract just the data
+        match self.apply_column_selection_if_needed_with_info(results, interrupt_flag) {
+            Ok(results_with_info) => Ok(results_with_info.data),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Apply column selection based on threshold or cs mode, returning metadata
+    pub fn apply_column_selection_if_needed_with_info(
+        &mut self,
+        results: Vec<Vec<String>>,
+        interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::result::Result<QueryResultsWithInfo, Box<dyn StdError>> {
         // Don't apply column selection if results are empty or only contain header
         if results.len() <= 1 {
-            return Ok(results);
+            return Ok(QueryResultsWithInfo {
+                data: results,
+                column_info: None,
+            });
         }
         
         let column_count = results[0].len();
@@ -1661,8 +1741,8 @@ impl Database {
         if should_apply {
             debug_log!("Applying column selection: cs_mode={}, columns={}, threshold={}", 
                       self.column_select_mode, column_count, self.column_selection_threshold);
-            match self.interactive_column_selection(&results, interrupt_flag) {
-                Ok(filtered) => Ok(filtered),
+            match self.interactive_column_selection_with_info(&results, interrupt_flag) {
+                Ok(results_with_info) => Ok(results_with_info),
                 Err(e) if e.is::<ColumnSelectionAborted>() => {
                     // Re-throw the abort error to propagate it up
                     Err(e)
@@ -1670,11 +1750,17 @@ impl Database {
                 Err(e) => {
                     // For other errors, log and return original results
                     eprintln!("Column selection error: {}", e);
-                    Ok(results)
+                    Ok(QueryResultsWithInfo {
+                        data: results,
+                        column_info: None,
+                    })
                 }
             }
         } else {
-            Ok(results)
+            Ok(QueryResultsWithInfo {
+                data: results,
+                column_info: None,
+            })
         }
     }
 
@@ -2987,18 +3073,36 @@ impl Database {
     pub fn interactive_column_selection(
         &mut self,
         data: &[Vec<String>],
-        _interrupt_flag: &Arc<AtomicBool>,
+        interrupt_flag: &Arc<AtomicBool>,
     ) -> Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        // Use the new method that returns metadata and extract just the data
+        match self.interactive_column_selection_with_info(data, interrupt_flag) {
+            Ok(results_with_info) => Ok(results_with_info.data),
+            Err(e) => Err(e),
+        }
+    }
+
+    pub fn interactive_column_selection_with_info(
+        &mut self,
+        data: &[Vec<String>],
+        _interrupt_flag: &Arc<AtomicBool>,
+    ) -> Result<QueryResultsWithInfo, Box<dyn StdError>> {
         // For testing purposes, we'll add a special case that provides a mocked input
         // This is only used in tests and won't affect normal operation
         #[cfg(test)]
         if !data.is_empty() && !data[0].is_empty() && data[0][0] == "test_mock_input" {
             // In test mode, return a pre-filtered set based on the test case
-            return Ok(data.to_vec());
+            return Ok(QueryResultsWithInfo {
+                data: data.to_vec(),
+                column_info: None,
+            });
         }
 
         if data.is_empty() {
-            return Ok(Vec::new());
+            return Ok(QueryResultsWithInfo {
+                data: Vec::new(),
+                column_info: None,
+            });
         }
 
         // Get the header row
@@ -3024,7 +3128,7 @@ impl Database {
             let filtered_header: Vec<String> =
                 index_map.iter().map(|&idx| header[idx].clone()).collect();
 
-            filtered_data.push(filtered_header);
+            filtered_data.push(filtered_header.clone());
 
             // Now add each data row with only the selected columns
             for row in data.iter().skip(1) {
@@ -3033,7 +3137,21 @@ impl Database {
                 filtered_data.push(filtered_row);
             }
 
-            return Ok(filtered_data);
+            // Create column filtering info for saved view
+            let column_info = if selected_columns.len() < header.len() {
+                Some(ColumnFilteringInfo::new(
+                    header.len(),
+                    selected_columns.len(),
+                    filtered_header,
+                ))
+            } else {
+                None
+            };
+
+            return Ok(QueryResultsWithInfo {
+                data: filtered_data,
+                column_info,
+            });
         }
 
         // Use inquire for interactive column selection
@@ -3049,7 +3167,10 @@ impl Database {
                 if selected_columns.is_empty() {
                     // If nothing selected, show all columns
                     println!("No columns selected, showing all {} columns", header.len());
-                    return Ok(data.to_vec());
+                    return Ok(QueryResultsWithInfo {
+                        data: data.to_vec(),
+                        column_info: None,
+                    });
                 }
                 
                 // Find indices of selected columns
@@ -3072,7 +3193,7 @@ impl Database {
                 // Save for future use with the same set of columns
                 self.save_column_view(&view_key, filtered_header.clone());
 
-                filtered_data.push(filtered_header);
+                filtered_data.push(filtered_header.clone());
 
                 // Add each data row with only the selected columns
                 for row in data.iter().skip(1) {
@@ -3090,7 +3211,21 @@ impl Database {
                     filtered_data.push(filtered_row);
                 }
 
-                return Ok(filtered_data);
+                // Create column filtering info for interactive selection
+                let column_info = if selected_indices.len() < header.len() {
+                    Some(ColumnFilteringInfo::new(
+                        header.len(),
+                        selected_indices.len(),
+                        filtered_header,
+                    ))
+                } else {
+                    None
+                };
+
+                return Ok(QueryResultsWithInfo {
+                    data: filtered_data,
+                    column_info,
+                });
             }
             Err(inquire::InquireError::OperationCanceled) => {
                 // User pressed Ctrl-C - return the abort error
@@ -3100,7 +3235,10 @@ impl Database {
             Err(e) => {
                 // Other errors - show all columns
                 eprintln!("Column selection error: {}, showing all columns", e);
-                return Ok(data.to_vec());
+                return Ok(QueryResultsWithInfo {
+                    data: data.to_vec(),
+                    column_info: None,
+                });
             }
         }
     }
