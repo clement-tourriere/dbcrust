@@ -707,8 +707,8 @@ impl CliCore {
         };
 
         let mut prompt = DbPrompt::with_config(
-            username,
-            db_name,
+            username.clone(),
+            db_name.clone(),
             self.config.multiline_prompt_indicator.clone(),
         );
 
@@ -764,6 +764,7 @@ impl CliCore {
         };
 
         let mut line_editor = Reedline::create()
+            .use_bracketed_paste(true)  // Enable bracketed paste for multi-line pasted content
             .with_completer(completer)
             .with_edit_mode(edit_mode)
             .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
@@ -827,7 +828,7 @@ impl CliCore {
                         continue;
                     }
 
-                    // Handle SQL queries
+                    // Handle SQL queries (reedline handles multiline with Alt+Enter automatically)
                     match self
                         .execute_sql_interactive(line, &db_arc, &interrupt_flag)
                         .await
@@ -868,6 +869,7 @@ impl CliCore {
 
         Ok(())
     }
+
 
     /// Execute backslash command in interactive mode - returns whether to exit
     async fn execute_backslash_command_interactive(
