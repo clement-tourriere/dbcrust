@@ -29,6 +29,16 @@ impl std::fmt::Display for ColumnSelectionAborted {
 }
 
 impl StdError for ColumnSelectionAborted {}
+
+/// Connection pool statistics for monitoring and debugging
+#[derive(Debug, Clone)]
+pub struct PoolStats {
+    pub max_connections: u32,
+    pub total_connections: u32,
+    pub active_connections: u32,
+    pub idle_connections: u32,
+    pub acquire_timeout_seconds: u64,
+}
 use std::io::prelude::*;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -932,7 +942,16 @@ impl Database {
                 d.datname
         "#;
 
-        let rows = sqlx::query(query).fetch_all(pool).await?;
+        // Add timeout to metadata query to prevent hanging
+        let timeout_duration = std::time::Duration::from_secs(self.get_metadata_timeout());
+        let rows = match tokio::time::timeout(
+            timeout_duration,
+            sqlx::query(query).fetch_all(pool)
+        ).await {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return Err(format!("Metadata query timed out after {} seconds", self.get_metadata_timeout()).into()),
+        };
 
         if rows.is_empty() {
             return Ok(vec![vec![
@@ -1159,6 +1178,53 @@ impl Database {
 
     pub fn get_pool(&self) -> Option<&PgPool> {
         self.pool.as_ref()
+    }
+
+    /// Get connection pool statistics for monitoring and debugging
+    pub fn get_pool_stats(&self) -> Option<PoolStats> {
+        if let Some(pool) = &self.pool {
+            let idle = pool.num_idle() as u32;
+            let total = pool.size() as u32;
+            let active = total - idle;
+            
+            Some(PoolStats {
+                max_connections: pool.options().get_max_connections(),
+                idle_connections: idle,
+                active_connections: active,
+                total_connections: total,
+                acquire_timeout_seconds: pool.options().get_acquire_timeout().as_secs(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Log detailed connection pool information for debugging
+    pub fn log_pool_stats(&self, context: &str) {
+        if let Some(stats) = self.get_pool_stats() {
+            debug_log!(
+                "[{}] Pool Stats - Total: {}, Active: {}, Idle: {}, Max: {}, Timeout: {}s",
+                context,
+                stats.total_connections,
+                stats.active_connections,
+                stats.idle_connections,
+                stats.max_connections,
+                stats.acquire_timeout_seconds
+            );
+        } else {
+            debug_log!("[{}] No pool available for stats", context);
+        }
+    }
+
+    /// Check if the connection pool is healthy (not exhausted)
+    pub fn is_pool_healthy(&self) -> bool {
+        if let Some(stats) = self.get_pool_stats() {
+            // Consider pool healthy if we have less than 80% active connections
+            let utilization_ratio = stats.active_connections as f64 / stats.max_connections as f64;
+            utilization_ratio < 0.8
+        } else {
+            false // No pool = not healthy
+        }
     }
 
     pub fn get_database_client(&self) -> Option<&Box<dyn DatabaseClient>> {
@@ -1401,7 +1467,16 @@ impl Database {
 
         let query_with_limit = self.maybe_add_limit(query);
 
-        let fetched_rows: Vec<PgRow> = sqlx::query(&query_with_limit).fetch_all(pool_ref).await?;
+        // Add timeout to query execution to prevent hanging
+        let timeout_duration = std::time::Duration::from_secs(self.get_query_timeout());
+        let fetched_rows: Vec<PgRow> = match tokio::time::timeout(
+            timeout_duration,
+            sqlx::query(&query_with_limit).fetch_all(pool_ref)
+        ).await {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return Err(format!("Query timed out after {} seconds", self.get_query_timeout()).into()),
+        };
 
         if fetched_rows.is_empty() {
             // To get headers for an empty result set, we need to prepare and inspect columns
@@ -3205,6 +3280,16 @@ impl Database {
         );
 
         Ok(())
+    }
+    
+    /// Get query timeout (hardcoded for now, will be configurable later)
+    fn get_query_timeout(&self) -> u64 {
+        30 // 30 seconds default query timeout
+    }
+    
+    /// Get metadata timeout (hardcoded for now, will be configurable later)
+    fn get_metadata_timeout(&self) -> u64 {
+        10 // 10 seconds default metadata timeout
     }
 }
 

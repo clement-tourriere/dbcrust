@@ -15,6 +15,40 @@ use tokio;
 // The hardcoded BACKSLASH_COMMANDS array has been removed.
 // Commands are now dynamically retrieved from CommandParser.
 
+/// Cache statistics for monitoring and debugging
+#[derive(Debug, Clone, Default)]
+pub struct CacheStatistics {
+    pub schema_hits: u64,
+    pub schema_misses: u64,
+    pub table_hits: u64,
+    pub table_misses: u64,
+    pub column_hits: u64,
+    pub column_misses: u64,
+    pub function_hits: u64,
+    pub function_misses: u64,
+    pub batch_fetches: u64,
+    pub cache_invalidations: u64,
+}
+
+impl CacheStatistics {
+    pub fn total_hits(&self) -> u64 {
+        self.schema_hits + self.table_hits + self.column_hits + self.function_hits
+    }
+    
+    pub fn total_misses(&self) -> u64 {
+        self.schema_misses + self.table_misses + self.column_misses + self.function_misses
+    }
+    
+    pub fn hit_ratio(&self) -> f64 {
+        let total = self.total_hits() + self.total_misses();
+        if total == 0 {
+            0.0
+        } else {
+            self.total_hits() as f64 / total as f64
+        }
+    }
+}
+
 pub struct SqlCompleter {
     database: Arc<Mutex<Database>>,
     sql_keywords: Vec<String>,
@@ -30,6 +64,9 @@ pub struct SqlCompleter {
     cached_for_host: Option<String>,
     cached_for_port: Option<u16>,
     batch_fetch_in_progress: Arc<AtomicBool>,
+    // Enhanced caching features
+    cache_stats: CacheStatistics,
+    max_cache_entries: usize, // Limit cache size to prevent memory issues
 }
 
 // NoopCompleter that does nothing - used when autocomplete is disabled
@@ -114,6 +151,9 @@ impl SqlCompleter {
             cached_for_host: None,
             cached_for_port: None,
             batch_fetch_in_progress: Arc::new(AtomicBool::new(false)),
+            // Enhanced caching features
+            cache_stats: CacheStatistics::default(),
+            max_cache_entries: 10000, // Reasonable limit to prevent memory issues
         }
     }
 
@@ -128,6 +168,37 @@ impl SqlCompleter {
         self.cached_for_dbname = None;
         self.cached_for_host = None;
         self.cached_for_port = None;
+        self.cache_stats.cache_invalidations += 1;
+        debug_log!("[clear_cache] Cache cleared, total invalidations: {}", self.cache_stats.cache_invalidations);
+    }
+
+    /// Get cache statistics for monitoring
+    pub fn get_cache_stats(&self) -> &CacheStatistics {
+        &self.cache_stats
+    }
+
+    /// Check if column cache exceeds size limit and trim if necessary
+    fn trim_column_cache_if_needed(&mut self) {
+        if let Some(ref mut columns) = self.columns_cache {
+            if columns.len() > self.max_cache_entries {
+                debug_log!("[trim_column_cache] Cache size {} exceeds limit {}, trimming", 
+                          columns.len(), self.max_cache_entries);
+                
+                // Keep the most recently accessed entries by removing older ones
+                // For simplicity, we'll remove random entries until we're under the limit
+                let to_remove = columns.len() - (self.max_cache_entries * 3 / 4); // Remove 25% to avoid immediate retrimming
+                let keys_to_remove: Vec<String> = columns.keys()
+                    .take(to_remove)
+                    .cloned()
+                    .collect();
+                
+                for key in keys_to_remove {
+                    columns.remove(&key);
+                }
+                
+                debug_log!("[trim_column_cache] Trimmed to {} entries", columns.len());
+            }
+        }
     }
 
     // Method to update cache metadata (like dbname, host, port, and last_updated time)
@@ -229,6 +300,13 @@ impl SqlCompleter {
     fn batch_fetch_all_metadata(&mut self) -> Result<(), String> {
         let start_time = std::time::Instant::now();
         debug_log!("[batch_fetch_all_metadata] Starting batch fetch");
+        self.cache_stats.batch_fetches += 1;
+
+        // Log initial pool stats
+        {
+            let db_guard = self.database.lock().unwrap();
+            db_guard.log_pool_stats("batch_fetch_start");
+        }
 
         // Check if batch fetch is already in progress
         if self.batch_fetch_in_progress.load(Ordering::Relaxed) {
@@ -258,117 +336,128 @@ impl SqlCompleter {
         let db_clone: Arc<Mutex<Database>> = Arc::clone(&self.database);
         let batch_fetch_flag = Arc::clone(&self.batch_fetch_in_progress);
         
-        let fetched_data = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
+        // FIXED: Use tokio::task::block_in_place to handle async work from sync context
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(_handle) => {
+                debug_log!("[batch_fetch_all_metadata] Using block_in_place for database queries");
+                
+                let batch_start = std::time::Instant::now();
+                let blocking_result = tokio::task::block_in_place(|| {
+                    // Use Handle::current() to spawn on the existing runtime  
+                    let handle = tokio::runtime::Handle::current();
+                    handle.block_on(async {
+                        let db_guard = db_clone.lock().unwrap();
+                        let pool = match db_guard.get_pool() {
+                            Some(p) => p,
+                            None => return Err("No database pool available".to_string()),
+                        };
 
-            let db_guard = db_clone.lock().unwrap();
-            debug_log!("[batch_fetch_all_metadata:thread] Starting batch queries");
+                        // Use faster pg_catalog queries instead of information_schema views
+                        let schemas_future = sqlx::query(
+                            r#"
+                            SELECT nspname as schema_name
+                            FROM pg_namespace
+                            WHERE nspname NOT LIKE 'pg_%' 
+                              AND nspname NOT IN ('information_schema', 'pg_toast')
+                            ORDER BY nspname
+                            "#,
+                        ).fetch_all(pool);
 
-            // Execute all queries concurrently using tokio::try_join! with timeout
-            let batch_start = std::time::Instant::now();
-            let result = rt.block_on(async {
-                let pool = match db_guard.get_pool() {
-                    Some(p) => p,
-                    None => return Err("No database pool available".to_string()),
-                };
+                        let tables_future = sqlx::query(
+                            r#"
+                            SELECT c.relname as table_name, n.nspname as table_schema
+                            FROM pg_class c
+                            INNER JOIN pg_namespace n ON c.relnamespace = n.oid
+                            WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')  -- tables, views, materialized views, foreign tables, partitioned tables
+                              AND n.nspname NOT LIKE 'pg_%'
+                              AND n.nspname NOT IN ('information_schema', 'pg_toast')
+                            ORDER BY n.nspname, c.relname
+                            "#,
+                        ).fetch_all(pool);
 
-                // Use faster pg_catalog queries instead of information_schema views
-                let schemas_future = sqlx::query(
-                    r#"
-                    SELECT nspname as schema_name
-                    FROM pg_namespace
-                    WHERE nspname NOT LIKE 'pg_%' 
-                      AND nspname NOT IN ('information_schema', 'pg_toast')
-                    ORDER BY nspname
-                    "#,
-                ).fetch_all(pool);
+                        let functions_future = sqlx::query(
+                            r#"
+                            SELECT p.proname as routine_name, n.nspname as routine_schema
+                            FROM pg_proc p
+                            INNER JOIN pg_namespace n ON p.pronamespace = n.oid
+                            WHERE p.prokind = 'f'  -- only functions, not procedures or aggregates
+                              AND n.nspname NOT LIKE 'pg_%'
+                              AND n.nspname NOT IN ('information_schema', 'pg_toast')
+                            ORDER BY n.nspname, p.proname
+                            "#,
+                        ).fetch_all(pool);
 
-                let tables_future = sqlx::query(
-                    r#"
-                    SELECT c.relname as table_name, n.nspname as table_schema
-                    FROM pg_class c
-                    INNER JOIN pg_namespace n ON c.relnamespace = n.oid
-                    WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')  -- tables, views, materialized views, foreign tables, partitioned tables
-                      AND n.nspname NOT LIKE 'pg_%'
-                      AND n.nspname NOT IN ('information_schema', 'pg_toast')
-                    ORDER BY n.nspname, c.relname
-                    "#,
-                ).fetch_all(pool);
+                        // For large databases, execute queries sequentially to reduce connection pressure
+                        // For smaller databases, execute concurrently for speed
+                        let batch_future = async {
+                            // First get a quick table count to determine strategy
+                            let table_count_result = sqlx::query(
+                                r#"
+                                SELECT COUNT(*)::int as table_count
+                                FROM pg_class c
+                                INNER JOIN pg_namespace n ON c.relnamespace = n.oid
+                                WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
+                                  AND n.nspname NOT LIKE 'pg_%'
+                                  AND n.nspname NOT IN ('information_schema', 'pg_toast')
+                                "#,
+                            ).fetch_one(pool).await;
 
-                let functions_future = sqlx::query(
-                    r#"
-                    SELECT p.proname as routine_name, n.nspname as routine_schema
-                    FROM pg_proc p
-                    INNER JOIN pg_namespace n ON p.pronamespace = n.oid
-                    WHERE p.prokind = 'f'  -- only functions, not procedures or aggregates
-                      AND n.nspname NOT LIKE 'pg_%'
-                      AND n.nspname NOT IN ('information_schema', 'pg_toast')
-                    ORDER BY n.nspname, p.proname
-                    "#,
-                ).fetch_all(pool);
+                            let use_sequential = match table_count_result {
+                                Ok(row) => {
+                                    let count: i32 = row.get("table_count");
+                                    count > 50 // Use sequential for databases with >50 tables
+                                }
+                                Err(_) => false, // Default to concurrent if count fails
+                            };
 
-                // For large databases, execute queries sequentially to reduce connection pressure
-                // For smaller databases, execute concurrently for speed
-                let batch_future = async {
-                    // First get a quick table count to determine strategy
-                    let table_count_result = sqlx::query(
-                        r#"
-                        SELECT COUNT(*)::int as table_count
-                        FROM pg_class c
-                        INNER JOIN pg_namespace n ON c.relnamespace = n.oid
-                        WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
-                          AND n.nspname NOT LIKE 'pg_%'
-                          AND n.nspname NOT IN ('information_schema', 'pg_toast')
-                        "#,
-                    ).fetch_one(pool).await;
+                            if use_sequential {
+                                debug_log!("[batch_fetch_all_metadata] Using sequential queries for large database");
+                                // Execute queries sequentially to reduce connection pressure
+                                let schemas_result = schemas_future.await?;
+                                let tables_result = tables_future.await?;
+                                let functions_result = functions_future.await?;
+                                Ok((schemas_result, tables_result, functions_result))
+                            } else {
+                                debug_log!("[batch_fetch_all_metadata] Using concurrent queries for small database");
+                                // Execute queries concurrently for speed
+                                tokio::try_join!(
+                                    schemas_future,
+                                    tables_future,
+                                    functions_future
+                                )
+                            }
+                        };
 
-                    let use_sequential = match table_count_result {
-                        Ok(row) => {
-                            let count: i32 = row.get("table_count");
-                            count > 50 // Use sequential for databases with >50 tables
+                        match tokio::time::timeout(std::time::Duration::from_secs(45), batch_future).await {
+                            Ok(Ok(result)) => Ok(result),
+                            Ok(Err(e)) => Err(e.to_string()),
+                            Err(_) => Err("Batch metadata fetch timed out after 45 seconds".to_string()),
                         }
-                        Err(_) => false, // Default to concurrent if count fails
-                    };
+                    })
+                });
 
-                    if use_sequential {
-                        debug_log!("[batch_fetch_all_metadata] Using sequential queries for large database");
-                        // Execute queries sequentially to reduce connection pressure
-                        let schemas_result = schemas_future.await?;
-                        let tables_result = tables_future.await?;
-                        let functions_result = functions_future.await?;
-                        Ok((schemas_result, tables_result, functions_result))
-                    } else {
-                        debug_log!("[batch_fetch_all_metadata] Using concurrent queries for small database");
-                        // Execute queries concurrently for speed
-                        tokio::try_join!(
-                            schemas_future,
-                            tables_future,
-                            functions_future
-                        )
-                    }
-                };
-
-                match tokio::time::timeout(std::time::Duration::from_secs(45), batch_future).await {
-                    Ok(Ok(result)) => Ok(result),
-                    Ok(Err(e)) => Err(e.to_string()),
-                    Err(_) => Err("Batch metadata fetch timed out after 45 seconds".to_string()),
+                debug_log!("[batch_fetch_all_metadata] Batch queries completed in {:?}", batch_start.elapsed());
+                
+                // Log final pool stats
+                {
+                    let db_guard = db_clone.lock().unwrap();
+                    db_guard.log_pool_stats("batch_fetch_end");
                 }
-            });
+                
+                // Reset the flag when done
+                batch_fetch_flag.store(false, Ordering::Relaxed);
+                
+                blocking_result
+            }
+            Err(_) => {
+                // No current runtime available, reset flag and return error
+                batch_fetch_flag.store(false, Ordering::Relaxed);
+                Err("No Tokio runtime available for metadata fetch".to_string())
+            }
+        };
 
-            debug_log!("[batch_fetch_all_metadata:thread] Batch queries completed in {:?}", batch_start.elapsed());
-
-            // Reset the flag when done
-            batch_fetch_flag.store(false, Ordering::Relaxed);
-
-            result.map_err(|e| e.to_string())
-        })
-        .join();
-
-        match fetched_data {
-            Ok(Ok((schemas_rows, tables_rows, functions_rows))) => {
+        match result {
+            Ok((schemas_rows, tables_rows, functions_rows)) => {
                 // Process schemas
                 let schemas: Vec<String> = schemas_rows
                     .iter()
@@ -411,13 +500,9 @@ impl SqlCompleter {
 
                 Ok(())
             }
-            Ok(Err(e)) => {
-                debug_log!("[batch_fetch_all_metadata] Database error: {}", e);
-                Err(e)
-            }
             Err(e) => {
-                debug_log!("[batch_fetch_all_metadata] Thread panic: {:?}", e);
-                Err("Thread panicked during batch fetch".to_string())
+                debug_log!("[batch_fetch_all_metadata] Runtime error: {}", e);
+                Err(e)
             }
         }
     }
@@ -478,6 +563,7 @@ impl SqlCompleter {
 
         if let Some(ref schemas) = self.schemas_cache {
             let duration = start_time.elapsed();
+            self.cache_stats.schema_hits += 1;
             debug_log!(
                 "[fetch_schemas] Cache hit! Returning {} schemas in {:?}",
                 schemas.len(),
@@ -500,19 +586,22 @@ impl SqlCompleter {
         }
 
         // Fallback to individual fetch if batch fails
+        self.cache_stats.schema_misses += 1;
         debug_log!("[fetch_schemas] Falling back to individual fetch");
         let db_clone: Arc<Mutex<Database>> = Arc::clone(&self.database);
-        let fetched_data_from_thread = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-
-            let mut db_guard = db_clone.lock().unwrap();
-            let result = rt.block_on(db_guard.get_schemas());
-            result.map_err(|e| e.to_string())
-        })
-        .join();
+        let fetched_data_from_thread = match tokio::runtime::Handle::try_current() {
+            Ok(_handle) => {
+                let result = tokio::task::block_in_place(|| {
+                    let handle = tokio::runtime::Handle::current();
+                    handle.block_on(async {
+                        let mut db_guard = db_clone.lock().unwrap();
+                        db_guard.get_schemas().await
+                    })
+                });
+                Ok(result.map_err(|e| e.to_string()))
+            }
+            Err(_) => Err("No Tokio runtime available for metadata fetch".to_string())
+        };
 
         match fetched_data_from_thread {
             Ok(Ok(schemas)) => {
@@ -549,6 +638,7 @@ impl SqlCompleter {
         // Check if data is in cache
         if let Some(ref tables_map) = self.tables_cache {
             if let Some(tables_in_schema) = tables_map.get(schema) {
+                self.cache_stats.table_hits += 1;
                 debug_log!("[fetch_tables] Cache hit! Returning {} tables for schema '{}'", 
                           tables_in_schema.len(), schema);
                 return tables_in_schema.clone();
@@ -567,26 +657,29 @@ impl SqlCompleter {
         }
 
         // Fallback to individual fetch if batch fails or schema not found
+        self.cache_stats.table_misses += 1;
         debug_log!("[fetch_tables] Falling back to individual fetch for schema '{}'", schema);
         let db_clone: Arc<Mutex<Database>> = Arc::clone(&self.database);
         let schema_owned = schema.to_string();
-        let fetched_data_from_thread = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
+        let fetched_data_from_thread = match tokio::runtime::Handle::try_current() {
+            Ok(_handle) => {
+                let result = tokio::task::block_in_place(|| {
+                    let handle = tokio::runtime::Handle::current();
+                    handle.block_on(async {
+                        let mut db_guard = db_clone.lock().unwrap();
+                        let schema_opt_for_db: Option<&str> = if schema_owned.is_empty() {
+                            None
+                        } else {
+                            Some(&schema_owned)
+                        };
 
-            let mut db_guard = db_clone.lock().unwrap();
-            let schema_opt_for_db: Option<&str> = if schema_owned.is_empty() {
-                None
-            } else {
-                Some(&schema_owned)
-            };
-
-            let result = rt.block_on(db_guard.get_tables_and_views(schema_opt_for_db));
-            result.map_err(|e| e.to_string())
-        })
-        .join();
+                        db_guard.get_tables_and_views(schema_opt_for_db).await
+                    })
+                });
+                Ok(result.map_err(|e| e.to_string()))
+            }
+            Err(_) => Err("No Tokio runtime available for metadata fetch".to_string())
+        };
 
         match fetched_data_from_thread {
             Ok(Ok(tables)) => {
@@ -623,6 +716,7 @@ impl SqlCompleter {
         let cache_key = schema.to_string();
         if let Some(ref functions_map) = self.functions_cache {
             if let Some(functions_in_schema) = functions_map.get(&cache_key) {
+                self.cache_stats.function_hits += 1;
                 return functions_in_schema.clone();
             }
         }
@@ -638,20 +732,23 @@ impl SqlCompleter {
         }
 
         // Fallback to individual fetch if batch fails or schema not found
+        self.cache_stats.function_misses += 1;
         debug_log!("[fetch_functions] Falling back to individual fetch for schema '{}'", schema);
         let db_clone: Arc<Mutex<Database>> = Arc::clone(&self.database);
         let schema_owned = schema.to_string();
-        let fetched_data_from_thread = std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-
-            let mut db_guard = db_clone.lock().unwrap();
-            rt.block_on(db_guard.get_functions(Some(&schema_owned)))
-                .map_err(|e| e.to_string())
-        })
-        .join();
+        let fetched_data_from_thread = match tokio::runtime::Handle::try_current() {
+            Ok(_handle) => {
+                let result = tokio::task::block_in_place(|| {
+                    let handle = tokio::runtime::Handle::current();
+                    handle.block_on(async {
+                        let mut db_guard = db_clone.lock().unwrap();
+                        db_guard.get_functions(Some(&schema_owned)).await
+                    })
+                });
+                Ok(result.map_err(|e| e.to_string()))
+            }
+            Err(_) => Err("No Tokio runtime available for metadata fetch".to_string())
+        };
 
         match fetched_data_from_thread {
             Ok(Ok(funcs)) => {
@@ -694,6 +791,7 @@ impl SqlCompleter {
         if let Some(ref columns_map) = self.columns_cache {
             if let Some(columns_for_table) = columns_map.get(&cache_key) {
                 let duration = start_time.elapsed();
+                self.cache_stats.column_hits += 1;
                 debug_log!(
                     "[fetch_columns] Cache hit! Returning {} columns for table '{}' in {:?}",
                     columns_for_table.len(),
@@ -705,6 +803,7 @@ impl SqlCompleter {
         }
 
         // Cache miss
+        self.cache_stats.column_misses += 1;
         debug_log!(
             "[fetch_columns] Cache miss for table: '{}', spawning thread",
             table_name_with_schema
@@ -714,35 +813,39 @@ impl SqlCompleter {
         // Cache miss
         let db_clone: Arc<Mutex<Database>> = Arc::clone(&self.database);
         let table_name_with_schema_owned = table_name_with_schema.to_string();
-        let fetched_data_from_thread = std::thread::spawn(move || {
-            // Create a new runtime for the thread
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .unwrap();
-            debug_log!("[fetch_columns:thread] Runtime built");
+        let fetched_data_from_thread = match tokio::runtime::Handle::try_current() {
+            Ok(_handle) => {
+                debug_log!("[fetch_columns] Using block_in_place");
 
-            // Execute the query with the runtime
-            let mut db_guard = db_clone.lock().unwrap();
-            debug_log!("[fetch_columns:thread] Lock acquired");
+                let result = tokio::task::block_in_place(|| {
+                    let handle = tokio::runtime::Handle::current();
+                    handle.block_on(async {
+                        // Execute the query with the runtime
+                        let mut db_guard = db_clone.lock().unwrap();
+                        debug_log!("[fetch_columns] Lock acquired");
 
-            let parts: Vec<&str> = table_name_with_schema_owned.splitn(2, '.').collect();
-            let (schema_opt, table_only_name) = if parts.len() == 2 {
-                (Some(parts[0]), parts[1])
-            } else {
-                (None, parts[0])
-            };
+                        let parts: Vec<&str> = table_name_with_schema_owned.splitn(2, '.').collect();
+                        let (schema_opt, table_only_name) = if parts.len() == 2 {
+                            (Some(parts[0]), parts[1])
+                        } else {
+                            (None, parts[0])
+                        };
 
-            let query_start = std::time::Instant::now();
-            let result = rt.block_on(db_guard.get_columns_for_table(table_only_name, schema_opt));
-            debug_log!(
-                "[fetch_columns:thread] DB query completed in {:?}",
-                query_start.elapsed()
-            );
+                        let query_start = std::time::Instant::now();
+                        let result = db_guard.get_columns_for_table(table_only_name, schema_opt).await;
+                        debug_log!(
+                            "[fetch_columns] DB query completed in {:?}",
+                            query_start.elapsed()
+                        );
 
-            result.map_err(|e| e.to_string())
-        })
-        .join();
+                        result
+                    })
+                });
+
+                Ok(result.map_err(|e| e.to_string()))
+            }
+            Err(_) => Err("No Tokio runtime available for metadata fetch".to_string())
+        };
 
         let thread_duration = thread_start.elapsed();
         debug_log!("[fetch_columns] Thread completed in {:?}", thread_duration);
@@ -752,6 +855,7 @@ impl SqlCompleter {
                 let mut new_columns_map = self.columns_cache.clone().unwrap_or_default();
                 new_columns_map.insert(cache_key, cols.clone());
                 self.columns_cache = Some(new_columns_map);
+                self.trim_column_cache_if_needed(); // Prevent unlimited cache growth
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
 
                 let total_duration = start_time.elapsed();
@@ -831,43 +935,42 @@ impl Completer for SqlCompleter {
                 }
                 if line.starts_with("\\c ") || line.starts_with("\\connect ") {
                     let db_clone: Arc<Mutex<Database>> = Arc::clone(&self.database);
-                    match std::thread::spawn(move || -> Vec<String> {
-                        let rt = tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .unwrap();
-                        if let Ok(mut db_guard) = db_clone.lock() {
-                            match rt.block_on(db_guard.list_database_names()) {
-                                Ok(databases) => databases,
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(_handle) => {
+                            match tokio::task::block_in_place(|| {
+                                let handle = tokio::runtime::Handle::current();
+                                handle.block_on(async {
+                                    if let Ok(mut db_guard) = db_clone.lock() {
+                                        db_guard.list_database_names().await
+                                    } else {
+                                        Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, "Failed to lock database")) as Box<dyn std::error::Error>)
+                                    }
+                                })
+                            }) {
+                                Ok(databases) => {
+                                    for dbname in databases {
+                                        if dbname.starts_with(current_word) {
+                                            completions.push(Suggestion {
+                                                value: dbname.clone(),
+                                                description: Some("Database".to_string()),
+                                                span: Span {
+                                                    start: word_start,
+                                                    end: pos,
+                                                },
+                                                append_whitespace: true,
+                                                extra: None,
+                                                style: Some(Style::new().fg(Color::Yellow)),
+                                            });
+                                        }
+                                    }
+                                }
                                 Err(e) => {
-                                    eprintln!("Error listing databases in completer thread: {e}");
-                                    Vec::<String>::new()
-                                }
-                            }
-                        } else {
-                            eprintln!("Failed to lock database in completer thread for list_database_names");
-                            Vec::<String>::new()
-                        }
-                    }).join() {
-                        Ok(databases_from_thread) => {
-                            for dbname in databases_from_thread {
-                                if dbname.starts_with(current_word) {
-                                    completions.push(Suggestion {
-                                        value: dbname.clone(),
-                                        description: Some("Database".to_string()),
-                                        span: Span {
-                                            start: word_start,
-                                            end: pos,
-                                        },
-                                        append_whitespace: true,
-                                        extra: None,
-                                        style: Some(Style::new().fg(Color::Yellow)),
-                                    });
+                                    eprintln!("Error listing databases: {e}");
                                 }
                             }
                         }
-                        Err(e) => {
-                            eprintln!("Completer thread for list_database_names panicked: {e:?}");
+                        Err(_) => {
+                            eprintln!("No Tokio runtime available for database completion");
                         }
                     }
                     return completions; // Return completions gathered so far for \c

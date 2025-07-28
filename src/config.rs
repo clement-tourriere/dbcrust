@@ -193,6 +193,12 @@ pub struct Config {
     #[serde(default = "default_vault_min_ttl")]
     pub vault_cache_min_ttl_seconds: u64,       // 300 = 5 minutes
 
+    // Query timeout settings
+    #[serde(default = "default_query_timeout")]
+    pub query_timeout_seconds: u64,             // 30 = 30 seconds
+    #[serde(default = "default_metadata_timeout")]
+    pub metadata_timeout_seconds: u64,          // 10 = 10 seconds
+
     // Legacy fields - support deserializing from old config format
     // These will be skipped during serialization
     #[serde(skip_serializing, default)]
@@ -244,6 +250,8 @@ impl Default for Config {
             vault_credential_cache_enabled: default_vault_cache_enabled(),
             vault_cache_renewal_threshold: default_vault_renewal_threshold(),
             vault_cache_min_ttl_seconds: default_vault_min_ttl(),
+            query_timeout_seconds: default_query_timeout(),
+            metadata_timeout_seconds: default_metadata_timeout(),
             // Legacy fields initialized from connection
             host: connection.host.clone(),
             port: connection.port,
@@ -334,6 +342,14 @@ fn default_vault_renewal_threshold() -> f64 {
 
 fn default_vault_min_ttl() -> u64 {
     300 // Don't cache credentials with less than 5 minutes TTL
+}
+
+fn default_query_timeout() -> u64 {
+    30 // 30 seconds default query timeout
+}
+
+fn default_metadata_timeout() -> u64 {
+    10 // 10 seconds default metadata timeout
 }
 
 fn default_database_type() -> DatabaseType {

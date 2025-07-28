@@ -77,6 +77,9 @@ pub enum Command {
     ExplainRaw { query: String },
     ExplainFormatted { query: String },
     ExplainExport { query: String, filename: String },
+    
+    // Connection pool monitoring
+    ShowPoolStats,
 }
 
 #[derive(Error, Debug)]
@@ -155,6 +158,8 @@ pub enum CommandShortcut {
     Er, Ef, Ex,
     // Advanced commands
     Setmulti, Pager, Banner, A, Cs, Csthreshold, Clrcs, Resetview,
+    // Connection pool monitoring
+    Ps,
     // Vault credential cache commands
     Vc, Vcc, Vcr, Vce,
 }
@@ -211,6 +216,8 @@ impl CommandShortcut {
             CommandShortcut::Csthreshold => "\\csthreshold",
             CommandShortcut::Clrcs => "\\clrcs",
             CommandShortcut::Resetview => "\\resetview",
+            // Connection pool monitoring
+            CommandShortcut::Ps => "\\ps",
             // Vault credential cache commands
             CommandShortcut::Vc => "\\vc",
             CommandShortcut::Vcc => "\\vcc",
@@ -270,6 +277,8 @@ impl CommandShortcut {
             CommandShortcut::Csthreshold => "Set column selection threshold",
             CommandShortcut::Clrcs => "Clear column views",
             CommandShortcut::Resetview => "Reset view",
+            // Connection pool monitoring
+            CommandShortcut::Ps => "Show connection pool statistics",
             // Vault credential cache commands
             CommandShortcut::Vc => "Show vault credential cache status",
             CommandShortcut::Vcc => "Clear all cached vault credentials",
@@ -300,7 +309,7 @@ impl CommandShortcut {
             // Vault management
             CommandShortcut::Vc | CommandShortcut::Vcc | CommandShortcut::Vcr | CommandShortcut::Vce => CommandCategory::VaultManagement,
             // EXPLAIN variants (Advanced)
-            CommandShortcut::Er | CommandShortcut::Ef | CommandShortcut::Ex => CommandCategory::Advanced,
+            CommandShortcut::Er | CommandShortcut::Ef | CommandShortcut::Ex | CommandShortcut::Ps => CommandCategory::Advanced,
         }
     }
 }
@@ -494,6 +503,9 @@ impl CommandParser {
             },
             "clrcs" => Ok(Command::ClearColumnViews),
             "resetview" => Ok(Command::ResetView),
+            
+            // Connection pool monitoring
+            "ps" => Ok(Command::ShowPoolStats),
             
             // Vault credential cache commands
             "vc" => Ok(Command::VaultCacheStatus),
@@ -1192,6 +1204,39 @@ impl CommandExecutor for Command {
                 }
             }
 
+            Command::ShowPoolStats => {
+                let db = database.lock().unwrap();
+                match db.get_pool_stats() {
+                    Some(stats) => {
+                        let health_indicator = if stats.active_connections as f32 / stats.max_connections as f32 > 0.8 {
+                            "⚠️  High Usage"
+                        } else if stats.active_connections == 0 {
+                            "💤 Idle"
+                        } else {
+                            "✅ Healthy"
+                        };
+                        
+                        let output = format!(
+                            "Connection Pool Statistics:\n\
+                            Max Connections:    {}\n\
+                            Active Connections: {}\n\
+                            Idle Connections:   {}\n\
+                            Total Connections:  {}\n\
+                            Acquire Timeout:    {}s\n\
+                            Health Status:      {}",
+                            stats.max_connections,
+                            stats.active_connections,
+                            stats.idle_connections,
+                            stats.total_connections,
+                            stats.acquire_timeout_seconds,
+                            health_indicator
+                        );
+                        Ok(CommandResult::Output(output))
+                    }
+                    None => Ok(CommandResult::Error("Connection pool not available".to_string()))
+                }
+            }
+
         }
     }
     
@@ -1237,6 +1282,7 @@ impl CommandExecutor for Command {
             Command::SetColumnSelectionThreshold { .. } => "Set column selection threshold",
             Command::ClearColumnViews => "Clear saved column views",
             Command::ResetView => "Reset all view settings to defaults",
+            Command::ShowPoolStats => "Show connection pool statistics",
             // Vault credential cache commands
             Command::VaultCacheStatus => "Show vault credential cache status",
             Command::VaultCacheClear => "Clear all cached vault credentials",
@@ -1287,6 +1333,7 @@ impl CommandExecutor for Command {
             Command::SetColumnSelectionThreshold { .. } => "\\csthreshold <number>",
             Command::ClearColumnViews => "\\clrcs",
             Command::ResetView => "\\resetview",
+            Command::ShowPoolStats => "\\ps",
             // Vault credential cache commands
             Command::VaultCacheStatus => "\\vc",
             Command::VaultCacheClear => "\\vcc",
@@ -1305,7 +1352,7 @@ impl CommandExecutor for Command {
             Command::ListSessions | Command::SaveSession { .. } | Command::DeleteSession { .. } | Command::ConnectSession { .. } => CommandCategory::SessionManagement,
             Command::ListRecentConnections | Command::ClearRecentConnections => CommandCategory::ConnectionHistory,
             Command::ListUsers | Command::ListIndexes | Command::ListPragmas | Command::ShowPgpass | Command::ShowMyconf | Command::ListDockerContainers => CommandCategory::DatabaseSpecific,
-            Command::ExplainRaw { .. } | Command::ExplainFormatted { .. } | Command::ExplainExport { .. } => CommandCategory::Advanced,
+            Command::ExplainRaw { .. } | Command::ExplainFormatted { .. } | Command::ExplainExport { .. } | Command::ShowPoolStats => CommandCategory::Advanced,
             Command::SetMultilineIndicator { .. } | Command::TogglePager | Command::ToggleBanner | Command::ToggleAutocomplete | Command::ToggleColumnSelection | Command::SetColumnSelectionThreshold { .. } | Command::ClearColumnViews | Command::ResetView => CommandCategory::DisplayOptions,
             Command::VaultCacheStatus | Command::VaultCacheClear | Command::VaultCacheRefresh { .. } | Command::VaultCacheExpired => CommandCategory::VaultManagement,
         }

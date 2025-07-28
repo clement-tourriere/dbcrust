@@ -301,9 +301,16 @@ impl DatabaseClient for PostgreSQLClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug_log!("[PostgreSQLClient::execute_query] Executing query");
 
-        let rows = sqlx::query(sql)
-            .fetch_all(&self.pool)
-            .await?;
+        // Add timeout to prevent hanging queries
+        let timeout_duration = std::time::Duration::from_secs(30); // 30 seconds timeout
+        let rows = match tokio::time::timeout(
+            timeout_duration,
+            sqlx::query(sql).fetch_all(&self.pool)
+        ).await {
+            Ok(Ok(rows)) => rows,
+            Ok(Err(e)) => return Err(DatabaseError::QueryError(e.to_string())),
+            Err(_) => return Err(DatabaseError::QueryError("Query timed out after 30 seconds".to_string())),
+        };
 
         if rows.is_empty() {
             return Ok(vec![]);
