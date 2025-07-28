@@ -1924,7 +1924,7 @@ impl Database {
             Box::<dyn StdError>::from("Database pool not initialized for execute_explain_query_raw")
         })?;
 
-        let explain_query = format!("EXPLAIN (FORMAT JSON) {query}");
+        let explain_query = format!("EXPLAIN (ANALYZE, FORMAT JSON) {query}");
         let explain_results: Vec<JsonValue> = sqlx::query_scalar(&explain_query)
             .fetch_all(pool_ref)
             .await?;
@@ -2595,9 +2595,9 @@ impl Database {
             Box::<dyn StdError>::from("Database pool not initialized for execute_explain_query")
         })?;
 
-        // EXPLAIN (FORMAT JSON) returns a JSON array, usually with one element which is an object.
-        // Each object is a plan tree.
-        let explain_query = format!("EXPLAIN (FORMAT JSON) {query}");
+        // EXPLAIN (ANALYZE, FORMAT JSON) returns a JSON array with runtime information
+        // Each object is a plan tree with actual execution data for enhanced analysis
+        let explain_query = format!("EXPLAIN (ANALYZE, FORMAT JSON) {query}");
         let explain_results: Vec<JsonValue> = sqlx::query_scalar(&explain_query)
             .fetch_all(pool_ref)
             .await?;
