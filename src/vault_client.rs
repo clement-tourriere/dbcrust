@@ -186,12 +186,29 @@ pub async fn list_vault_databases(mount_path: &str) -> Result<Vec<String>, Vault
 
     if !response.status().is_success() {
         let status = response.status();
+        let error_text = response.text().await?;
+        
         if status.as_u16() == 404 {
             return Err(VaultError::ApiError(format!(
                 "Path {mount_path}/config not found (404). Ensure DB secrets engine is at '{mount_path}' and you have permissions."
             )));
+        } else if status.as_u16() == 403 {
+            // Parse the error to provide more specific guidance
+            if error_text.contains("invalid token") {
+                return Err(VaultError::ApiError(format!(
+                    "Vault API error (403 Forbidden): {error_text}"
+                )));
+            } else if error_text.contains("permission denied") {
+                return Err(VaultError::ApiError(format!(
+                    "Vault API error (403 Forbidden): {error_text}"
+                )));
+            } else {
+                return Err(VaultError::ApiError(format!(
+                    "Vault API error (403 Forbidden): {error_text}"
+                )));
+            }
         }
-        let error_text = response.text().await?;
+        
         return Err(VaultError::ApiError(format!(
             "Vault API error ({status}): {error_text}"
         )));
