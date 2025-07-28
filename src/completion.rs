@@ -356,27 +356,32 @@ impl SqlCompleter {
             }
         }
 
-        // Check if we're in test mode (no pool) - return mock data immediately
-        let is_test_mode = {
+        // Check database connection status
+        let (has_connection, is_test) = {
             let db_guard = self.database.lock().unwrap();
-            db_guard.get_pool().is_none()
+            (db_guard.has_database_connection(), db_guard.is_test_instance())
         };
         
-        if is_test_mode {
-            debug_log!("[fetch_tables] Using mock implementation (no pool)");
-            let mock_tables = if schema == "custom_schema" {
-                vec!["custom_table1".to_string()]
-            } else if schema.is_empty() {
-                // For empty schema (all schemas), return all mock tables
-                vec!["users".to_string(), "orders".to_string()]
+        if !has_connection {
+            if is_test {
+                // Return mock data for tests
+                debug_log!("[fetch_tables] Using test mock data");
+                let mock_tables = if schema == "custom_schema" {
+                    vec!["custom_table1".to_string()]
+                } else if schema.is_empty() {
+                    vec!["users".to_string(), "orders".to_string()]
+                } else {
+                    vec!["users".to_string(), "orders".to_string()]
+                };
+                let mut new_tables_map = self.tables_cache.clone().unwrap_or_default();
+                new_tables_map.insert(schema.to_string(), mock_tables.clone());
+                self.tables_cache = Some(new_tables_map);
+                self.update_cache_metadata(&current_dbname, &current_host, current_port);
+                return mock_tables;
             } else {
-                vec!["users".to_string(), "orders".to_string()]
-            };
-            let mut new_tables_map = self.tables_cache.clone().unwrap_or_default();
-            new_tables_map.insert(schema.to_string(), mock_tables.clone());
-            self.tables_cache = Some(new_tables_map);
-            self.update_cache_metadata(&current_dbname, &current_host, current_port);
-            return mock_tables;
+                debug_log!("[fetch_tables] No database connection available");
+                return Vec::new();
+            }
         }
 
         // Use lazy loading - only fetch tables for this specific schema
@@ -476,27 +481,33 @@ impl SqlCompleter {
         );
         let thread_start = std::time::Instant::now();
 
-        // Check if we're in test mode first
-        let is_test_mode = {
+        // Check database connection status
+        let (has_connection, is_test) = {
             let db_guard = self.database.lock().unwrap();
-            db_guard.get_pool().is_none()
+            (db_guard.has_database_connection(), db_guard.is_test_instance())
         };
         
-        if is_test_mode {
-            debug_log!("[fetch_columns] Using mock implementation (no pool)");
-            let mock_columns = if table_name_with_schema == "users" {
-                vec!["id".to_string(), "name".to_string(), "email".to_string()]
-            } else if table_name_with_schema == "orders" {
-                vec!["id".to_string(), "user_id".to_string(), "total".to_string()]
+        if !has_connection {
+            if is_test {
+                // Return mock data for tests
+                debug_log!("[fetch_columns] Using test mock data");
+                let mock_columns = if table_name_with_schema == "users" {
+                    vec!["id".to_string(), "name".to_string(), "email".to_string()]
+                } else if table_name_with_schema == "orders" {
+                    vec!["id".to_string(), "user_id".to_string(), "total".to_string()]
+                } else {
+                    vec!["id".to_string(), "name".to_string()]
+                };
+                let mut new_columns_map = self.columns_cache.clone().unwrap_or_default();
+                new_columns_map.insert(cache_key, mock_columns.clone());
+                self.columns_cache = Some(new_columns_map);
+                self.trim_column_cache_if_needed();
+                self.update_cache_metadata(&current_dbname, &current_host, current_port);
+                return mock_columns;
             } else {
-                vec!["id".to_string(), "name".to_string()] // Default mock columns
-            };
-            let mut new_columns_map = self.columns_cache.clone().unwrap_or_default();
-            new_columns_map.insert(cache_key, mock_columns.clone());
-            self.columns_cache = Some(new_columns_map);
-            self.trim_column_cache_if_needed(); // Prevent unlimited cache growth
-            self.update_cache_metadata(&current_dbname, &current_host, current_port);
-            return mock_columns;
+                debug_log!("[fetch_columns] No database connection available");
+                return Vec::new();
+            }
         }
 
         // Cache miss
@@ -605,18 +616,24 @@ impl SqlCompleter {
         self.cache_stats.schema_misses += 1;
         debug_log!("[fetch_schemas_lazy] Cache miss, fetching schemas only");
         
-        // Check if we're in test mode (no pool) - return mock data immediately
-        let is_test_mode = {
+        // Check database connection status
+        let (has_connection, is_test) = {
             let db_guard = self.database.lock().unwrap();
-            db_guard.get_pool().is_none()
+            (db_guard.has_database_connection(), db_guard.is_test_instance())
         };
         
-        if is_test_mode {
-            debug_log!("[fetch_schemas_lazy] Using mock implementation (no pool)");
-            let mock_schemas = vec!["public".to_string(), "custom_schema".to_string()];
-            self.schemas_cache = Some(mock_schemas.clone());
-            self.update_cache_metadata(&current_dbname, &current_host, current_port);
-            return mock_schemas;
+        if !has_connection {
+            if is_test {
+                // Return mock data for tests
+                debug_log!("[fetch_schemas_lazy] Using test mock data");
+                let mock_schemas = vec!["public".to_string(), "custom_schema".to_string()];
+                self.schemas_cache = Some(mock_schemas.clone());
+                self.update_cache_metadata(&current_dbname, &current_host, current_port);
+                return mock_schemas;
+            } else {
+                debug_log!("[fetch_schemas_lazy] No database connection available");
+                return Vec::new();
+            }
         }
         
         let db_clone: Arc<Mutex<Database>> = Arc::clone(&self.database);
@@ -683,24 +700,30 @@ impl SqlCompleter {
         self.cache_stats.table_misses += 1;
         debug_log!("[fetch_tables_lazy] Cache miss, fetching tables for schema '{}'", schema);
         
-        // Check if we're in test mode (no pool) - return mock data immediately
-        let is_test_mode = {
+        // Check database connection status
+        let (has_connection, is_test) = {
             let db_guard = self.database.lock().unwrap();
-            db_guard.get_pool().is_none()
+            (db_guard.has_database_connection(), db_guard.is_test_instance())
         };
         
-        if is_test_mode {
-            debug_log!("[fetch_tables_lazy] Using mock implementation (no pool)");
-            let mock_tables = if schema == "custom_schema" {
-                vec!["custom_table1".to_string()]
+        if !has_connection {
+            if is_test {
+                // Return mock data for tests
+                debug_log!("[fetch_tables_lazy] Using test mock data");
+                let mock_tables = if schema == "custom_schema" {
+                    vec!["custom_table1".to_string()]
+                } else {
+                    vec!["users".to_string(), "orders".to_string()]
+                };
+                let mut new_tables_map = self.tables_cache.clone().unwrap_or_default();
+                new_tables_map.insert(schema.to_string(), mock_tables.clone());
+                self.tables_cache = Some(new_tables_map);
+                self.update_cache_metadata(&current_dbname, &current_host, current_port);
+                return mock_tables;
             } else {
-                vec!["users".to_string(), "orders".to_string()]
-            };
-            let mut new_tables_map = self.tables_cache.clone().unwrap_or_default();
-            new_tables_map.insert(schema.to_string(), mock_tables.clone());
-            self.tables_cache = Some(new_tables_map);
-            self.update_cache_metadata(&current_dbname, &current_host, current_port);
-            return mock_tables;
+                debug_log!("[fetch_tables_lazy] No database connection available");
+                return Vec::new();
+            }
         }
         
         let db_clone: Arc<Mutex<Database>> = Arc::clone(&self.database);
@@ -766,13 +789,14 @@ impl SqlCompleter {
         let start_time = std::time::Instant::now();
         debug_log!("[fetch_functions_lazy] Starting lazy fetch for schema '{}'", schema);
 
-        let (current_dbname, current_host, current_port, is_test_mode) = {
+        let (current_dbname, current_host, current_port, has_connection, is_test) = {
             let db_guard = self.database.lock().unwrap();
             (
                 db_guard.get_current_db(),
                 db_guard.get_host().to_string(),
                 db_guard.get_port(),
-                db_guard.get_pool().is_none(),
+                db_guard.has_database_connection(),
+                db_guard.is_test_instance(),
             )
         };
         self.ensure_cache_validity(&current_dbname, &current_host, current_port);
@@ -794,14 +818,20 @@ impl SqlCompleter {
             }
         }
 
-        if is_test_mode {
-            debug_log!("[fetch_functions_lazy] Using mock implementation (test mode)");
-            let mock_functions = vec!["generate_series".to_string(), "now".to_string()];
-            let mut new_functions_map = self.functions_cache.clone().unwrap_or_default();
-            new_functions_map.insert(cache_key, mock_functions.clone());
-            self.functions_cache = Some(new_functions_map);
-            self.update_cache_metadata(&current_dbname, &current_host, current_port);
-            return mock_functions;
+        if !has_connection {
+            if is_test {
+                // Return mock data for tests
+                debug_log!("[fetch_functions_lazy] Using test mock data");
+                let mock_functions = vec!["generate_series".to_string(), "now".to_string()];
+                let mut new_functions_map = self.functions_cache.clone().unwrap_or_default();
+                new_functions_map.insert(cache_key, mock_functions.clone());
+                self.functions_cache = Some(new_functions_map);
+                self.update_cache_metadata(&current_dbname, &current_host, current_port);
+                return mock_functions;
+            } else {
+                debug_log!("[fetch_functions_lazy] No database connection available");
+                return Vec::new();
+            }
         }
 
         // Use lazy loading - only fetch functions for this specific schema
@@ -900,28 +930,30 @@ impl Completer for SqlCompleter {
                     return Vec::new(); // \l does not take arguments after space
                 }
                 if line.starts_with("\\c ") || line.starts_with("\\connect ") {
-                    // Check if we're in test mode first
-                    let is_test_mode = {
+                    // Check database connection status
+                    let (has_connection, is_test) = {
                         let db_guard = self.database.lock().unwrap();
-                        db_guard.get_pool().is_none()
+                        (db_guard.has_database_connection(), db_guard.is_test_instance())
                     };
                     
-                    if is_test_mode {
-                        // Return mock database names for test mode
-                        let mock_databases = vec!["main_db".to_string(), "test_db".to_string()];
-                        for dbname in mock_databases {
-                            if dbname.starts_with(current_word) {
-                                completions.push(Suggestion {
-                                    value: dbname.clone(),
-                                    description: Some("Database".to_string()),
-                                    span: Span {
-                                        start: word_start,
-                                        end: pos,
-                                    },
-                                    append_whitespace: true,
-                                    extra: None,
-                                    style: Some(Style::new().fg(Color::Yellow)),
-                                });
+                    if !has_connection {
+                        if is_test {
+                            // Return mock database names for tests
+                            let mock_databases = vec!["main_db".to_string(), "test_db".to_string()];
+                            for dbname in mock_databases {
+                                if dbname.starts_with(current_word) {
+                                    completions.push(Suggestion {
+                                        value: dbname.clone(),
+                                        description: Some("Database".to_string()),
+                                        span: Span {
+                                            start: word_start,
+                                            end: pos,
+                                        },
+                                        append_whitespace: true,
+                                        extra: None,
+                                        style: Some(Style::new().fg(Color::Yellow)),
+                                    });
+                                }
                             }
                         }
                         return completions;
@@ -1284,13 +1316,18 @@ impl Completer for SqlCompleter {
                         };
                         
                         if should_suggest {
+                            let (suggestion_value, suggestion_span) = if lower_current_word == "from" {
+                                // Replace "from" with "FROM " + table name
+                                (format!("FROM {}", table_name), Span { start: word_start, end: pos })
+                            } else {
+                                // Normal table name completion
+                                (table_name.clone(), Span { start: word_start, end: pos })
+                            };
+                            
                             completions.push(Suggestion {
-                                value: table_name.clone(),
+                                value: suggestion_value,
                                 description: Some("Table/View".to_string()),
-                                span: Span { 
-                                    start: if lower_current_word == "from" { pos } else { word_start }, 
-                                    end: pos 
-                                },
+                                span: suggestion_span,
                                 append_whitespace: true,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Green)),
@@ -1995,5 +2032,50 @@ mod tests {
         let suggestions = completer.complete(line, 3);
         assert!(suggestions.iter().any(|s| s.value == "SELECT"), 
             "Should suggest SELECT keyword for 'SEL'. Got: {:?}", suggestions);
+    }
+
+    #[tokio::test]
+    async fn test_from_completion_with_proper_spacing() {
+        let mut completer = create_test_completer().await;
+        
+        // Test completion after "SELECT * from" - should replace "from" with "FROM table_name"
+        let line = "SELECT * from";
+        let suggestions = completer.complete(line, line.len());
+        
+        // Find a table suggestion
+        let table_suggestion = suggestions.iter()
+            .find(|s| s.description.as_deref() == Some("Table/View"))
+            .expect("Should have at least one table suggestion");
+        
+        // The suggestion should be "FROM table_name", not just "table_name"
+        assert!(table_suggestion.value.starts_with("FROM "), 
+            "Table suggestion after 'from' should start with 'FROM '. Got: '{}'", table_suggestion.value);
+        
+        // The span should replace the entire "from" word
+        assert_eq!(table_suggestion.span.start, 9); // Position of "from" in "SELECT * from"
+        assert_eq!(table_suggestion.span.end, 13);   // End of "from"
+    }
+
+    #[tokio::test]
+    async fn test_from_completion_with_partial_table_name() {
+        let mut completer = create_test_completer().await;
+        
+        // Test completion after "SELECT * FROM u" - should suggest table names starting with 'u'
+        let line = "SELECT * FROM u";
+        let suggestions = completer.complete(line, line.len());
+        
+        // Should find table starting with 'u'
+        assert!(suggestions.iter().any(|s| s.value == "users"), 
+            "Should suggest 'users' table for 'FROM u'. Got: {:?}", 
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>());
+        
+        // The suggestion should just be the table name, not "FROM users"
+        let users_suggestion = suggestions.iter()
+            .find(|s| s.value == "users")
+            .expect("Should find users suggestion");
+        
+        // The span should replace just the "u" part
+        assert_eq!(users_suggestion.span.start, 14); // Position of "u" in "SELECT * FROM u"
+        assert_eq!(users_suggestion.span.end, 15);   // End of "u"
     }
 }

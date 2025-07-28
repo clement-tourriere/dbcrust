@@ -1260,6 +1260,19 @@ impl Database {
         self.database_client.as_ref()
     }
     
+    /// Check if we have a valid database connection (either new client or legacy pool)
+    /// This is used by completion system to determine if metadata queries are possible
+    pub fn has_database_connection(&self) -> bool {
+        self.database_client.is_some() || self.pool.is_some()
+    }
+    
+    /// Check if this is a test database instance (used by completion system for mock data)
+    /// This is separate from has_database_connection to cleanly separate test vs production logic
+    pub fn is_test_instance(&self) -> bool {
+        // Test instances are created with specific test markers
+        self.host == "localhost_test" && self.user == "testuser_mock"
+    }
+    
     /// Get the current connection information
     pub fn get_connection_info(&self) -> Option<&crate::database::ConnectionInfo> {
         // Check override first (for Vault connections), then fall back to database client
