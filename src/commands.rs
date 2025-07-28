@@ -1078,10 +1078,10 @@ impl CommandExecutor for Command {
             }
 
             Command::ToggleColumnSelection => {
-                config.column_selection_mode_default = !config.column_selection_mode_default;
-                config.save().map_err(|e| CommandError::DatabaseError(e.into()))?;
-                let status = if config.column_selection_mode_default { "enabled" } else { "disabled" };
-                Ok(CommandResult::Output(format!("Column selection is now {status}.")))
+                let mut db = database.lock().unwrap();
+                let new_status = db.toggle_column_select_mode();
+                let status = if new_status { "enabled" } else { "disabled" };
+                Ok(CommandResult::Output(format!("Column selection mode is now {status}.")))
             }
 
             Command::SetColumnSelectionThreshold { threshold } => {
@@ -1233,7 +1233,7 @@ impl CommandExecutor for Command {
             Command::TogglePager => "Toggle pager for long output",
             Command::ToggleBanner => "Toggle startup banner display",
             Command::ToggleAutocomplete => "Toggle autocomplete functionality",
-            Command::ToggleColumnSelection => "Toggle column selection mode",
+            Command::ToggleColumnSelection => "Toggle forced column selection mode (on/off)",
             Command::SetColumnSelectionThreshold { .. } => "Set column selection threshold",
             Command::ClearColumnViews => "Clear saved column views",
             Command::ResetView => "Reset all view settings to defaults",

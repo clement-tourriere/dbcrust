@@ -157,8 +157,6 @@ pub struct Config {
     pub expanded_display_default: bool,
     pub autocomplete_enabled: bool,
     pub explain_mode_default: bool,
-    #[serde(default)]
-    pub column_selection_mode_default: bool,
     #[serde(default = "default_column_selection_threshold")]
     pub column_selection_threshold: usize,
     #[serde(default)]
@@ -232,7 +230,6 @@ impl Default for Config {
             expanded_display_default: false,
             autocomplete_enabled: true,
             explain_mode_default: false,
-            column_selection_mode_default: false,
             column_selection_threshold: default_column_selection_threshold(),
             named_queries: HashMap::new(),
             ssh_tunnel_patterns: HashMap::new(),

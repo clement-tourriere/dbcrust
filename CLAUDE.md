@@ -579,9 +579,6 @@ Column selections are automatically saved and reused:
 Column selection settings are stored in the main configuration:
 
 ```toml
-# Default column selection mode (false = only auto-trigger)
-column_selection_mode_default = false
-
 # Threshold for auto-triggering column selection
 column_selection_threshold = 10
 ```
