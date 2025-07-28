@@ -5,13 +5,14 @@ build-backend = "maturin"
 [project]
 name = "dbcrust"
 version = "0.11.0"
-description = "Multi-database interactive client (PostgreSQL, SQLite, MySQL) with tab completion"
+description = "High-performance database CLI and Python library with Django ORM analysis, SSH tunneling, and multi-database support (PostgreSQL, MySQL, SQLite)"
 authors = [{ name = "Clément Tourrière", email = "clement.tourriere@gmail.com" }]
 requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = [
     "dbcrust", "database", "postgres", "mysql", "sqlite", "cli", "interactive",
-    "sql", "postgresql", "mysql", "sqlite", "ssh-tunnel", "vault", "docker"
+    "sql", "postgresql", "mysql", "sqlite", "ssh-tunnel", "vault", "docker",
+    "django", "orm", "python-library", "performance-analysis", "n-plus-one"
 ]
 readme = "README.md"
 homepage = "https://github.com/clement-tourriere/dbcrust"
@@ -33,10 +34,13 @@ classifiers = [
     "Topic :: Database",
     "Topic :: Database :: Front-Ends",
     "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Quality Assurance",
     "Topic :: System :: Systems Administration",
     "Topic :: Terminals",
     "Topic :: Utilities",
     "Environment :: Console",
+    "Framework :: Django",
+    "Intended Audience :: Information Technology",
 ]
 
 [project.urls]

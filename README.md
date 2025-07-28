@@ -1,6 +1,6 @@
 # DBCrust
 
-**The modern database CLI that speaks your language — PostgreSQL, MySQL, SQLite with zero compromises.**
+**The modern database CLI and Python library that speaks your language — PostgreSQL, MySQL, SQLite with zero compromises. Built for developers, data analysts, and Django teams.**
 
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -9,20 +9,18 @@
 
 ## Why DBCrust?
 
-DBCrust brings the power of modern CLI tools to database management. Built in Rust for maximum performance, it provides
-an intuitive interface for PostgreSQL, MySQL, and SQLite with features that boost developer productivity.
+DBCrust combines a high-performance database CLI with a powerful Python library for database management and Django ORM optimization. Built in Rust for maximum performance, it provides an intuitive interface for PostgreSQL, MySQL, and SQLite with advanced features that boost developer productivity and catch performance issues early.
 
 ## 🚀 Key Features
 
 - **Multi-Database Support** - PostgreSQL, MySQL, SQLite in one tool
 - **Smart Autocompletion** - Context-aware suggestions for tables, columns, and SQL keywords
-- **Django ORM Analyzer** - Detect N+1 queries and optimization opportunities in Django applications
-- **Query Visualization** - Beautiful EXPLAIN output with execution plans
-- **Enterprise Security** - SSH tunneling, HashiCorp Vault integration, and encrypted connections
-- **Docker Integration** - Connect to databases in Docker containers with automatic port detection and OrbStack DNS
-  support
-- **Python Integration** - Use as a library in your Python applications
-- **Developer Experience** - History, syntax highlighting, and external editor support
+- **🐍 Python Library & Django ORM Analyzer** - Rich Python API with N+1 query detection and Django optimization tools
+- **📊 Query Visualization** - Beautiful EXPLAIN output with execution plans
+- **🔐 Enterprise Security** - SSH tunneling, HashiCorp Vault integration, and encrypted connections
+- **🐳 Docker Integration** - Connect to databases in Docker containers with automatic port detection and OrbStack DNS support
+- **⚡ Performance Analysis** - Built-in tools to catch database performance issues in development
+- **🎯 Developer Experience** - History, syntax highlighting, external editor support, and automated testing integration
 
 ## Quick Start
 
@@ -45,6 +43,40 @@ dbcrust sqlite:///path/to/database.db
 dbcrust docker://postgres-container
 dbcrust docker://   # Interactive container selection
 ```
+
+## 🐍 Python & Django Integration
+
+DBCrust isn't just a CLI – it's a powerful Python library designed for developers working with databases and Django applications.
+
+### Quick Python Examples
+
+```python
+import dbcrust
+
+# Execute SQL queries programmatically
+result = dbcrust.run_command("postgres://user:pass@localhost/db", "SELECT * FROM users LIMIT 10")
+
+# Django ORM performance analysis
+from dbcrust.django import analyzer
+with analyzer.analyze() as analysis:
+    books = Book.objects.all()
+    for book in books:
+        print(book.author.name)  # Detects N+1 queries automatically
+
+# Get results
+results = analysis.get_results()
+print(results.summary)
+```
+
+### Perfect for Django Teams
+
+- **🔍 N+1 Query Detection** - Automatically catch expensive query patterns
+- **📈 Performance Monitoring** - Integrate into CI/CD for performance regression testing  
+- **🛠️ Development Debugging** - Real-time analysis during development
+- **📋 Code Review Automation** - Generate performance reports for pull requests
+- **🧪 Testing Integration** - Validate query performance in test suites
+
+[**📖 Complete Python & Django Documentation →**](https://clement-tourriere.github.io/dbcrust/django-analyzer/)
 
 ## Installation
 
@@ -172,9 +204,9 @@ dbcrust vault://app-role@database/postgres-prod
 dbcrust vault:///
 ```
 
-## Python API
+## 🐍 Complete Python API Reference
 
-DBCrust provides powerful Python integration with three main approaches:
+DBCrust provides comprehensive Python integration with multiple approaches for different use cases. Whether you're building automation scripts, analyzing Django applications, or integrating database operations into your Python workflow, DBCrust has you covered.
 
 ### 1. Direct Command Execution
 
@@ -252,21 +284,27 @@ result = client.run_command("SELECT COUNT(*) FROM users")
 
 ### 5. Django ORM Performance Analysis
 
-For Django developers, DBCrust includes a powerful ORM analyzer that detects performance issues:
+DBCrust includes a powerful Django ORM analyzer that detects performance issues:
 
 ```python
 from dbcrust.django import analyzer
 
 # Analyze Django ORM queries for performance issues
 with analyzer.analyze() as analysis:
-    # Your Django ORM code here
+    # Your Django code here
     books = Book.objects.all()
     for book in books:
         print(book.author.name)  # Will detect N+1 query
 
-# Get detailed analysis results
+# Get results
 results = analysis.get_results()
 print(results.summary)
+```
+
+```bash
+# Django management command integration
+python manage.py dbcrust                    # Connect to default database
+python manage.py dbcrust --database analytics  # Connect to specific database
 ```
 
 **Features:**
@@ -274,7 +312,7 @@ print(results.summary)
 - **Missing Optimizations** - Detects missing `select_related()` and `prefetch_related()`
 - **Transaction Safety** - Optional rollback mode for safe analysis
 - **EXPLAIN Integration** - Combines with DBCrust for database-level insights
-- **Actionable Recommendations** - Provides specific code suggestions
+- **Django Management Command** - `python manage.py dbcrust` works like `dbshell` but with DBCrust features
 
 **Perfect for:**
 - Development debugging and optimization
