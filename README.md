@@ -108,7 +108,7 @@ pip install dbcrust
 ### Install from Source
 
 ```bash
-git clone git@gitlab.gitguardian.ovh:clement-tourriere/dbcrust.git
+git clone https://github.com/clement-tourriere/dbcrust.git
 cd dbcrust
 cargo install --path .
 ```
@@ -322,36 +322,18 @@ python manage.py dbcrust --database analytics  # Connect to specific database
 
 [**📖 Complete Django Analyzer Documentation →**](https://clement-tourriere.github.io/dbcrust/django-analyzer/)
 
-## Command Reference
+## Commands
 
-| Command         | Description                     |
-|-----------------|---------------------------------|
-| `\l`            | List databases                  |
-| `\dt`           | List tables                     |
-| `\d <table>`    | Describe table                  |
-| `\c <database>` | Switch database                 |
-| `\x`            | Toggle expanded display         |
-| `\e`            | Toggle EXPLAIN mode             |
-| `\ed`           | Edit query in external editor   |
-| `\i <file>`     | Execute SQL file                |
-| `\docker`       | List Docker database containers |
-| `\q`            | Quit                            |
+DBCrust provides 40+ interactive commands for database management, query optimization, and developer workflows.
 
-<details>
-<summary>View all commands</summary>
+**Quick examples:**
+- `\l` - List databases
+- `\dt` - List tables  
+- `\d users` - Describe table structure
+- `\e` - Toggle EXPLAIN mode for query analysis
+- `\docker` - List Docker database containers
 
-| Command   | Description             |
-|-----------|-------------------------|
-| `\a`      | Toggle autocomplete     |
-| `\cs`     | Toggle column selection |
-| `\config` | Show configuration      |
-| `\save`   | Save current connection |
-| `\pgpass` | Show .pgpass info       |
-| `\n`      | Named queries           |
-| `\s`      | Session management      |
-| `\h`      | Help                    |
-
-</details>
+[**📖 Complete Command Reference →**](https://clement-tourriere.github.io/dbcrust/reference/backslash-commands/)
 
 ## Advanced Features
 
@@ -430,7 +412,7 @@ We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) f
 ### Development Setup
 
 ```bash
-git clone git@gitlab.gitguardian.ovh:clement-tourriere/dbcrust.git
+git clone https://github.com/clement-tourriere/dbcrust.git
 cd dbcrust
 cargo build
 cargo test
