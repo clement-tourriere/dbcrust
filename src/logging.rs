@@ -138,7 +138,7 @@ fn log_message(message: &str) -> io::Result<()> {
 pub fn debug(message: &str) -> io::Result<()> {
     // Check if debug logging is enabled in the config before logging
     let config = config::Config::load();
-    if !config.debug_logging_enabled {
+    if !matches!(config.logging.level, crate::config::LogLevel::Debug | crate::config::LogLevel::Trace) {
         return Ok(());
     }
 

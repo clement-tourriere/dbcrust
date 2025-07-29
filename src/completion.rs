@@ -1,8 +1,8 @@
 use crate::config::{Config, SavedSession};
 use crate::db::Database;
-use crate::debug_log;
 use crate::commands::CommandParser;
-use crate::sql_context::{parse_sql_context, SqlContext, get_context_suggestions};
+use crate::sql_context::{parse_sql_context, SqlContext, get_context_suggestions, TableReference};
+use tracing::{debug, error};
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Span, Suggestion};
 use std::collections::HashMap;
@@ -63,6 +63,11 @@ pub struct SqlCompleter {
     // Enhanced caching features
     cache_stats: CacheStatistics,
     max_cache_entries: usize, // Limit cache size to prevent memory issues
+    
+    // Recent context caching for smart inference
+    recent_tables: HashMap<String, TableReference>, // alias -> TableReference
+    recent_table_order: Vec<String>, // Track insertion order for LRU
+    max_recent_tables: usize, // Limit recent table cache size
 }
 
 // NoopCompleter that does nothing - used when autocomplete is disabled
@@ -78,8 +83,9 @@ impl Completer for NoopCompleter {
 impl SqlCompleter {
     #[allow(dead_code)]
     pub fn new(database: Arc<Mutex<Database>>) -> Self {
-        // Common SQL keywords for PostgreSQL
+        // Common SQL keywords and functions for all databases
         let sql_keywords = vec![
+            // Keywords
             "SELECT",
             "FROM",
             "WHERE",
@@ -127,6 +133,68 @@ impl SqlCompleter {
             "NOT",
             "TRUE",
             "FALSE",
+            "AS",
+            "ON",
+            "CASE",
+            "WHEN",
+            "THEN",
+            "ELSE",
+            "END",
+            "WITH",
+            "EXISTS",
+            "OVER",
+            "PARTITION BY",
+            
+            // Aggregate Functions (common to all DBs)
+            "COUNT(",
+            "SUM(",
+            "AVG(",
+            "MAX(",
+            "MIN(",
+            
+            // String Functions (common to most DBs)
+            "UPPER(",
+            "LOWER(",
+            "LENGTH(",
+            "TRIM(",
+            "LTRIM(",
+            "RTRIM(",
+            "SUBSTR(",
+            "SUBSTRING(",
+            "REPLACE(",
+            "CONCAT(",
+            
+            // Math Functions (common to all DBs)
+            "ABS(",
+            "ROUND(",
+            "CEIL(",
+            "CEILING(",
+            "FLOOR(",
+            "POWER(",
+            "SQRT(",
+            "MOD(",
+            
+            // Date/Time Functions (common variants)
+            "NOW()",
+            "CURRENT_DATE",
+            "CURRENT_TIME",
+            "CURRENT_TIMESTAMP",
+            "DATE(",
+            "TIME(",
+            
+            // Type Conversion
+            "CAST(",
+            "COALESCE(",
+            "NULLIF(",
+            
+            // Window Functions
+            "ROW_NUMBER(",
+            "RANK(",
+            "DENSE_RANK(",
+            "LAG(",
+            "LEAD(",
+            "FIRST_VALUE(",
+            "LAST_VALUE(",
         ]
         .into_iter()
         .map(String::from)
@@ -149,6 +217,11 @@ impl SqlCompleter {
             // Enhanced caching features
             cache_stats: CacheStatistics::default(),
             max_cache_entries: 10000, // Reasonable limit to prevent memory issues
+            
+            // Recent context caching for smart inference
+            recent_tables: HashMap::new(),
+            recent_table_order: Vec::new(),
+            max_recent_tables: 10, // Keep last 10 table contexts
         }
     }
 
@@ -163,8 +236,76 @@ impl SqlCompleter {
         self.cached_for_dbname = None;
         self.cached_for_host = None;
         self.cached_for_port = None;
+        // Clear recent table cache as well
+        self.recent_tables.clear();
+        self.recent_table_order.clear();
         self.cache_stats.cache_invalidations += 1;
-        debug_log!("[clear_cache] Cache cleared, total invalidations: {}", self.cache_stats.cache_invalidations);
+        debug!("[clear_cache] Cache cleared, total invalidations: {}", self.cache_stats.cache_invalidations);
+    }
+    
+    /// Update recent tables cache with new table references
+    fn update_recent_tables(&mut self, tables: &[TableReference]) {
+        debug!("[update_recent_tables] Adding {} tables to recent cache", tables.len());
+        
+        for table_ref in tables {
+            // Add table by its actual name
+            let table_key = table_ref.table_name.clone();
+            self.add_to_recent_tables(table_key.clone(), table_ref.clone());
+            
+            // Also add by alias if it exists
+            if let Some(ref alias) = table_ref.alias {
+                self.add_to_recent_tables(alias.clone(), table_ref.clone());
+            }
+        }
+    }
+    
+    /// Add a single table reference to recent cache with LRU management
+    fn add_to_recent_tables(&mut self, key: String, table_ref: TableReference) {
+        // Remove if already exists (for LRU update)
+        if self.recent_tables.contains_key(&key) {
+            self.recent_table_order.retain(|k| k != &key);
+        }
+        
+        // Add to front of order list
+        self.recent_table_order.insert(0, key.clone());
+        self.recent_tables.insert(key, table_ref);
+        
+        // Trim if over limit
+        while self.recent_table_order.len() > self.max_recent_tables {
+            if let Some(old_key) = self.recent_table_order.pop() {
+                self.recent_tables.remove(&old_key);
+            }
+        }
+        
+        debug!("[add_to_recent_tables] Recent cache now has {} entries", self.recent_tables.len());
+    }
+    
+    /// Try to find a table reference by alias or name in recent cache
+    fn find_recent_table(&self, identifier: &str) -> Option<&TableReference> {
+        self.recent_tables.get(identifier)
+    }
+    
+    /// Update recent table cache from executed SQL query
+    /// This should be called whenever a query is executed to cache table references for future completions
+    pub fn cache_tables_from_executed_query(&mut self, sql: &str) {
+        use crate::sql_context::extract_from_tables;
+        
+        debug!("[cache_tables_from_executed_query] Analyzing executed query for table references");
+        
+        // Extract table references from the executed query
+        let table_refs = extract_from_tables(sql);
+        
+        if !table_refs.is_empty() {
+            debug!("[cache_tables_from_executed_query] Found {} table references in executed query: {:?}", 
+                   table_refs.len(), table_refs);
+            
+            // Update the recent table cache with the extracted tables
+            self.update_recent_tables(&table_refs);
+            
+            debug!("[cache_tables_from_executed_query] Successfully cached {} table references", table_refs.len());
+        } else {
+            debug!("[cache_tables_from_executed_query] No table references found in query");
+        }
     }
 
     /// Get cache statistics for monitoring
@@ -176,7 +317,7 @@ impl SqlCompleter {
     fn trim_column_cache_if_needed(&mut self) {
         if let Some(ref mut columns) = self.columns_cache {
             if columns.len() > self.max_cache_entries {
-                debug_log!("[trim_column_cache] Cache size {} exceeds limit {}, trimming", 
+                debug!("[trim_column_cache] Cache size {} exceeds limit {}, trimming", 
                           columns.len(), self.max_cache_entries);
                 
                 // Keep the most recently accessed entries by removing older ones
@@ -191,7 +332,7 @@ impl SqlCompleter {
                     columns.remove(&key);
                 }
                 
-                debug_log!("[trim_column_cache] Trimmed to {} entries", columns.len());
+                debug!("[trim_column_cache] Trimmed to {} entries", columns.len());
             }
         }
     }
@@ -260,11 +401,11 @@ impl SqlCompleter {
         // Only clear cache if there's a meaningful change or TTL expired
         if database_changed || connection_changed || ttl_expired {
             if database_changed {
-                debug_log!("[ensure_cache_validity] Database changed, clearing cache");
+                debug!("[ensure_cache_validity] Database changed, clearing cache");
             } else if connection_changed {
-                debug_log!("[ensure_cache_validity] Connection type changed, clearing cache");
+                debug!("[ensure_cache_validity] Connection type changed, clearing cache");
             } else if ttl_expired {
-                debug_log!(
+                debug!(
                     "[ensure_cache_validity] Cache TTL expired (using {} seconds for SSH tunnel: {})",
                     effective_ttl.as_secs(),
                     using_ssh_tunnel
@@ -334,7 +475,7 @@ impl SqlCompleter {
 
     fn fetch_tables(&mut self, schema: &str) -> Vec<String> {
         let _start_time = std::time::Instant::now();
-        debug_log!("[fetch_tables] Starting fetch for schema: '{}'", schema);
+        debug!("[fetch_tables] Starting fetch for schema: '{}'", schema);
 
         let (current_dbname, current_host, current_port) = {
             let db_guard = self.database.lock().unwrap();
@@ -350,7 +491,7 @@ impl SqlCompleter {
         if let Some(ref tables_map) = self.tables_cache {
             if let Some(tables_in_schema) = tables_map.get(schema) {
                 self.cache_stats.table_hits += 1;
-                debug_log!("[fetch_tables] Cache hit! Returning {} tables for schema '{}'", 
+                debug!("[fetch_tables] Cache hit! Returning {} tables for schema '{}'", 
                           tables_in_schema.len(), schema);
                 return tables_in_schema.clone();
             }
@@ -365,7 +506,7 @@ impl SqlCompleter {
         if !has_connection {
             if is_test {
                 // Return mock data for tests
-                debug_log!("[fetch_tables] Using test mock data");
+                debug!("[fetch_tables] Using test mock data");
                 let mock_tables = if schema == "custom_schema" {
                     vec!["custom_table1".to_string()]
                 } else if schema.is_empty() {
@@ -379,17 +520,17 @@ impl SqlCompleter {
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
                 return mock_tables;
             } else {
-                debug_log!("[fetch_tables] No database connection available");
+                debug!("[fetch_tables] No database connection available");
                 return Vec::new();
             }
         }
 
         // Use lazy loading - only fetch tables for this specific schema
-        debug_log!("[fetch_tables] Using lazy loading approach for individual table fetch in schema '{}'", schema);
+        debug!("[fetch_tables] Using lazy loading approach for individual table fetch in schema '{}'", schema);
 
         // Fallback to individual fetch if batch fails or schema not found
         self.cache_stats.table_misses += 1;
-        debug_log!("[fetch_tables] Falling back to individual fetch for schema '{}'", schema);
+        debug!("[fetch_tables] Falling back to individual fetch for schema '{}'", schema);
         let db_clone: Arc<Mutex<Database>> = Arc::clone(&self.database);
         let schema_owned = schema.to_string();
         let fetched_data_from_thread = match tokio::runtime::Handle::try_current() {
@@ -425,7 +566,7 @@ impl SqlCompleter {
                 new_tables_map.insert(schema.to_string(), tables.clone());
                 self.tables_cache = Some(new_tables_map);
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
-                debug_log!("[fetch_tables] Individual fetch successful: {} tables for schema '{}'",
+                debug!("[fetch_tables] Individual fetch successful: {} tables for schema '{}'",
                           tables.len(), schema);
                 tables
             }
@@ -442,11 +583,7 @@ impl SqlCompleter {
 
     fn fetch_columns(&mut self, table_name_with_schema: &str) -> Vec<String> {
         let start_time = std::time::Instant::now();
-        debug_log!(
-            "[fetch_columns] Starting fetch for table: '{}' at {:?}",
-            table_name_with_schema,
-            start_time
-        );
+        debug!("fetch_columns starting for table: '{}'", table_name_with_schema);
 
         let (current_dbname, current_host, current_port) = {
             let db_guard = self.database.lock().unwrap();
@@ -463,7 +600,7 @@ impl SqlCompleter {
             if let Some(columns_for_table) = columns_map.get(&cache_key) {
                 let duration = start_time.elapsed();
                 self.cache_stats.column_hits += 1;
-                debug_log!(
+                debug!(
                     "[fetch_columns] Cache hit! Returning {} columns for table '{}' in {:?}",
                     columns_for_table.len(),
                     table_name_with_schema,
@@ -475,7 +612,7 @@ impl SqlCompleter {
 
         // Cache miss
         self.cache_stats.column_misses += 1;
-        debug_log!(
+        debug!(
             "[fetch_columns] Cache miss for table: '{}', spawning thread",
             table_name_with_schema
         );
@@ -487,10 +624,13 @@ impl SqlCompleter {
             (db_guard.has_database_connection(), db_guard.is_test_instance())
         };
         
+        debug!("Database connection status: has_connection={}, is_test={}", 
+                has_connection, is_test);
+        
         if !has_connection {
             if is_test {
                 // Return mock data for tests
-                debug_log!("[fetch_columns] Using test mock data");
+                debug!("Using test mock data for table: {}", table_name_with_schema);
                 let mock_columns = if table_name_with_schema == "users" {
                     vec!["id".to_string(), "name".to_string(), "email".to_string()]
                 } else if table_name_with_schema == "orders" {
@@ -505,7 +645,7 @@ impl SqlCompleter {
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
                 return mock_columns;
             } else {
-                debug_log!("[fetch_columns] No database connection available");
+                debug!("No database connection available for table: {}", table_name_with_schema);
                 return Vec::new();
             }
         }
@@ -515,14 +655,14 @@ impl SqlCompleter {
         let table_name_with_schema_owned = table_name_with_schema.to_string();
         let fetched_data_from_thread = match tokio::runtime::Handle::try_current() {
             Ok(_handle) => {
-                debug_log!("[fetch_columns] Using block_in_place");
+                debug!("[fetch_columns] Using block_in_place");
 
                 let result = tokio::task::block_in_place(|| {
                     let handle = tokio::runtime::Handle::current();
                     handle.block_on(async {
                         // Execute the query with the runtime
                         let mut db_guard = db_clone.lock().unwrap();
-                        debug_log!("[fetch_columns] Lock acquired");
+                        debug!("[fetch_columns] Lock acquired");
 
                         let parts: Vec<&str> = table_name_with_schema_owned.splitn(2, '.').collect();
                         let (schema_opt, table_only_name) = if parts.len() == 2 {
@@ -533,10 +673,7 @@ impl SqlCompleter {
 
                         let query_start = std::time::Instant::now();
                         let result = db_guard.get_columns_for_table(table_only_name, schema_opt).await;
-                        debug_log!(
-                            "[fetch_columns] DB query completed in {:?}",
-                            query_start.elapsed()
-                        );
+                        debug!("[fetch_columns] DB query completed in {:?}", query_start.elapsed());
 
                         result
                     })
@@ -548,37 +685,33 @@ impl SqlCompleter {
         };
 
         let thread_duration = thread_start.elapsed();
-        debug_log!("[fetch_columns] Thread completed in {:?}", thread_duration);
+        debug!("[fetch_columns] Thread completed in {:?}", thread_duration);
 
+        debug!("Processing fetch result for table: {}", table_name_with_schema);
+        
         match fetched_data_from_thread {
             Ok(Ok(cols)) => {
+                debug!("Successfully fetched {} columns: {:?}", cols.len(), cols);
+                
                 let mut new_columns_map = self.columns_cache.clone().unwrap_or_default();
                 new_columns_map.insert(cache_key, cols.clone());
                 self.columns_cache = Some(new_columns_map);
                 self.trim_column_cache_if_needed(); // Prevent unlimited cache growth
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
 
-                let total_duration = start_time.elapsed();
-                debug_log!(
-                    "[fetch_columns] Successfully fetched {} columns for table '{}' in {:?} (thread: {:?})",
-                    cols.len(),
-                    table_name_with_schema,
-                    total_duration,
-                    thread_duration
-                );
                 cols
             }
             Ok(Err(e)) => {
-                let total_duration = start_time.elapsed();
+                error!("Error fetching columns for table '{}': {}", table_name_with_schema, e);
                 eprintln!(
-                    "Error fetching columns for table '{table_name_with_schema}' in completer thread: {e} (took {total_duration:?})"
+                    "Error fetching columns for table '{table_name_with_schema}' in completer thread: {e}"
                 );
                 Vec::new()
             }
             Err(e_join) => {
-                let total_duration = start_time.elapsed();
+                debug!("Thread error for table '{}': {:?}", table_name_with_schema, e_join);
                 eprintln!(
-                    "Completer thread for columns (table '{table_name_with_schema}') panicked: {e_join:?} (took {total_duration:?})"
+                    "Completer thread for columns (table '{table_name_with_schema}') panicked: {e_join:?}"
                 );
                 Vec::new()
             }
@@ -588,7 +721,7 @@ impl SqlCompleter {
     /// Lazy fetch schemas - only fetches schemas without triggering batch fetch
     fn fetch_schemas_lazy(&mut self) -> Vec<String> {
         let start_time = std::time::Instant::now();
-        debug_log!("[fetch_schemas_lazy] Starting lazy fetch at {:?}", start_time);
+        debug!("[fetch_schemas_lazy] Starting lazy fetch at {:?}", start_time);
 
         let (current_dbname, current_host, current_port) = {
             let db_guard = self.database.lock().unwrap();
@@ -604,7 +737,7 @@ impl SqlCompleter {
         if let Some(ref schemas) = self.schemas_cache {
             let duration = start_time.elapsed();
             self.cache_stats.schema_hits += 1;
-            debug_log!(
+            debug!(
                 "[fetch_schemas_lazy] Cache hit! Returning {} schemas in {:?}",
                 schemas.len(),
                 duration
@@ -614,7 +747,7 @@ impl SqlCompleter {
 
         // Direct individual fetch without batch fetch
         self.cache_stats.schema_misses += 1;
-        debug_log!("[fetch_schemas_lazy] Cache miss, fetching schemas only");
+        debug!("[fetch_schemas_lazy] Cache miss, fetching schemas only");
         
         // Check database connection status
         let (has_connection, is_test) = {
@@ -625,13 +758,13 @@ impl SqlCompleter {
         if !has_connection {
             if is_test {
                 // Return mock data for tests
-                debug_log!("[fetch_schemas_lazy] Using test mock data");
+                debug!("[fetch_schemas_lazy] Using test mock data");
                 let mock_schemas = vec!["public".to_string(), "custom_schema".to_string()];
                 self.schemas_cache = Some(mock_schemas.clone());
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
                 return mock_schemas;
             } else {
-                debug_log!("[fetch_schemas_lazy] No database connection available");
+                debug!("[fetch_schemas_lazy] No database connection available");
                 return Vec::new();
             }
         }
@@ -656,7 +789,7 @@ impl SqlCompleter {
                 self.schemas_cache = Some(schemas.clone());
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
                 let duration = start_time.elapsed();
-                debug_log!("[fetch_schemas_lazy] Successfully fetched {} schemas in {:?}", schemas.len(), duration);
+                debug!("[fetch_schemas_lazy] Successfully fetched {} schemas in {:?}", schemas.len(), duration);
                 schemas
             }
             Ok(Err(e)) => {
@@ -673,7 +806,7 @@ impl SqlCompleter {
     /// Lazy fetch tables for a specific schema - only fetches tables for the given schema
     fn fetch_tables_lazy(&mut self, schema: &str) -> Vec<String> {
         let start_time = std::time::Instant::now();
-        debug_log!("[fetch_tables_lazy] Starting lazy fetch for schema: '{}'", schema);
+        debug!("[fetch_tables_lazy] Starting lazy fetch for schema: '{}'", schema);
 
         let (current_dbname, current_host, current_port) = {
             let db_guard = self.database.lock().unwrap();
@@ -690,7 +823,7 @@ impl SqlCompleter {
             if let Some(tables_in_schema) = tables_map.get(schema) {
                 self.cache_stats.table_hits += 1;
                 let duration = start_time.elapsed();
-                debug_log!("[fetch_tables_lazy] Cache hit! Returning {} tables for schema '{}' in {:?}", 
+                debug!("[fetch_tables_lazy] Cache hit! Returning {} tables for schema '{}' in {:?}", 
                           tables_in_schema.len(), schema, duration);
                 return tables_in_schema.clone();
             }
@@ -698,7 +831,7 @@ impl SqlCompleter {
 
         // Direct individual fetch without batch fetch
         self.cache_stats.table_misses += 1;
-        debug_log!("[fetch_tables_lazy] Cache miss, fetching tables for schema '{}'", schema);
+        debug!("[fetch_tables_lazy] Cache miss, fetching tables for schema '{}'", schema);
         
         // Check database connection status
         let (has_connection, is_test) = {
@@ -709,7 +842,7 @@ impl SqlCompleter {
         if !has_connection {
             if is_test {
                 // Return mock data for tests
-                debug_log!("[fetch_tables_lazy] Using test mock data");
+                debug!("[fetch_tables_lazy] Using test mock data");
                 let mock_tables = if schema == "custom_schema" {
                     vec!["custom_table1".to_string()]
                 } else {
@@ -721,7 +854,7 @@ impl SqlCompleter {
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
                 return mock_tables;
             } else {
-                debug_log!("[fetch_tables_lazy] No database connection available");
+                debug!("[fetch_tables_lazy] No database connection available");
                 return Vec::new();
             }
         }
@@ -762,7 +895,7 @@ impl SqlCompleter {
                 self.tables_cache = Some(new_tables_map);
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
                 let duration = start_time.elapsed();
-                debug_log!("[fetch_tables_lazy] Successfully fetched {} tables for schema '{}' in {:?}",
+                debug!("[fetch_tables_lazy] Successfully fetched {} tables for schema '{}' in {:?}",
                           tables.len(), schema, duration);
                 tables
             }
@@ -779,15 +912,181 @@ impl SqlCompleter {
 
     /// Lazy fetch columns for a specific table - the existing fetch_columns is already lazy
     fn fetch_columns_lazy(&mut self, table_name_with_schema: &str) -> Vec<String> {
+        debug!("fetch_columns_lazy called for table: '{}'", table_name_with_schema);
+        
         // The existing fetch_columns method is already lazy (doesn't call batch fetch)
         // so we can just delegate to it
-        self.fetch_columns(table_name_with_schema)
+        let columns = self.fetch_columns(table_name_with_schema);
+        
+        debug!("fetch_columns_lazy returning {} columns: {:?}", columns.len(), columns);
+        
+        columns
+    }
+
+    /// Get the current database type
+    fn get_database_type(&self) -> Option<crate::database::DatabaseType> {
+        let db_guard = self.database.lock().unwrap();
+        if let Some(database_client) = db_guard.get_database_client() {
+            let connection_info = database_client.get_connection_info();
+            Some(connection_info.database_type.clone())
+        } else {
+            // Default to PostgreSQL for legacy support
+            Some(crate::database::DatabaseType::PostgreSQL)
+        }
+    }
+
+    /// Lazy fetch built-in SQL functions based on database type
+    fn fetch_builtin_functions_lazy(&mut self) -> Vec<String> {
+        let start_time = std::time::Instant::now();
+        debug!("[fetch_builtin_functions_lazy] Starting lazy fetch for built-in functions");
+
+        // Check if we have cached built-in functions
+        if let Some(ref functions) = self.functions_cache {
+            if let Some(builtin_functions) = functions.get("__builtin__") {
+                self.cache_stats.function_hits += 1;
+                debug!("[fetch_builtin_functions_lazy] Cache hit! Returning {} built-in functions", 
+                          builtin_functions.len());
+                return builtin_functions.clone();
+            }
+        }
+
+        self.cache_stats.function_misses += 1;
+        
+        let db_type = self.get_database_type();
+        let mut builtin_functions = Vec::new();
+
+        match db_type {
+            Some(crate::database::DatabaseType::PostgreSQL) => {
+                // For PostgreSQL, we could query pg_proc, but for now use extended hardcoded list
+                builtin_functions.extend_from_slice(&[
+                    // PostgreSQL-specific functions
+                    "STRING_AGG(",
+                    "ARRAY_AGG(",
+                    "JSON_BUILD_OBJECT(",
+                    "JSONB_BUILD_OBJECT(",
+                    "JSON_AGG(",
+                    "JSONB_AGG(",
+                    "REGEXP_MATCH(",
+                    "REGEXP_MATCHES(",
+                    "REGEXP_REPLACE(",
+                    "REGEXP_SPLIT_TO_ARRAY(",
+                    "GENERATE_SERIES(",
+                    "AGE(",
+                    "DATE_PART(",
+                    "EXTRACT(",
+                    "TO_CHAR(",
+                    "TO_DATE(",
+                    "TO_TIMESTAMP(",
+                    "INTERVAL",
+                    "UNNEST(",
+                    "ARRAY_LENGTH(",
+                    "CARDINALITY(",
+                    "SPLIT_PART(",
+                    "POSITION(",
+                    "OVERLAY(",
+                    "LEFT(",
+                    "RIGHT(",
+                    "REVERSE(",
+                    "REPEAT(",
+                    "MD5(",
+                    "SHA256(",
+                    "ENCODE(",
+                    "DECODE(",
+                    "RANDOM()",
+                    "SETSEED(",
+                    "WIDTH_BUCKET(",
+                    "PERCENTILE_CONT(",
+                    "PERCENTILE_DISC(",
+                ]);
+            }
+            Some(crate::database::DatabaseType::MySQL) => {
+                // MySQL-specific functions
+                builtin_functions.extend_from_slice(&[
+                    "GROUP_CONCAT(",
+                    "JSON_OBJECT(",
+                    "JSON_ARRAY(",
+                    "JSON_EXTRACT(",
+                    "JSON_SET(",
+                    "JSON_INSERT(",
+                    "JSON_REPLACE(",
+                    "JSON_REMOVE(",
+                    "STR_TO_DATE(",
+                    "DATE_FORMAT(",
+                    "TIMESTAMPDIFF(",
+                    "TIMESTAMPADD(",
+                    "DAYOFWEEK(",
+                    "DAYOFMONTH(",
+                    "DAYOFYEAR(",
+                    "WEEKDAY(",
+                    "YEARWEEK(",
+                    "FIND_IN_SET(",
+                    "FIELD(",
+                    "ELT(",
+                    "EXPORT_SET(",
+                    "LPAD(",
+                    "RPAD(",
+                    "HEX(",
+                    "UNHEX(",
+                    "SHA1(",
+                    "SHA2(",
+                    "COMPRESS(",
+                    "UNCOMPRESS(",
+                    "RAND(",
+                    "UUID(",
+                    "INET_ATON(",
+                    "INET_NTOA(",
+                    "INET6_ATON(",
+                    "INET6_NTOA(",
+                ]);
+            }
+            Some(crate::database::DatabaseType::SQLite) => {
+                // SQLite has a limited set of built-in functions
+                builtin_functions.extend_from_slice(&[
+                    "IFNULL(",
+                    "RANDOM()",
+                    "SQLITE_VERSION()",
+                    "SQLITE_SOURCE_ID()",
+                    "TOTAL(",
+                    "GROUP_CONCAT(",
+                    "GLOB(",
+                    "INSTR(",
+                    "QUOTE(",
+                    "RANDOMBLOB(",
+                    "ZEROBLOB(",
+                    "HEX(",
+                    "TYPEOF(",
+                    "LAST_INSERT_ROWID()",
+                    "CHANGES()",
+                    "TOTAL_CHANGES()",
+                    "JULIANDAY(",
+                    "STRFTIME(",
+                ]);
+            }
+            None => {
+                debug!("[fetch_builtin_functions_lazy] No database type detected");
+            }
+        }
+
+        // Convert to String
+        let builtin_functions: Vec<String> = builtin_functions.iter()
+            .map(|&s| s.to_string())
+            .collect();
+
+        // Cache the result
+        let mut new_functions_map = self.functions_cache.clone().unwrap_or_default();
+        new_functions_map.insert("__builtin__".to_string(), builtin_functions.clone());
+        self.functions_cache = Some(new_functions_map);
+
+        let duration = start_time.elapsed();
+        debug!("[fetch_builtin_functions_lazy] Successfully collected {} built-in functions in {:?}",
+                  builtin_functions.len(), duration);
+        builtin_functions
     }
 
     /// Lazy fetch functions for a specific schema - only fetches functions individually
     fn fetch_functions_lazy(&mut self, schema: &str) -> Vec<String> {
         let start_time = std::time::Instant::now();
-        debug_log!("[fetch_functions_lazy] Starting lazy fetch for schema '{}'", schema);
+        debug!("[fetch_functions_lazy] Starting lazy fetch for schema '{}'", schema);
 
         let (current_dbname, current_host, current_port, has_connection, is_test) = {
             let db_guard = self.database.lock().unwrap();
@@ -808,7 +1107,7 @@ impl SqlCompleter {
             if let Some(functions_in_schema) = functions_map.get(&cache_key) {
                 let duration = start_time.elapsed();
                 self.cache_stats.function_hits += 1;
-                debug_log!(
+                debug!(
                     "[fetch_functions_lazy] Cache hit! Returning {} functions for schema '{}' in {:?}",
                     functions_in_schema.len(),
                     schema,
@@ -821,7 +1120,7 @@ impl SqlCompleter {
         if !has_connection {
             if is_test {
                 // Return mock data for tests
-                debug_log!("[fetch_functions_lazy] Using test mock data");
+                debug!("[fetch_functions_lazy] Using test mock data");
                 let mock_functions = vec!["generate_series".to_string(), "now".to_string()];
                 let mut new_functions_map = self.functions_cache.clone().unwrap_or_default();
                 new_functions_map.insert(cache_key, mock_functions.clone());
@@ -829,17 +1128,17 @@ impl SqlCompleter {
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
                 return mock_functions;
             } else {
-                debug_log!("[fetch_functions_lazy] No database connection available");
+                debug!("[fetch_functions_lazy] No database connection available");
                 return Vec::new();
             }
         }
 
         // Use lazy loading - only fetch functions for this specific schema
-        debug_log!("[fetch_functions_lazy] Using lazy loading approach for individual function fetch in schema '{}'", schema);
+        debug!("[fetch_functions_lazy] Using lazy loading approach for individual function fetch in schema '{}'", schema);
 
         // Fallback to individual fetch - skip batch fetch completely
         self.cache_stats.function_misses += 1;
-        debug_log!("[fetch_functions_lazy] Fetching functions individually for schema '{}'", schema);
+        debug!("[fetch_functions_lazy] Fetching functions individually for schema '{}'", schema);
         let db_clone: Arc<Mutex<Database>> = Arc::clone(&self.database);
         let schema_owned = schema.to_string();
         let fetched_data_from_thread = match tokio::runtime::Handle::try_current() {
@@ -868,7 +1167,7 @@ impl SqlCompleter {
                 self.functions_cache = Some(new_functions_map);
                 self.update_cache_metadata(&current_dbname, &current_host, current_port);
                 let duration = start_time.elapsed();
-                debug_log!("[fetch_functions_lazy] Successfully fetched {} functions for schema '{}' in {:?}",
+                debug!("[fetch_functions_lazy] Successfully fetched {} functions for schema '{}' in {:?}",
                           functions.len(), schema, duration);
                 functions
             }
@@ -886,6 +1185,9 @@ impl SqlCompleter {
 
 impl Completer for SqlCompleter {
     fn complete(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        
+        // Basic completion debug info
+        debug!("Completion request: line='{}' (len={}), pos={}", line, line.len(), pos);
         
         // At the beginning of each completion request, ensure cache validity.
         // This handles both TTL and DB connection changes.
@@ -910,8 +1212,9 @@ impl Completer for SqlCompleter {
         let mut completions = Vec::new();
 
         // Determine the start of the word to be completed
+        // NOTE: We don't treat '.' as a word boundary to support table.column patterns
         let word_start = line[..pos]
-            .rfind(|c: char| c.is_whitespace() || c == '(' || c == '.' || c == ',')
+            .rfind(|c: char| c.is_whitespace() || c == '(' || c == ',')
             .map_or(0, |idx| idx + 1);
 
         let current_word = &line[word_start..pos]; // Define current_word here
@@ -1177,20 +1480,242 @@ impl Completer for SqlCompleter {
             return completions;
         }
 
-        // Check for dot completion first (existing functionality)
-        // If we have a dot, let the existing dot completion logic handle it
-        let has_dot_completion = word_start > 0 && line.chars().nth(word_start - 1) == Some('.');
-        
-        // SQL CONTEXT ANALYSIS - Only apply if not doing dot completion
-        if !has_dot_completion {
+        // SQL CONTEXT ANALYSIS - Handle both regular and table.column patterns
+        {
             let sql_context = parse_sql_context(line, pos);
+            
+            debug!("SQL Context Analysis: full_line='{}', pos={}, context={:?}", line, pos, sql_context);
+            debug!("  Line before cursor: '{}'", &line[..pos.min(line.len())]);
+            debug!("  FROM tables found: {} tables", match &sql_context {
+                SqlContext::SelectClause { from_tables } |
+                SqlContext::WhereClause { from_tables } |
+                SqlContext::OrderByClause { from_tables } |
+                SqlContext::GroupByClause { from_tables } |
+                SqlContext::HavingClause { from_tables } => from_tables.len(),
+                _ => 0,
+            });
+            
+            // Update recent tables cache when we detect FROM tables
+            match &sql_context {
+                SqlContext::SelectClause { from_tables } |
+                SqlContext::WhereClause { from_tables } |
+                SqlContext::OrderByClause { from_tables } |
+                SqlContext::GroupByClause { from_tables } |
+                SqlContext::HavingClause { from_tables } if !from_tables.is_empty() => {
+                    self.update_recent_tables(from_tables);
+                    debug!("Updated recent tables cache with {} tables", from_tables.len());
+                }
+                _ => {
+                    debug!("No FROM tables to cache. Recent cache has {} entries: {:?}", 
+                           self.recent_tables.len(), self.recent_table_order);
+                }
+            }
             
             // Handle context-aware completions
             match &sql_context {
             SqlContext::SelectClause { from_tables } => {
-                // After SELECT, suggest columns from FROM tables, * and aggregate functions
-                let context_suggestions = get_context_suggestions(&sql_context);
+                if !from_tables.is_empty() {
+                    debug!("SelectClause context with {} from_tables", from_tables.len());
+                    for table_ref in from_tables.iter() {
+                        debug!("Table: {} (alias: {:?}, schema: {:?})", 
+                                table_ref.table_name, table_ref.alias, table_ref.schema);
+                    }
+                }
                 
+                // Check if current word contains a dot (table.column pattern)
+                if current_word.contains('.') {
+                    debug!("Handling table.column pattern: '{}'", current_word);
+                    let parts: Vec<&str> = current_word.splitn(2, '.').collect();
+                    if parts.len() == 2 {
+                        let table_prefix = parts[0];
+                        let column_prefix = parts[1];
+                        debug!("Extracted table_prefix='{}', column_prefix='{}'", table_prefix, column_prefix);
+                        
+                        // Try to find matching table by alias or name in from_tables first
+                        let mut found_table = false;
+                        for table_ref in from_tables {
+                            let matches_alias = table_ref.alias.as_ref().map(|a| a == table_prefix).unwrap_or(false);
+                            let matches_table_name = table_ref.table_name == table_prefix;
+                            
+                            if matches_alias || matches_table_name {
+                                debug!("Found matching table in FROM: {} (matches_alias={}, matches_table_name={})", 
+                                       table_ref.table_name, matches_alias, matches_table_name);
+                                found_table = true;
+                                
+                                let full_table_name = if let Some(ref schema) = table_ref.schema {
+                                    format!("{}.{}", schema, table_ref.table_name)
+                                } else {
+                                    table_ref.table_name.clone()
+                                };
+                                
+                                debug!("Fetching columns for specific table: {}", full_table_name);
+                                let columns = self.fetch_columns_lazy(&full_table_name);
+                                debug!("Found {} columns for table {}, filtering by column_prefix: '{}'", 
+                                       columns.len(), full_table_name, column_prefix);
+                                
+                                for column in columns {
+                                    if column.to_lowercase().starts_with(&column_prefix.to_lowercase()) {
+                                        debug!("Adding qualified column suggestion: {}.{}", table_prefix, column);
+                                        let display_name = table_ref.alias.as_ref()
+                                            .unwrap_or(&table_ref.table_name);
+                                        completions.push(Suggestion {
+                                            value: format!("{}.{}", table_prefix, column),
+                                            description: Some(format!("Column from {}", display_name)),
+                                            span: Span { start: word_start, end: pos },
+                                            append_whitespace: true,
+                                            extra: None,
+                                            style: Some(Style::new().fg(Color::Green)),
+                                        });
+                                    }
+                                }
+                                break; // Found the matching table, no need to continue
+                            }
+                        }
+                        
+                        // If no match in from_tables, try recent tables cache
+                        if !found_table {
+                            debug!("No match in FROM tables, checking recent tables cache for: '{}'", table_prefix);
+                            if let Some(recent_table_ref) = self.find_recent_table(table_prefix).cloned() {
+                                debug!("Found matching table in recent cache: {} (alias: {:?})", 
+                                       recent_table_ref.table_name, recent_table_ref.alias);
+                                
+                                let full_table_name = if let Some(ref schema) = recent_table_ref.schema {
+                                    format!("{}.{}", schema, recent_table_ref.table_name)
+                                } else {
+                                    recent_table_ref.table_name.clone()
+                                };
+                                
+                                debug!("Fetching columns for recent table: {}", full_table_name);
+                                let columns = self.fetch_columns_lazy(&full_table_name);
+                                debug!("Found {} columns for recent table {}, filtering by column_prefix: '{}'", 
+                                       columns.len(), full_table_name, column_prefix);
+                                
+                                for column in columns {
+                                    if column.to_lowercase().starts_with(&column_prefix.to_lowercase()) {
+                                        debug!("Adding qualified column suggestion from recent: {}.{}", table_prefix, column);
+                                        let display_name = recent_table_ref.alias.as_ref()
+                                            .unwrap_or(&recent_table_ref.table_name);
+                                        completions.push(Suggestion {
+                                            value: format!("{}.{}", table_prefix, column),
+                                            description: Some(format!("Column from {} (recent)", display_name)),
+                                            span: Span { start: word_start, end: pos },
+                                            append_whitespace: true,
+                                            extra: None,
+                                            style: Some(Style::new().fg(Color::Yellow)), // Different color for recent suggestions
+                                        });
+                                    }
+                                }
+                            } else {
+                                debug!("No matching table found in recent cache for: '{}'", table_prefix);
+                            }
+                        }
+                    }
+                } else {
+                    // Handle single-table column completion (prioritize when only one table)
+                    if from_tables.len() == 1 {
+                        debug!("Single table detected: {}, suggesting all matching columns", from_tables[0].table_name);
+                        let table_ref = &from_tables[0];
+                        let full_table_name = if let Some(ref schema) = table_ref.schema {
+                            format!("{}.{}", schema, table_ref.table_name)
+                        } else {
+                            table_ref.table_name.clone()
+                        };
+                        
+                        debug!("Fetching columns for single table: {}", full_table_name);
+                        let columns = self.fetch_columns_lazy(&full_table_name);
+                        debug!("Found {} columns for single table {}, current word: '{}'", 
+                               columns.len(), full_table_name, current_word);
+                        
+                        for column in columns {
+                            if column.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                                debug!("Adding single-table column suggestion: {}", column);
+                                let display_name = table_ref.alias.as_ref()
+                                    .unwrap_or(&table_ref.table_name);
+                                completions.push(Suggestion {
+                                    value: column.clone(),
+                                    description: Some(format!("Column from {}", display_name)),
+                                    span: Span { start: word_start, end: pos },
+                                    append_whitespace: true,
+                                    extra: None,
+                                    style: Some(Style::new().fg(Color::Green)),
+                                });
+                            }
+                        }
+                    } else if from_tables.is_empty() && !self.recent_tables.is_empty() {
+                        // No FROM tables found, but we have recent tables - use context inference
+                        debug!("No FROM tables found, using recent table context inference for: '{}'", current_word);
+                        debug!("Recent tables available: {:?}", self.recent_table_order);
+                        
+                        // Suggest columns from the most recently used table
+                        if let Some(most_recent_key) = self.recent_table_order.first().cloned() {
+                            if let Some(recent_table_ref) = self.recent_tables.get(&most_recent_key).cloned() {
+                                debug!("Using most recent table: {} (alias: {:?})", 
+                                       recent_table_ref.table_name, recent_table_ref.alias);
+                                
+                                let full_table_name = if let Some(ref schema) = recent_table_ref.schema {
+                                    format!("{}.{}", schema, recent_table_ref.table_name)
+                                } else {
+                                    recent_table_ref.table_name.clone()
+                                };
+                                
+                                debug!("Fetching columns for recent table inference: {}", full_table_name);
+                                let columns = self.fetch_columns_lazy(&full_table_name);
+                                debug!("Found {} columns for recent table {}, current word: '{}'", 
+                                       columns.len(), full_table_name, current_word);
+                                
+                                for column in columns {
+                                    if column.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                                        debug!("Adding inferred column suggestion: {}", column);
+                                        let display_name = recent_table_ref.alias.as_ref()
+                                            .unwrap_or(&recent_table_ref.table_name);
+                                        completions.push(Suggestion {
+                                            value: column.clone(),
+                                            description: Some(format!("Column from {} (inferred)", display_name)),
+                                            span: Span { start: word_start, end: pos },
+                                            append_whitespace: true,
+                                            extra: None,
+                                            style: Some(Style::new().fg(Color::Cyan)), // Different color for inferred suggestions
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        // Regular multi-table column completion
+                        debug!("Handling multi-table column completion for: '{}' ({} tables)", current_word, from_tables.len());
+                        for table_ref in from_tables {
+                            let full_table_name = if let Some(ref schema) = table_ref.schema {
+                                format!("{}.{}", schema, table_ref.table_name)
+                            } else {
+                                table_ref.table_name.clone()
+                            };
+                            
+                            debug!("Fetching columns for table: {}", full_table_name);
+                            let columns = self.fetch_columns_lazy(&full_table_name);
+                            debug!("Found {} columns for table {}, current word: '{}'", 
+                                   columns.len(), full_table_name, current_word);
+                            
+                            for column in columns {
+                                if column.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                                    debug!("Adding column suggestion: {}", column);
+                                    let display_name = table_ref.alias.as_ref()
+                                        .unwrap_or(&table_ref.table_name);
+                                    completions.push(Suggestion {
+                                        value: column.clone(),
+                                        description: Some(format!("Column from {}", display_name)),
+                                        span: Span { start: word_start, end: pos },
+                                        append_whitespace: true,
+                                        extra: None,
+                                        style: Some(Style::new().fg(Color::Green)),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                // Then, suggest generic SQL constructs (*, COUNT, etc.)
+                let context_suggestions = get_context_suggestions(&sql_context);
                 for suggestion in context_suggestions {
                     if suggestion.to_lowercase().starts_with(&current_word.to_lowercase()) {
                         completions.push(Suggestion {
@@ -1204,38 +1729,41 @@ impl Completer for SqlCompleter {
                     }
                 }
                 
-                // Also suggest column names from FROM tables
-                for table in from_tables {
-                    let columns = self.fetch_columns_lazy(table);
-                    for column in columns {
-                        if column.to_lowercase().starts_with(&current_word.to_lowercase()) {
-                            completions.push(Suggestion {
-                                value: column.clone(),
-                                description: Some(format!("Column from {}", table)),
-                                span: Span { start: word_start, end: pos },
-                                append_whitespace: true,
-                                extra: None,
-                                style: Some(Style::new().fg(Color::Green)),
-                            });
-                        }
-                    }
-                }
+                debug!("After processing SELECT context: from_tables={}, completions={}", 
+                       from_tables.len(), completions.len());
                 
+                // Early return for SELECT context: if we have any completions (columns or SQL suggestions),
+                // return early to prevent general table completion logic from overriding them
                 if !completions.is_empty() {
+                    debug!("Early return: {} from_tables, {} completions", 
+                           from_tables.len(), completions.len());
                     return completions;
                 }
+                
+                debug!("Continuing to general completion logic");
+                
+                // For SELECT with FROM tables, allow other completion logic to run
+                // This enables keyword and function suggestions alongside column suggestions
             }
             SqlContext::WhereClause { from_tables } | 
             SqlContext::OrderByClause { from_tables } | 
             SqlContext::GroupByClause { from_tables } => {
                 // After WHERE/ORDER BY/GROUP BY, suggest column names from FROM tables
-                for table in from_tables {
-                    let columns = self.fetch_columns_lazy(table);
+                for table_ref in from_tables {
+                    let full_table_name = if let Some(ref schema) = table_ref.schema {
+                        format!("{}.{}", schema, table_ref.table_name)
+                    } else {
+                        table_ref.table_name.clone()
+                    };
+                    
+                    let columns = self.fetch_columns_lazy(&full_table_name);
                     for column in columns {
                         if column.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                            let display_name = table_ref.alias.as_ref()
+                                .unwrap_or(&table_ref.table_name);
                             completions.push(Suggestion {
                                 value: column.clone(),
-                                description: Some(format!("Column from {}", table)),
+                                description: Some(format!("Column from {}", display_name)),
                                 span: Span { start: word_start, end: pos },
                                 append_whitespace: true,
                                 extra: None,
@@ -1266,13 +1794,21 @@ impl Completer for SqlCompleter {
                 }
                 
                 // Also suggest column names
-                for table in from_tables {
-                    let columns = self.fetch_columns_lazy(table);
+                for table_ref in from_tables {
+                    let full_table_name = if let Some(ref schema) = table_ref.schema {
+                        format!("{}.{}", schema, table_ref.table_name)
+                    } else {
+                        table_ref.table_name.clone()
+                    };
+                    
+                    let columns = self.fetch_columns_lazy(&full_table_name);
                     for column in columns {
                         if column.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                            let display_name = table_ref.alias.as_ref()
+                                .unwrap_or(&table_ref.table_name);
                             completions.push(Suggestion {
                                 value: column.clone(),
-                                description: Some(format!("Column from {}", table)),
+                                description: Some(format!("Column from {}", display_name)),
                                 span: Span { start: word_start, end: pos },
                                 append_whitespace: true,
                                 extra: None,
@@ -1510,7 +2046,7 @@ impl Completer for SqlCompleter {
         } else {
             // Case 2: current_word is like "table_prefix" (e.g. "data_") or empty.
             // Suggest tables from all accessible schemas.
-            debug_log!("[completion] Fetching all tables for completion");
+            debug!("[completion] Fetching all tables for completion");
             let all_tables_from_all_schemas = self.fetch_tables_lazy("");
             for table_name in all_tables_from_all_schemas {
                 if table_name.to_lowercase().starts_with(&lower_current_word) {
@@ -1532,13 +2068,33 @@ impl Completer for SqlCompleter {
 
         // Suggest functions only if we're in keyword context and haven't already returned early
         if is_keyword_context {
-            debug_log!("[completion] Fetching functions for completion");
-            let functions = self.fetch_functions_lazy("public");
-            for func in functions {
+            debug!("[completion] Fetching functions for completion");
+            
+            // Get built-in functions based on database type
+            let builtin_functions = self.fetch_builtin_functions_lazy();
+            for func in builtin_functions {
                 if func.to_lowercase().starts_with(&lower_current_word) {
                     completions.push(Suggestion {
                         value: func.clone(),
-                        description: Some("Function".to_string()),
+                        description: Some("Built-in Function".to_string()),
+                        span: Span {
+                            start: word_start,
+                            end: pos,
+                        },
+                        append_whitespace: false, // Functions with ( don't need space
+                        extra: None,
+                        style: Some(Style::new().fg(Color::Cyan)),
+                    });
+                }
+            }
+            
+            // Also get user-defined functions
+            let user_functions = self.fetch_functions_lazy("public");
+            for func in user_functions {
+                if func.to_lowercase().starts_with(&lower_current_word) {
+                    completions.push(Suggestion {
+                        value: func.clone(),
+                        description: Some("User Function".to_string()),
                         span: Span {
                             start: word_start,
                             end: pos,
@@ -1572,18 +2128,23 @@ impl Completer for SqlCompleter {
             }
         }
 
-        // Sort suggestions by type priority (Tables/Views first, then Schemas, Functions, then Keywords)
+        // Sort suggestions by type priority (Columns first, then context suggestions, then others)
         // and secondarily by alphabetical order
         completions.sort_by(|a, b| {
             let type_priority = |suggestion: &Suggestion| -> i32 {
                 match suggestion.description.as_deref() {
-                    Some("Table/View") => 1,
-                    Some(desc) if desc.starts_with("Table/View") => 1,
-                    Some("Column") => 2,
-                    Some("Schema") => 3,
-                    Some("Function") => 4,
-                    Some("SQL Keyword") => 5,
-                    _ => 6,
+                    Some(desc) if desc.starts_with("Column from") => 0, // Highest priority
+                    Some("*") => 1, // Special SQL constructs 
+                    Some("SQL suggestion") => 2, // Context suggestions like COUNT(, SUM(
+                    Some("Table/View") => 3,
+                    Some(desc) if desc.starts_with("Table/View") => 3,
+                    Some("Column") => 4, // Generic columns (from dot completion)
+                    Some("Built-in Function") => 5,
+                    Some("User Function") => 6,
+                    Some("Function") => 7,
+                    Some("Schema") => 8,
+                    Some("SQL Keyword") => 9,
+                    _ => 10,
                 }
             };
             
@@ -1616,7 +2177,7 @@ impl Completer for SqlCompleter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, SavedSession};
+    use crate::config::SavedSession;
     use std::sync::{Arc, Mutex};
 
     async fn create_test_completer() -> SqlCompleter {
@@ -1624,74 +2185,8 @@ mod tests {
         let db_instance = crate::db::Database::new_for_test();
         let db_arc = Arc::new(Mutex::new(db_instance));
 
-        let mut completer = SqlCompleter {
-            database: db_arc,
-            sql_keywords: vec![
-                "SELECT",
-                "FROM",
-                "WHERE",
-                "INSERT",
-                "UPDATE",
-                "DELETE",
-                "DROP",
-                "CREATE",
-                "ALTER",
-                "TABLE",
-                "VIEW",
-                "INDEX",
-                "TRIGGER",
-                "FUNCTION",
-                "PROCEDURE",
-                "SCHEMA",
-                "DATABASE",
-                "GROUP BY",
-                "ORDER BY",
-                "HAVING",
-                "JOIN",
-                "LEFT JOIN",
-                "RIGHT JOIN",
-                "INNER JOIN",
-                "FULL JOIN",
-                "CROSS JOIN",
-                "UNION",
-                "INTERSECT",
-                "EXCEPT",
-                "LIMIT",
-                "OFFSET",
-                "ASC",
-                "DESC",
-                "DISTINCT",
-                "ALL",
-                "IN",
-                "BETWEEN",
-                "LIKE",
-                "ILIKE",
-                "SIMILAR TO",
-                "IS NULL",
-                "IS NOT NULL",
-                "AND",
-                "OR",
-                "NOT",
-                "TRUE",
-                "FALSE",
-            ]
-            .into_iter()
-            .map(String::from)
-            .collect(),
-            config: Config::load(),
-            schemas_cache: None,
-            tables_cache: None,
-            columns_cache: None,
-            functions_cache: None,
-            cache_last_updated: None,
-            cache_ttl: Duration::from_secs(300),
-            ssh_tunnel_cache_ttl: Duration::from_secs(1800),
-            cached_for_dbname: None,
-            cached_for_host: None,
-            cached_for_port: None,
-            cache_stats: CacheStatistics::default(),
-            max_cache_entries: 10000,
-        };
+        // Use the actual new() method to get the real keyword list
+        let mut completer = SqlCompleter::new(db_arc);
 
         // Keep existing mock config data for named queries and sessions
         completer
@@ -2077,5 +2572,145 @@ mod tests {
         // The span should replace just the "u" part
         assert_eq!(users_suggestion.span.start, 14); // Position of "u" in "SELECT * FROM u"
         assert_eq!(users_suggestion.span.end, 15);   // End of "u"
+    }
+    
+    #[tokio::test]
+    async fn test_builtin_function_completion() {
+        let mut completer = create_test_completer().await;
+        
+        // Test completion of SQL aggregate functions
+        let line = "COUNT";
+        let suggestions = completer.complete(line, line.len());
+        
+        // Should suggest COUNT( function from hardcoded keywords  
+        assert!(suggestions.iter().any(|s| s.value == "COUNT("), 
+            "Should suggest 'COUNT(' function. Got: {:?}", 
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>());
+        
+        // Test string functions
+        let line = "UPPER";
+        let suggestions = completer.complete(line, line.len());
+        
+        // Should suggest UPPER( function 
+        assert!(suggestions.iter().any(|s| s.value == "UPPER("), 
+            "Should suggest 'UPPER(' function. Got: {:?}", 
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>());
+        
+        // Test date functions
+        let line = "NOW";
+        let suggestions = completer.complete(line, line.len());
+        
+        // Should suggest NOW() function
+        assert!(suggestions.iter().any(|s| s.value == "NOW()"), 
+            "Should suggest 'NOW()' function. Got: {:?}", 
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>());
+    }
+    
+    #[tokio::test]
+    async fn test_context_aware_column_completion_with_alias() {
+        let mut completer = create_test_completer().await;
+        
+        // Test column completion when cursor is moved back to SELECT after writing FROM
+        let line = "SELECT  FROM users u";
+        let suggestions = completer.complete(line, 7); // Position after "SELECT "
+        
+        // Should suggest columns from users table
+        assert!(suggestions.iter().any(|s| s.value == "id"), 
+            "Should suggest 'id' column from users table. Got: {:?}", 
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>());
+        
+        // Should show proper description with alias
+        let id_suggestion = suggestions.iter()
+            .find(|s| s.value == "id")
+            .expect("Should find id suggestion");
+        assert_eq!(id_suggestion.description, Some("Column from u".to_string()));
+        
+        // Should also suggest * and aggregate functions in SELECT context
+        assert!(suggestions.iter().any(|s| s.value == "*"), 
+            "Should suggest '*' in SELECT context");
+        assert!(suggestions.iter().any(|s| s.value == "COUNT("), 
+            "Should suggest 'COUNT(' in SELECT context");
+        
+        // Most importantly: columns should come FIRST in the suggestions list
+        let first_suggestion = &suggestions[0];
+        assert!(first_suggestion.description.as_ref().unwrap().starts_with("Column from"), 
+            "First suggestion should be a column, got: {:?}", first_suggestion);
+    }
+    
+    #[tokio::test]
+    async fn test_column_prioritization_in_select() {
+        let mut completer = create_test_completer().await;
+        
+        // Test that columns are prioritized over SQL keywords/functions
+        let line = "SELECT n FROM users";
+        let suggestions = completer.complete(line, 8); // Position after "SELECT n"
+        
+        // Should find the 'name' column
+        assert!(suggestions.iter().any(|s| s.value == "name"), 
+            "Should suggest 'name' column. Got: {:?}", 
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>());
+        
+        // The 'name' column should be the first suggestion
+        let first_suggestion = &suggestions[0];
+        assert_eq!(first_suggestion.value, "name", 
+            "First suggestion should be 'name' column, got: {:?}", first_suggestion.value);
+        assert!(first_suggestion.description.as_ref().unwrap().starts_with("Column from"), 
+            "First suggestion should be a column, got: {:?}", first_suggestion.description);
+    }
+    
+    #[tokio::test]
+    async fn test_column_completion_with_underscore_table() {
+        let mut completer = create_test_completer().await;
+        
+        // Test the specific case from the user: "SELECT  FROM users_user"
+        let line = "SELECT  FROM users_user";
+        let suggestions = completer.complete(line, 7); // Position after "SELECT "
+        
+        // Debug: Print all suggestions to see what we get
+        println!("Suggestions for 'SELECT  FROM users_user': {:?}", 
+                suggestions.iter().map(|s| (&s.value, &s.description)).collect::<Vec<_>>());
+        
+        // Should have some suggestions (either columns if table exists, or fallback suggestions)
+        assert!(!suggestions.is_empty(), "Should have some suggestions");
+        
+        // If we can't fetch columns from users_user (because it doesn't exist in test), 
+        // we should at least get the context suggestions like *, COUNT(, etc.
+        assert!(suggestions.iter().any(|s| s.value == "*"), 
+            "Should suggest '*' in SELECT context. Got: {:?}", 
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>());
+        
+        // Check that we maintain the correct prioritization - columns first if any, then * and functions
+        if suggestions.iter().any(|s| s.description.as_ref().map_or(false, |d| d.starts_with("Column from"))) {
+            // If we have columns, they should be first
+            let first_suggestion = &suggestions[0];
+            assert!(first_suggestion.description.as_ref().unwrap().starts_with("Column from"), 
+                "First suggestion should be a column when available, got: {:?}", first_suggestion);
+        } else {
+            // If no columns available, * should be first
+            let first_suggestion = &suggestions[0];
+            assert_eq!(first_suggestion.value, "*", 
+                "When no columns available, '*' should be first suggestion, got: {:?}", first_suggestion.value);
+        }
+    }
+    
+    #[tokio::test]
+    async fn test_function_suggestions_in_select_context() {
+        let mut completer = create_test_completer().await;
+        
+        // Test that functions are suggested in SELECT context
+        let line = "SELECT UP";
+        let suggestions = completer.complete(line, line.len());
+        
+        assert!(suggestions.iter().any(|s| s.value == "UPPER("), 
+            "Should suggest 'UPPER(' function in SELECT context. Got: {:?}", 
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>());
+        
+        // Test type conversion functions
+        let line = "SELECT CAST";
+        let suggestions = completer.complete(line, line.len());
+        
+        assert!(suggestions.iter().any(|s| s.value == "CAST("), 
+            "Should suggest 'CAST(' function. Got: {:?}", 
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>());
     }
 }

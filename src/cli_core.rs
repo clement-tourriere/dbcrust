@@ -1,5 +1,6 @@
 use crate::cli::Args;
 use crate::commands::{CommandExecutor, CommandParser, CommandResult};
+use crate::completion::{NoopCompleter, SqlCompleter};
 use crate::config::{set_global_verbosity_override, Config as DbCrustConfig, VerbosityLevel};
 use crate::database::ConnectionInfo;
 use crate::db::Database;
@@ -16,6 +17,21 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use terminal_size;
 use url;
+
+/// Wrapper for shared completer to work with reedline
+struct SharedCompleterWrapper {
+    completer: Arc<Mutex<SqlCompleter>>,
+}
+
+impl reedline::Completer for SharedCompleterWrapper {
+    fn complete(&mut self, line: &str, pos: usize) -> Vec<reedline::Suggestion> {
+        if let Ok(mut completer) = self.completer.lock() {
+            completer.complete(line, pos)
+        } else {
+            Vec::new()
+        }
+    }
+}
 
 /// Core CLI functionality shared between Rust and Python interfaces
 pub struct CliCore {
@@ -174,9 +190,9 @@ impl CliCore {
         // Also enable debug logging if --debug flag is provided, overriding config
         if args.debug {
             let mut temp_config = cli_core.config.clone();
-            temp_config.debug_logging_enabled = true;
+            temp_config.logging.level = crate::config::LogLevel::Debug;
 
-            if !cli_core.config.debug_logging_enabled {
+            if temp_config.logging.level != crate::config::LogLevel::Debug {
                 debug_log!("Debug logging enabled via command line flag");
             }
 
@@ -368,7 +384,7 @@ impl CliCore {
                         self.config.autocomplete_enabled
                     );
                     println!("  Pager enabled: {}", self.config.pager_enabled);
-                    println!("  Debug logging: {}", self.config.debug_logging_enabled);
+                    println!("  Logging level: {}", self.config.logging.level);
                 }
                 _ => {
                     eprintln!("Command '{command_trimmed}' requires a database connection");
@@ -679,7 +695,6 @@ impl CliCore {
 
     /// Run interactive mode - core interactive logic
     pub async fn run_interactive_mode(&mut self, args: &Args) -> Result<(), CliError> {
-        use crate::completion::{NoopCompleter, SqlCompleter};
         use crate::highlighter::SqlHighlighter;
         use reedline::{Reedline, Signal};
 
@@ -756,11 +771,21 @@ impl CliCore {
                 .unwrap_or_else(|_| FileBackedHistory::default())
         });
 
-        // Create completer and editor with full configuration
-        let completer = if self.config.autocomplete_enabled {
-            Box::new(SqlCompleter::new(db_arc.clone())) as Box<dyn reedline::Completer>
+        // Create shared completer that can be accessed from both line editor and SQL execution
+        let shared_completer = if self.config.autocomplete_enabled {
+            Some(Arc::new(Mutex::new(SqlCompleter::new(db_arc.clone()))))
         } else {
-            Box::new(NoopCompleter {}) as Box<dyn reedline::Completer>
+            None
+        };
+
+        // Create completer wrapper for reedline
+        let completer: Box<dyn reedline::Completer> = if let Some(ref shared_comp) = shared_completer {
+            // Create a wrapper that delegates to the shared completer
+            Box::new(SharedCompleterWrapper {
+                completer: shared_comp.clone(),
+            })
+        } else {
+            Box::new(NoopCompleter {})
         };
 
         let mut line_editor = Reedline::create()
@@ -792,7 +817,7 @@ impl CliCore {
                                 last_script.lines().count()
                             );
                             match self
-                                .execute_sql_interactive(&last_script, &db_arc, &interrupt_flag)
+                                .execute_sql_interactive(&last_script, &db_arc, &interrupt_flag, shared_completer.as_ref())
                                 .await
                             {
                                 Ok(_) => {}
@@ -830,7 +855,7 @@ impl CliCore {
 
                     // Handle SQL queries (reedline handles multiline with Alt+Enter automatically)
                     match self
-                        .execute_sql_interactive(line, &db_arc, &interrupt_flag)
+                        .execute_sql_interactive(line, &db_arc, &interrupt_flag, shared_completer.as_ref())
                         .await
                     {
                         Ok(_) => {}
@@ -918,6 +943,7 @@ impl CliCore {
         sql: &str,
         db_arc: &Arc<Mutex<Database>>,
         interrupt_flag: &Arc<AtomicBool>,
+        shared_completer: Option<&Arc<Mutex<SqlCompleter>>>,
     ) -> Result<(), CliError> {
         let results_with_info = {
             let mut db_guard = db_arc.lock().unwrap();
@@ -951,6 +977,13 @@ impl CliCore {
             } else {
                 let formatted_output = format_query_results_psql_with_info(&results_with_info.data, results_with_info.column_info.as_ref());
                 println!("{formatted_output}");
+            }
+        }
+
+        // Update completer cache with tables from executed query
+        if let Some(completer_arc) = shared_completer {
+            if let Ok(mut completer) = completer_arc.lock() {
+                completer.cache_tables_from_executed_query(sql);
             }
         }
 

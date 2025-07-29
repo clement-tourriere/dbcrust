@@ -149,6 +149,67 @@ impl Default for ConnectionConfig {
     }
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum LogLevel {
+    #[serde(rename = "trace")]
+    Trace,
+    #[serde(rename = "debug")]  
+    Debug,
+    #[serde(rename = "info")]
+    Info,
+    #[serde(rename = "warn")]
+    Warn,
+    #[serde(rename = "error")]
+    Error,
+}
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        LogLevel::Info
+    }
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogLevel::Trace => write!(f, "trace"),
+            LogLevel::Debug => write!(f, "debug"), 
+            LogLevel::Info => write!(f, "info"),
+            LogLevel::Warn => write!(f, "warn"),
+            LogLevel::Error => write!(f, "error"),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LoggingConfig {
+    #[serde(default)]
+    pub level: LogLevel,
+    #[serde(default = "default_console_output")]
+    pub console_output: bool,
+    #[serde(default = "default_file_output")]
+    pub file_output: bool,
+    #[serde(default = "default_log_file_path")]
+    pub file_path: String,
+    #[serde(default = "default_max_file_size")]
+    pub max_file_size_mb: u64,
+    #[serde(default = "default_max_files")]
+    pub max_files: usize,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        LoggingConfig {
+            level: LogLevel::Info,
+            console_output: default_console_output(),
+            file_output: default_file_output(),
+            file_path: default_log_file_path(),
+            max_file_size_mb: default_max_file_size(),
+            max_files: default_max_files(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     #[serde(default)]
@@ -173,8 +234,8 @@ pub struct Config {
     #[serde(default = "default_pager_threshold_lines")]
     pub pager_threshold_lines: usize, // 0 means use terminal height
 
-    #[serde(default = "default_debug_logging")]
-    pub debug_logging_enabled: bool,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 
     #[serde(default = "default_show_banner")]
     pub show_banner: bool,
@@ -243,7 +304,7 @@ impl Default for Config {
             pager_enabled: default_pager_enabled(),
             pager_command: default_pager_command(),
             pager_threshold_lines: default_pager_threshold_lines(),
-            debug_logging_enabled: default_debug_logging(),
+            logging: LoggingConfig::default(),
             show_banner: default_show_banner(),
             verbosity_level: default_verbosity_level(),
             multiline_prompt_indicator: default_multiline_prompt_indicator(),
@@ -316,8 +377,30 @@ fn default_pager_threshold_lines() -> usize {
     0 // 0 interpreted as: use terminal height if available, else default to 25-30 lines
 }
 
-fn default_debug_logging() -> bool {
+fn default_console_output() -> bool {
+    true
+}
+
+fn default_file_output() -> bool {
     false
+}
+
+fn default_log_file_path() -> String {
+    // Use config directory + logs/dbcrust.log
+    if let Ok(config_dir) = Config::get_config_dir() {
+        let log_dir = config_dir.join("logs");
+        log_dir.join("dbcrust.log").to_string_lossy().to_string()
+    } else {
+        "dbcrust.log".to_string()
+    }
+}
+
+fn default_max_file_size() -> u64 {
+    10 // 10 MB
+}
+
+fn default_max_files() -> usize {
+    5 // Keep 5 rotated files
 }
 
 fn default_show_banner() -> bool {

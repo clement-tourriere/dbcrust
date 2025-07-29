@@ -821,3 +821,113 @@ config.clear_recent_connections() ?;
 - Reedline for modern CLI experience
 - Conditional compilation for Python bindings
 - Configuration stored in `~/.config/dbcrust/config.toml`
+
+## Logging and Debugging
+
+DBCrust uses the `tracing` crate for structured logging. Configure logging behavior through the `config.toml` file.
+
+### Logging Configuration
+
+Add logging configuration to your `~/.config/dbcrust/config.toml`:
+
+```toml
+[logging]
+# Log levels: trace, debug, info, warn, error
+level = "debug"
+
+# Output to console (default: true)
+console_output = true
+
+# Output to file (default: false)
+file_output = true
+
+# Log file path (default: ~/.config/dbcrust/dbcrust.log)
+file_path = "/path/to/your/logfile.log"
+
+# Maximum log file size in MB before rotation (default: 10)
+max_file_size_mb = 10
+
+# Maximum number of log files to keep (default: 5)
+max_files = 5
+```
+
+### Debugging Autocomplete Issues
+
+To debug autocomplete problems, set `level = "debug"` in your logging configuration:
+
+```bash
+# Build and run with debug logging enabled
+cargo build --release
+./target/release/dbcrust postgres://connection
+
+# In the REPL, type your query and hit TAB
+postgres@postgres=> SELECT   FROM users_user[TAB]
+```
+
+**Debug Output Pattern:**
+```
+2024-01-15 14:30:00.123 DEBUG [dbcrust] SQL Context Analysis - Line: 'SELECT   FROM users_user', Pos: 7
+2024-01-15 14:30:00.124 DEBUG [dbcrust] Context: SelectClause with 1 from_tables
+2024-01-15 14:30:00.125 DEBUG [dbcrust] Table: users_user (alias: None, schema: None)
+2024-01-15 14:30:00.126 DEBUG [dbcrust] Fetching columns for table: users_user
+2024-01-15 14:30:00.130 DEBUG [dbcrust] [fetch_columns] DB query completed in 3.2ms
+2024-01-15 14:30:00.131 DEBUG [dbcrust] Successfully fetched 5 columns: ["id", "name", "email", "created_at", "updated_at"]
+2024-01-15 14:30:00.132 DEBUG [dbcrust] Adding column suggestion: id
+2024-01-15 14:30:00.133 DEBUG [dbcrust] Adding column suggestion: name
+```
+
+**Key Debug Points:**
+- **SQL Context Parsing**: Verify context identification and table extraction
+- **Column Fetching**: Check database query performance and results
+- **Cache Behavior**: Monitor cache hits/misses and invalidations
+- **Completion Logic**: Track suggestion generation and filtering
+
+### Logging Output Options
+
+**Console Only** (default):
+```toml
+[logging]
+level = "info"
+console_output = true
+file_output = false
+```
+
+**File Only** (for production):
+```toml
+[logging]
+level = "warn"
+console_output = false
+file_output = true
+file_path = "/var/log/dbcrust/dbcrust.log"
+```
+
+**Both Console and File** (development):
+```toml
+[logging]
+level = "debug"
+console_output = true
+file_output = true
+file_path = "~/.config/dbcrust/debug.log"
+```
+
+### Log Levels
+
+- **trace**: Most verbose, includes function entry/exit
+- **debug**: Detailed diagnostic information for troubleshooting
+- **info**: General application flow information
+- **warn**: Potentially harmful situations
+- **error**: Error events that allow the application to continue
+
+### Performance Monitoring
+
+Use `debug` level to monitor performance-critical operations:
+
+```toml
+[logging]
+level = "debug"
+```
+
+This will show timing information for:
+- Database queries (`[fetch_columns] DB query completed in X.Xms`)
+- Cache operations (`Cache hit/miss for table 'X'`)
+- Thread operations (`Thread completed in X.Xms`)
