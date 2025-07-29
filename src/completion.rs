@@ -1,7 +1,7 @@
 use crate::config::{Config, SavedSession};
 use crate::db::Database;
 use crate::commands::CommandParser;
-use crate::sql_context::{parse_sql_context, SqlContext, get_context_suggestions, TableReference};
+use crate::sql_context::{parse_sql_context, SqlContext, get_context_suggestions};
 use tracing::{debug, error};
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Span, Suggestion};
@@ -64,10 +64,6 @@ pub struct SqlCompleter {
     cache_stats: CacheStatistics,
     max_cache_entries: usize, // Limit cache size to prevent memory issues
     
-    // Recent context caching for smart inference
-    recent_tables: HashMap<String, TableReference>, // alias -> TableReference
-    recent_table_order: Vec<String>, // Track insertion order for LRU
-    max_recent_tables: usize, // Limit recent table cache size
 }
 
 // NoopCompleter that does nothing - used when autocomplete is disabled
@@ -217,11 +213,6 @@ impl SqlCompleter {
             // Enhanced caching features
             cache_stats: CacheStatistics::default(),
             max_cache_entries: 10000, // Reasonable limit to prevent memory issues
-            
-            // Recent context caching for smart inference
-            recent_tables: HashMap::new(),
-            recent_table_order: Vec::new(),
-            max_recent_tables: 10, // Keep last 10 table contexts
         }
     }
 
@@ -236,77 +227,11 @@ impl SqlCompleter {
         self.cached_for_dbname = None;
         self.cached_for_host = None;
         self.cached_for_port = None;
-        // Clear recent table cache as well
-        self.recent_tables.clear();
-        self.recent_table_order.clear();
         self.cache_stats.cache_invalidations += 1;
         debug!("[clear_cache] Cache cleared, total invalidations: {}", self.cache_stats.cache_invalidations);
     }
     
     /// Update recent tables cache with new table references
-    fn update_recent_tables(&mut self, tables: &[TableReference]) {
-        debug!("[update_recent_tables] Adding {} tables to recent cache", tables.len());
-        
-        for table_ref in tables {
-            // Add table by its actual name
-            let table_key = table_ref.table_name.clone();
-            self.add_to_recent_tables(table_key.clone(), table_ref.clone());
-            
-            // Also add by alias if it exists
-            if let Some(ref alias) = table_ref.alias {
-                self.add_to_recent_tables(alias.clone(), table_ref.clone());
-            }
-        }
-    }
-    
-    /// Add a single table reference to recent cache with LRU management
-    fn add_to_recent_tables(&mut self, key: String, table_ref: TableReference) {
-        // Remove if already exists (for LRU update)
-        if self.recent_tables.contains_key(&key) {
-            self.recent_table_order.retain(|k| k != &key);
-        }
-        
-        // Add to front of order list
-        self.recent_table_order.insert(0, key.clone());
-        self.recent_tables.insert(key, table_ref);
-        
-        // Trim if over limit
-        while self.recent_table_order.len() > self.max_recent_tables {
-            if let Some(old_key) = self.recent_table_order.pop() {
-                self.recent_tables.remove(&old_key);
-            }
-        }
-        
-        debug!("[add_to_recent_tables] Recent cache now has {} entries", self.recent_tables.len());
-    }
-    
-    /// Try to find a table reference by alias or name in recent cache
-    fn find_recent_table(&self, identifier: &str) -> Option<&TableReference> {
-        self.recent_tables.get(identifier)
-    }
-    
-    /// Update recent table cache from executed SQL query
-    /// This should be called whenever a query is executed to cache table references for future completions
-    pub fn cache_tables_from_executed_query(&mut self, sql: &str) {
-        use crate::sql_context::extract_from_tables;
-        
-        debug!("[cache_tables_from_executed_query] Analyzing executed query for table references");
-        
-        // Extract table references from the executed query
-        let table_refs = extract_from_tables(sql);
-        
-        if !table_refs.is_empty() {
-            debug!("[cache_tables_from_executed_query] Found {} table references in executed query: {:?}", 
-                   table_refs.len(), table_refs);
-            
-            // Update the recent table cache with the extracted tables
-            self.update_recent_tables(&table_refs);
-            
-            debug!("[cache_tables_from_executed_query] Successfully cached {} table references", table_refs.len());
-        } else {
-            debug!("[cache_tables_from_executed_query] No table references found in query");
-        }
-    }
 
     /// Get cache statistics for monitoring
     pub fn get_cache_stats(&self) -> &CacheStatistics {
@@ -1495,19 +1420,17 @@ impl Completer for SqlCompleter {
                 _ => 0,
             });
             
-            // Update recent tables cache when we detect FROM tables
+            // Log detected FROM tables for debugging
             match &sql_context {
                 SqlContext::SelectClause { from_tables } |
                 SqlContext::WhereClause { from_tables } |
                 SqlContext::OrderByClause { from_tables } |
                 SqlContext::GroupByClause { from_tables } |
                 SqlContext::HavingClause { from_tables } if !from_tables.is_empty() => {
-                    self.update_recent_tables(from_tables);
-                    debug!("Updated recent tables cache with {} tables", from_tables.len());
+                    debug!("Detected {} FROM tables in current context", from_tables.len());
                 }
                 _ => {
-                    debug!("No FROM tables to cache. Recent cache has {} entries: {:?}", 
-                           self.recent_tables.len(), self.recent_table_order);
+                    debug!("No FROM tables detected in current context");
                 }
             }
             
@@ -1572,42 +1495,9 @@ impl Completer for SqlCompleter {
                             }
                         }
                         
-                        // If no match in from_tables, try recent tables cache
+                        // If no match in FROM tables, we cannot determine the table
                         if !found_table {
-                            debug!("No match in FROM tables, checking recent tables cache for: '{}'", table_prefix);
-                            if let Some(recent_table_ref) = self.find_recent_table(table_prefix).cloned() {
-                                debug!("Found matching table in recent cache: {} (alias: {:?})", 
-                                       recent_table_ref.table_name, recent_table_ref.alias);
-                                
-                                let full_table_name = if let Some(ref schema) = recent_table_ref.schema {
-                                    format!("{}.{}", schema, recent_table_ref.table_name)
-                                } else {
-                                    recent_table_ref.table_name.clone()
-                                };
-                                
-                                debug!("Fetching columns for recent table: {}", full_table_name);
-                                let columns = self.fetch_columns_lazy(&full_table_name);
-                                debug!("Found {} columns for recent table {}, filtering by column_prefix: '{}'", 
-                                       columns.len(), full_table_name, column_prefix);
-                                
-                                for column in columns {
-                                    if column.to_lowercase().starts_with(&column_prefix.to_lowercase()) {
-                                        debug!("Adding qualified column suggestion from recent: {}.{}", table_prefix, column);
-                                        let display_name = recent_table_ref.alias.as_ref()
-                                            .unwrap_or(&recent_table_ref.table_name);
-                                        completions.push(Suggestion {
-                                            value: format!("{}.{}", table_prefix, column),
-                                            description: Some(format!("Column from {} (recent)", display_name)),
-                                            span: Span { start: word_start, end: pos },
-                                            append_whitespace: true,
-                                            extra: None,
-                                            style: Some(Style::new().fg(Color::Yellow)), // Different color for recent suggestions
-                                        });
-                                    }
-                                }
-                            } else {
-                                debug!("No matching table found in recent cache for: '{}'", table_prefix);
-                            }
+                            debug!("No matching table found in FROM clause for prefix: '{}'. Cannot suggest columns without context.", table_prefix);
                         }
                     }
                 } else {
@@ -1639,45 +1529,6 @@ impl Completer for SqlCompleter {
                                     extra: None,
                                     style: Some(Style::new().fg(Color::Green)),
                                 });
-                            }
-                        }
-                    } else if from_tables.is_empty() && !self.recent_tables.is_empty() {
-                        // No FROM tables found, but we have recent tables - use context inference
-                        debug!("No FROM tables found, using recent table context inference for: '{}'", current_word);
-                        debug!("Recent tables available: {:?}", self.recent_table_order);
-                        
-                        // Suggest columns from the most recently used table
-                        if let Some(most_recent_key) = self.recent_table_order.first().cloned() {
-                            if let Some(recent_table_ref) = self.recent_tables.get(&most_recent_key).cloned() {
-                                debug!("Using most recent table: {} (alias: {:?})", 
-                                       recent_table_ref.table_name, recent_table_ref.alias);
-                                
-                                let full_table_name = if let Some(ref schema) = recent_table_ref.schema {
-                                    format!("{}.{}", schema, recent_table_ref.table_name)
-                                } else {
-                                    recent_table_ref.table_name.clone()
-                                };
-                                
-                                debug!("Fetching columns for recent table inference: {}", full_table_name);
-                                let columns = self.fetch_columns_lazy(&full_table_name);
-                                debug!("Found {} columns for recent table {}, current word: '{}'", 
-                                       columns.len(), full_table_name, current_word);
-                                
-                                for column in columns {
-                                    if column.to_lowercase().starts_with(&current_word.to_lowercase()) {
-                                        debug!("Adding inferred column suggestion: {}", column);
-                                        let display_name = recent_table_ref.alias.as_ref()
-                                            .unwrap_or(&recent_table_ref.table_name);
-                                        completions.push(Suggestion {
-                                            value: column.clone(),
-                                            description: Some(format!("Column from {} (inferred)", display_name)),
-                                            span: Span { start: word_start, end: pos },
-                                            append_whitespace: true,
-                                            extra: None,
-                                            style: Some(Style::new().fg(Color::Cyan)), // Different color for inferred suggestions
-                                        });
-                                    }
-                                }
                             }
                         }
                     } else {
