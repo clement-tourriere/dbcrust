@@ -124,32 +124,6 @@ pub struct SavedSession {
     pub options: HashMap<String, String>,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ConnectionConfig {
-    pub host: String,
-    pub port: u16,
-    pub user: String,
-    pub dbname: String,
-    pub save_password: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub password: Option<String>,
-    #[serde(default)]
-    pub ssh_tunnel: Option<SSHTunnelConfig>,
-}
-
-impl Default for ConnectionConfig {
-    fn default() -> Self {
-        ConnectionConfig {
-            host: "localhost".to_string(),
-            port: 5432,
-            user: "postgres".to_string(),
-            dbname: "postgres".to_string(),
-            save_password: false,
-            password: None,
-            ssh_tunnel: None,
-        }
-    }
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum LogLevel {
@@ -214,8 +188,6 @@ impl Default for LoggingConfig {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
-    #[serde(default)]
-    pub connection: ConnectionConfig,
     #[serde(default = "default_default_limit")]
     pub default_limit: usize,
     #[serde(default = "default_expanded_display_default")]
@@ -266,20 +238,6 @@ pub struct Config {
     #[serde(default = "default_metadata_timeout")]
     pub metadata_timeout_seconds: u64,          // 10 = 10 seconds
 
-    // Legacy fields - support deserializing from old config format
-    // These will be skipped during serialization
-    #[serde(skip_serializing, default)]
-    pub host: String,
-    #[serde(skip_serializing, default)]
-    pub port: u16,
-    #[serde(skip_serializing, default)]
-    pub user: String,
-    #[serde(skip_serializing, default)]
-    pub dbname: String,
-    #[serde(skip_serializing, default)]
-    pub save_password: bool,
-    #[serde(skip_serializing, skip_deserializing, default)]
-    pub password: Option<String>,
 
     // Recent connections - not serialized with main config, stored separately
     #[serde(skip)]
@@ -296,9 +254,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        let connection = ConnectionConfig::default();
         Config {
-            connection: connection.clone(),
             default_limit: 100,
             expanded_display_default: false,
             autocomplete_enabled: true,
@@ -319,13 +275,6 @@ impl Default for Config {
             vault_cache_min_ttl_seconds: default_vault_min_ttl(),
             query_timeout_seconds: default_query_timeout(),
             metadata_timeout_seconds: default_metadata_timeout(),
-            // Legacy fields initialized from connection
-            host: connection.host.clone(),
-            port: connection.port,
-            user: connection.user.clone(),
-            dbname: connection.dbname.clone(),
-            save_password: connection.save_password,
-            password: connection.password.clone(),
             recent_connections_storage: {
                 // For tests, use empty storage to avoid loading user data
                 let is_test = std::env::var("RUST_TEST_MODE").is_ok() 
@@ -866,28 +815,6 @@ impl Config {
 
                     match config_result {
                         Ok(mut config) => {
-                            // Handle legacy config files by copying top-level connection fields to the connection struct
-                            // This check detects if we're dealing with an old config format
-                            if content.contains("host =") && !content.contains("connection") {
-                                config.connection.host = config.host.clone();
-                                config.connection.port = config.port;
-                                config.connection.user = config.user.clone();
-                                config.connection.dbname = config.dbname.clone();
-                                config.connection.save_password = config.save_password;
-
-                                // Save the updated format immediately to migrate the file
-                                if let Err(e) = config.save() {
-                                    eprintln!("Error migrating config file: {e}");
-                                }
-                            } else {
-                                // If using the new format, make sure legacy fields are in sync
-                                config.host = config.connection.host.clone();
-                                config.port = config.connection.port;
-                                config.user = config.connection.user.clone();
-                                config.dbname = config.connection.dbname.clone();
-                                config.save_password = config.connection.save_password;
-                                config.password = config.connection.password.clone();
-                            }
                             // Load recent connections, saved sessions, and vault credentials from separate files
                             config.recent_connections_storage = Self::load_recent_connections();
                             config.saved_sessions_storage = Self::load_saved_sessions();
@@ -1174,22 +1101,6 @@ impl Config {
             // NOW ADD TABLE SECTIONS AFTER ALL ROOT-LEVEL FIELDS
             // ================================================================================
 
-            // Connection Settings
-            content.push_str("# ================================================================================\n");
-            content.push_str("# CONNECTION SETTINGS\n");
-            content.push_str("# Default connection parameters when no URL is provided\n");
-            content.push_str("# ================================================================================\n\n");
-            content.push_str("[connection]\n");
-            content.push_str(&format!("# Database host (default: localhost)\n"));
-            content.push_str(&format!("host = \"{}\"\n\n", self.connection.host));
-            content.push_str(&format!("# Database port (default: 5432 for PostgreSQL)\n"));
-            content.push_str(&format!("port = {}\n\n", self.connection.port));
-            content.push_str(&format!("# Database username (default: postgres)\n"));
-            content.push_str(&format!("user = \"{}\"\n\n", self.connection.user));
-            content.push_str(&format!("# Database name (default: postgres)\n"));
-            content.push_str(&format!("dbname = \"{}\"\n\n", self.connection.dbname));
-            content.push_str(&format!("# Save password in config (not recommended)\n"));
-            content.push_str(&format!("save_password = {}\n\n", self.connection.save_password));
 
             // SSH Tunnel Patterns
             content.push_str("# ================================================================================\n");
@@ -1309,50 +1220,7 @@ impl Config {
     }
 
     // Session management methods
-    pub fn save_session(&mut self, name: &str) -> Result<(), Box<dyn Error>> {
-        let session = SavedSession {
-            host: self.connection.host.clone(),
-            port: self.connection.port,
-            user: self.connection.user.clone(),
-            dbname: self.connection.dbname.clone(),
-            ssh_tunnel: self.connection.ssh_tunnel.clone(),
-            database_type: DatabaseType::PostgreSQL, // Default for legacy support
-            file_path: None,
-            options: HashMap::new(),
-        };
 
-        self.saved_sessions_storage.sessions.insert(name.to_string(), session);
-        self.save_saved_sessions()?;
-        Ok(())
-    }
-
-    /// Save session with database type information for multi-database support
-    pub fn save_session_with_db_type(&mut self, name: &str, database_type: DatabaseType, file_path: Option<String>, options: HashMap<String, String>) -> Result<(), Box<dyn Error>> {
-        // Normalize SQLite file paths to absolute paths
-        let normalized_file_path = if database_type == DatabaseType::SQLite {
-            match file_path {
-                Some(path) => Some(Self::normalize_sqlite_path(&path)?),
-                None => None,
-            }
-        } else {
-            file_path
-        };
-
-        let session = SavedSession {
-            host: self.connection.host.clone(),
-            port: self.connection.port,
-            user: self.connection.user.clone(),
-            dbname: self.connection.dbname.clone(),
-            ssh_tunnel: self.connection.ssh_tunnel.clone(),
-            database_type,
-            file_path: normalized_file_path,
-            options,
-        };
-
-        self.saved_sessions_storage.sessions.insert(name.to_string(), session);
-        self.save_saved_sessions()?;
-        Ok(())
-    }
 
     /// Save session from actual connection info (for Docker and other resolved connections)
     pub fn save_session_from_connection_info(&mut self, name: &str, connection_info: &crate::database::ConnectionInfo) -> Result<(), Box<dyn Error>> {
@@ -1420,27 +1288,6 @@ impl Config {
             .collect()
     }
 
-    /// Updates connection parameters without saving the configuration
-    /// This is crucial for ensuring we don't accidentally overwrite user
-    /// defined settings like ssh_tunnel_patterns when updating connection details
-    pub fn update_connection_params(
-        &mut self,
-        host: String,
-        port: u16,
-        user: String,
-        dbname: String,
-    ) {
-        self.connection.host = host.clone();
-        self.connection.port = port;
-        self.connection.user = user.clone();
-        self.connection.dbname = dbname.clone();
-
-        // Keep legacy fields in sync
-        self.host = host;
-        self.port = port;
-        self.user = user;
-        self.dbname = dbname;
-    }
 
     pub fn parse_ssh_tunnel_string(&self, ssh_tunnel_str: &str) -> Option<SSHTunnelConfig> {
         // Format: [user[:password]@]ssh_host[:ssh_port]
