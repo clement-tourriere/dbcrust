@@ -1726,6 +1726,27 @@ impl Completer for SqlCompleter {
                         return completions;
                     }
                 }
+                
+                // Case 3: If word is a partial table name (not "from" keyword), suggest matching tables
+                if !lower_current_word.is_empty() && lower_current_word != "from" {
+                    let tables = self.fetch_tables_lazy("");
+                    for table_name in tables {
+                        if table_name.to_lowercase().starts_with(&lower_current_word) {
+                            completions.push(Suggestion {
+                                value: table_name.clone(),
+                                description: Some("Table/View".to_string()),
+                                span: Span { start: word_start, end: pos },
+                                append_whitespace: true,
+                                extra: None,
+                                style: Some(Style::new().fg(Color::Green)),
+                            });
+                        }
+                    }
+                    
+                    if !completions.is_empty() {
+                        return completions;
+                    }
+                }
             }
             SqlContext::General => {
                 // Use default behavior for general context
