@@ -214,9 +214,13 @@ impl Default for LoggingConfig {
 pub struct Config {
     #[serde(default)]
     pub connection: ConnectionConfig,
+    #[serde(default = "default_default_limit")]
     pub default_limit: usize,
+    #[serde(default = "default_expanded_display_default")]
     pub expanded_display_default: bool,
+    #[serde(default = "default_autocomplete_enabled")]
     pub autocomplete_enabled: bool,
+    #[serde(default = "default_explain_mode_default")]
     pub explain_mode_default: bool,
     #[serde(default = "default_column_selection_threshold")]
     pub column_selection_threshold: usize,
@@ -355,6 +359,22 @@ impl Default for Config {
             },
         }
     }
+}
+
+fn default_default_limit() -> usize {
+    100
+}
+
+fn default_expanded_display_default() -> bool {
+    false
+}
+
+fn default_autocomplete_enabled() -> bool {
+    true
+}
+
+fn default_explain_mode_default() -> bool {
+    false
 }
 
 fn default_column_selection_threshold() -> usize {
@@ -926,6 +946,118 @@ impl Config {
                                                         .insert(name.clone(), query.to_string());
                                                 }
                                             }
+                                        }
+
+                                        // Extract ssh_tunnel_patterns
+                                        if let Some(patterns) =
+                                            table.get("ssh_tunnel_patterns").and_then(|v| v.as_table())
+                                        {
+                                            for (pattern, tunnel_config) in patterns {
+                                                if let Some(config_str) = tunnel_config.as_str() {
+                                                    config
+                                                        .ssh_tunnel_patterns
+                                                        .insert(pattern.clone(), config_str.to_string());
+                                                }
+                                            }
+                                        }
+
+                                        // Extract column_selection_threshold
+                                        if let Some(threshold) =
+                                            table.get("column_selection_threshold").and_then(|v| v.as_integer())
+                                        {
+                                            config.column_selection_threshold = threshold as usize;
+                                        }
+
+                                        // Extract pager settings
+                                        if let Some(pager_enabled) =
+                                            table.get("pager_enabled").and_then(|v| v.as_bool())
+                                        {
+                                            config.pager_enabled = pager_enabled;
+                                        }
+
+                                        if let Some(pager_command) =
+                                            table.get("pager_command").and_then(|v| v.as_str())
+                                        {
+                                            config.pager_command = pager_command.to_string();
+                                        }
+
+                                        if let Some(pager_threshold) =
+                                            table.get("pager_threshold_lines").and_then(|v| v.as_integer())
+                                        {
+                                            config.pager_threshold_lines = pager_threshold as usize;
+                                        }
+
+                                        // Extract show_banner
+                                        if let Some(show_banner) =
+                                            table.get("show_banner").and_then(|v| v.as_bool())
+                                        {
+                                            config.show_banner = show_banner;
+                                        }
+
+                                        // Extract verbosity_level
+                                        if let Some(verbosity) =
+                                            table.get("verbosity_level").and_then(|v| v.as_str())
+                                        {
+                                            if let Ok(level) = serde_json::from_value::<VerbosityLevel>(
+                                                serde_json::Value::String(verbosity.to_string())
+                                            ) {
+                                                config.verbosity_level = level;
+                                            }
+                                        }
+
+                                        // Extract multiline_prompt_indicator
+                                        if let Some(indicator) =
+                                            table.get("multiline_prompt_indicator").and_then(|v| v.as_str())
+                                        {
+                                            config.multiline_prompt_indicator = indicator.to_string();
+                                        }
+
+                                        // Extract vault settings
+                                        if let Some(vault_cache_enabled) =
+                                            table.get("vault_credential_cache_enabled").and_then(|v| v.as_bool())
+                                        {
+                                            config.vault_credential_cache_enabled = vault_cache_enabled;
+                                        }
+
+                                        if let Some(vault_renewal) =
+                                            table.get("vault_cache_renewal_threshold").and_then(|v| v.as_float())
+                                        {
+                                            config.vault_cache_renewal_threshold = vault_renewal;
+                                        }
+
+                                        if let Some(vault_min_ttl) =
+                                            table.get("vault_cache_min_ttl_seconds").and_then(|v| v.as_integer())
+                                        {
+                                            config.vault_cache_min_ttl_seconds = vault_min_ttl as u64;
+                                        }
+
+                                        // Extract timeout settings
+                                        if let Some(query_timeout) =
+                                            table.get("query_timeout_seconds").and_then(|v| v.as_integer())
+                                        {
+                                            config.query_timeout_seconds = query_timeout as u64;
+                                        }
+
+                                        if let Some(metadata_timeout) =
+                                            table.get("metadata_timeout_seconds").and_then(|v| v.as_integer())
+                                        {
+                                            config.metadata_timeout_seconds = metadata_timeout as u64;
+                                        }
+
+                                        // Extract logging configuration
+                                        if let Some(logging) =
+                                            table.get("logging").and_then(|v| v.as_table())
+                                        {
+                                            if let Ok(logging_config) = toml::Value::Table(logging.clone()).try_into::<LoggingConfig>() {
+                                                config.logging = logging_config;
+                                            }
+                                        }
+
+                                        // Extract max_recent_connections
+                                        if let Some(max_recent) =
+                                            table.get("max_recent_connections").and_then(|v| v.as_integer())
+                                        {
+                                            config.max_recent_connections = max_recent as usize;
                                         }
 
                                     }
