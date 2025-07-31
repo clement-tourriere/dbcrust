@@ -735,6 +735,13 @@ impl CliCore {
                 ReedlineEvent::MenuNext,
             ]),
         );
+        
+        // Add Shift+Tab for navigating up through suggestions
+        keybindings.add_binding(
+            KeyModifiers::SHIFT,
+            KeyCode::BackTab,
+            ReedlineEvent::MenuPrevious,
+        );
 
         let edit_mode = Box::new(Emacs::new(keybindings));
 
