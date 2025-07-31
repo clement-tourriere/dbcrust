@@ -6,9 +6,11 @@ use std::error::Error;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use crate::database::DatabaseType;
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
+
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, ValueEnum)]
 pub enum VerbosityLevel {
@@ -462,6 +464,12 @@ fn default_database_type() -> DatabaseType {
 // Global verbosity override for command-line arguments
 static VERBOSITY_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<VerbosityLevel>>> = std::sync::OnceLock::new();
 
+// Global config loading lock to prevent simultaneous config loads during error recovery
+static CONFIG_LOADING_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+// Global config saving lock to prevent recursive config saves during error recovery
+static CONFIG_SAVING_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
 /// Set a global verbosity override that will be used instead of the config file setting
 pub fn set_global_verbosity_override(level: Option<VerbosityLevel>) {
     if let Ok(mut override_val) = VERBOSITY_OVERRIDE.get_or_init(|| std::sync::Mutex::new(None)).lock() {
@@ -777,10 +785,84 @@ impl Config {
     }
 
     pub fn load() -> Self {
+        // Check if another config load is already in progress
+        if CONFIG_LOADING_IN_PROGRESS.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            // Another config load is in progress, return default config silently
+            let mut config = Config::default();
+            config.recent_connections_storage = Self::load_recent_connections();
+            config.saved_sessions_storage = Self::load_saved_sessions();
+            config.vault_credential_storage = Self::load_vault_credentials();
+            
+            // Apply global verbosity override if set
+            if let Some(override_level) = get_global_verbosity_override() {
+                config.verbosity_level = override_level;
+            }
+            
+            return config;
+        }
+        
+        // We now own the lock, proceed with normal loading
+        // Use a guard pattern to ensure the lock is released even if there's a panic
+        struct LockGuard;
+        impl Drop for LockGuard {
+            fn drop(&mut self) {
+                CONFIG_LOADING_IN_PROGRESS.store(false, Ordering::Release);
+            }
+        }
+        let _guard = LockGuard;
+        
+        Self::load_with_retry_count(0)
+    }
+
+    fn load_with_retry_count(retry_count: u32) -> Self {
+        const MAX_RETRIES: u32 = 3;
+        
+        if retry_count >= MAX_RETRIES {
+            eprintln!("Maximum config load retries ({MAX_RETRIES}) exceeded. Using default configuration.");
+            eprintln!("Please check your config file manually or delete it to regenerate: ~/.config/dbcrust/config.toml");
+            let mut config = Config::default();
+            config.recent_connections_storage = Self::load_recent_connections();
+            config.saved_sessions_storage = Self::load_saved_sessions();
+            config.vault_credential_storage = Self::load_vault_credentials();
+            
+            // Apply global verbosity override if set
+            if let Some(override_level) = get_global_verbosity_override() {
+                config.verbosity_level = override_level;
+            }
+            
+            return config;
+        }
+        
+        if retry_count > 0 {
+            eprintln!("Config load retry attempt {retry_count}/{MAX_RETRIES}");
+        }
+        
         if let Some(config_path) = get_config_path() {
             match fs::read_to_string(&config_path) {
                 Ok(content) => {
                     let config_result: Result<Config, toml::de::Error> = toml::from_str(&content);
+                    
+                    // Debug: If parsing fails, show detailed information about the error
+                    if let Err(ref e) = config_result {
+                        eprintln!("TOML parsing error details:");
+                        eprintln!("  Error: {}", e);
+                        
+                        // Check if it's specifically about autocomplete_enabled
+                        if e.to_string().contains("autocomplete_enabled") {
+                            eprintln!("  This is an autocomplete_enabled field type issue");
+                            
+                            // Show the line content for debugging
+                            if let Some(line_num) = e.to_string().lines().next()
+                                .and_then(|l| l.split("line ").nth(1))
+                                .and_then(|l| l.split(',').next())
+                                .and_then(|l| l.parse::<usize>().ok())
+                            {
+                                if let Some(line) = content.lines().nth(line_num - 1) {
+                                    eprintln!("  Problem line {}: {}", line_num, line.trim());
+                                }
+                            }
+                        }
+                    }
 
                     match config_result {
                         Ok(mut config) => {
@@ -816,303 +898,139 @@ impl Config {
                                 config.verbosity_level = override_level;
                             }
                             
+                            // Check if config file is missing any fields and upgrade if needed
+                            if !config.has_all_fields(&content) {
+                                if let Err(e) = config.save_with_documentation() {
+                                    // Silent fallback - don't spam user with config save errors
+                                    eprintln!("Warning: Could not update config file with missing fields: {e}");
+                                    eprintln!("Continuing with existing configuration...");
+                                }
+                            }
+                            
                             config
                         }
                         Err(e) => {
-                            eprintln!("Error parsing config file ({e}), attempting partial load");
+                            if retry_count == 0 {
+                                eprintln!("Error parsing config file ({e}), backing up and creating fresh config");
 
-                            // Try to load the file with a more lenient approach
-                            // First, parse it as a generic TOML Value
-                            match toml::from_str::<toml::Value>(&content) {
-                                Ok(toml_value) => {
-                                    let mut config = Config::default();
+                                // Backup corrupted file and extract SSH tunnel patterns safely
+                                let backup_path = config_path.with_extension("toml.backup");
+                                if let Err(backup_err) = std::fs::copy(&config_path, &backup_path) {
+                                    eprintln!("Warning: Could not backup corrupted config: {backup_err}");
+                                } else {
+                                    println!("Backed up corrupted config to: {}", backup_path.display());
+                                }
 
-                                    // Extract the fields we can from the TOML value
-                                    if let Some(table) = toml_value.as_table() {
-                                        // Extract simple fields
-                                        if let Some(limit) =
-                                            table.get("default_limit").and_then(|v| v.as_integer())
-                                        {
-                                            config.default_limit = limit as usize;
+                                // Extract SSH tunnel patterns using regex (safer than TOML parsing)
+                                let mut config = Config::default();
+                                
+                                // Use regex to safely extract SSH tunnel patterns from corrupted file
+                                let ssh_section_regex = regex::Regex::new(r"(?m)^\[ssh_tunnel_patterns\]$").unwrap();
+                                let pattern_regex = regex::Regex::new(r#"(?m)^"([^"]+(?:\\.[^"]*)*)" = "([^"]+(?:\\.[^"]*)*)"$"#).unwrap();
+                                
+                                if let Some(ssh_match) = ssh_section_regex.find(&content) {
+                                    let ssh_section_start = ssh_match.end();
+                                    
+                                    // Find the next section or end of file
+                                    let next_section_regex = regex::Regex::new(r"(?m)^\[[^\]]+\]$").unwrap();
+                                    let ssh_section_end = next_section_regex
+                                        .find_at(&content, ssh_section_start)
+                                        .map(|m| m.start())
+                                        .unwrap_or(content.len());
+                                    
+                                    let ssh_section = &content[ssh_section_start..ssh_section_end];
+                                    
+                                    // Extract only valid SSH tunnel patterns (skip corrupted config fields)
+                                    for cap in pattern_regex.captures_iter(ssh_section) {
+                                        let pattern = &cap[1];
+                                        let tunnel_config = &cap[2];
+                                        
+                                        // Only accept patterns that look like SSH tunnel patterns
+                                        // Valid patterns contain dots, backslashes, or tunnel configs contain '@'
+                                        if (pattern.contains('.') || pattern.contains("\\\\")) && tunnel_config.contains('@') {
+                                            // Unescape the pattern for internal storage
+                                            let unescaped_pattern = pattern.replace("\\\\", "\\");
+                                            config.ssh_tunnel_patterns.insert(unescaped_pattern, tunnel_config.to_string());
+                                            println!("Preserved SSH tunnel pattern: {} -> {}", pattern, tunnel_config);
+                                        } else {
+                                            eprintln!("Skipping invalid SSH tunnel pattern: {} -> {}", pattern, tunnel_config);
                                         }
-
-                                        if let Some(expanded) = table
-                                            .get("expanded_display_default")
-                                            .and_then(|v| v.as_bool())
-                                        {
-                                            config.expanded_display_default = expanded;
-                                        }
-
-                                        if let Some(autocomplete) = table
-                                            .get("autocomplete_enabled")
-                                            .and_then(|v| v.as_bool())
-                                        {
-                                            config.autocomplete_enabled = autocomplete;
-                                        }
-
-                                        if let Some(explain) = table
-                                            .get("explain_mode_default")
-                                            .and_then(|v| v.as_bool())
-                                        {
-                                            config.explain_mode_default = explain;
-                                        }
-
-                                        // Extract connection info if available
-                                        if let Some(conn) =
-                                            table.get("connection").and_then(|v| v.as_table())
-                                        {
-                                            if let Some(host) =
-                                                conn.get("host").and_then(|v| v.as_str())
-                                            {
-                                                config.connection.host = host.to_string();
-                                                config.host = host.to_string();
-                                            }
-
-                                            if let Some(port) =
-                                                conn.get("port").and_then(|v| v.as_integer())
-                                            {
-                                                config.connection.port = port as u16;
-                                                config.port = port as u16;
-                                            }
-
-                                            if let Some(user) =
-                                                conn.get("user").and_then(|v| v.as_str())
-                                            {
-                                                config.connection.user = user.to_string();
-                                                config.user = user.to_string();
-                                            }
-
-                                            if let Some(dbname) =
-                                                conn.get("dbname").and_then(|v| v.as_str())
-                                            {
-                                                config.connection.dbname = dbname.to_string();
-                                                config.dbname = dbname.to_string();
-                                            }
-
-                                            if let Some(save_pwd) =
-                                                conn.get("save_password").and_then(|v| v.as_bool())
-                                            {
-                                                config.connection.save_password = save_pwd;
-                                                config.save_password = save_pwd;
-                                            }
-                                        }
-
-                                        // Extract legacy connection info if not using connection table
-                                        if !table.contains_key("connection") {
-                                            if let Some(host) =
-                                                table.get("host").and_then(|v| v.as_str())
-                                            {
-                                                config.connection.host = host.to_string();
-                                                config.host = host.to_string();
-                                            }
-
-                                            if let Some(port) =
-                                                table.get("port").and_then(|v| v.as_integer())
-                                            {
-                                                config.connection.port = port as u16;
-                                                config.port = port as u16;
-                                            }
-
-                                            if let Some(user) =
-                                                table.get("user").and_then(|v| v.as_str())
-                                            {
-                                                config.connection.user = user.to_string();
-                                                config.user = user.to_string();
-                                            }
-
-                                            if let Some(dbname) =
-                                                table.get("dbname").and_then(|v| v.as_str())
-                                            {
-                                                config.connection.dbname = dbname.to_string();
-                                                config.dbname = dbname.to_string();
-                                            }
-
-                                            if let Some(save_pwd) =
-                                                table.get("save_password").and_then(|v| v.as_bool())
-                                            {
-                                                config.connection.save_password = save_pwd;
-                                                config.save_password = save_pwd;
-                                            }
-                                        }
-
-                                        // Extract named queries
-                                        if let Some(queries) =
-                                            table.get("named_queries").and_then(|v| v.as_table())
-                                        {
-                                            for (name, value) in queries {
-                                                if let Some(query) = value.as_str() {
-                                                    config
-                                                        .named_queries
-                                                        .insert(name.clone(), query.to_string());
-                                                }
-                                            }
-                                        }
-
-                                        // Extract ssh_tunnel_patterns
-                                        if let Some(patterns) =
-                                            table.get("ssh_tunnel_patterns").and_then(|v| v.as_table())
-                                        {
-                                            for (pattern, tunnel_config) in patterns {
-                                                if let Some(config_str) = tunnel_config.as_str() {
-                                                    config
-                                                        .ssh_tunnel_patterns
-                                                        .insert(pattern.clone(), config_str.to_string());
-                                                }
-                                            }
-                                        }
-
-                                        // Extract column_selection_threshold
-                                        if let Some(threshold) =
-                                            table.get("column_selection_threshold").and_then(|v| v.as_integer())
-                                        {
-                                            config.column_selection_threshold = threshold as usize;
-                                        }
-
-                                        // Extract pager settings
-                                        if let Some(pager_enabled) =
-                                            table.get("pager_enabled").and_then(|v| v.as_bool())
-                                        {
-                                            config.pager_enabled = pager_enabled;
-                                        }
-
-                                        if let Some(pager_command) =
-                                            table.get("pager_command").and_then(|v| v.as_str())
-                                        {
-                                            config.pager_command = pager_command.to_string();
-                                        }
-
-                                        if let Some(pager_threshold) =
-                                            table.get("pager_threshold_lines").and_then(|v| v.as_integer())
-                                        {
-                                            config.pager_threshold_lines = pager_threshold as usize;
-                                        }
-
-                                        // Extract show_banner
-                                        if let Some(show_banner) =
-                                            table.get("show_banner").and_then(|v| v.as_bool())
-                                        {
-                                            config.show_banner = show_banner;
-                                        }
-
-                                        // Extract verbosity_level
-                                        if let Some(verbosity) =
-                                            table.get("verbosity_level").and_then(|v| v.as_str())
-                                        {
-                                            if let Ok(level) = serde_json::from_value::<VerbosityLevel>(
-                                                serde_json::Value::String(verbosity.to_string())
-                                            ) {
-                                                config.verbosity_level = level;
-                                            }
-                                        }
-
-                                        // Extract multiline_prompt_indicator
-                                        if let Some(indicator) =
-                                            table.get("multiline_prompt_indicator").and_then(|v| v.as_str())
-                                        {
-                                            config.multiline_prompt_indicator = indicator.to_string();
-                                        }
-
-                                        // Extract vault settings
-                                        if let Some(vault_cache_enabled) =
-                                            table.get("vault_credential_cache_enabled").and_then(|v| v.as_bool())
-                                        {
-                                            config.vault_credential_cache_enabled = vault_cache_enabled;
-                                        }
-
-                                        if let Some(vault_renewal) =
-                                            table.get("vault_cache_renewal_threshold").and_then(|v| v.as_float())
-                                        {
-                                            config.vault_cache_renewal_threshold = vault_renewal;
-                                        }
-
-                                        if let Some(vault_min_ttl) =
-                                            table.get("vault_cache_min_ttl_seconds").and_then(|v| v.as_integer())
-                                        {
-                                            config.vault_cache_min_ttl_seconds = vault_min_ttl as u64;
-                                        }
-
-                                        // Extract timeout settings
-                                        if let Some(query_timeout) =
-                                            table.get("query_timeout_seconds").and_then(|v| v.as_integer())
-                                        {
-                                            config.query_timeout_seconds = query_timeout as u64;
-                                        }
-
-                                        if let Some(metadata_timeout) =
-                                            table.get("metadata_timeout_seconds").and_then(|v| v.as_integer())
-                                        {
-                                            config.metadata_timeout_seconds = metadata_timeout as u64;
-                                        }
-
-                                        // Extract logging configuration
-                                        if let Some(logging) =
-                                            table.get("logging").and_then(|v| v.as_table())
-                                        {
-                                            if let Ok(logging_config) = toml::Value::Table(logging.clone()).try_into::<LoggingConfig>() {
-                                                config.logging = logging_config;
-                                            }
-                                        }
-
-                                        // Extract max_recent_connections
-                                        if let Some(max_recent) =
-                                            table.get("max_recent_connections").and_then(|v| v.as_integer())
-                                        {
-                                            config.max_recent_connections = max_recent as usize;
-                                        }
-
                                     }
+                                }
 
-                                    // Save the updated config to fix the format
-                                    if let Err(save_err) = config.save() {
-                                        eprintln!("Error saving updated config: {save_err}");
-                                    } else {
-                                        println!("Config file updated with new format");
-                                    }
-
-                                    // Load recent connections and saved sessions from separate files
+                                // Create fresh config with preserved SSH tunnel patterns
+                                if let Err(save_err) = config.save_with_documentation() {
+                                    eprintln!("Unable to create fresh config file: {save_err}");
+                                    eprintln!("Using default configuration in memory...");
+                                    
+                                    // If save fails, return default config to prevent infinite loop
                                     config.recent_connections_storage = Self::load_recent_connections();
                                     config.saved_sessions_storage = Self::load_saved_sessions();
+                                    config.vault_credential_storage = Self::load_vault_credentials();
                                     
-                                    // Apply global verbosity override if set
                                     if let Some(override_level) = get_global_verbosity_override() {
                                         config.verbosity_level = override_level;
                                     }
                                     
-                                    config
+                                    return config;
                                 }
-                                Err(_) => {
-                                    eprintln!(
-                                        "Could not parse config file as TOML, using defaults"
-                                    );
-                                    let mut config = Config::default();
-                                    config.recent_connections_storage = Self::load_recent_connections();
-                                    config.saved_sessions_storage = Self::load_saved_sessions();
-                                    
-                                    // Apply global verbosity override if set
-                                    if let Some(override_level) = get_global_verbosity_override() {
-                                        config.verbosity_level = override_level;
-                                    }
-                                    
-                                    config
+
+                                // Load separate storage files  
+                                config.recent_connections_storage = Self::load_recent_connections();
+                                config.saved_sessions_storage = Self::load_saved_sessions();
+                                config.vault_credential_storage = Self::load_vault_credentials();
+                                
+                                // Apply global verbosity override if set
+                                if let Some(override_level) = get_global_verbosity_override() {
+                                    config.verbosity_level = override_level;
                                 }
+                                
+                                // Retry loading the freshly created config
+                                eprintln!("Retrying config load after creating fresh config...");
+                                return Self::load_with_retry_count(retry_count + 1);
+                            } else {
+                                // On subsequent retries, show detailed error and fail
+                                eprintln!("Config parsing failed again on retry {retry_count}: {e}");
+                                eprintln!("This suggests a persistent issue with the config structure.");
+                                
+                                // Return default config to prevent further retries
+                                let mut config = Config::default();
+                                config.recent_connections_storage = Self::load_recent_connections();
+                                config.saved_sessions_storage = Self::load_saved_sessions();
+                                config.vault_credential_storage = Self::load_vault_credentials();
+                                
+                                if let Some(override_level) = get_global_verbosity_override() {
+                                    config.verbosity_level = override_level;
+                                }
+                                
+                                config
                             }
                         }
                     }
                 }
                 Err(_) => {
+                    // Config file doesn't exist, create it with comprehensive documentation
                     let mut config = Config::default();
                     config.recent_connections_storage = Self::load_recent_connections();
                     config.saved_sessions_storage = Self::load_saved_sessions();
+                    config.vault_credential_storage = Self::load_vault_credentials();
                     
                     // Apply global verbosity override if set
                     if let Some(override_level) = get_global_verbosity_override() {
                         config.verbosity_level = override_level;
                     }
                     
+                    // Create the config file with comprehensive documentation
+                    if let Err(e) = config.save_with_documentation() {
+                        eprintln!("Warning: Could not create config file: {e}");
+                        eprintln!("Continuing with default configuration...");
+                    }
+                    
                     config
                 },
             }
         } else {
+            // No config path available, return default config without creating file
             let mut config = Config::default();
             config.recent_connections_storage = Self::load_recent_connections();
             config.saved_sessions_storage = Self::load_saved_sessions();
@@ -1139,6 +1057,229 @@ impl Config {
             file.write_all(toml.as_bytes())?;
         }
         Ok(())
+    }
+
+    /// Save config with comprehensive documentation for all options
+    pub fn save_with_documentation(&self) -> io::Result<()> {
+        // Check if another config save is already in progress
+        if CONFIG_SAVING_IN_PROGRESS.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            // Another config save is in progress, return error to prevent recursion
+            return Err(io::Error::new(io::ErrorKind::Other, "Config save already in progress - preventing recursion"));
+        }
+        
+        // Use a guard pattern to ensure the lock is released even if there's a panic
+        struct SaveGuard;
+        impl Drop for SaveGuard {
+            fn drop(&mut self) {
+                CONFIG_SAVING_IN_PROGRESS.store(false, Ordering::Release);
+            }
+        }
+        let _guard = SaveGuard;
+        
+        if let Some(config_path) = get_config_path() {
+            ensure_config_dir(&config_path)?;
+
+            let mut content = String::new();
+            
+            // Header
+            content.push_str("# DBCrust Configuration File\n");
+            content.push_str("# This file contains all available configuration options with their current values.\n");
+            content.push_str("# Lines starting with '#' are comments. Uncomment and modify values as needed.\n\n");
+
+            // ROOT LEVEL FIELDS FIRST (to avoid TOML structure issues)
+            // ================================================================================
+            
+            // Display Settings
+            content.push_str("# ================================================================================\n");
+            content.push_str("# DISPLAY SETTINGS\n");
+            content.push_str("# Control how query results and interface elements are displayed\n");
+            content.push_str("# ================================================================================\n\n");
+            
+            content.push_str(&format!("# Default row limit for query results (default: 100)\n"));
+            content.push_str(&format!("default_limit = {}\n\n", self.default_limit));
+            
+            content.push_str(&format!("# Use expanded display mode by default (default: false)\n"));
+            content.push_str(&format!("expanded_display_default = {}\n\n", self.expanded_display_default));
+            
+            content.push_str(&format!("# Show banner on startup (default: false)\n"));
+            content.push_str(&format!("show_banner = {}\n\n", self.show_banner));
+            
+            content.push_str(&format!("# Verbosity level: \"Quiet\", \"Normal\", or \"Verbose\" (default: Normal)\n"));
+            content.push_str(&format!("verbosity_level = \"{:?}\"\n\n", self.verbosity_level));
+            
+            content.push_str(&format!("# Indicator for multiline prompts (default: empty)\n"));
+            content.push_str(&format!("multiline_prompt_indicator = \"{}\"\n\n", self.multiline_prompt_indicator));
+
+            content.push_str(&format!("# Number of columns to trigger interactive column selection (default: 10)\n"));
+            content.push_str(&format!("# Set to 0 to disable automatic column selection\n"));
+            content.push_str(&format!("column_selection_threshold = {}\n\n", self.column_selection_threshold));
+
+            // Pager Settings
+            content.push_str("# ================================================================================\n");
+            content.push_str("# PAGER SETTINGS\n");
+            content.push_str("# Configure output paging for large result sets\n");
+            content.push_str("# ================================================================================\n\n");
+            
+            content.push_str(&format!("# Enable pager for large outputs (default: true)\n"));
+            content.push_str(&format!("pager_enabled = {}\n\n", self.pager_enabled));
+            
+            content.push_str(&format!("# Pager command (default: \"less -R\")\n"));
+            content.push_str(&format!("pager_command = \"{}\"\n\n", self.pager_command));
+            
+            content.push_str(&format!("# Lines before triggering pager, 0 = terminal height (default: 0)\n"));
+            content.push_str(&format!("pager_threshold_lines = {}\n\n", self.pager_threshold_lines));
+
+            // Features
+            content.push_str("# ================================================================================\n");
+            content.push_str("# FEATURES\n");
+            content.push_str("# Enable or disable various features\n");
+            content.push_str("# ================================================================================\n\n");
+            
+            content.push_str(&format!("# Enable SQL autocomplete (default: true)\n"));
+            content.push_str(&format!("autocomplete_enabled = {}\n\n", self.autocomplete_enabled));
+            
+            content.push_str(&format!("# Enable EXPLAIN mode by default (default: false)\n"));
+            content.push_str(&format!("explain_mode_default = {}\n\n", self.explain_mode_default));
+            
+            content.push_str(&format!("# Maximum number of recent connections to remember (default: 10)\n"));
+            content.push_str(&format!("max_recent_connections = {}\n\n", self.max_recent_connections));
+
+            // Query Timeouts
+            content.push_str("# ================================================================================\n");
+            content.push_str("# TIMEOUT SETTINGS\n");
+            content.push_str("# Configure query and metadata operation timeouts\n");
+            content.push_str("# ================================================================================\n\n");
+            
+            content.push_str(&format!("# Query execution timeout in seconds (default: 30)\n"));
+            content.push_str(&format!("query_timeout_seconds = {}\n\n", self.query_timeout_seconds));
+            
+            content.push_str(&format!("# Metadata query timeout in seconds (default: 10)\n"));
+            content.push_str(&format!("metadata_timeout_seconds = {}\n\n", self.metadata_timeout_seconds));
+
+            // Vault Settings
+            content.push_str("# ================================================================================\n");
+            content.push_str("# VAULT INTEGRATION\n");
+            content.push_str("# HashiCorp Vault credential caching settings\n");
+            content.push_str("# ================================================================================\n\n");
+            
+            content.push_str(&format!("# Enable Vault credential caching (default: true)\n"));
+            content.push_str(&format!("vault_credential_cache_enabled = {}\n\n", self.vault_credential_cache_enabled));
+            
+            content.push_str(&format!("# Renew credentials when this fraction of TTL remains (default: 0.25 = 25%)\n"));
+            content.push_str(&format!("vault_cache_renewal_threshold = {}\n\n", self.vault_cache_renewal_threshold));
+            
+            content.push_str(&format!("# Don't cache credentials with TTL less than this (seconds, default: 300)\n"));
+            content.push_str(&format!("vault_cache_min_ttl_seconds = {}\n\n", self.vault_cache_min_ttl_seconds));
+
+            // NOW ADD TABLE SECTIONS AFTER ALL ROOT-LEVEL FIELDS
+            // ================================================================================
+
+            // Connection Settings
+            content.push_str("# ================================================================================\n");
+            content.push_str("# CONNECTION SETTINGS\n");
+            content.push_str("# Default connection parameters when no URL is provided\n");
+            content.push_str("# ================================================================================\n\n");
+            content.push_str("[connection]\n");
+            content.push_str(&format!("# Database host (default: localhost)\n"));
+            content.push_str(&format!("host = \"{}\"\n\n", self.connection.host));
+            content.push_str(&format!("# Database port (default: 5432 for PostgreSQL)\n"));
+            content.push_str(&format!("port = {}\n\n", self.connection.port));
+            content.push_str(&format!("# Database username (default: postgres)\n"));
+            content.push_str(&format!("user = \"{}\"\n\n", self.connection.user));
+            content.push_str(&format!("# Database name (default: postgres)\n"));
+            content.push_str(&format!("dbname = \"{}\"\n\n", self.connection.dbname));
+            content.push_str(&format!("# Save password in config (not recommended)\n"));
+            content.push_str(&format!("save_password = {}\n\n", self.connection.save_password));
+
+            // SSH Tunnel Patterns
+            content.push_str("# ================================================================================\n");
+            content.push_str("# SSH TUNNEL PATTERNS\n");
+            content.push_str("# Automatically open SSH tunnels for hosts matching these patterns\n");
+            content.push_str("# Format: \"regex_pattern\" = \"user@ssh_host:port\"\n");
+            content.push_str("# Supports command substitution with backticks: \"pattern\" = \"user@`command`\"\n");
+            content.push_str("# ================================================================================\n\n");
+            content.push_str("[ssh_tunnel_patterns]\n");
+            if self.ssh_tunnel_patterns.is_empty() {
+                content.push_str("# Example patterns:\n");
+                content.push_str("# \".*\\.rds\\.amazonaws\\.com\" = \"user@bastion.example.com\"\n");
+                content.push_str("# \"prod-.*\\.internal\" = \"user@`get-bastion-ip.sh`\"\n");
+            } else {
+                for (pattern, tunnel_config) in &self.ssh_tunnel_patterns {
+                    // Properly escape strings for TOML format
+                    let escaped_pattern = pattern.replace('\\', "\\\\").replace('"', "\\\"");
+                    let escaped_config = tunnel_config.replace('\\', "\\\\").replace('"', "\\\"");
+                    content.push_str(&format!("\"{}\" = \"{}\"\n", escaped_pattern, escaped_config));
+                }
+            }
+            content.push_str("\n");
+
+            // Logging Configuration
+            content.push_str("# ================================================================================\n");
+            content.push_str("# LOGGING CONFIGURATION\n");
+            content.push_str("# Configure application logging for debugging\n");
+            content.push_str("# ================================================================================\n\n");
+            content.push_str("[logging]\n");
+            content.push_str(&format!("# Log level: \"trace\", \"debug\", \"info\", \"warn\", \"error\" (default: info)\n"));
+            content.push_str(&format!("level = \"{}\"\n\n", self.logging.level));
+            content.push_str(&format!("# Output logs to console (default: true)\n"));
+            content.push_str(&format!("console_output = {}\n\n", self.logging.console_output));
+            content.push_str(&format!("# Output logs to file (default: false)\n"));
+            content.push_str(&format!("file_output = {}\n\n", self.logging.file_output));
+            content.push_str(&format!("# Log file path (default: ~/.config/dbcrust/logs/dbcrust.log)\n"));
+            content.push_str(&format!("file_path = \"{}\"\n\n", self.logging.file_path));
+            content.push_str(&format!("# Maximum log file size in MB before rotation (default: 10)\n"));
+            content.push_str(&format!("max_file_size_mb = {}\n\n", self.logging.max_file_size_mb));
+            content.push_str(&format!("# Number of rotated log files to keep (default: 5)\n"));
+            content.push_str(&format!("max_files = {}\n\n", self.logging.max_files));
+
+            // Named Queries
+            if !self.named_queries.is_empty() {
+                content.push_str("# ================================================================================\n");
+                content.push_str("# NAMED QUERIES\n");
+                content.push_str("# Save frequently used queries with memorable names\n");
+                content.push_str("# Use \\nq <name> to execute, \\nq to list all\n");
+                content.push_str("# ================================================================================\n\n");
+                content.push_str("[named_queries]\n");
+                for (name, query) in &self.named_queries {
+                    content.push_str(&format!("{} = \"{}\"\n", name, query.replace('"', "\\\"")));
+                }
+                content.push_str("\n");
+            }
+
+            let mut file = File::create(&config_path)?;
+            file.write_all(content.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// Check if the config file contains all expected fields
+    /// This helps detect when a config needs to be upgraded with missing options
+    fn has_all_fields(&self, file_content: &str) -> bool {
+        // List of key fields/sections that should exist in a complete config
+        let required_fields = [
+            "default_limit",
+            "expanded_display_default", 
+            "autocomplete_enabled",
+            "explain_mode_default",
+            "column_selection_threshold",
+            "pager_enabled",
+            "pager_command",
+            "pager_threshold_lines",
+            "show_banner",
+            "verbosity_level",
+            "multiline_prompt_indicator",
+            "vault_credential_cache_enabled",
+            "vault_cache_renewal_threshold", 
+            "vault_cache_min_ttl_seconds",
+            "query_timeout_seconds",
+            "metadata_timeout_seconds",
+            "max_recent_connections",
+            "[logging]",
+            "[connection]"
+        ];
+        
+        // Check if all required fields are present in the file content
+        required_fields.iter().all(|field| file_content.contains(field))
     }
 
     pub fn add_named_query(&mut self, name: &str, query: &str) -> Result<(), Box<dyn Error>> {
