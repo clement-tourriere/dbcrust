@@ -125,6 +125,7 @@ impl Default for CliCore {
     }
 }
 
+
 impl CliCore {
     /// Create a new CLI core instance
     pub fn new() -> Self {
@@ -582,7 +583,7 @@ impl CliCore {
                     .as_mut()
                     .ok_or_else(|| CliError::CommandError("No database connection".to_string()))?;
 
-                match database.execute_query_with_info(command_trimmed).await {
+                match database.execute_query_with_info_no_column_selection(command_trimmed).await {
                     Ok(results_with_info) => {
                         if !results_with_info.data.is_empty() {
                             let is_expanded = database.is_expanded_display();

@@ -546,7 +546,7 @@ impl Database {
             password,
             current_dbname,
             expanded_display: expanded_display_default.unwrap_or(false),
-            default_limit: default_limit.unwrap_or(10),
+            default_limit: default_limit.unwrap_or(100),
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: config.explain_mode_default,
             column_select_mode: false,
@@ -761,7 +761,7 @@ impl Database {
             password,
             current_dbname: dbname.to_string(),
             expanded_display: expanded_display_default.unwrap_or(false),
-            default_limit: default_limit.unwrap_or(10),
+            default_limit: default_limit.unwrap_or(100),
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: config.explain_mode_default,
             column_select_mode: false,
@@ -1448,6 +1448,26 @@ impl Database {
         self.execute_query_with_interrupt_and_info(query, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).await
     }
 
+    pub async fn execute_query_with_info_no_column_selection(
+        &mut self,
+        query: &str,
+    ) -> std::result::Result<QueryResultsWithInfo, Box<dyn StdError>> {
+        // Temporarily disable column selection
+        let original_cs_mode = self.column_select_mode;
+        let original_threshold = self.column_selection_threshold;
+        
+        self.column_select_mode = false;
+        self.column_selection_threshold = usize::MAX; // Effectively disable auto-triggering
+        
+        let result = self.execute_query_with_interrupt_and_info(query, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).await;
+        
+        // Restore original settings
+        self.column_select_mode = original_cs_mode;
+        self.column_selection_threshold = original_threshold;
+        
+        result
+    }
+
     pub async fn execute_query_with_interrupt(
         &mut self,
         query: &str,
@@ -1478,7 +1498,10 @@ impl Database {
         // Try using the new database abstraction layer first
         if let Some(ref database_client) = self.database_client {
             debug_log!("Using new database abstraction layer for execute_query");
-            match database_client.execute_query(query).await {
+            let query_with_limit = self.maybe_add_limit(query);
+            debug_log!("[database_client] Original query: {}", query);
+            debug_log!("[database_client] Query with limit: {}", query_with_limit);
+            match database_client.execute_query(&query_with_limit).await {
                 Ok(results) => return self.apply_column_selection_if_needed_with_info(results, interrupt_flag),
                 Err(e) => {
                     debug_log!("Database client execute_query failed: {}. Falling back to legacy implementation.", e);
@@ -1534,6 +1557,8 @@ impl Database {
         })?;
 
         let query_with_limit = self.maybe_add_limit(query);
+        debug_log!("[execute_query] Original query: {}", query);
+        debug_log!("[execute_query] Query with limit: {}", query_with_limit);
 
         // Add timeout to query execution to prevent hanging
         let timeout_duration = std::time::Duration::from_secs(self.get_query_timeout());

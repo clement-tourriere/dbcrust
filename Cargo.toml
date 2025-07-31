@@ -20,7 +20,7 @@ name = "dbc"
 path = "src/bin/dbc.rs"
 
 [dependencies]
-reedline = { version = "0.40", default-features = false }
+reedline = { version = "0.41", default-features = false }
 sqlx = { version = "0.8", features = [
     "runtime-tokio-rustls",
     "postgres",
