@@ -6,7 +6,7 @@ use crate::database::ConnectionInfo;
 use crate::db::Database;
 use crate::format::{format_query_results_expanded, format_query_results_psql_with_info};
 use crate::prompt::DbPrompt;
-use crate::{debug_log, logging};
+use crate::{debug_log, logging, pager};
 use clap::CommandFactory;
 use dirs;
 use inquire;
@@ -588,12 +588,14 @@ impl CliCore {
                             let is_expanded = database.is_expanded_display();
                             if is_expanded {
                                 let tables = format_query_results_expanded(&results_with_info.data);
+                                let mut combined_output = String::new();
                                 for table in tables {
-                                    println!("{table}");
+                                    combined_output.push_str(&format!("{table}\n"));
                                 }
+                                Self::page_or_print(&combined_output, &self.config)?;
                             } else {
                                 let formatted_output = format_query_results_psql_with_info(&results_with_info.data, results_with_info.column_info.as_ref());
-                                println!("{formatted_output}");
+                                Self::page_or_print(&formatted_output, &self.config)?;
                             }
                         }
                     }
@@ -953,12 +955,14 @@ impl CliCore {
 
             if is_expanded {
                 let tables = format_query_results_expanded(&results_with_info.data);
+                let mut combined_output = String::new();
                 for table in tables {
-                    println!("{table}");
+                    combined_output.push_str(&format!("{table}\n"));
                 }
+                Self::page_or_print(&combined_output, &self.config)?;
             } else {
                 let formatted_output = format_query_results_psql_with_info(&results_with_info.data, results_with_info.column_info.as_ref());
-                println!("{formatted_output}");
+                Self::page_or_print(&formatted_output, &self.config)?;
             }
         }
 
@@ -1528,5 +1532,50 @@ impl CliCore {
         }
 
         help
+    }
+
+    /// Determine if output should be paged based on line count and configuration
+    fn should_use_pager(output: &str, config: &DbCrustConfig) -> bool {
+        // If pager is disabled, never page
+        if !config.pager_enabled {
+            return false;
+        }
+
+        // Count lines in output 
+        let line_count = output.lines().count();
+        
+        // Get the threshold
+        let threshold = if config.pager_threshold_lines == 0 {
+            // Use terminal height if available, otherwise default to 25
+            if let Some(terminal_size) = terminal_size::terminal_size() {
+                terminal_size.1.0 as usize
+            } else {
+                25 // Fallback default
+            }
+        } else {
+            config.pager_threshold_lines
+        };
+
+        line_count > threshold
+    }
+
+    /// Route output to pager or direct print based on configuration and content size
+    fn page_or_print(output: &str, config: &DbCrustConfig) -> Result<(), CliError> {
+        if Self::should_use_pager(output, config) {
+            // Try to use pager
+            match pager::page_output(output, &config.pager_command) {
+                Ok(()) => Ok(()),
+                Err(e) => {
+                    // Pager failed, fall back to direct output
+                    debug_log!("Pager failed, falling back to direct output: {}", e);
+                    print!("{}", output);
+                    Ok(())
+                }
+            }
+        } else {
+            // Direct output
+            print!("{}", output);
+            Ok(())
+        }
     }
 }
