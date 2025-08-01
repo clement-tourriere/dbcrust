@@ -98,6 +98,7 @@ plugins:
   - git-revision-date-localized:
       enable_creation_date: true
 
+
 nav:
   - Home: index.md
   - Getting Started:

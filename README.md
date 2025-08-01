@@ -24,18 +24,44 @@ DBCrust combines a high-performance database CLI with a powerful Python library 
 
 ## Quick Start
 
+### Unix Installation (macOS, Linux)
+
+```bash
+# Install DBCrust with a single command
+curl -fsSL https://clement-tourriere.github.io/install.sh | sh
+
+# Then use it immediately
+dbcrust postgres://user:pass@localhost/mydb
+dbc postgres://user:pass@localhost/mydb  # Short alias
+```
+
+### Windows Installation
+
+```powershell
+# Install DBCrust with PowerShell
+irm https://clement-tourriere.github.io/install.ps1 | iex
+
+# Then use it immediately
+dbcrust postgres://user:pass@localhost/mydb
+dbc postgres://user:pass@localhost/mydb  # Short alias
+```
+
+### Python/PyPI Installation (All Platforms)
+
 ```bash
 # Quick run with uv (no installation needed)
 uvx dbcrust postgres://user:pass@localhost/mydb
 
-# Or install globally
+# Or install globally via PyPI
 uv tool install dbcrust
 dbcrust postgres://user:pass@localhost/mydb
+```
 
-# Short alias also available
-dbc postgres://user:pass@localhost/mydb
+### Basic Usage
 
+```bash
 # Multi-database support
+dbcrust postgres://user:pass@localhost/mydb
 dbcrust mysql://user:pass@localhost/mydb
 dbcrust sqlite:///path/to/database.db
 
