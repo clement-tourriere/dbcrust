@@ -4,6 +4,7 @@ use crate::debug_log;
 use crate::pgpass;
 use std::collections::HashMap;
 use std::error::Error as StdError;
+use inquire::MultiSelect;
 
 #[derive(Debug)]
 pub struct ColumnSelectionAborted;
@@ -86,6 +87,7 @@ pub struct Database {
     column_select_mode: bool,
     banner_enabled: bool,
     column_selection_threshold: usize,
+    column_selection_default_all: bool,
     column_views: HashMap<String, Vec<String>>, // Map of column view name -> selected columns
     last_view_key: Option<String>,
     last_json_plan: Option<String>, // Store the last EXPLAIN JSON plan for copying
@@ -357,6 +359,7 @@ impl Database {
             column_select_mode: false,
             banner_enabled: config.show_banner,
             column_selection_threshold: config.column_selection_threshold,
+            column_selection_default_all: config.column_selection_default_all,
             column_views: HashMap::new(),
             last_view_key: None,
             last_json_plan: None,
@@ -773,13 +776,44 @@ impl Database {
     fn apply_column_selection_if_needed_with_info(
         &mut self,
         results: Vec<Vec<String>>, 
-        _interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>
+        interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>
     ) -> std::result::Result<QueryResultsWithInfo, Box<dyn StdError>> {
-        // Mock implementation for column selection - simplified since we removed the complex logic
-        Ok(QueryResultsWithInfo {
-            data: results,
-            column_info: None,
-        })
+        if results.is_empty() {
+            return Ok(QueryResultsWithInfo {
+                data: results,
+                column_info: None,
+            });
+        }
+
+        let column_count = results[0].len();
+        
+        // Check if we should apply column selection
+        let should_apply = self.column_select_mode || self.should_auto_enable_column_selection(column_count);
+        
+        if should_apply {
+            debug_log!("Applying column selection: cs_mode={}, columns={}, threshold={}", 
+                      self.column_select_mode, column_count, self.column_selection_threshold);
+            match self.interactive_column_selection_with_info(&results, interrupt_flag) {
+                Ok(results_with_info) => Ok(results_with_info),
+                Err(e) if e.to_string().contains("Column selection aborted") => {
+                    // Re-throw the abort error to propagate it up
+                    Err(e)
+                }
+                Err(e) => {
+                    // For other errors, log and return original results
+                    eprintln!("Column selection error: {}", e);
+                    Ok(QueryResultsWithInfo {
+                        data: results,
+                        column_info: None,
+                    })
+                }
+            }
+        } else {
+            Ok(QueryResultsWithInfo {
+                data: results,
+                column_info: None,
+            })
+        }
     }
 
     pub async fn execute_explain_query(
@@ -936,6 +970,7 @@ impl Database {
             column_select_mode: false,
             banner_enabled: config.show_banner,
             column_selection_threshold: config.column_selection_threshold,
+            column_selection_default_all: config.column_selection_default_all,
             column_views: HashMap::new(),
             last_view_key: None,
             last_json_plan: None,
@@ -1096,6 +1131,125 @@ impl Database {
 
     pub fn set_column_selection_threshold(&mut self, threshold: usize) {
         self.column_selection_threshold = threshold;
+    }
+
+    pub fn should_auto_enable_column_selection(&self, column_count: usize) -> bool {
+        // Auto-enable column selection mode if there are more columns than the threshold
+        column_count > self.column_selection_threshold
+    }
+
+    pub fn interactive_column_selection_with_info(
+        &mut self,
+        data: &[Vec<String>],
+        interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<QueryResultsWithInfo, Box<dyn StdError>> {
+        if data.is_empty() {
+            return Ok(QueryResultsWithInfo {
+                data: data.to_vec(),
+                column_info: None,
+            });
+        }
+
+        // Get the headers from the first row
+        let headers = &data[0];
+        let view_key = self.generate_column_view_key(headers);
+
+        // Check if we have a saved view for this column set
+        let selected_columns = if let Some(saved_columns) = self.get_column_view(&view_key) {
+            saved_columns.clone()
+        } else {
+            // Create options for the multi-select
+            let options: Vec<String> = headers.clone();
+            
+            // Build the prompt
+            let prompt_message = format!(
+                "Select columns to display ({} columns available):",
+                headers.len()
+            );
+
+            // Create the multi-select
+            let mut selector = MultiSelect::new(&prompt_message, options.clone())
+                .with_help_message("Use arrow keys to navigate, Space to select/deselect, Enter to confirm, Ctrl-C to cancel")
+                .with_vim_mode(false);
+
+            // Pre-select columns based on configuration
+            let all_indices: Vec<usize> = if self.column_selection_default_all {
+                // Pre-select all columns (opt-out behavior)
+                (0..headers.len()).collect()
+            } else {
+                // Start with no columns selected (opt-in behavior)
+                Vec::new()
+            };
+            
+            if !all_indices.is_empty() {
+                selector = selector.with_default(&all_indices);
+            }
+
+            // Handle the selection with interrupt support
+            let selection_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                selector.prompt()
+            }));
+
+            match selection_result {
+                Ok(Ok(selected)) => {
+                    if selected.is_empty() {
+                        // If no columns selected, show all columns
+                        headers.clone()
+                    } else {
+                        selected
+                    }
+                }
+                Ok(Err(_)) | Err(_) => {
+                    // User cancelled with Ctrl-C or error occurred
+                    if interrupt_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Err(Box::new(ColumnSelectionAborted));
+                    }
+                    // For other errors, return all columns
+                    headers.clone()
+                }
+            }
+        };
+
+        // Save the selection for future use
+        self.save_column_view(&view_key, selected_columns.clone());
+        self.last_view_key = Some(view_key);
+
+        // Get column indices for selected columns
+        let column_indices: Vec<usize> = selected_columns
+            .iter()
+            .filter_map(|col| headers.iter().position(|h| h == col))
+            .collect();
+
+        if column_indices.is_empty() {
+            // If no valid columns found, return all data
+            return Ok(QueryResultsWithInfo {
+                data: data.to_vec(),
+                column_info: None,
+            });
+        }
+
+        // Filter the data to include only selected columns
+        let filtered_data: Vec<Vec<String>> = data
+            .iter()
+            .map(|row| {
+                column_indices
+                    .iter()
+                    .map(|&idx| row.get(idx).cloned().unwrap_or_default())
+                    .collect()
+            })
+            .collect();
+
+        // Create column info for selected columns
+        let column_info = Some(ColumnFilteringInfo {
+            total_columns: headers.len(),
+            displayed_columns: selected_columns.len(),
+            filtered_column_names: selected_columns.clone(),
+        });
+
+        Ok(QueryResultsWithInfo {
+            data: filtered_data,
+            column_info,
+        })
     }
 }
 

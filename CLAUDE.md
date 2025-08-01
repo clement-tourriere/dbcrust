@@ -252,6 +252,7 @@ fn test_command_enum_completeness() {
 - Layered config: defaults → file → CLI args
 - Add new fields with `#[serde(default)]` for backward compatibility
 - Store persistent state (sessions, named queries) in config
+- **IMPORTANT**: When adding new config fields, always update the `save_with_documentation` method in `src/config.rs` to include documentation for the new field. This ensures the field appears in generated config files with proper comments.
 
 #### Dedicated Storage Files Pattern
 
@@ -621,6 +622,9 @@ Column selection settings are stored in the main configuration:
 ```toml
 # Threshold for auto-triggering column selection
 column_selection_threshold = 10
+
+# Default column selection behavior (true = all selected, false = none selected)
+column_selection_default_all = false  # Default: opt-in behavior
 ```
 
 ### Use Cases

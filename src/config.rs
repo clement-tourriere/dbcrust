@@ -198,6 +198,8 @@ pub struct Config {
     pub explain_mode_default: bool,
     #[serde(default = "default_column_selection_threshold")]
     pub column_selection_threshold: usize,
+    #[serde(default = "default_column_selection_default_all")]
+    pub column_selection_default_all: bool,
     #[serde(default)]
     pub named_queries: HashMap<String, String>,
     #[serde(default)]
@@ -260,6 +262,7 @@ impl Default for Config {
             autocomplete_enabled: true,
             explain_mode_default: false,
             column_selection_threshold: default_column_selection_threshold(),
+            column_selection_default_all: default_column_selection_default_all(),
             named_queries: HashMap::new(),
             ssh_tunnel_patterns: HashMap::new(),
             max_recent_connections: default_max_recent_connections(),
@@ -330,6 +333,10 @@ fn default_explain_mode_default() -> bool {
 
 fn default_column_selection_threshold() -> usize {
     10
+}
+
+fn default_column_selection_default_all() -> bool {
+    false // Default to no columns pre-selected (opt-in behavior)
 }
 
 fn default_max_recent_connections() -> usize {
@@ -1040,6 +1047,9 @@ impl Config {
             content.push_str(&format!("# Number of columns to trigger interactive column selection (default: 10)\n"));
             content.push_str(&format!("# Set to 0 to disable automatic column selection\n"));
             content.push_str(&format!("column_selection_threshold = {}\n\n", self.column_selection_threshold));
+            
+            content.push_str(&format!("# Default all columns selected in column selection (true = opt-out, false = opt-in) (default: false)\n"));
+            content.push_str(&format!("column_selection_default_all = {}\n\n", self.column_selection_default_all));
 
             // Pager Settings
             content.push_str("# ================================================================================\n");

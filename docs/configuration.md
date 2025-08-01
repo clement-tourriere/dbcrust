@@ -167,10 +167,12 @@ Controls how query results and tables are displayed.
 | `max_column_width` | integer | `50` | Maximum column width before truncation |
 | `truncate_long_values` | boolean | `true` | Truncate long text values |
 | `column_selection_threshold` | integer | `10` | Auto-trigger column selection when results exceed N columns |
+| `column_selection_default_all` | boolean | `false` | Default all columns selected in column selection interface |
 
 **Column Selection Configuration:**
 
 - **`column_selection_threshold`**: Automatically shows column selection interface when queries return more columns than this number
+- **`column_selection_default_all`**: When `true`, all columns are pre-selected for opt-out behavior. When `false` (default), no columns are pre-selected for opt-in behavior.
 
 **Example:**
 ```toml
@@ -183,6 +185,7 @@ truncate_long_values = false
 
 # Column selection settings
 column_selection_threshold = 15        # Higher threshold for experienced users
+column_selection_default_all = true    # Pre-select all columns (opt-out)
 ```
 
 **Column Selection Behavior:**
