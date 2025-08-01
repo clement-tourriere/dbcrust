@@ -1218,35 +1218,18 @@ impl CommandExecutor for Command {
 
             Command::ShowPoolStats => {
                 let db = database.lock().unwrap();
-                match db.get_pool_stats() {
-                    Some(stats) => {
-                        let health_indicator = if stats.active_connections as f32 / stats.max_connections as f32 > 0.8 {
-                            "⚠️  High Usage"
-                        } else if stats.active_connections == 0 {
-                            "💤 Idle"
-                        } else {
-                            "✅ Healthy"
-                        };
-                        
-                        let output = format!(
-                            "Connection Pool Statistics:\n\
-                            Max Connections:    {}\n\
-                            Active Connections: {}\n\
-                            Idle Connections:   {}\n\
-                            Total Connections:  {}\n\
-                            Acquire Timeout:    {}s\n\
-                            Health Status:      {}",
-                            stats.max_connections,
-                            stats.active_connections,
-                            stats.idle_connections,
-                            stats.total_connections,
-                            stats.acquire_timeout_seconds,
-                            health_indicator
-                        );
-                        Ok(CommandResult::Output(output))
-                    }
-                    None => Ok(CommandResult::Error("Connection pool not available".to_string()))
-                }
+                let connection_status = if db.is_connected().await {
+                    "✅ Connected"
+                } else {
+                    "❌ Disconnected"
+                };
+                
+                let output = format!(
+                    "Connection Status: {}\n\nNote: Detailed pool statistics are no longer available.\nConnection pooling is now managed by database-specific clients.",
+                    connection_status
+                );
+                
+                Ok(CommandResult::Output(output))
             }
 
         }

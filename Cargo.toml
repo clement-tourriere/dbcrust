@@ -30,7 +30,6 @@ sqlx = { version = "0.8", features = [
     "json",
     "uuid",
     "ipnetwork",
-    "mac_address",
     "rust_decimal",
     "any",
 ], default-features = false }

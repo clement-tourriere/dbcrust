@@ -1,6 +1,6 @@
 //! PostgreSQL implementation of the database abstraction layer
 use async_trait::async_trait;
-use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, DatabaseType, MetadataProvider};
+use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
 use crate::db::TableDetails;
 use crate::debug_log;
 use crate::performance_analyzer::PerformanceAnalyzer;
@@ -16,6 +16,205 @@ pub struct PostgreSQLMetadataProvider {
 impl PostgreSQLMetadataProvider {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    /// Get detailed column information including data types, nullability, and defaults
+    async fn get_detailed_columns(&self, table: &str, schema: Option<&str>) -> Result<Vec<crate::db::ColumnInfo>, DatabaseError> {
+        let schema_name = schema.unwrap_or("public");
+        
+        let rows = sqlx::query(
+            r#"
+            SELECT 
+                a.attname as column_name,
+                format_type(a.atttypid, a.atttypmod) as data_type,
+                COALESCE(c.collname, '') as collation,
+                NOT a.attnotnull as nullable,
+                pg_get_expr(d.adbin, d.adrelid) as default_value
+            FROM pg_attribute a
+            INNER JOIN pg_class t ON a.attrelid = t.oid
+            INNER JOIN pg_namespace n ON t.relnamespace = n.oid
+            LEFT JOIN pg_attrdef d ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+            LEFT JOIN pg_collation c ON a.attcollation = c.oid AND a.attcollation <> 0
+            WHERE n.nspname = $1 
+              AND t.relname = $2
+              AND a.attnum > 0
+              AND NOT a.attisdropped
+            ORDER BY a.attnum
+            "#,
+        )
+        .bind(schema_name)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let columns: Vec<crate::db::ColumnInfo> = rows
+            .iter()
+            .map(|row| {
+                crate::db::ColumnInfo {
+                    name: row.get::<String, _>("column_name"),
+                    data_type: row.get::<String, _>("data_type"),
+                    collation: row.get::<String, _>("collation"),
+                    nullable: row.get::<bool, _>("nullable"),
+                    default_value: row.get::<Option<String>, _>("default_value"),
+                }
+            })
+            .collect();
+
+        Ok(columns)
+    }
+
+    /// Get index information for a table
+    async fn get_table_indexes(&self, table: &str, schema: &str) -> Result<Vec<crate::db::IndexInfo>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT 
+                i.relname as index_name,
+                CASE 
+                    WHEN ix.indisunique AND ix.indisprimary THEN 'PRIMARY KEY'
+                    WHEN ix.indisunique THEN 'UNIQUE'
+                    ELSE 'INDEX'
+                END as index_type,
+                ix.indisprimary as is_primary,
+                ix.indisunique as is_unique,
+                pg_get_expr(ix.indpred, ix.indrelid) as predicate,
+                pg_get_indexdef(ix.indexrelid) as definition
+            FROM pg_index ix
+            INNER JOIN pg_class i ON i.oid = ix.indexrelid
+            INNER JOIN pg_class t ON t.oid = ix.indrelid
+            INNER JOIN pg_namespace n ON t.relnamespace = n.oid
+            WHERE n.nspname = $1 AND t.relname = $2
+            ORDER BY ix.indisprimary DESC, ix.indisunique DESC, i.relname
+            "#,
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let indexes: Vec<crate::db::IndexInfo> = rows
+            .iter()
+            .map(|row| {
+                crate::db::IndexInfo {
+                    name: row.get::<String, _>("index_name"),
+                    index_type: row.get::<String, _>("index_type"),
+                    is_primary: row.get::<bool, _>("is_primary"),
+                    is_unique: row.get::<bool, _>("is_unique"),
+                    predicate: row.get::<Option<String>, _>("predicate"),
+                    definition: row.get::<String, _>("definition"),
+                    constraint_def: None,
+                }
+            })
+            .collect();
+
+        Ok(indexes)
+    }
+
+    /// Get foreign key constraints for a table
+    async fn get_table_foreign_keys(&self, table: &str, schema: &str) -> Result<Vec<crate::db::ForeignKeyInfo>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT 
+                c.conname as constraint_name,
+                pg_get_constraintdef(c.oid) as definition
+            FROM pg_constraint c
+            INNER JOIN pg_class t ON c.conrelid = t.oid
+            INNER JOIN pg_namespace n ON t.relnamespace = n.oid
+            WHERE n.nspname = $1 
+              AND t.relname = $2 
+              AND c.contype = 'f'
+            ORDER BY c.conname
+            "#,
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let foreign_keys: Vec<crate::db::ForeignKeyInfo> = rows
+            .iter()
+            .map(|row| {
+                crate::db::ForeignKeyInfo {
+                    name: row.get::<String, _>("constraint_name"),
+                    definition: row.get::<String, _>("definition"),
+                }
+            })
+            .collect();
+
+        Ok(foreign_keys)
+    }
+
+    /// Get check constraints for a table
+    async fn get_table_check_constraints(&self, table: &str, schema: &str) -> Result<Vec<crate::db::CheckConstraintInfo>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT 
+                c.conname as constraint_name,
+                pg_get_constraintdef(c.oid) as definition
+            FROM pg_constraint c
+            INNER JOIN pg_class t ON c.conrelid = t.oid
+            INNER JOIN pg_namespace n ON t.relnamespace = n.oid
+            WHERE n.nspname = $1 
+              AND t.relname = $2 
+              AND c.contype = 'c'
+            ORDER BY c.conname
+            "#,
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let check_constraints: Vec<crate::db::CheckConstraintInfo> = rows
+            .iter()
+            .map(|row| {
+                crate::db::CheckConstraintInfo {
+                    name: row.get::<String, _>("constraint_name"),
+                    definition: row.get::<String, _>("definition"),
+                }
+            })
+            .collect();
+
+        Ok(check_constraints)
+    }
+
+    /// Get tables that reference this table (reverse foreign keys)
+    async fn get_table_referenced_by(&self, table: &str, schema: &str) -> Result<Vec<crate::db::ReferencedByInfo>, DatabaseError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT 
+                n.nspname as referencing_schema,
+                t.relname as referencing_table,
+                c.conname as constraint_name,
+                pg_get_constraintdef(c.oid) as definition
+            FROM pg_constraint c
+            INNER JOIN pg_class t ON c.conrelid = t.oid
+            INNER JOIN pg_namespace n ON t.relnamespace = n.oid
+            INNER JOIN pg_class ref_t ON c.confrelid = ref_t.oid
+            INNER JOIN pg_namespace ref_n ON ref_t.relnamespace = ref_n.oid
+            WHERE ref_n.nspname = $1 
+              AND ref_t.relname = $2 
+              AND c.contype = 'f'
+            ORDER BY n.nspname, t.relname, c.conname
+            "#,
+        )
+        .bind(schema)
+        .bind(table)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let referenced_by: Vec<crate::db::ReferencedByInfo> = rows
+            .iter()
+            .map(|row| {
+                crate::db::ReferencedByInfo {
+                    schema: row.get::<String, _>("referencing_schema"),
+                    table: row.get::<String, _>("referencing_table"),
+                    constraint_name: row.get::<String, _>("constraint_name"),
+                    definition: row.get::<String, _>("definition"),
+                }
+            })
+            .collect();
+
+        Ok(referenced_by)
     }
 }
 
@@ -155,13 +354,39 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
         Ok(functions)
     }
 
-    async fn get_table_details(&self, _table: &str, _schema: Option<&str>) -> Result<TableDetails, DatabaseError> {
-        // This would need to be implemented to call the existing get_table_details logic
-        // For now, return an error indicating this needs implementation
-        Err(DatabaseError::FeatureNotSupported {
-            database_type: DatabaseType::PostgreSQL,
-            feature: "get_table_details not yet migrated".to_string(),
-        })
+    async fn get_table_details(&self, table: &str, schema: Option<&str>) -> Result<TableDetails, DatabaseError> {
+        debug_log!("[PostgreSQLMetadataProvider::get_table_details] Starting query for table: '{}', schema: {:?}", table, schema);
+
+        let schema_name = schema.unwrap_or("public");
+
+        // Get basic table information and columns
+        let columns = self.get_detailed_columns(table, Some(schema_name)).await?;
+        
+        // Get indexes
+        let indexes = self.get_table_indexes(table, schema_name).await?;
+        
+        // Get foreign keys
+        let foreign_keys = self.get_table_foreign_keys(table, schema_name).await?;
+        
+        // Get check constraints
+        let check_constraints = self.get_table_check_constraints(table, schema_name).await?;
+        
+        // Get referenced by information
+        let referenced_by = self.get_table_referenced_by(table, schema_name).await?;
+
+        let table_details = TableDetails {
+            name: table.to_string(),
+            schema: schema_name.to_string(),
+            full_name: format!("{}.{}", schema_name, table),
+            columns,
+            indexes,
+            check_constraints,
+            foreign_keys,
+            referenced_by,
+        };
+
+        debug_log!("[PostgreSQLMetadataProvider::get_table_details] Successfully fetched details for table: '{}'", table);
+        Ok(table_details)
     }
 
     fn supports_explain(&self) -> bool {
@@ -416,7 +641,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
     let column = row.column(column_index);
     let type_name = column.type_info().name();
     
-    // Handle NULL values
+    // Handle NULL values first - try the most generic nullable type
     if let Ok(value) = row.try_get::<Option<String>, _>(column_index) {
         if value.is_none() {
             return Ok("".to_string());
@@ -424,23 +649,36 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
     }
 
     // Match on PostgreSQL type names and convert appropriately
-    
-
     match type_name {
-        "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" => {
+        // String types
+        "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" | "CITEXT" => {
             row.try_get::<String, _>(column_index)
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
-        "INT4" | "INTEGER" => {
+        
+        // Integer types
+        "INT2" | "SMALLINT" => {
+            row.try_get::<i16, _>(column_index)
+                .map(|v| v.to_string())
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        "INT4" | "INTEGER" | "SERIAL" => {
             row.try_get::<i32, _>(column_index)
                 .map(|v| v.to_string())
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
-        "INT8" | "BIGINT" => {
+        "INT8" | "BIGINT" | "BIGSERIAL" => {
             row.try_get::<i64, _>(column_index)
                 .map(|v| v.to_string())
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
+        "OID" => {
+            row.try_get::<i32, _>(column_index)
+                .map(|v| v.to_string())
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        
+        // Floating point types
         "FLOAT4" | "REAL" => {
             row.try_get::<f32, _>(column_index)
                 .map(|v| v.to_string())
@@ -451,11 +689,24 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                 .map(|v| v.to_string())
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
+        "NUMERIC" | "DECIMAL" => {
+            row.try_get::<sqlx::types::Decimal, _>(column_index)
+                .map(|v| v.to_string())
+                .or_else(|_| {
+                    // Fallback for numeric values that can't be represented as Decimal
+                    row.try_get::<String, _>(column_index)
+                })
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        
+        // Boolean type
         "BOOL" | "BOOLEAN" => {
             row.try_get::<bool, _>(column_index)
                 .map(|v| v.to_string())
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
+        
+        // Date and time types
         "TIMESTAMPTZ" => {
             row.try_get::<chrono::DateTime<chrono::Utc>, _>(column_index)
                 .map(|v| v.to_rfc3339())
@@ -471,20 +722,113 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                 .map(|v| v.to_string())
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
+        "TIME" => {
+            row.try_get::<chrono::NaiveTime, _>(column_index)
+                .map(|v| v.to_string())
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        "TIMETZ" => {
+            // PostgreSQL TIMETZ - for now treat as string since chrono doesn't have a direct equivalent
+            row.try_get::<String, _>(column_index)
+                .or_else(|_| {
+                    // If string doesn't work, try as time and convert
+                    row.try_get::<chrono::NaiveTime, _>(column_index)
+                        .map(|v| v.to_string())
+                })
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        "INTERVAL" => {
+            // PostgreSQL intervals - SQLx doesn't have built-in support, try as string
+            row.try_get::<String, _>(column_index)
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        
+        // JSON types
         "JSON" | "JSONB" => {
             row.try_get::<serde_json::Value, _>(column_index)
                 .map(|v| v.to_string())
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
+        
+        // UUID type
         "UUID" => {
             row.try_get::<sqlx::types::Uuid, _>(column_index)
                 .map(|v| v.to_string())
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
-        _ => {
-            // For unknown types, try to get as string
+        
+        // Binary data types
+        "BYTEA" => {
+            row.try_get::<Vec<u8>, _>(column_index)
+                .map(|v| format!("\\x{}", hex::encode(v)))
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        
+        // Network address types
+        "INET" | "CIDR" => {
+            row.try_get::<std::net::IpAddr, _>(column_index)
+                .map(|v| v.to_string())
+                .or_else(|_| {
+                    // Fallback to string if IP parsing fails
+                    row.try_get::<String, _>(column_index)
+                })
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        "MACADDR" | "MACADDR8" => {
+            // Try MAC address type if available, otherwise fallback to string
             row.try_get::<String, _>(column_index)
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        
+        // Array types - handle common array types
+        t if t.ends_with("[]") => {
+            // For arrays, try to get as JSON first, then fallback to string
+            match row.try_get::<serde_json::Value, _>(column_index) {
+                Ok(json_val) => Ok(json_val.to_string()),
+                Err(_) => {
+                    // Fallback to string representation
+                    row.try_get::<String, _>(column_index)
+                        .map_err(|e| DatabaseError::QueryError(e.to_string()))
+                }
+            }
+        }
+        
+        // Geometric types - these are complex, try as string
+        "POINT" | "LINE" | "LSEG" | "BOX" | "PATH" | "POLYGON" | "CIRCLE" => {
+            row.try_get::<String, _>(column_index)
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        
+        // Range types
+        "INT4RANGE" | "INT8RANGE" | "NUMRANGE" | "TSRANGE" | "TSTZRANGE" | "DATERANGE" => {
+            row.try_get::<String, _>(column_index)
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        
+        // XML type
+        "XML" => {
+            row.try_get::<String, _>(column_index)
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        
+        // Bit string types
+        "BIT" | "VARBIT" => {
+            // Bit strings as string representation
+            row.try_get::<String, _>(column_index)
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        
+        // Money type
+        "MONEY" => {
+            // Money as string representation
+            row.try_get::<String, _>(column_index)
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+        }
+        
+        // Custom/composite types and unknown types - try as string
+        _ => {
+            row.try_get::<String, _>(column_index)
+                .map_err(|e| DatabaseError::QueryError(format!("Unable to format PostgreSQL type '{}': {}", type_name, e)))
         }
     }
 }
@@ -492,6 +836,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::DatabaseType;
     use std::collections::HashMap;
 
     #[tokio::test]
