@@ -1,6 +1,6 @@
-use crate::config::{SSHTunnelConfig, VerbosityLevel};
+use crate::config::SSHTunnelConfig;
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseType, create_database_client};
-use tracing::debug;
+use tracing::{debug, info};
 use crate::pgpass;
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -57,20 +57,6 @@ pub struct QueryResultsWithInfo {
 }
 
 
-// Verbosity-aware logging macro
-macro_rules! verbose_log {
-    ($verbosity:expr, $min_level:expr, $($arg:tt)*) => {
-        match ($verbosity, $min_level) {
-            (VerbosityLevel::Quiet, VerbosityLevel::Quiet) |
-            (VerbosityLevel::Normal, VerbosityLevel::Quiet) |
-            (VerbosityLevel::Normal, VerbosityLevel::Normal) |
-            (VerbosityLevel::Verbose, _) => {
-                println!($($arg)*);
-            }
-            _ => {}
-        }
-    };
-}
 
 pub struct Database {
     // Database abstraction layer client
@@ -115,7 +101,7 @@ impl Database {
         // Parse the connection info from URL
         let config_start = std::time::Instant::now();
         let config = crate::config::Config::load();
-        verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  📋 Parsing connection URL...");
+        debug!("📋 Parsing connection URL...");
         let connection_info = ConnectionInfo::parse_url(url)?;
         debug!("[Database::from_url] Parsed URL in {:?}", step_start.elapsed());
         
@@ -125,7 +111,7 @@ impl Database {
         }
         
         // For PostgreSQL/MySQL, check for SSH tunnel patterns
-        verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  🔍 Checking for SSH tunnel patterns...");
+        debug!("🔍 Checking for SSH tunnel patterns...");
         let ssh_tunnel_config = if let Some(ref host) = connection_info.host {
             config.get_ssh_tunnel_for_host(host)
         } else {
@@ -135,13 +121,13 @@ impl Database {
         
         if ssh_tunnel_config.is_some() {
             // SSH tunnel info should always be shown (even in quiet mode)
-            verbose_log!(config.verbosity_level, VerbosityLevel::Quiet, "  ✓ SSH tunnel pattern found for host: {:?}", connection_info.host);
+            info!("✓ SSH tunnel pattern found for host: {:?}", connection_info.host);
             debug!("[Database::from_url] SSH tunnel configuration found for host: {:?}", connection_info.host);
         } else {
-            verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  ⚠️  No SSH tunnel pattern found for host: {:?}", connection_info.host);
+            debug!("⚠️  No SSH tunnel pattern found for host: {:?}", connection_info.host);
         }
         
-        verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  🔧 Creating database connection...");
+        debug!("🔧 Creating database connection...");
         let conn_start = std::time::Instant::now();
         let result = Self::from_connection_info(connection_info, default_limit, expanded_display_default, ssh_tunnel_config).await;
         debug!("[Database::from_url] from_connection_info took {:?}", conn_start.elapsed());
