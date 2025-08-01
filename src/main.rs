@@ -1,4 +1,3 @@
-// Import the debug_log macro here
 extern crate dbcrust;
 mod cli;
 // completion is now in lib.rs

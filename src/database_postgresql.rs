@@ -2,7 +2,7 @@
 use async_trait::async_trait;
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
 use crate::db::TableDetails;
-use crate::debug_log;
+use tracing::debug;
 use crate::performance_analyzer::PerformanceAnalyzer;
 use serde_json;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
@@ -221,7 +221,7 @@ impl PostgreSQLMetadataProvider {
 #[async_trait]
 impl MetadataProvider for PostgreSQLMetadataProvider {
     async fn get_schemas(&self) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[PostgreSQLMetadataProvider::get_schemas] Starting query");
+        debug!("[PostgreSQLMetadataProvider::get_schemas] Starting query");
         
         let rows = sqlx::query(
             r#"
@@ -240,12 +240,12 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
             .map(|row| row.get::<String, _>(0))
             .collect();
 
-        debug_log!("[PostgreSQLMetadataProvider::get_schemas] Found {} schemas", schemas.len());
+        debug!("[PostgreSQLMetadataProvider::get_schemas] Found {} schemas", schemas.len());
         Ok(schemas)
     }
 
     async fn get_tables(&self, schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[PostgreSQLMetadataProvider::get_tables] Starting query for schema: {:?}", schema);
+        debug!("[PostgreSQLMetadataProvider::get_tables] Starting query for schema: {:?}", schema);
 
         let query = if let Some(schema_name) = schema {
             sqlx::query(
@@ -279,12 +279,12 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
             .map(|row| row.get::<String, _>(0))
             .collect();
 
-        debug_log!("[PostgreSQLMetadataProvider::get_tables] Found {} tables", tables.len());
+        debug!("[PostgreSQLMetadataProvider::get_tables] Found {} tables", tables.len());
         Ok(tables)
     }
 
     async fn get_columns(&self, table: &str, schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[PostgreSQLMetadataProvider::get_columns] Starting query for table: '{}', schema: {:?}", table, schema);
+        debug!("[PostgreSQLMetadataProvider::get_columns] Starting query for table: '{}', schema: {:?}", table, schema);
 
         let schema_name = schema.unwrap_or("public");
         
@@ -311,12 +311,12 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
             .map(|row| row.get::<String, _>(0))
             .collect();
 
-        debug_log!("[PostgreSQLMetadataProvider::get_columns] Found {} columns", columns.len());
+        debug!("[PostgreSQLMetadataProvider::get_columns] Found {} columns", columns.len());
         Ok(columns)
     }
 
     async fn get_functions(&self, schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[PostgreSQLMetadataProvider::get_functions] Starting query for schema: {:?}", schema);
+        debug!("[PostgreSQLMetadataProvider::get_functions] Starting query for schema: {:?}", schema);
 
         let query = if let Some(schema_name) = schema {
             sqlx::query(
@@ -350,12 +350,12 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
             .map(|row| row.get::<String, _>(0))
             .collect();
 
-        debug_log!("[PostgreSQLMetadataProvider::get_functions] Found {} functions", functions.len());
+        debug!("[PostgreSQLMetadataProvider::get_functions] Found {} functions", functions.len());
         Ok(functions)
     }
 
     async fn get_table_details(&self, table: &str, schema: Option<&str>) -> Result<TableDetails, DatabaseError> {
-        debug_log!("[PostgreSQLMetadataProvider::get_table_details] Starting query for table: '{}', schema: {:?}", table, schema);
+        debug!("[PostgreSQLMetadataProvider::get_table_details] Starting query for table: '{}', schema: {:?}", table, schema);
 
         let schema_name = schema.unwrap_or("public");
 
@@ -385,7 +385,7 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
             referenced_by,
         };
 
-        debug_log!("[PostgreSQLMetadataProvider::get_table_details] Successfully fetched details for table: '{}'", table);
+        debug!("[PostgreSQLMetadataProvider::get_table_details] Successfully fetched details for table: '{}'", table);
         Ok(table_details)
     }
 
@@ -469,7 +469,7 @@ impl PostgreSQLClient {
 
     /// Format PostgreSQL EXPLAIN JSON output for better readability
     async fn format_explain_output(&self, raw_results: Vec<Vec<String>>) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[PostgreSQLClient::format_explain_output] Formatting PostgreSQL EXPLAIN output");
+        debug!("[PostgreSQLClient::format_explain_output] Formatting PostgreSQL EXPLAIN output");
         
         if raw_results.is_empty() {
             return Ok(vec![vec!["No query plan available".to_string()]]);
@@ -488,7 +488,7 @@ impl PostgreSQLClient {
             }
             
             let json_str = &row[0];
-            debug_log!("[PostgreSQLClient::format_explain_output] Attempting to parse JSON: {}", json_str);
+            debug!("[PostgreSQLClient::format_explain_output] Attempting to parse JSON: {}", json_str);
             
             // Parse JSON
             match serde_json::from_str::<serde_json::Value>(json_str) {
@@ -506,7 +506,7 @@ impl PostgreSQLClient {
                     formatted_results.push(vec!["💡 Use \\ecopy to copy the raw JSON plan to clipboard".to_string()]);
                 },
                 Err(e) => {
-                    debug_log!("[PostgreSQLClient::format_explain_output] JSON parse error: {}", e);
+                    debug!("[PostgreSQLClient::format_explain_output] JSON parse error: {}", e);
                     formatted_results.push(vec![format!("JSON Parse Error: {}", e)]);
                     formatted_results.push(vec![json_str.clone()]);
                 }
@@ -524,7 +524,7 @@ impl PostgreSQLClient {
 #[async_trait]
 impl DatabaseClient for PostgreSQLClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[PostgreSQLClient::execute_query] Executing query");
+        debug!("[PostgreSQLClient::execute_query] Executing query");
 
         // Add timeout to prevent hanging queries
         let timeout_duration = std::time::Duration::from_secs(30); // 30 seconds timeout
@@ -563,7 +563,7 @@ impl DatabaseClient for PostgreSQLClient {
             results.push(string_row);
         }
 
-        debug_log!("[PostgreSQLClient::execute_query] Query completed with {} rows", results.len() - 1);
+        debug!("[PostgreSQLClient::execute_query] Query completed with {} rows", results.len() - 1);
         Ok(results)
     }
 

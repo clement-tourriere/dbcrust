@@ -50,7 +50,6 @@ pub use db::Database;
 pub use logging::{debug, get_log_file_path_string};
 pub use myconf::{get_mysql_config_path, lookup_mysql_password, save_mysql_config};
 pub use pgpass::{get_pgpass_path, lookup_password};
-pub use ssh_tunnel::set_debug_mode;
 
 #[cfg(feature = "python")]
 #[pyclass]

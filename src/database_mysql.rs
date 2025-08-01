@@ -2,7 +2,7 @@
 use async_trait::async_trait;
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
 use crate::db::TableDetails;
-use crate::debug_log;
+use tracing::debug;
 use crate::performance_analyzer::PerformanceAnalyzer;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::{Row, Column};
@@ -22,7 +22,7 @@ impl MySqlMetadataProvider {
 #[async_trait]
 impl MetadataProvider for MySqlMetadataProvider {
     async fn get_schemas(&self) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[MySqlMetadataProvider::get_schemas] Starting query");
+        debug!("[MySqlMetadataProvider::get_schemas] Starting query");
         
         // MySQL schemas are essentially databases
         let rows = sqlx::query(
@@ -53,12 +53,12 @@ impl MetadataProvider for MySqlMetadataProvider {
             })
             .collect();
 
-        debug_log!("[MySqlMetadataProvider::get_schemas] Found {} schemas", schemas.len());
+        debug!("[MySqlMetadataProvider::get_schemas] Found {} schemas", schemas.len());
         Ok(schemas)
     }
 
     async fn get_tables(&self, schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[MySqlMetadataProvider::get_tables] Starting query for schema: {:?}", schema);
+        debug!("[MySqlMetadataProvider::get_tables] Starting query for schema: {:?}", schema);
 
         let query = if let Some(schema_name) = schema {
             format!(
@@ -99,12 +99,12 @@ impl MetadataProvider for MySqlMetadataProvider {
             })
             .collect();
 
-        debug_log!("[MySqlMetadataProvider::get_tables] Found {} tables", tables.len());
+        debug!("[MySqlMetadataProvider::get_tables] Found {} tables", tables.len());
         Ok(tables)
     }
 
     async fn get_columns(&self, table: &str, schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[MySqlMetadataProvider::get_columns] Starting query for table: '{}', schema: {:?}", table, schema);
+        debug!("[MySqlMetadataProvider::get_columns] Starting query for table: '{}', schema: {:?}", table, schema);
 
         let query = if let Some(schema_name) = schema {
             format!(
@@ -146,12 +146,12 @@ impl MetadataProvider for MySqlMetadataProvider {
             })
             .collect();
 
-        debug_log!("[MySqlMetadataProvider::get_columns] Found {} columns", columns.len());
+        debug!("[MySqlMetadataProvider::get_columns] Found {} columns", columns.len());
         Ok(columns)
     }
 
     async fn get_functions(&self, schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[MySqlMetadataProvider::get_functions] Starting query");
+        debug!("[MySqlMetadataProvider::get_functions] Starting query");
 
         // MySQL built-in functions and user-defined functions
         let query = if let Some(schema_name) = schema {
@@ -210,7 +210,7 @@ impl MetadataProvider for MySqlMetadataProvider {
                 "VERSION".to_string(),
                 "YEAR".to_string(),
             ];
-            debug_log!("[MySqlMetadataProvider::get_functions] Found {} built-in functions", builtin_functions.len());
+            debug!("[MySqlMetadataProvider::get_functions] Found {} built-in functions", builtin_functions.len());
             return Ok(builtin_functions);
         };
 
@@ -220,12 +220,12 @@ impl MetadataProvider for MySqlMetadataProvider {
             .map(|row| row.get::<String, _>("function_name"))
             .collect();
 
-        debug_log!("[MySqlMetadataProvider::get_functions] Found {} functions", functions.len());
+        debug!("[MySqlMetadataProvider::get_functions] Found {} functions", functions.len());
         Ok(functions)
     }
 
     async fn get_table_details(&self, table: &str, schema: Option<&str>) -> Result<TableDetails, DatabaseError> {
-        debug_log!("[MySqlMetadataProvider::get_table_details] Getting details for table: {}", table);
+        debug!("[MySqlMetadataProvider::get_table_details] Getting details for table: {}", table);
         
         let schema_name = schema.unwrap_or("DATABASE()");
         
@@ -482,7 +482,7 @@ impl MetadataProvider for MySqlMetadataProvider {
             referenced_by: Vec::new(), // Would need complex query to find referencing tables
         };
 
-        debug_log!("[MySqlMetadataProvider::get_table_details] Table details retrieved successfully");
+        debug!("[MySqlMetadataProvider::get_table_details] Table details retrieved successfully");
         Ok(table_details)
     }
 
@@ -505,7 +505,7 @@ pub struct MySqlClient {
 
 impl MySqlClient {
     pub async fn new(connection_info: ConnectionInfo) -> Result<Self, DatabaseError> {
-        debug_log!("[MySqlClient::new] Creating MySQL client");
+        debug!("[MySqlClient::new] Creating MySQL client");
 
         // Build connection URL
         let host = connection_info.host.as_deref().unwrap_or("localhost");
@@ -530,7 +530,7 @@ impl MySqlClient {
             database_url.push_str(&params.join("&"));
         }
 
-        debug_log!("[MySqlClient::new] Connecting to: {}", crate::password_sanitizer::sanitize_connection_url(&database_url));
+        debug!("[MySqlClient::new] Connecting to: {}", crate::password_sanitizer::sanitize_connection_url(&database_url));
 
         // Configure connection pool with MySQL-specific optimizations
         let pool = MySqlPoolOptions::new()
@@ -557,7 +557,7 @@ impl MySqlClient {
 
     /// Apply MySQL-specific performance optimizations
     async fn apply_mysql_optimizations(pool: &MySqlPool) -> Result<(), DatabaseError> {
-        debug_log!("[MySqlClient] Applying MySQL optimizations");
+        debug!("[MySqlClient] Applying MySQL optimizations");
         
         // Set session-level optimizations for better performance
         sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'")
@@ -570,7 +570,7 @@ impl MySqlClient {
             .await
             .ok(); // Ignore errors as query cache might be disabled
 
-        debug_log!("[MySqlClient] MySQL optimizations applied successfully");
+        debug!("[MySqlClient] MySQL optimizations applied successfully");
         Ok(())
     }
     
@@ -578,7 +578,7 @@ impl MySqlClient {
     async fn format_json_explain_output(&self, rows: Vec<MySqlRow>) -> Result<Vec<Vec<String>>, DatabaseError> {
         use serde_json::Value;
         
-        debug_log!("[MySqlClient::format_json_explain_output] Formatting JSON EXPLAIN output");
+        debug!("[MySqlClient::format_json_explain_output] Formatting JSON EXPLAIN output");
         
         let mut results = Vec::new();
         results.push(vec!["MySQL Query Plan".to_string()]);
@@ -616,7 +616,7 @@ impl MySqlClient {
                     self.format_explain_json_recursive(&json, &mut results, 0);
                 },
                 Err(e) => {
-                    debug_log!("[MySqlClient::format_json_explain_output] JSON parse error: {}", e);
+                    debug!("[MySqlClient::format_json_explain_output] JSON parse error: {}", e);
                     results.push(vec![format!("JSON Parse Error: {}", e)]);
                     results.push(vec![json_str]);
                 }
@@ -763,7 +763,7 @@ impl MySqlClient {
 #[async_trait]
 impl DatabaseClient for MySqlClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[MySqlClient::execute_query] Executing query");
+        debug!("[MySqlClient::execute_query] Executing query");
 
         let rows = sqlx::query(sql)
             .fetch_all(&self.pool)
@@ -795,12 +795,12 @@ impl DatabaseClient for MySqlClient {
             results.push(string_row);
         }
 
-        debug_log!("[MySqlClient::execute_query] Query completed with {} rows", results.len() - 1);
+        debug!("[MySqlClient::execute_query] Query completed with {} rows", results.len() - 1);
         Ok(results)
     }
 
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[MySqlClient::explain_query] Executing EXPLAIN for query");
+        debug!("[MySqlClient::explain_query] Executing EXPLAIN for query");
         
         // Try EXPLAIN FORMAT=JSON first for better structured output
         let json_explain_sql = format!("EXPLAIN FORMAT=JSON {sql}");
@@ -808,43 +808,43 @@ impl DatabaseClient for MySqlClient {
         
         match json_result {
             Ok(rows) if !rows.is_empty() => {
-                debug_log!("[MySqlClient::explain_query] Using JSON format");
+                debug!("[MySqlClient::explain_query] Using JSON format");
                 return self.format_json_explain_output(rows).await;
             },
             Err(e) => {
-                debug_log!("[MySqlClient::explain_query] JSON format failed: {}, falling back to standard", e);
+                debug!("[MySqlClient::explain_query] JSON format failed: {}, falling back to standard", e);
             },
             _ => {
-                debug_log!("[MySqlClient::explain_query] JSON format returned empty, falling back to standard");
+                debug!("[MySqlClient::explain_query] JSON format returned empty, falling back to standard");
             }
         }
         
         // Fallback to standard EXPLAIN format
-        debug_log!("[MySqlClient::explain_query] Using standard EXPLAIN format");
+        debug!("[MySqlClient::explain_query] Using standard EXPLAIN format");
         let explain_sql = format!("EXPLAIN {sql}");
         self.execute_query(&explain_sql).await
     }
 
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[MySqlClient::explain_query_raw] Executing raw EXPLAIN for query");
+        debug!("[MySqlClient::explain_query_raw] Executing raw EXPLAIN for query");
         
         // Try EXPLAIN FORMAT=JSON first for raw structured output
         let json_explain_sql = format!("EXPLAIN FORMAT=JSON {sql}");
         let json_result = self.execute_query(&json_explain_sql).await;
         
         if json_result.is_ok() {
-            debug_log!("[MySqlClient::explain_query_raw] Using JSON format");
+            debug!("[MySqlClient::explain_query_raw] Using JSON format");
             return json_result;
         }
         
         // Fallback to standard EXPLAIN format if JSON fails
-        debug_log!("[MySqlClient::explain_query_raw] JSON format failed, falling back to standard");
+        debug!("[MySqlClient::explain_query_raw] JSON format failed, falling back to standard");
         let explain_sql = format!("EXPLAIN {sql}");
         self.execute_query(&explain_sql).await
     }
 
     async fn list_databases(&self) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[MySqlClient::list_databases] Listing databases with enhanced information");
+        debug!("[MySqlClient::list_databases] Listing databases with enhanced information");
         
         // Try enhanced query first with character set and collation info
         let enhanced_query = r#"
@@ -860,7 +860,7 @@ impl DatabaseClient for MySqlClient {
         
         match enhanced_result {
             Ok(rows) => {
-                debug_log!("[MySqlClient::list_databases] Using enhanced format with charset/collation");
+                debug!("[MySqlClient::list_databases] Using enhanced format with charset/collation");
                 let mut results = Vec::new();
                 
                 // Add header row for enhanced format
@@ -889,16 +889,16 @@ impl DatabaseClient for MySqlClient {
                     results.push(vec![db_name, charset, collation]);
                 }
 
-                debug_log!("[MySqlClient::list_databases] Found {} databases with enhanced info", results.len() - 1);
+                debug!("[MySqlClient::list_databases] Found {} databases with enhanced info", results.len() - 1);
                 return Ok(results);
             },
             Err(e) => {
-                debug_log!("[MySqlClient::list_databases] Enhanced query failed: {}, falling back to basic", e);
+                debug!("[MySqlClient::list_databases] Enhanced query failed: {}, falling back to basic", e);
             }
         }
         
         // Fallback to basic SHOW DATABASES
-        debug_log!("[MySqlClient::list_databases] Using basic SHOW DATABASES format");
+        debug!("[MySqlClient::list_databases] Using basic SHOW DATABASES format");
         let query = "SHOW DATABASES";
         let rows = sqlx::query(query).fetch_all(&self.pool).await?;
         
@@ -919,12 +919,12 @@ impl DatabaseClient for MySqlClient {
             results.push(vec![db_name]);
         }
 
-        debug_log!("[MySqlClient::list_databases] Found {} databases", results.len() - 1);
+        debug!("[MySqlClient::list_databases] Found {} databases", results.len() - 1);
         Ok(results)
     }
 
     async fn connect_to_database(&mut self, database: &str) -> Result<(), DatabaseError> {
-        debug_log!("[MySqlClient::connect_to_database] Connecting to database: {}", database);
+        debug!("[MySqlClient::connect_to_database] Connecting to database: {}", database);
         
         // Execute USE statement to change database
         let use_query = format!("USE `{database}`");
@@ -955,7 +955,7 @@ impl DatabaseClient for MySqlClient {
     }
 
     async fn close(&mut self) -> Result<(), DatabaseError> {
-        debug_log!("[MySqlClient::close] Closing MySQL connection");
+        debug!("[MySqlClient::close] Closing MySQL connection");
         self.pool.close().await;
         Ok(())
     }

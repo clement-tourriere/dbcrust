@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::env;
 
-use crate::debug_log;
+use tracing::debug;
 
 #[derive(Debug, Clone)]
 #[derive(Default)]
@@ -63,7 +63,7 @@ pub fn get_mysql_config_path() -> Option<PathBuf> {
 /// Parse a MySQL configuration file
 /// Returns a HashMap of section name to configuration options
 pub fn parse_mysql_config(config_path: &Path) -> Result<HashMap<String, MySQLConfig>, Box<dyn std::error::Error>> {
-    debug_log!("[parse_mysql_config] Reading MySQL config from: {}", config_path.display());
+    debug!("[parse_mysql_config] Reading MySQL config from: {}", config_path.display());
     
     let content = fs::read_to_string(config_path)?;
     let mut configs = HashMap::new();
@@ -119,7 +119,7 @@ pub fn parse_mysql_config(config_path: &Path) -> Result<HashMap<String, MySQLCon
                 "ssl-key" | "ssl_key" => current_config.ssl_key = Some(value.to_string()),
                 _ => {
                     // Ignore unknown options
-                    debug_log!("[parse_mysql_config] Ignoring unknown option: {}", key);
+                    debug!("[parse_mysql_config] Ignoring unknown option: {}", key);
                 }
             }
         }
@@ -130,7 +130,7 @@ pub fn parse_mysql_config(config_path: &Path) -> Result<HashMap<String, MySQLCon
         configs.insert(current_section, current_config);
     }
 
-    debug_log!("[parse_mysql_config] Parsed {} sections", configs.len());
+    debug!("[parse_mysql_config] Parsed {} sections", configs.len());
     Ok(configs)
 }
 
@@ -139,12 +139,12 @@ pub fn parse_mysql_config(config_path: &Path) -> Result<HashMap<String, MySQLCon
 pub fn lookup_mysql_config(section: Option<&str>) -> Option<MySQLConfig> {
     let config_path = get_mysql_config_path()?;
     
-    debug_log!("[lookup_mysql_config] Looking up MySQL config in: {}", config_path.display());
+    debug!("[lookup_mysql_config] Looking up MySQL config in: {}", config_path.display());
     
     let configs = match parse_mysql_config(&config_path) {
         Ok(configs) => configs,
         Err(e) => {
-            debug_log!("[lookup_mysql_config] Error parsing MySQL config: {}", e);
+            debug!("[lookup_mysql_config] Error parsing MySQL config: {}", e);
             return None;
         }
     };
@@ -152,7 +152,7 @@ pub fn lookup_mysql_config(section: Option<&str>) -> Option<MySQLConfig> {
     // If a specific section is requested, use that
     if let Some(section_name) = section {
         if let Some(config) = configs.get(section_name) {
-            debug_log!("[lookup_mysql_config] Found config in section [{}]", section_name);
+            debug!("[lookup_mysql_config] Found config in section [{}]", section_name);
             return Some(config.clone());
         }
     }
@@ -161,19 +161,19 @@ pub fn lookup_mysql_config(section: Option<&str>) -> Option<MySQLConfig> {
     let default_sections = ["client", "mysql"];
     for section_name in &default_sections {
         if let Some(config) = configs.get(*section_name) {
-            debug_log!("[lookup_mysql_config] Found config in section [{}]", section_name);
+            debug!("[lookup_mysql_config] Found config in section [{}]", section_name);
             return Some(config.clone());
         }
     }
 
-    debug_log!("[lookup_mysql_config] No suitable configuration found");
+    debug!("[lookup_mysql_config] No suitable configuration found");
     None
 }
 
 /// Look up MySQL password specifically
 /// This provides a similar interface to pgpass::lookup_password
 pub fn lookup_mysql_password(host: &str, port: u16, database: &str, user: &str) -> Option<String> {
-    debug_log!("[lookup_mysql_password] Looking up password for {}@{}:{}/{}", user, host, port, database);
+    debug!("[lookup_mysql_password] Looking up password for {}@{}:{}/{}", user, host, port, database);
     
     if let Some(config) = lookup_mysql_config(None) {
         // Check if the configuration matches the requested connection
@@ -183,12 +183,12 @@ pub fn lookup_mysql_password(host: &str, port: u16, database: &str, user: &str) 
         let database_matches = config.database.as_ref().is_none_or(|d| d == database);
 
         if host_matches && port_matches && user_matches && database_matches {
-            debug_log!("[lookup_mysql_password] Configuration matches, returning password");
+            debug!("[lookup_mysql_password] Configuration matches, returning password");
             return config.password;
         }
     }
 
-    debug_log!("[lookup_mysql_password] No matching configuration found");
+    debug!("[lookup_mysql_password] No matching configuration found");
     None
 }
 
@@ -198,7 +198,7 @@ pub fn save_mysql_config(host: &str, port: u16, database: &str, user: &str, pass
     let home_dir = dirs::home_dir().ok_or("Could not determine home directory")?;
     let config_path = home_dir.join(".my.cnf");
     
-    debug_log!("[save_mysql_config] Saving MySQL config to: {}", config_path.display());
+    debug!("[save_mysql_config] Saving MySQL config to: {}", config_path.display());
 
     // Read existing configuration if it exists
     let mut existing_configs = if config_path.exists() {
@@ -266,7 +266,7 @@ pub fn save_mysql_config(host: &str, port: u16, database: &str, user: &str, pass
         fs::set_permissions(&config_path, permissions)?;
     }
 
-    debug_log!("[save_mysql_config] MySQL configuration saved successfully");
+    debug!("[save_mysql_config] MySQL configuration saved successfully");
     Ok(())
 }
 

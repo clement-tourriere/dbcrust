@@ -6,7 +6,7 @@ use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
-use crate::debug_log;
+use tracing::debug;
 
 // Parse a vault:// URL and extract vault parameters
 // Format: vault://<role_name>@<mount_path:database>/<vault_db_name>
@@ -286,7 +286,7 @@ pub async fn get_dynamic_credentials_with_caching(
 ) -> Result<(VaultDynamicCredentialsData, VaultLeaseInfo), VaultError> {
     // Check cache first if caching is enabled
     if let Some(cached_creds) = config.get_cached_vault_credentials(mount_path, db_config_name, role_name) {
-        crate::debug_log!("Using cached vault credentials for {}/{}/{}", mount_path, db_config_name, role_name);
+        debug!("Using cached vault credentials for {}/{}/{}", mount_path, db_config_name, role_name);
         
         // Return cached credentials with lease info reconstructed from cache
         let credentials = VaultDynamicCredentialsData {
@@ -304,7 +304,7 @@ pub async fn get_dynamic_credentials_with_caching(
     }
 
     // Cache miss or caching disabled - fetch fresh credentials from Vault
-    crate::debug_log!("Cache miss for vault credentials {}/{}/{}, fetching from Vault", mount_path, db_config_name, role_name);
+    debug!("Cache miss for vault credentials {}/{}/{}, fetching from Vault", mount_path, db_config_name, role_name);
     
     let (client, vault_addr) = create_vault_client().await?;
     let path = format!("{vault_addr}/v1/{mount_path}/creds/{role_name}");
@@ -361,10 +361,10 @@ pub async fn get_dynamic_credentials_with_caching(
         };
         
         if let Err(e) = config.cache_vault_credentials(mount_path, db_config_name, role_name, cached_creds) {
-            crate::debug_log!("Failed to cache vault credentials: {}", e);
+            debug!("Failed to cache vault credentials: {}", e);
             // Don't fail the whole operation if caching fails
         } else {
-            crate::debug_log!("Cached vault credentials for {}/{}/{}", mount_path, db_config_name, role_name);
+            debug!("Cached vault credentials for {}/{}/{}", mount_path, db_config_name, role_name);
         }
     }
 
@@ -407,11 +407,11 @@ pub async fn get_available_roles_for_user(
     // The filtering has already been done at the database selection level
     match db_config.allowed_roles {
         Some(roles) => {
-            debug_log!("Roles available for database {}: {:?}", db_config_name, roles);
+            debug!("Roles available for database {}: {:?}", db_config_name, roles);
             Ok(roles)
         },
         None => {
-            debug_log!("No roles defined for database {}", db_config_name);
+            debug!("No roles defined for database {}", db_config_name);
             Ok(Vec::new())
         }
     }
@@ -427,8 +427,8 @@ pub async fn filter_databases_with_available_roles(
     let user_acl = get_user_acl_permissions().await?;
     
     // Debug log the full ACL structure
-    debug_log!("User ACL exact paths: {:?}", user_acl.exact_paths.keys().collect::<Vec<_>>());
-    debug_log!("User ACL glob paths: {:?}", user_acl.glob_paths.keys().collect::<Vec<_>>());
+    debug!("User ACL exact paths: {:?}", user_acl.exact_paths.keys().collect::<Vec<_>>());
+    debug!("User ACL glob paths: {:?}", user_acl.glob_paths.keys().collect::<Vec<_>>());
     
     let mut accessible_dbs = Vec::new();
     
@@ -444,15 +444,15 @@ pub async fn filter_databases_with_available_roles(
         let direct_access = has_path_permission(&user_acl, &direct_path, &["read", "create"]);
         
         if creds_access || direct_access {
-            debug_log!("User has access to database: {} (creds_path: {}, direct_access: {})", 
+            debug!("User has access to database: {} (creds_path: {}, direct_access: {})", 
                       db_name, creds_access, direct_access);
             accessible_dbs.push(db_name);
         } else {
-            debug_log!("User does NOT have access to database: {}", db_name);
+            debug!("User does NOT have access to database: {}", db_name);
         }
     }
     
-    debug_log!("Accessible databases after filtering: {:?}", accessible_dbs);
+    debug!("Accessible databases after filtering: {:?}", accessible_dbs);
     Ok(accessible_dbs)
 }
 
@@ -472,7 +472,7 @@ async fn get_user_acl_permissions() -> Result<VaultResultantAclData, VaultError>
     }
 
     let response_text = response.text().await?;
-    debug_log!("ACL Response: {}", response_text);
+    debug!("ACL Response: {}", response_text);
     
     let acl_response: VaultResultantAclResponse = serde_json::from_str(&response_text)
         .map_err(VaultError::JsonError)?;
@@ -489,7 +489,7 @@ pub fn has_path_permission(
     // First check exact paths
     if let Some(path_capabilities) = acl_data.exact_paths.get(path) {
         if has_capabilities(&path_capabilities.capabilities, required_capabilities) {
-            debug_log!("Found exact path match: {}", path);
+            debug!("Found exact path match: {}", path);
             return true;
         }
     }
@@ -497,14 +497,14 @@ pub fn has_path_permission(
     // Then check glob paths
     for (glob_path, capabilities) in &acl_data.glob_paths {
         if glob_matches(glob_path, path) {
-            debug_log!("Found glob path match: {} for path {}", glob_path, path);
+            debug!("Found glob path match: {} for path {}", glob_path, path);
             if has_capabilities(&capabilities.capabilities, required_capabilities) {
                 return true;
             }
         }
     }
 
-    debug_log!("No permission found for path: {}", path);
+    debug!("No permission found for path: {}", path);
     false
 }
 

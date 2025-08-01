@@ -2,7 +2,7 @@
 use async_trait::async_trait;
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
 use crate::db::TableDetails;
-use crate::debug_log;
+use tracing::debug;
 use crate::performance_analyzer::PerformanceAnalyzer;
 use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::{Row, Column};
@@ -21,7 +21,7 @@ impl SqliteMetadataProvider {
 #[async_trait]
 impl MetadataProvider for SqliteMetadataProvider {
     async fn get_schemas(&self) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[SqliteMetadataProvider::get_schemas] Starting query");
+        debug!("[SqliteMetadataProvider::get_schemas] Starting query");
         
         // SQLite doesn't have traditional schemas like PostgreSQL, but it supports attached databases
         // We'll list the main database and any attached databases
@@ -38,12 +38,12 @@ impl MetadataProvider for SqliteMetadataProvider {
             .map(|row| row.get::<String, _>("name"))
             .collect();
 
-        debug_log!("[SqliteMetadataProvider::get_schemas] Found {} schemas", schemas.len());
+        debug!("[SqliteMetadataProvider::get_schemas] Found {} schemas", schemas.len());
         Ok(schemas)
     }
 
     async fn get_tables(&self, schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[SqliteMetadataProvider::get_tables] Starting query for schema: {:?}", schema);
+        debug!("[SqliteMetadataProvider::get_tables] Starting query for schema: {:?}", schema);
 
         let schema_name = schema.unwrap_or("main");
         
@@ -64,12 +64,12 @@ impl MetadataProvider for SqliteMetadataProvider {
             .map(|row| row.get::<String, _>("table_name"))
             .collect();
 
-        debug_log!("[SqliteMetadataProvider::get_tables] Found {} tables", tables.len());
+        debug!("[SqliteMetadataProvider::get_tables] Found {} tables", tables.len());
         Ok(tables)
     }
 
     async fn get_columns(&self, table: &str, schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[SqliteMetadataProvider::get_columns] Starting query for table: '{}', schema: {:?}", table, schema);
+        debug!("[SqliteMetadataProvider::get_columns] Starting query for table: '{}', schema: {:?}", table, schema);
 
         let schema_name = schema.unwrap_or("main");
         
@@ -85,12 +85,12 @@ impl MetadataProvider for SqliteMetadataProvider {
             .map(|row| row.get::<String, _>("name"))
             .collect();
 
-        debug_log!("[SqliteMetadataProvider::get_columns] Found {} columns", columns.len());
+        debug!("[SqliteMetadataProvider::get_columns] Found {} columns", columns.len());
         Ok(columns)
     }
 
     async fn get_functions(&self, _schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug_log!("[SqliteMetadataProvider::get_functions] Starting query");
+        debug!("[SqliteMetadataProvider::get_functions] Starting query");
 
         // SQLite has built-in functions but no user-defined function discovery like PostgreSQL
         // Return a list of common SQLite built-in functions
@@ -126,12 +126,12 @@ impl MetadataProvider for SqliteMetadataProvider {
             "upper".to_string(),
         ];
 
-        debug_log!("[SqliteMetadataProvider::get_functions] Found {} functions", functions.len());
+        debug!("[SqliteMetadataProvider::get_functions] Found {} functions", functions.len());
         Ok(functions)
     }
 
     async fn get_table_details(&self, table: &str, schema: Option<&str>) -> Result<TableDetails, DatabaseError> {
-        debug_log!("[SqliteMetadataProvider::get_table_details] Getting details for table: {}", table);
+        debug!("[SqliteMetadataProvider::get_table_details] Getting details for table: {}", table);
         
         let schema_name = schema.unwrap_or("main");
         
@@ -224,7 +224,7 @@ impl MetadataProvider for SqliteMetadataProvider {
             referenced_by: Vec::new(), // Would need complex query to find referencing tables
         };
 
-        debug_log!("[SqliteMetadataProvider::get_table_details] Table details retrieved successfully");
+        debug!("[SqliteMetadataProvider::get_table_details] Table details retrieved successfully");
         Ok(table_details)
     }
 
@@ -247,7 +247,7 @@ pub struct SqliteClient {
 
 impl SqliteClient {
     pub async fn new(connection_info: ConnectionInfo) -> Result<Self, DatabaseError> {
-        debug_log!("[SqliteClient::new] Creating SQLite client");
+        debug!("[SqliteClient::new] Creating SQLite client");
 
         // Get the database file path
         let file_path = connection_info
@@ -280,7 +280,7 @@ impl SqliteClient {
             }
         };
 
-        debug_log!("[SqliteClient::new] Connecting to: {}", database_url);
+        debug!("[SqliteClient::new] Connecting to: {}", database_url);
 
         // Configure connection pool with SQLite-specific optimizations
         let pool = SqlitePoolOptions::new()
@@ -314,7 +314,7 @@ impl SqliteClient {
 
     /// Apply SQLite-specific performance optimizations
     async fn apply_sqlite_optimizations(pool: &SqlitePool) -> Result<(), DatabaseError> {
-        debug_log!("[SqliteClient] Applying SQLite optimizations");
+        debug!("[SqliteClient] Applying SQLite optimizations");
         
         // Enable WAL mode for better concurrency
         sqlx::query("PRAGMA journal_mode = WAL")
@@ -346,13 +346,13 @@ impl SqliteClient {
             .execute(pool)
             .await?;
 
-        debug_log!("[SqliteClient] SQLite optimizations applied successfully");
+        debug!("[SqliteClient] SQLite optimizations applied successfully");
         Ok(())
     }
     
     /// Format SQLite EXPLAIN QUERY PLAN output for better readability
     async fn format_explain_output(&self, raw_results: Vec<Vec<String>>) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[SqliteClient::format_explain_output] Formatting EXPLAIN QUERY PLAN output");
+        debug!("[SqliteClient::format_explain_output] Formatting EXPLAIN QUERY PLAN output");
         
         if raw_results.is_empty() {
             return Ok(vec![vec!["No query plan available".to_string()]]);
@@ -518,7 +518,7 @@ impl SqliteClient {
 #[async_trait]
 impl DatabaseClient for SqliteClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[SqliteClient::execute_query] Executing query");
+        debug!("[SqliteClient::execute_query] Executing query");
 
         let rows = sqlx::query(sql)
             .fetch_all(&self.pool)
@@ -550,12 +550,12 @@ impl DatabaseClient for SqliteClient {
             results.push(string_row);
         }
 
-        debug_log!("[SqliteClient::execute_query] Query completed with {} rows", results.len() - 1);
+        debug!("[SqliteClient::execute_query] Query completed with {} rows", results.len() - 1);
         Ok(results)
     }
 
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[SqliteClient::explain_query] Executing EXPLAIN QUERY PLAN for query");
+        debug!("[SqliteClient::explain_query] Executing EXPLAIN QUERY PLAN for query");
         
         let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
         let raw_results = self.execute_query(&explain_sql).await?;
@@ -565,14 +565,14 @@ impl DatabaseClient for SqliteClient {
     }
 
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[SqliteClient::explain_query_raw] Executing raw EXPLAIN QUERY PLAN for query");
+        debug!("[SqliteClient::explain_query_raw] Executing raw EXPLAIN QUERY PLAN for query");
         
         let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
         self.execute_query(&explain_sql).await
     }
 
     async fn list_databases(&self) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug_log!("[SqliteClient::list_databases] Listing attached databases with enhanced information");
+        debug!("[SqliteClient::list_databases] Listing attached databases with enhanced information");
         
         let query = "PRAGMA database_list";
         let rows = sqlx::query(query).fetch_all(&self.pool).await?;
@@ -646,12 +646,12 @@ impl DatabaseClient for SqliteClient {
             ]);
         }
 
-        debug_log!("[SqliteClient::list_databases] Found {} databases", results.len() - 1);
+        debug!("[SqliteClient::list_databases] Found {} databases", results.len() - 1);
         Ok(results)
     }
 
     async fn connect_to_database(&mut self, database: &str) -> Result<(), DatabaseError> {
-        debug_log!("[SqliteClient::connect_to_database] Connecting to database: {}", database);
+        debug!("[SqliteClient::connect_to_database] Connecting to database: {}", database);
         
         // For SQLite, this could mean attaching a different database file
         // For now, we'll just update the current database name for display purposes
@@ -682,7 +682,7 @@ impl DatabaseClient for SqliteClient {
     }
 
     async fn close(&mut self) -> Result<(), DatabaseError> {
-        debug_log!("[SqliteClient::close] Closing SQLite connection");
+        debug!("[SqliteClient::close] Closing SQLite connection");
         self.pool.close().await;
         Ok(())
     }

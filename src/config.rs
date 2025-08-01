@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crate::database::DatabaseType;
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
+use tracing::debug;
 
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, ValueEnum)]
@@ -623,7 +624,7 @@ impl Config {
                                         eprintln!("Error decrypting vault credentials file: {e}");
                                         eprintln!("Failed to remove corrupted vault credentials file: {remove_err}");
                                     } else {
-                                        crate::debug_log!("Removed corrupted vault credentials file due to decryption failure: {e}");
+                                        debug!("Removed corrupted vault credentials file due to decryption failure: {e}");
                                     }
                                     VaultCredentialStorage::default()
                                 }

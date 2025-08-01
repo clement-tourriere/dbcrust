@@ -1,7 +1,7 @@
 //! Database abstraction layer for multi-database support
 //! Supports PostgreSQL, SQLite, and MySQL/MariaDB
 use async_trait::async_trait;
-use crate::debug_log;
+use tracing::debug;
 use std::collections::HashMap;
 use std::fmt;
 use thiserror::Error;
@@ -92,7 +92,7 @@ pub async fn create_database_client(connection_info: ConnectionInfo) -> Result<B
 impl ConnectionInfo {
     /// Parse a database URL into connection information
     pub fn parse_url(url_str: &str) -> Result<Self, DatabaseError> {
-        debug_log!("[ConnectionInfo::parse_url] Parsing URL: {}", crate::password_sanitizer::sanitize_connection_url(url_str));
+        debug!("[ConnectionInfo::parse_url] Parsing URL: {}", crate::password_sanitizer::sanitize_connection_url(url_str));
         
         let url = Url::parse(url_str)
             .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to parse URL: {e}")))?;
@@ -204,7 +204,7 @@ impl ConnectionInfo {
             connection_info.options.insert(key.to_string(), value.to_string());
         }
 
-        debug_log!("[ConnectionInfo::parse_url] Parsed connection info for {}", database_type);
+        debug!("[ConnectionInfo::parse_url] Parsed connection info for {}", database_type);
         Ok(connection_info)
     }
 

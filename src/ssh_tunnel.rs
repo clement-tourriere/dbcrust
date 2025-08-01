@@ -11,33 +11,13 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::time::timeout;
-
-// Static debug flag - can be set through environment variable in the future
-static mut DEBUG_MODE: bool = false;
-
-// Debug logging macro that only logs when DEBUG_MODE is true
-macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        unsafe {
-            if DEBUG_MODE {
-                println!($($arg)*);
-            }
-        }
-    };
-}
+use tracing::debug;
 
 // Status logging macro that always shows important status messages
 macro_rules! status_log {
     ($($arg:tt)*) => {
         println!($($arg)*);
     };
-}
-
-// Function to set debug mode
-pub fn set_debug_mode(enable: bool) {
-    unsafe {
-        DEBUG_MODE = enable;
-    }
 }
 
 #[derive(Error, Debug, Clone)]
@@ -180,7 +160,7 @@ impl SSHTunnel {
             self.ssh_host
         );
 
-        debug_log!(
+        debug!(
             "Executing SSH command: {}",
             crate::password_sanitizer::sanitize_ssh_command(&ssh_command_str)
         );
@@ -192,7 +172,7 @@ impl SSHTunnel {
         let child_id = child
             .id()
             .map_or_else(|| "[unknown_pid]".to_string(), |id| id.to_string());
-        debug_log!(
+        debug!(
             "SSH process {} spawned. Waiting for tunnel setup...",
             child_id
         );
@@ -231,7 +211,7 @@ impl SSHTunnel {
                             // Process is still running, continue
                         }
                         Err(e) => {
-                            debug_log!("Error checking SSH process status: {}", e);
+                            debug!("Error checking SSH process status: {}", e);
                         }
                     }
                 }
@@ -283,7 +263,7 @@ impl SSHTunnel {
                 )));
             }
 
-            debug_log!(
+            debug!(
                 "Attempting TCP connection to {} to verify tunnel (try {}s / {}s total)...",
                 local_addr,
                 start_time.elapsed().as_secs(),
@@ -299,7 +279,7 @@ impl SSHTunnel {
                 Ok(Ok(stream)) => {
                     // Connected successfully
                     drop(stream);
-                    debug_log!(
+                    debug!(
                         "TCP check successful! SSH tunnel ready on {} -> {}:{} (via {}@{}:{})",
                         local_addr,
                         self.remote_host,
@@ -312,7 +292,7 @@ impl SSHTunnel {
                 }
                 Ok(Err(e)) => {
                     // TCP connect failed within individual_tcp_connect_timeout
-                    debug_log!(
+                    debug!(
                         "TCP check to {} failed: {}. Retrying in {}s... ({}/{}s elapsed)",
                         local_addr,
                         e,
@@ -323,7 +303,7 @@ impl SSHTunnel {
                 }
                 Err(_) => {
                     // tokio::time::timeout returned an error (individual_tcp_connect_timeout exceeded)
-                    debug_log!(
+                    debug!(
                         "TCP check to {} timed out. Retrying in {}s... ({}/{}s elapsed)",
                         local_addr,
                         tcp_check_interval.as_secs(),
@@ -400,13 +380,13 @@ impl SSHTunnel {
     pub async fn stop(&self) -> Result<(), SSHTunnelError> {
         if let Ok(mut guard) = self.tunnel_process.lock() {
             if let Some(mut child) = guard.take() {
-                debug_log!("Stopping SSH tunnel process (PID: {:?})...", child.id());
+                debug!("Stopping SSH tunnel process (PID: {:?})...", child.id());
                 match child.kill().await {
                     Ok(_) => {
-                        debug_log!("SSH tunnel process killed successfully");
+                        debug!("SSH tunnel process killed successfully");
                         match timeout(Duration::from_secs(5), child.wait()).await {
                             Ok(Ok(status)) => {
-                                debug_log!("SSH tunnel process exited with status: {}", status)
+                                debug!("SSH tunnel process exited with status: {}", status)
                             }
                             Ok(Err(e)) => {
                                 eprintln!("Error waiting for SSH tunnel process to exit: {e}")
@@ -426,7 +406,7 @@ impl SSHTunnel {
                     }
                 }
             } else {
-                debug_log!("No active SSH tunnel process to stop.");
+                debug!("No active SSH tunnel process to stop.");
             }
         } else {
             eprintln!("Failed to acquire lock for stopping tunnel process.");
@@ -454,7 +434,7 @@ impl Drop for SSHTunnel {
     fn drop(&mut self) {
         if let Ok(mut guard) = self.tunnel_process.lock() {
             if let Some(mut child) = guard.take() {
-                debug_log!(
+                debug!(
                     "SSHTunnel dropped. Attempting to kill tunnel process (PID: {:?}).",
                     child.id()
                 );
@@ -462,7 +442,7 @@ impl Drop for SSHTunnel {
                     eprintln!("Error attempting to kill SSH tunnel process in drop: {e}");
                 } else {
                     status_log!("SSH tunnel closed");
-                    debug_log!("SSH tunnel process kill signal sent from drop.");
+                    debug!("SSH tunnel process kill signal sent from drop.");
                 }
             }
         }

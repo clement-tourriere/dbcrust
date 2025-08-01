@@ -6,7 +6,8 @@ use crate::database::ConnectionInfo;
 use crate::db::Database;
 use crate::format::{format_query_results_expanded, format_query_results_psql_with_info};
 use crate::prompt::DbPrompt;
-use crate::{debug_log, logging, pager};
+use crate::{logging, pager};
+use tracing::debug;
 use clap::CommandFactory;
 use dirs;
 use inquire;
@@ -146,7 +147,7 @@ impl CliCore {
         if let Err(e) = logging::init() {
             eprintln!("Warning: Failed to initialize logging: {e}");
         }
-        debug_log!("DbCrust CLI Core started");
+        debug!("DbCrust CLI Core started");
 
         let mut cli_core = Self::new();
 
@@ -171,8 +172,7 @@ impl CliCore {
         // Log system information
         cli_core.log_system_info(&args);
 
-        // Set SSH tunnel debug mode if --debug flag is provided
-        crate::ssh_tunnel::set_debug_mode(args.debug);
+        // SSH tunnel debug output now handled by tracing system
 
         // Also enable debug logging if --debug flag is provided, overriding config
         if args.debug {
@@ -180,7 +180,7 @@ impl CliCore {
             temp_config.logging.level = crate::config::LogLevel::Debug;
 
             if temp_config.logging.level != crate::config::LogLevel::Debug {
-                debug_log!("Debug logging enabled via command line flag");
+                debug!("Debug logging enabled via command line flag");
             }
 
             cli_core.config = temp_config;
@@ -263,20 +263,20 @@ impl CliCore {
 
     /// Log system information for debugging
     fn log_system_info(&self, args: &Args) {
-        debug_log!("Operating System: {}", std::env::consts::OS);
-        debug_log!("Architecture: {}", std::env::consts::ARCH);
-        debug_log!("CLI Arguments: {args:?}");
+        debug!("Operating System: {}", std::env::consts::OS);
+        debug!("Architecture: {}", std::env::consts::ARCH);
+        debug!("CLI Arguments: {args:?}");
 
         if let Some(terminal_size) = terminal_size::terminal_size() {
-            debug_log!("Terminal size: {}x{}", terminal_size.0.0, terminal_size.1.0);
+            debug!("Terminal size: {}x{}", terminal_size.0.0, terminal_size.1.0);
         }
 
         if let Ok(user) = std::env::var("USER") {
-            debug_log!("User: {user}");
+            debug!("User: {user}");
         }
 
         if let Ok(pwd) = std::env::var("PWD") {
-            debug_log!("Working directory: {pwd}");
+            debug!("Working directory: {pwd}");
         }
     }
 
@@ -481,7 +481,7 @@ impl CliCore {
                 true,
                 options,
             ) {
-                debug_log!("Failed to add vault connection to history: {}", e);
+                debug!("Failed to add vault connection to history: {}", e);
             }
 
             self.database = Some(database);
@@ -552,7 +552,7 @@ impl CliCore {
             database_type,
             true,
         ) {
-            debug_log!("Failed to add connection to history: {}", e);
+            debug!("Failed to add connection to history: {}", e);
         }
 
         self.database = Some(database);
@@ -870,11 +870,11 @@ impl CliCore {
                     self.database = Some(updated_db);
                 }
                 Err(_) => {
-                    debug_log!("Failed to unwrap database mutex");
+                    debug!("Failed to unwrap database mutex");
                 }
             },
             Err(_) => {
-                debug_log!("Failed to unwrap database Arc");
+                debug!("Failed to unwrap database Arc");
             }
         }
 
@@ -1160,7 +1160,7 @@ impl CliCore {
                     session.database_type.clone(),
                     true,
                 ) {
-                    debug_log!("Failed to add connection to history: {}", e);
+                    debug!("Failed to add connection to history: {}", e);
                 }
 
                 Ok(session_url)
@@ -1568,7 +1568,7 @@ impl CliCore {
                 Ok(()) => Ok(()),
                 Err(e) => {
                     // Pager failed, fall back to direct output
-                    debug_log!("Pager failed, falling back to direct output: {}", e);
+                    debug!("Pager failed, falling back to direct output: {}", e);
                     print!("{}", output);
                     Ok(())
                 }

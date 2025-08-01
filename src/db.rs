@@ -1,6 +1,6 @@
 use crate::config::{SSHTunnelConfig, VerbosityLevel};
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseType, create_database_client};
-use crate::debug_log;
+use tracing::debug;
 use crate::pgpass;
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -100,7 +100,7 @@ impl Database {
         default_limit: Option<usize>,
         expanded_display_default: Option<bool>,
     ) -> std::result::Result<Self, Box<dyn StdError>> {
-        debug_log!("[Database::from_url] Creating database from URL");
+        debug!("[Database::from_url] Creating database from URL");
         let step_start = std::time::Instant::now();
         
         // Handle Docker URLs specially
@@ -114,7 +114,7 @@ impl Database {
         let config = crate::config::Config::load();
         verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  📋 Parsing connection URL...");
         let connection_info = ConnectionInfo::parse_url(url)?;
-        debug_log!("[Database::from_url] Parsed URL in {:?}", step_start.elapsed());
+        debug!("[Database::from_url] Parsed URL in {:?}", step_start.elapsed());
         
         // For SQLite, we don't need SSH tunneling
         if connection_info.database_type == DatabaseType::SQLite {
@@ -128,12 +128,12 @@ impl Database {
         } else {
             None
         };
-        debug_log!("[Database::from_url] Config check took {:?}", config_start.elapsed());
+        debug!("[Database::from_url] Config check took {:?}", config_start.elapsed());
         
         if ssh_tunnel_config.is_some() {
             // SSH tunnel info should always be shown (even in quiet mode)
             verbose_log!(config.verbosity_level, VerbosityLevel::Quiet, "  ✓ SSH tunnel pattern found for host: {:?}", connection_info.host);
-            debug_log!("[Database::from_url] SSH tunnel configuration found for host: {:?}", connection_info.host);
+            debug!("[Database::from_url] SSH tunnel configuration found for host: {:?}", connection_info.host);
         } else {
             verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  ⚠️  No SSH tunnel pattern found for host: {:?}", connection_info.host);
         }
@@ -141,7 +141,7 @@ impl Database {
         verbose_log!(config.verbosity_level, VerbosityLevel::Verbose, "  🔧 Creating database connection...");
         let conn_start = std::time::Instant::now();
         let result = Self::from_connection_info(connection_info, default_limit, expanded_display_default, ssh_tunnel_config).await;
-        debug_log!("[Database::from_url] from_connection_info took {:?}", conn_start.elapsed());
+        debug!("[Database::from_url] from_connection_info took {:?}", conn_start.elapsed());
         result
     }
     
@@ -151,7 +151,7 @@ impl Database {
         default_limit: Option<usize>,
         expanded_display_default: Option<bool>,
     ) -> std::result::Result<(Self, Option<ConnectionInfo>), Box<dyn StdError>> {
-        debug_log!("[Database::from_docker_url] Creating database from Docker URL");
+        debug!("[Database::from_docker_url] Creating database from Docker URL");
         
         // Parse Docker URL
         let connection_info = ConnectionInfo::parse_url(url)?;
@@ -217,7 +217,7 @@ impl Database {
             docker_container: Some(container_name.clone()),
         };
         
-        debug_log!("[Database::from_docker_url] Resolved Docker connection: {}@{}:{}/{}", 
+        debug!("[Database::from_docker_url] Resolved Docker connection: {}@{}:{}/{}", 
                   resolved_connection_info.username.as_deref().unwrap_or(""),
                   resolved_connection_info.host.as_deref().unwrap_or(""),
                   resolved_connection_info.port.unwrap_or(0),
@@ -327,7 +327,7 @@ impl Database {
         expanded_display_default: Option<bool>,
         ssh_tunnel_config: Option<SSHTunnelConfig>,
     ) -> std::result::Result<Self, Box<dyn StdError>> {
-        debug_log!("[Database::from_connection_info] Creating database from connection info");
+        debug!("[Database::from_connection_info] Creating database from connection info");
         
         let config = crate::config::Config::load();
         
@@ -345,7 +345,7 @@ impl Database {
         };
         
         // Create database client using the new abstraction layer
-        debug_log!("[Database::from_connection_info] Creating database client");
+        debug!("[Database::from_connection_info] Creating database client");
         let database_client = create_database_client(final_connection_info).await
             .map_err(|e| format!("Failed to create database client: {e}"))?;
 
@@ -366,7 +366,7 @@ impl Database {
         };
 
         // Validate the connection before returning
-        debug_log!("[Database::from_connection_info] Validating connection");
+        debug!("[Database::from_connection_info] Validating connection");
         db.validate_connection().await?;
 
         Ok(db)
@@ -414,7 +414,7 @@ impl Database {
     ) -> std::result::Result<(), Box<dyn StdError>> {
         // Use new database abstraction layer
         if let Some(ref mut database_client) = self.database_client {
-            debug_log!("Using database abstraction layer for connect_to_db");
+            debug!("Using database abstraction layer for connect_to_db");
             return database_client.connect_to_database(dbname).await
                 .map_err(|e| e.into());
         } else {
@@ -427,7 +427,7 @@ impl Database {
     ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
         // Use new database abstraction layer
         if let Some(ref database_client) = self.database_client {
-            debug_log!("Using database abstraction layer for list_databases");
+            debug!("Using database abstraction layer for list_databases");
             return database_client.list_databases().await
                 .map_err(|e| e.into());
         } else {
@@ -437,10 +437,10 @@ impl Database {
 
     /// List users (database-specific implementation)
     pub async fn list_users(&mut self) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
-        debug_log!("[Database::list_users] Listing database users");
+        debug!("[Database::list_users] Listing database users");
         
         if let Some(ref database_client) = self.database_client {
-            debug_log!("Using database abstraction layer for list_users");
+            debug!("Using database abstraction layer for list_users");
             
             let connection_info = database_client.get_connection_info();
             
@@ -469,11 +469,11 @@ impl Database {
 
     /// List indexes (primarily for SQLite)
     pub async fn list_indexes(&mut self) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
-        debug_log!("[Database::list_indexes] Listing database indexes");
+        debug!("[Database::list_indexes] Listing database indexes");
         
         // Try using the new database abstraction layer first
         if let Some(ref database_client) = self.database_client {
-            debug_log!("Using database abstraction layer for list_indexes");
+            debug!("Using database abstraction layer for list_indexes");
             
             let connection_info = database_client.get_connection_info();
             
@@ -523,11 +523,11 @@ impl Database {
 
     /// List pragmas (SQLite-specific)
     pub async fn list_pragmas(&mut self) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
-        debug_log!("[Database::list_pragmas] Listing database pragmas");
+        debug!("[Database::list_pragmas] Listing database pragmas");
         
         // Try using the new database abstraction layer first
         if let Some(ref database_client) = self.database_client {
-            debug_log!("Using database abstraction layer for list_pragmas");
+            debug!("Using database abstraction layer for list_pragmas");
             
             let connection_info = database_client.get_connection_info();
             
@@ -752,7 +752,7 @@ impl Database {
     ) -> std::result::Result<QueryResultsWithInfo, Box<dyn StdError>> {
         // Check if we should EXPLAIN this query (applies to all database types)
         if self.explain_mode && is_query_explainable(query) {
-            debug_log!("EXPLAIN mode is enabled, executing EXPLAIN query");
+            debug!("EXPLAIN mode is enabled, executing EXPLAIN query");
             let results = self.execute_explain_query(query).await?;
             return Ok(QueryResultsWithInfo {
                 data: results,
@@ -762,10 +762,10 @@ impl Database {
         
         // Use new database abstraction layer
         if let Some(ref database_client) = self.database_client {
-            debug_log!("Using database abstraction layer for execute_query");
+            debug!("Using database abstraction layer for execute_query");
             let query_with_limit = self.maybe_add_limit(query);
-            debug_log!("[database_client] Original query: {}", query);
-            debug_log!("[database_client] Query with limit: {}", query_with_limit);
+            debug!("[database_client] Original query: {}", query);
+            debug!("[database_client] Query with limit: {}", query_with_limit);
             let results = database_client.execute_query(&query_with_limit).await?;
             return self.apply_column_selection_if_needed_with_info(results, interrupt_flag);
         } else {
@@ -791,7 +791,7 @@ impl Database {
         let should_apply = self.column_select_mode || self.should_auto_enable_column_selection(column_count);
         
         if should_apply {
-            debug_log!("Applying column selection: cs_mode={}, columns={}, threshold={}", 
+            debug!("Applying column selection: cs_mode={}, columns={}, threshold={}", 
                       self.column_select_mode, column_count, self.column_selection_threshold);
             match self.interactive_column_selection_with_info(&results, interrupt_flag) {
                 Ok(results_with_info) => Ok(results_with_info),
@@ -822,7 +822,7 @@ impl Database {
     ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
         // Use new database abstraction layer for EXPLAIN queries
         if let Some(ref database_client) = self.database_client {
-            debug_log!("Using database abstraction layer for execute_explain_query");
+            debug!("Using database abstraction layer for execute_explain_query");
             return database_client.explain_query(query).await.map_err(|e| e.into());
         } else {
             return Err("No database client available".into());
@@ -835,7 +835,7 @@ impl Database {
     ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
         // Use new database abstraction layer for raw EXPLAIN queries
         if let Some(ref database_client) = self.database_client {
-            debug_log!("Using database abstraction layer for execute_explain_query_raw");
+            debug!("Using database abstraction layer for execute_explain_query_raw");
             return database_client.explain_query_raw(query).await.map_err(|e| e.into());
         } else {
             return Err("No database client available".into());
@@ -848,7 +848,7 @@ impl Database {
     ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
         // Use new database abstraction layer for formatted EXPLAIN queries  
         if let Some(ref database_client) = self.database_client {
-            debug_log!("Using database abstraction layer for execute_explain_query_formatted");
+            debug!("Using database abstraction layer for execute_explain_query_formatted");
             let results = database_client.explain_query(query).await?;
             return Ok(results);
         } else {
@@ -908,7 +908,7 @@ impl Database {
 
     /// Test network connectivity to a host:port combination with timeout
     pub async fn test_network_connectivity(host: &str, port: u16, timeout_secs: u64) -> std::result::Result<(), Box<dyn StdError>> {
-        debug_log!("[Database::test_network_connectivity] Testing connection to {}:{}", host, port);
+        debug!("[Database::test_network_connectivity] Testing connection to {}:{}", host, port);
         
         // Test DNS resolution first
         match tokio::net::lookup_host(format!("{host}:{port}")).await {
@@ -916,7 +916,7 @@ impl Database {
                 if addresses.next().is_none() {
                     return Err(format!("DNS resolution failed: no addresses found for {host}").into());
                 }
-                debug_log!("[Database::test_network_connectivity] DNS resolution successful for {}", host);
+                debug!("[Database::test_network_connectivity] DNS resolution successful for {}", host);
             }
             Err(e) => {
                 return Err(format!("DNS resolution failed for {host}: {e}").into());
@@ -927,7 +927,7 @@ impl Database {
         let timeout = std::time::Duration::from_secs(timeout_secs);
         match tokio::time::timeout(timeout, tokio::net::TcpStream::connect(format!("{host}:{port}"))).await {
             Ok(Ok(_)) => {
-                debug_log!("[Database::test_network_connectivity] TCP connection successful to {}:{}", host, port);
+                debug!("[Database::test_network_connectivity] TCP connection successful to {}:{}", host, port);
                 Ok(())
             }
             Ok(Err(e)) => {
@@ -949,7 +949,7 @@ impl Database {
             match database_client.get_metadata_provider().get_table_details(table_name, None).await {
                 Ok(table_details) => return Ok(table_details),
                 Err(e) => {
-                    debug_log!("Error using database client for get_table_details: {}", e);
+                    debug!("Error using database client for get_table_details: {}", e);
                     return Err(Box::new(e));
                 }
             }
@@ -997,18 +997,18 @@ impl Database {
         schema_filter: Option<&str>,
     ) -> std::result::Result<Vec<String>, Box<dyn StdError>> {
         let start_time = std::time::Instant::now();
-        debug_log!(
+        debug!(
             "[get_tables_and_views] Starting query for schema_filter: {:?}",
             schema_filter
         );
 
         // Use the new database abstraction layer if available
         if let Some(ref database_client) = self.database_client {
-            debug_log!("[get_tables_and_views] Using new database abstraction layer");
+            debug!("[get_tables_and_views] Using new database abstraction layer");
             match database_client.get_metadata_provider().get_tables(schema_filter).await {
                 Ok(tables) => {
                     let duration = start_time.elapsed();
-                    debug_log!(
+                    debug!(
                         "[get_tables_and_views] Database abstraction layer returned {} tables in {:?}",
                         tables.len(),
                         duration
@@ -1016,7 +1016,7 @@ impl Database {
                     return Ok(tables);
                 }
                 Err(e) => {
-                    debug_log!("Error using database client for get_tables_and_views: {}", e);
+                    debug!("Error using database client for get_tables_and_views: {}", e);
                     return Err(Box::new(e));
                 }
             }
@@ -1027,15 +1027,15 @@ impl Database {
 
     pub async fn get_schemas(&mut self) -> std::result::Result<Vec<String>, Box<dyn StdError>> {
         let start_time = std::time::Instant::now();
-        debug_log!("[get_schemas] Starting query");
+        debug!("[get_schemas] Starting query");
 
         // Use the new database abstraction layer if available
         if let Some(ref database_client) = self.database_client {
-            debug_log!("[get_schemas] Using new database abstraction layer");
+            debug!("[get_schemas] Using new database abstraction layer");
             match database_client.get_metadata_provider().get_schemas().await {
                 Ok(schemas) => {
                     let duration = start_time.elapsed();
-                    debug_log!(
+                    debug!(
                         "[get_schemas] Database abstraction layer returned {} schemas in {:?}",
                         schemas.len(),
                         duration
@@ -1043,7 +1043,7 @@ impl Database {
                     return Ok(schemas);
                 }
                 Err(e) => {
-                    debug_log!("Error using database client for get_schemas: {}", e);
+                    debug!("Error using database client for get_schemas: {}", e);
                     return Err(Box::new(e));
                 }
             }

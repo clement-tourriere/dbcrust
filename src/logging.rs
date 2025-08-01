@@ -7,15 +7,6 @@ use std::time::SystemTime;
 
 use crate::config;
 
-// Debug logging macro for consistent debug output
-#[macro_export]
-macro_rules! debug_log {
-    ($($arg:tt)*) => {
-        // For now, always log debug messages if debug logging is available
-        // In the future, this could check configuration
-        let _ = $crate::logging::debug(&format!($($arg)*));
-    };
-}
 
 static INIT: Once = Once::new();
 // Use a single Mutex instead of trying to manage raw pointers
