@@ -11,7 +11,7 @@ set -u
 
 APP_NAME="dbcrust"
 APP_VERSION="${DBCRUST_VERSION:-latest}"
-GITHUB_REPO="clement-tourriere/pgcrust"
+GITHUB_REPO="clement-tourriere/dbcrust"
 
 # Configuration
 if [ -n "${DBCRUST_INSTALLER_GITHUB_BASE_URL:-}" ]; then
@@ -64,7 +64,7 @@ dbcrust-installer.sh
 
 The installer for DBCrust (Unix systems: macOS, Linux)
 
-For Windows, use: https://clement-tourriere.github.io/install.ps1
+For Windows, use: https://clement-tourriere.github.io/dbcrust/install.ps1
 
 This script detects what platform you're on and fetches an appropriate archive from
 ${INSTALLER_BASE_URL}/${GITHUB_REPO}/releases/

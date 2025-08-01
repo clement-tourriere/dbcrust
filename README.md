@@ -28,7 +28,7 @@ DBCrust combines a high-performance database CLI with a powerful Python library 
 
 ```bash
 # Install DBCrust with a single command
-curl -fsSL https://clement-tourriere.github.io/install.sh | sh
+curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
 
 # Then use it immediately
 dbcrust postgres://user:pass@localhost/mydb
@@ -39,7 +39,7 @@ dbc postgres://user:pass@localhost/mydb  # Short alias
 
 ```powershell
 # Install DBCrust with PowerShell
-irm https://clement-tourriere.github.io/install.ps1 | iex
+irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
 
 # Then use it immediately
 dbcrust postgres://user:pass@localhost/mydb

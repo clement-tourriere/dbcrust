@@ -14,7 +14,7 @@ $ErrorActionPreference = "Stop"
 
 # Configuration
 $APP_NAME = "dbcrust"
-$GITHUB_REPO = "clement-tourriere/pgcrust"
+$GITHUB_REPO = "clement-tourriere/dbcrust"
 $INSTALLER_BASE_URL = if ($env:DBCRUST_INSTALLER_GITHUB_BASE_URL) { $env:DBCRUST_INSTALLER_GITHUB_BASE_URL } else { "https://github.com" }
 
 if ($env:DBCRUST_VERSION) { $Version = $env:DBCRUST_VERSION }

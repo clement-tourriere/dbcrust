@@ -10,7 +10,7 @@ Get DBCrust installed instantly with our automated installers:
 
     ```bash
     # Install DBCrust with a single command
-    curl -fsSL https://clement-tourriere.github.io/install.sh | sh
+    curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
     
     # Then use it immediately
     dbcrust postgres://user:pass@localhost/mydb
@@ -21,7 +21,7 @@ Get DBCrust installed instantly with our automated installers:
 
     ```powershell
     # Install DBCrust with PowerShell
-    irm https://clement-tourriere.github.io/install.ps1 | iex
+    irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
     
     # Then use it immediately
     dbcrust postgres://user:pass@localhost/mydb
@@ -32,18 +32,18 @@ Get DBCrust installed instantly with our automated installers:
 
     ```bash
     # Install specific version (Unix)
-    DBCRUST_VERSION=v0.12.2 curl -fsSL https://clement-tourriere.github.io/install.sh | sh
+    DBCRUST_VERSION=v0.12.2 curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
     
     # Install to custom directory (Unix)
-    DBCRUST_INSTALL_DIR=/usr/local/bin curl -fsSL https://clement-tourriere.github.io/install.sh | sh
+    DBCRUST_INSTALL_DIR=/usr/local/bin curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
     
     # Verbose installation (Unix)
-    curl -fsSL https://clement-tourriere.github.io/install.sh | sh -s -- --verbose
+    curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh -s -- --verbose
     ```
 
     ```powershell
     # Install specific version (Windows)
-    $env:DBCRUST_VERSION = "v0.12.2"; irm https://clement-tourriere.github.io/install.ps1 | iex
+    $env:DBCRUST_VERSION = "v0.12.2"; irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
     
     # Install to custom directory (Windows)
     .\install.ps1 -InstallDir "C:\Tools\dbcrust" -NoModifyPath

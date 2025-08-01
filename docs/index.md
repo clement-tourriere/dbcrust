@@ -129,7 +129,25 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
 
 ## 🏃‍♂️ Quick Start
 
-=== "uvx (Recommended)"
+=== "Native Install (NEW! 🚀)"
+
+    **Unix (macOS, Linux):**
+    ```bash
+    curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
+    ```
+
+    **Windows:**
+    ```powershell
+    irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
+    ```
+
+    **Then use immediately:**
+    ```bash
+    dbcrust postgres://user:pass@localhost/mydb
+    dbc postgres://user:pass@localhost/mydb  # Short alias
+    ```
+
+=== "uvx (Python)"
 
     ```bash
     # Run immediately without installation
@@ -140,7 +158,7 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     dbcrust --help
     ```
 
-=== "PyPI"
+=== "pip"
 
     ```bash
     pip install dbcrust

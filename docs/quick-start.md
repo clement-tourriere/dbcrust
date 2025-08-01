@@ -4,7 +4,27 @@ Get up and running with DBCrust in under 2 minutes! This guide will have you que
 
 ## 🚀 Installation
 
-=== "uvx (Recommended)"
+=== "Native Installers (New!)"
+
+    The fastest way to install DBCrust as a standalone binary:
+
+    **Unix (macOS, Linux):**
+    ```bash
+    curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
+    ```
+
+    **Windows:**
+    ```powershell
+    irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
+    ```
+
+    Then use immediately:
+    ```bash
+    dbcrust postgres://postgres:password@localhost/mydb
+    dbc postgres://postgres:password@localhost/mydb  # Short alias
+    ```
+
+=== "uvx (Python)"
 
     The fastest way to try DBCrust without any setup:
 
