@@ -2,7 +2,7 @@ use crate::cli::Args;
 use crate::commands::{CommandExecutor, CommandParser, CommandResult};
 use crate::completion::{NoopCompleter, SqlCompleter};
 use crate::config::{set_global_verbosity_override, Config as DbCrustConfig, VerbosityLevel};
-use crate::database::ConnectionInfo;
+use crate::database::{ConnectionInfo, DatabaseTypeExt};
 use crate::db::Database;
 use crate::format::{format_query_results_expanded, format_query_results_psql_with_info};
 use crate::history_manager::{SessionHistoryManager, SessionId};
@@ -315,12 +315,8 @@ impl CliCore {
                     } else {
                         println!("Saved sessions:");
                         for (name, session) in sessions {
-                            let db_type = match session.database_type {
-                                crate::database::DatabaseType::PostgreSQL => "PostgreSQL",
-                                crate::database::DatabaseType::MySQL => "MySQL",
-                                crate::database::DatabaseType::SQLite => "SQLite",
-                            };
-                            if session.database_type == crate::database::DatabaseType::SQLite {
+                            let db_type = session.database_type.display_name();
+                            if session.database_type.is_file_based() {
                                 if let Some(ref file_path) = session.file_path {
                                     println!("  {name} - {file_path} ({db_type})");
                                 } else {
@@ -532,14 +528,11 @@ impl CliCore {
             let sanitized_url = crate::password_sanitizer::sanitize_connection_url(&resolved_url);
             (resolved_info.database_type.clone(), sanitized_url)
         } else {
-            let database_type = if full_url_str.starts_with("postgres://")
-                || full_url_str.starts_with("postgresql://")
-            {
-                crate::database::DatabaseType::PostgreSQL
-            } else if full_url_str.starts_with("mysql://") {
-                crate::database::DatabaseType::MySQL
-            } else if full_url_str.starts_with("sqlite://") {
-                crate::database::DatabaseType::SQLite
+            // Extract scheme from URL and use from_scheme method
+            let database_type = if let Some(scheme_end) = full_url_str.find("://") {
+                let scheme = &full_url_str[..scheme_end];
+                crate::database::DatabaseType::from_scheme(scheme)
+                    .unwrap_or(crate::database::DatabaseType::PostgreSQL)
             } else {
                 crate::database::DatabaseType::PostgreSQL
             };
@@ -1023,12 +1016,8 @@ impl CliCore {
             // Create options for inquire selection
             let mut options = Vec::new();
             for (name, session) in sessions.iter() {
-                let db_type = match session.database_type {
-                    crate::database::DatabaseType::PostgreSQL => "PostgreSQL",
-                    crate::database::DatabaseType::MySQL => "MySQL",
-                    crate::database::DatabaseType::SQLite => "SQLite",
-                };
-                let option = if session.database_type == crate::database::DatabaseType::SQLite {
+                let db_type = session.database_type.display_name();
+                let option = if session.database_type.is_file_based() {
                     if let Some(ref file_path) = session.file_path {
                         format!("{name} - {file_path} ({db_type})")
                     } else {
@@ -1052,12 +1041,8 @@ impl CliCore {
             sessions
                 .iter()
                 .find(|(name, session)| {
-                    let db_type = match session.database_type {
-                        crate::database::DatabaseType::PostgreSQL => "PostgreSQL",
-                        crate::database::DatabaseType::MySQL => "MySQL",
-                        crate::database::DatabaseType::SQLite => "SQLite",
-                    };
-                    let option = if session.database_type == crate::database::DatabaseType::SQLite {
+                    let db_type = session.database_type.display_name();
+                    let option = if session.database_type.is_file_based() {
                         if let Some(ref file_path) = session.file_path {
                             format!("{name} - {file_path} ({db_type})")
                         } else {
@@ -1082,8 +1067,7 @@ impl CliCore {
         // Get the saved session from config and reconstruct URL
         match self.config.get_session(&final_session_name) {
             Some(session) => {
-                let session_url = match session.database_type {
-                    crate::database::DatabaseType::SQLite => {
+                let session_url = if session.database_type.is_file_based() {
                         if session.host.starts_with("DOCKER:") {
                             let container_name = session
                                 .host
@@ -1100,35 +1084,8 @@ impl CliCore {
                                 "SQLite session missing file path".to_string(),
                             ));
                         }
-                    }
-                    crate::database::DatabaseType::MySQL => {
-                        if session.host.starts_with("DOCKER:") {
-                            let container_name = session
-                                .host
-                                .strip_prefix("DOCKER:")
-                                .unwrap_or(&session.host);
-                            println!(
-                                "🐳 Re-resolving Docker container for saved session: {container_name}"
-                            );
-                            format!("docker://{container_name}")
-                        } else if let Some(password) = crate::myconf::lookup_mysql_password(
-                            &session.host,
-                            session.port,
-                            &session.dbname,
-                            &session.user,
-                        ) {
-                            format!(
-                                "mysql://{}:{}@{}:{}/{}",
-                                session.user, password, session.host, session.port, session.dbname
-                            )
-                        } else {
-                            format!(
-                                "mysql://{}@{}:{}/{}",
-                                session.user, session.host, session.port, session.dbname
-                            )
-                        }
-                    }
-                    crate::database::DatabaseType::PostgreSQL => {
+                    } else {
+                        // Handle network-based database types (PostgreSQL, MySQL)
                         if session.host.starts_with("DOCKER:") {
                             let container_name = session
                                 .host
@@ -1152,24 +1109,40 @@ impl CliCore {
                             } else {
                                 format!("vault://{}@{vault_mount}/{vault_database}", vault_role)
                             }
-                        } else if let Some(password) = crate::pgpass::lookup_password(
-                            &session.host,
-                            session.port,
-                            &session.dbname,
-                            &session.user,
-                        ) {
-                            format!(
-                                "postgres://{}:{}@{}:{}/{}",
-                                session.user, password, session.host, session.port, session.dbname
-                            )
                         } else {
-                            format!(
-                                "postgres://{}@{}:{}/{}",
-                                session.user, session.host, session.port, session.dbname
-                            )
+                            // Use trait method to get URL scheme and handle password lookup
+                            let url_scheme = session.database_type.url_scheme();
+                            
+                            // Try to get password from appropriate credential store
+                            let password = match session.database_type {
+                                crate::database::DatabaseType::PostgreSQL => crate::pgpass::lookup_password(
+                                    &session.host,
+                                    session.port,
+                                    &session.dbname,
+                                    &session.user,
+                                ),
+                                crate::database::DatabaseType::MySQL => crate::myconf::lookup_mysql_password(
+                                    &session.host,
+                                    session.port,
+                                    &session.dbname,
+                                    &session.user,
+                                ),
+                                _ => None,
+                            };
+                            
+                            if let Some(password) = password {
+                                format!(
+                                    "{}://{}:{}@{}:{}/{}",
+                                    url_scheme, session.user, password, session.host, session.port, session.dbname
+                                )
+                            } else {
+                                format!(
+                                    "{}://{}@{}:{}/{}",
+                                    url_scheme, session.user, session.host, session.port, session.dbname
+                                )
+                            }
                         }
-                    }
-                };
+                    };
 
                 println!("✓ Successfully retrieved session '{final_session_name}'");
 
@@ -1207,11 +1180,7 @@ impl CliCore {
         for conn in recent_connections.iter().take(20) {
             let status = if conn.success { "✅" } else { "❌" };
             let timestamp = conn.timestamp.format("%Y-%m-%d %H:%M");
-            let db_type = match conn.database_type {
-                crate::database::DatabaseType::PostgreSQL => "PostgreSQL",
-                crate::database::DatabaseType::MySQL => "MySQL",
-                crate::database::DatabaseType::SQLite => "SQLite",
-            };
+            let db_type = conn.database_type.display_name();
             let option = format!(
                 "{} {} - {} ({})",
                 status, conn.display_name, timestamp, db_type
@@ -1231,11 +1200,7 @@ impl CliCore {
             .find(|conn| {
                 let status = if conn.success { "✅" } else { "❌" };
                 let timestamp = conn.timestamp.format("%Y-%m-%d %H:%M");
-                let db_type = match conn.database_type {
-                    crate::database::DatabaseType::PostgreSQL => "PostgreSQL",
-                    crate::database::DatabaseType::MySQL => "MySQL",
-                    crate::database::DatabaseType::SQLite => "SQLite",
-                };
+                let db_type = conn.database_type.display_name();
                 let option = format!(
                     "{} {} - {} ({})",
                     status, conn.display_name, timestamp, db_type
@@ -1329,31 +1294,27 @@ impl CliCore {
         let username = parsed_url.username();
         let database = parsed_url.path().trim_start_matches('/');
 
-        // Look up password from appropriate credential store
-        let reconstructed_url = match connection.database_type {
-            crate::database::DatabaseType::PostgreSQL => {
-                if let Some(password) =
-                    crate::pgpass::lookup_password(host, port, database, username)
-                {
-                    format!("postgres://{username}:{password}@{host}:{port}/{database}")
-                } else {
-                    // No password found, return URL without password (will prompt)
-                    format!("postgres://{username}@{host}:{port}/{database}")
-                }
-            }
-            crate::database::DatabaseType::MySQL => {
-                if let Some(password) =
-                    crate::myconf::lookup_mysql_password(host, port, database, username)
-                {
-                    format!("mysql://{username}:{password}@{host}:{port}/{database}")
-                } else {
-                    // No password found, return URL without password (will prompt)
-                    format!("mysql://{username}@{host}:{port}/{database}")
-                }
-            }
-            crate::database::DatabaseType::SQLite => {
-                // SQLite was already handled above
-                original_url.clone()
+        // Look up password from appropriate credential store using trait-based approach
+        let reconstructed_url = if connection.database_type.is_file_based() {
+            // SQLite was already handled above
+            original_url.clone()
+        } else {
+            let url_scheme = connection.database_type.url_scheme();
+            
+            // Try to get password from appropriate credential store
+            let password = match connection.database_type {
+                crate::database::DatabaseType::PostgreSQL => 
+                    crate::pgpass::lookup_password(host, port, database, username),
+                crate::database::DatabaseType::MySQL => 
+                    crate::myconf::lookup_mysql_password(host, port, database, username),
+                _ => None,
+            };
+            
+            if let Some(password) = password {
+                format!("{url_scheme}://{username}:{password}@{host}:{port}/{database}")
+            } else {
+                // No password found, return URL without password (will prompt)
+                format!("{url_scheme}://{username}@{host}:{port}/{database}")
             }
         };
 

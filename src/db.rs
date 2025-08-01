@@ -1,5 +1,5 @@
 use crate::config::SSHTunnelConfig;
-use crate::database::{ConnectionInfo, DatabaseClient, DatabaseType, create_database_client};
+use crate::database::{ConnectionInfo, DatabaseClient, DatabaseType, DatabaseTypeExt, create_database_client};
 use tracing::{debug, info};
 use crate::pgpass;
 use std::collections::HashMap;
@@ -106,7 +106,7 @@ impl Database {
         debug!("[Database::from_url] Parsed URL in {:?}", step_start.elapsed());
         
         // For SQLite, we don't need SSH tunneling
-        if connection_info.database_type == DatabaseType::SQLite {
+        if connection_info.database_type.is_file_based() {
             return Self::from_connection_info(connection_info, default_limit, expanded_display_default, None).await;
         }
         
@@ -450,22 +450,24 @@ impl Database {
             
             let connection_info = database_client.get_connection_info();
             
-            match connection_info.database_type {
-                crate::database::DatabaseType::MySQL => {
-                    self.execute_query("SELECT User, Host, account_locked FROM mysql.user ORDER BY User").await
-                        .map_err(|e| format!("Error listing MySQL users: {e}").into())
-                },
-                crate::database::DatabaseType::SQLite => {
-                    // SQLite doesn't have users concept
-                    Ok(vec![
-                        vec!["Note".to_string()],
-                        vec!["SQLite is file-based and doesn't have user accounts".to_string()],
-                        vec!["Access control is handled at the file system level".to_string()],
-                    ])
-                },
-                crate::database::DatabaseType::PostgreSQL => {
-                    self.execute_query("SELECT usename, usesuper, usecreatedb FROM pg_user ORDER BY usename").await
-                        .map_err(|e| format!("Error listing PostgreSQL users: {e}").into())
+            if connection_info.database_type.is_file_based() {
+                // SQLite doesn't have users concept
+                Ok(vec![
+                    vec!["Note".to_string()],
+                    vec!["SQLite is file-based and doesn't have user accounts".to_string()],
+                    vec!["Access control is handled at the file system level".to_string()],
+                ])
+            } else {
+                match connection_info.database_type {
+                    crate::database::DatabaseType::MySQL => {
+                        self.execute_query("SELECT User, Host, account_locked FROM mysql.user ORDER BY User").await
+                            .map_err(|e| format!("Error listing MySQL users: {e}").into())
+                    },
+                    crate::database::DatabaseType::PostgreSQL => {
+                        self.execute_query("SELECT usename, usesuper, usecreatedb FROM pg_user ORDER BY usename").await
+                            .map_err(|e| format!("Error listing PostgreSQL users: {e}").into())
+                    },
+                    _ => Ok(vec![vec!["Error".to_string()], vec!["Unsupported database type".to_string()]])
                 }
             }
         } else {
@@ -483,39 +485,41 @@ impl Database {
             
             let connection_info = database_client.get_connection_info();
             
-            match connection_info.database_type {
-                crate::database::DatabaseType::SQLite => {
-                    let query = r#"
-                        SELECT 
-                            name as 'Index Name',
-                            tbl_name as 'Table',
-                            CASE 
-                                WHEN "unique" = 1 THEN 'UNIQUE'
-                                ELSE 'NON-UNIQUE'
-                            END as 'Type'
-                        FROM sqlite_master 
-                        WHERE type = 'index' 
-                          AND name NOT LIKE 'sqlite_%'
-                        ORDER BY tbl_name, name
-                    "#;
-                    match self.execute_query(query).await {
-                        Ok(results) => return Ok(results),
-                        Err(e) => return Err(format!("Error listing SQLite indexes: {e}").into()),
-                    }
-                },
-                crate::database::DatabaseType::MySQL => {
-                    return Ok(vec![
-                        vec!["Note".to_string()],
-                        vec!["Use MySQL's SHOW INDEX FROM <table> command".to_string()],
-                        vec!["Or query INFORMATION_SCHEMA.STATISTICS".to_string()],
-                    ]);
-                },
-                crate::database::DatabaseType::PostgreSQL => {
-                    return Ok(vec![
-                        vec!["Note".to_string()],
-                        vec!["Use PostgreSQL's \\di command or".to_string()],
-                        vec!["Query pg_indexes system view".to_string()],
-                    ]);
+            if connection_info.database_type.is_file_based() {
+                let query = r#"
+                    SELECT 
+                        name as 'Index Name',
+                        tbl_name as 'Table',
+                        CASE 
+                            WHEN "unique" = 1 THEN 'UNIQUE'
+                            ELSE 'NON-UNIQUE'
+                        END as 'Type'
+                    FROM sqlite_master 
+                    WHERE type = 'index' 
+                      AND name NOT LIKE 'sqlite_%'
+                    ORDER BY tbl_name, name
+                "#;
+                match self.execute_query(query).await {
+                    Ok(results) => return Ok(results),
+                    Err(e) => return Err(format!("Error listing SQLite indexes: {e}").into()),
+                }
+            } else {
+                match connection_info.database_type {
+                    crate::database::DatabaseType::MySQL => {
+                        return Ok(vec![
+                            vec!["Note".to_string()],
+                            vec!["Use MySQL's SHOW INDEX FROM <table> command".to_string()],
+                            vec!["Or query INFORMATION_SCHEMA.STATISTICS".to_string()],
+                        ]);
+                    },
+                    crate::database::DatabaseType::PostgreSQL => {
+                        return Ok(vec![
+                            vec!["Note".to_string()],
+                            vec!["Use PostgreSQL's \\di command or".to_string()],
+                            vec!["Query pg_indexes system view".to_string()],
+                        ]);
+                    },
+                    _ => return Ok(vec![vec!["Error".to_string()], vec!["Unsupported database type".to_string()]])
                 }
             }
         }

@@ -7,7 +7,7 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::database::DatabaseType;
+use crate::database::{DatabaseType, DatabaseTypeExt};
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
 use tracing::debug;
@@ -1311,7 +1311,7 @@ impl Config {
         };
 
         // Normalize SQLite file paths to absolute paths
-        let normalized_file_path = if connection_info.database_type == DatabaseType::SQLite {
+        let normalized_file_path = if connection_info.database_type.is_file_based() {
             match &connection_info.file_path {
                 Some(path) => Some(Self::normalize_sqlite_path(path)?),
                 None => None,
@@ -1585,7 +1585,7 @@ impl Config {
         success: bool
     ) -> Result<(), Box<dyn Error>> {
         // Normalize SQLite URLs to use absolute paths
-        let normalized_url = if database_type == DatabaseType::SQLite && connection_url.starts_with("sqlite:///") && !connection_url.starts_with("sqlite:////") {
+        let normalized_url = if database_type.is_file_based() && connection_url.starts_with("sqlite:///") && !connection_url.starts_with("sqlite:////") {
             // sqlite:///path (3 slashes) = relative path that needs normalization
             let relative_path = connection_url.strip_prefix("sqlite:///").unwrap_or("");
             let normalized_path = Self::normalize_sqlite_path(relative_path)?;
@@ -1626,7 +1626,7 @@ impl Config {
         success: bool
     ) -> Result<(), Box<dyn Error>> {
         // Normalize SQLite URLs to use absolute paths
-        let normalized_url = if database_type == DatabaseType::SQLite && connection_url.starts_with("sqlite:///") && !connection_url.starts_with("sqlite:////") {
+        let normalized_url = if database_type.is_file_based() && connection_url.starts_with("sqlite:///") && !connection_url.starts_with("sqlite:////") {
             // sqlite:///path (3 slashes) = relative path that needs normalization
             let relative_path = connection_url.strip_prefix("sqlite:///").unwrap_or("");
             let normalized_path = Self::normalize_sqlite_path(relative_path)?;

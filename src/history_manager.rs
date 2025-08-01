@@ -6,7 +6,7 @@ use sha2::{Sha256, Digest};
 use tracing::{debug, warn};
 use reedline::{FileBackedHistory, History};
 
-use crate::database::{ConnectionInfo, DatabaseType};
+use crate::database::{ConnectionInfo, DatabaseTypeExt};
 use crate::db::Database;
 use crate::config::Config;
 
@@ -20,68 +20,58 @@ pub struct SessionId {
 impl SessionId {
     /// Generate a session ID from connection information
     pub fn from_connection_info(connection_info: &ConnectionInfo) -> Self {
-        let identifier = match connection_info.database_type {
-            DatabaseType::PostgreSQL | DatabaseType::MySQL => {
-                let host = connection_info.host.as_ref().map(|s| s.as_str()).unwrap_or("localhost");
-                let port = connection_info.port.unwrap_or(match connection_info.database_type {
-                    DatabaseType::PostgreSQL => 5432,
-                    DatabaseType::MySQL => 3306,
-                    _ => 0,
-                });
-                let username = connection_info.username.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
-                let database = connection_info.database.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
-                
-                // Check for special cases
-                if let Some(container) = &connection_info.docker_container {
-                    format!("docker:{}:{}", container, database)
-                } else if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
-                    connection_info.options.get("vault_mount"),
-                    connection_info.options.get("vault_database"),
-                    connection_info.options.get("vault_role"),
-                ) {
-                    format!("vault:{}:{}:{}", vault_mount, vault_database, vault_role)
-                } else {
-                    format!("{}:{}:{}:{}:{}", connection_info.database_type, host, port, username, database)
-                }
+        let identifier = if connection_info.database_type.is_file_based() {
+            if let Some(file_path) = &connection_info.file_path {
+                format!("sqlite:{}", file_path)
+            } else {
+                "sqlite:memory".to_string()
             }
-            DatabaseType::SQLite => {
-                if let Some(file_path) = &connection_info.file_path {
-                    format!("sqlite:{}", file_path)
-                } else {
-                    "sqlite:memory".to_string()
-                }
+        } else {
+            let host = connection_info.host.as_ref().map(|s| s.as_str()).unwrap_or("localhost");
+            let port = connection_info.port.unwrap_or_else(|| 
+                connection_info.database_type.default_port().unwrap_or(0)
+            );
+            let username = connection_info.username.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
+            let database = connection_info.database.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
+            
+            // Check for special cases
+            if let Some(container) = &connection_info.docker_container {
+                format!("docker:{}:{}", container, database)
+            } else if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
+                connection_info.options.get("vault_mount"),
+                connection_info.options.get("vault_database"),
+                connection_info.options.get("vault_role"),
+            ) {
+                format!("vault:{}:{}:{}", vault_mount, vault_database, vault_role)
+            } else {
+                format!("{}:{}:{}:{}:{}", connection_info.database_type.display_name(), host, port, username, database)
             }
         };
 
-        let display_name = match connection_info.database_type {
-            DatabaseType::PostgreSQL | DatabaseType::MySQL => {
-                let host = connection_info.host.as_ref().map(|s| s.as_str()).unwrap_or("localhost");
-                let port = connection_info.port.unwrap_or(match connection_info.database_type {
-                    DatabaseType::PostgreSQL => 5432,
-                    DatabaseType::MySQL => 3306,
-                    _ => 0,
-                });
-                let username = connection_info.username.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
-                let database = connection_info.database.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
-                
-                if let Some(container) = &connection_info.docker_container {
-                    format!("{}@docker:{}/{}", username, container, database)
-                } else if let (Some(vault_mount), Some(vault_database), Some(_vault_role)) = (
-                    connection_info.options.get("vault_mount"),
-                    connection_info.options.get("vault_database"),
-                    connection_info.options.get("vault_role"),
-                ) {
-                    format!("{}@vault:{}/{}", username, vault_mount, vault_database)
-                } else {
-                    format!("{}@{}:{}/{}", username, host, port, database)
-                }
+        let display_name = if connection_info.database_type.is_file_based() {
+            if let Some(file_path) = &connection_info.file_path {
+                format!("sqlite:{}", file_path)
+            } else {
+                "sqlite:memory".to_string()
             }
-            DatabaseType::SQLite => {
-                if let Some(file_path) = &connection_info.file_path {
-                    format!("sqlite:{}", file_path)
-                } else {
-                    "sqlite:memory".to_string()
-                }
+        } else {
+            let host = connection_info.host.as_ref().map(|s| s.as_str()).unwrap_or("localhost");
+            let port = connection_info.port.unwrap_or_else(|| 
+                connection_info.database_type.default_port().unwrap_or(0)
+            );
+            let username = connection_info.username.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
+            let database = connection_info.database.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
+            
+            if let Some(container) = &connection_info.docker_container {
+                format!("{}@docker:{}/{}", username, container, database)
+            } else if let (Some(vault_mount), Some(vault_database), Some(_vault_role)) = (
+                connection_info.options.get("vault_mount"),
+                connection_info.options.get("vault_database"),
+                connection_info.options.get("vault_role"),
+            ) {
+                format!("{}@vault:{}/{}", username, vault_mount, vault_database)
+            } else {
+                format!("{}@{}:{}/{}", username, host, port, database)
             }
         };
 

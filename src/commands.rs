@@ -2,6 +2,7 @@
 //! This replaces the string-based BackslashCommandRegistry with a robust type system
 
 use crate::config::Config as DbCrustConfig;
+use crate::database::DatabaseTypeExt;
 use crate::db::Database;
 use crate::prompt::DbPrompt;
 use std::error::Error as StdError;
@@ -711,12 +712,8 @@ impl CommandExecutor for Command {
                     let mut output = String::new();
                     output.push_str("Saved sessions:\n");
                     for (name, session) in sessions.iter() {
-                        let db_type = match session.database_type {
-                            crate::database::DatabaseType::PostgreSQL => "PostgreSQL",
-                            crate::database::DatabaseType::MySQL => "MySQL", 
-                            crate::database::DatabaseType::SQLite => "SQLite",
-                        };
-                        if session.database_type == crate::database::DatabaseType::SQLite {
+                        let db_type = session.database_type.display_name();
+                        if session.database_type.is_file_based() {
                             if let Some(ref file_path) = session.file_path {
                                 output.push_str(&format!("  {name} - {file_path} ({db_type})\n"));
                             } else {
@@ -741,11 +738,7 @@ impl CommandExecutor for Command {
                     for (i, conn) in recent.iter().take(20).enumerate() {
                         let status = if conn.success { "✅" } else { "❌" };
                         let timestamp = conn.timestamp.format("%Y-%m-%d %H:%M");
-                        let db_type = match conn.database_type {
-                            crate::database::DatabaseType::PostgreSQL => "PostgreSQL",
-                            crate::database::DatabaseType::MySQL => "MySQL",
-                            crate::database::DatabaseType::SQLite => "SQLite",
-                        };
+                        let db_type = conn.database_type.display_name();
                         output.push_str(&format!("  {}: {} {} - {} ({})\n", 
                             i + 1, status, conn.display_name, timestamp, db_type));
                     }
@@ -990,13 +983,10 @@ impl CommandExecutor for Command {
                     None => {
                         // Check if we have a database client to provide a more specific error message
                         if let Some(database_client) = db.get_database_client() {
-                            match database_client.get_connection_info().database_type {
-                                crate::database::DatabaseType::SQLite => {
-                                    Ok(CommandResult::Error("\\ecopy is not supported for SQLite databases. SQLite EXPLAIN queries don't produce JSON plans.".to_string()))
-                                }
-                                _ => {
-                                    Ok(CommandResult::Error("No EXPLAIN JSON plan available. Run an EXPLAIN query first with \\ef or \\er.".to_string()))
-                                }
+                            if database_client.get_connection_info().database_type.is_file_based() {
+                                Ok(CommandResult::Error("\\ecopy is not supported for SQLite databases. SQLite EXPLAIN queries don't produce JSON plans.".to_string()))
+                            } else {
+                                Ok(CommandResult::Error("No EXPLAIN JSON plan available. Run an EXPLAIN query first with \\ef or \\er.".to_string()))
                             }
                         } else {
                             Ok(CommandResult::Error("No EXPLAIN JSON plan available. Run an EXPLAIN query first with \\ef or \\er.".to_string()))

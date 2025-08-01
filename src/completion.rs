@@ -1,4 +1,5 @@
 use crate::config::{Config, SavedSession};
+use crate::database::DatabaseTypeExt;
 use crate::db::Database;
 use crate::commands::CommandParser;
 use crate::sql_context::{parse_sql_context, SqlContext, get_context_suggestions};
@@ -880,116 +881,11 @@ impl SqlCompleter {
         let db_type = self.get_database_type();
         let mut builtin_functions = Vec::new();
 
-        match db_type {
-            Some(crate::database::DatabaseType::PostgreSQL) => {
-                // For PostgreSQL, we could query pg_proc, but for now use extended hardcoded list
-                builtin_functions.extend_from_slice(&[
-                    // PostgreSQL-specific functions
-                    "STRING_AGG(",
-                    "ARRAY_AGG(",
-                    "JSON_BUILD_OBJECT(",
-                    "JSONB_BUILD_OBJECT(",
-                    "JSON_AGG(",
-                    "JSONB_AGG(",
-                    "REGEXP_MATCH(",
-                    "REGEXP_MATCHES(",
-                    "REGEXP_REPLACE(",
-                    "REGEXP_SPLIT_TO_ARRAY(",
-                    "GENERATE_SERIES(",
-                    "AGE(",
-                    "DATE_PART(",
-                    "EXTRACT(",
-                    "TO_CHAR(",
-                    "TO_DATE(",
-                    "TO_TIMESTAMP(",
-                    "INTERVAL",
-                    "UNNEST(",
-                    "ARRAY_LENGTH(",
-                    "CARDINALITY(",
-                    "SPLIT_PART(",
-                    "POSITION(",
-                    "OVERLAY(",
-                    "LEFT(",
-                    "RIGHT(",
-                    "REVERSE(",
-                    "REPEAT(",
-                    "MD5(",
-                    "SHA256(",
-                    "ENCODE(",
-                    "DECODE(",
-                    "RANDOM()",
-                    "SETSEED(",
-                    "WIDTH_BUCKET(",
-                    "PERCENTILE_CONT(",
-                    "PERCENTILE_DISC(",
-                ]);
-            }
-            Some(crate::database::DatabaseType::MySQL) => {
-                // MySQL-specific functions
-                builtin_functions.extend_from_slice(&[
-                    "GROUP_CONCAT(",
-                    "JSON_OBJECT(",
-                    "JSON_ARRAY(",
-                    "JSON_EXTRACT(",
-                    "JSON_SET(",
-                    "JSON_INSERT(",
-                    "JSON_REPLACE(",
-                    "JSON_REMOVE(",
-                    "STR_TO_DATE(",
-                    "DATE_FORMAT(",
-                    "TIMESTAMPDIFF(",
-                    "TIMESTAMPADD(",
-                    "DAYOFWEEK(",
-                    "DAYOFMONTH(",
-                    "DAYOFYEAR(",
-                    "WEEKDAY(",
-                    "YEARWEEK(",
-                    "FIND_IN_SET(",
-                    "FIELD(",
-                    "ELT(",
-                    "EXPORT_SET(",
-                    "LPAD(",
-                    "RPAD(",
-                    "HEX(",
-                    "UNHEX(",
-                    "SHA1(",
-                    "SHA2(",
-                    "COMPRESS(",
-                    "UNCOMPRESS(",
-                    "RAND(",
-                    "UUID(",
-                    "INET_ATON(",
-                    "INET_NTOA(",
-                    "INET6_ATON(",
-                    "INET6_NTOA(",
-                ]);
-            }
-            Some(crate::database::DatabaseType::SQLite) => {
-                // SQLite has a limited set of built-in functions
-                builtin_functions.extend_from_slice(&[
-                    "IFNULL(",
-                    "RANDOM()",
-                    "SQLITE_VERSION()",
-                    "SQLITE_SOURCE_ID()",
-                    "TOTAL(",
-                    "GROUP_CONCAT(",
-                    "GLOB(",
-                    "INSTR(",
-                    "QUOTE(",
-                    "RANDOMBLOB(",
-                    "ZEROBLOB(",
-                    "HEX(",
-                    "TYPEOF(",
-                    "LAST_INSERT_ROWID()",
-                    "CHANGES()",
-                    "TOTAL_CHANGES()",
-                    "JULIANDAY(",
-                    "STRFTIME(",
-                ]);
-            }
-            None => {
-                debug!("[fetch_builtin_functions_lazy] No database type detected");
-            }
+        if let Some(database_type) = db_type {
+            // Use trait method to get database-specific SQL functions
+            builtin_functions.extend_from_slice(database_type.sql_functions());
+        } else {
+            debug!("[fetch_builtin_functions_lazy] No database type detected");
         }
 
         // Convert to String
