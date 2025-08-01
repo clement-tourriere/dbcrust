@@ -15,6 +15,7 @@ pub mod db;
 pub mod docker; // Docker container integration
 pub mod format; // Made format module public
 pub mod highlighter;
+pub mod history_manager; // Per-session command history management
 pub mod logging;
 pub mod myconf; // MySQL configuration file support
 pub mod named_queries;

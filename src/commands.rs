@@ -49,6 +49,9 @@ pub enum Command {
     ListRecentConnections,
     ClearRecentConnections,
     
+    // History management
+    ClearSessionHistory { session_hash: Option<String> },
+    
     // Advanced commands (future expansion)
     SetMultilineIndicator { indicator: String },
     TogglePager,
@@ -130,6 +133,7 @@ pub enum CommandCategory {
     NamedQueries,
     SessionManagement,
     ConnectionHistory,
+    HistoryManagement,
     DatabaseSpecific,
     VaultManagement,
     Advanced,
@@ -152,6 +156,8 @@ pub enum CommandShortcut {
     S, Ss, Sd,
     // Connection history
     R, Rc,
+    // History management
+    Hc,
     // Database-specific commands
     Du, Di, Dp, Pgpass, Myconf, Docker,
     // EXPLAIN variants (Advanced)
@@ -196,6 +202,8 @@ impl CommandShortcut {
             // Connection history
             CommandShortcut::R => "\\r",
             CommandShortcut::Rc => "\\rc",
+            // History management
+            CommandShortcut::Hc => "\\hc",
             // Database-specific commands
             CommandShortcut::Du => "\\du",
             CommandShortcut::Di => "\\di",
@@ -257,6 +265,8 @@ impl CommandShortcut {
             // Connection history
             CommandShortcut::R => "List recent connections",
             CommandShortcut::Rc => "Clear recent connections",
+            // History management
+            CommandShortcut::Hc => "Clear session history",
             // Database-specific commands
             CommandShortcut::Du => "List users",
             CommandShortcut::Di => "List indexes",
@@ -304,6 +314,8 @@ impl CommandShortcut {
             CommandShortcut::S | CommandShortcut::Ss | CommandShortcut::Sd => CommandCategory::SessionManagement,
             // Connection history
             CommandShortcut::R | CommandShortcut::Rc => CommandCategory::ConnectionHistory,
+            // History management
+            CommandShortcut::Hc => CommandCategory::HistoryManagement,
             // Database-specific commands
             CommandShortcut::Du | CommandShortcut::Di | CommandShortcut::Dp | CommandShortcut::Pgpass | CommandShortcut::Myconf | CommandShortcut::Docker => CommandCategory::DatabaseSpecific,
             // Vault management
@@ -444,6 +456,15 @@ impl CommandParser {
             // Connection history
             "r" => Ok(Command::ListRecentConnections),
             "rc" => Ok(Command::ClearRecentConnections),
+            
+            // History management
+            "hc" => {
+                if args.is_empty() {
+                    Ok(Command::ClearSessionHistory { session_hash: None })
+                } else {
+                    Ok(Command::ClearSessionHistory { session_hash: Some(args.to_string()) })
+                }
+            },
             
             // Database-specific commands
             "du" => Ok(Command::ListUsers),
@@ -1232,6 +1253,57 @@ impl CommandExecutor for Command {
                 Ok(CommandResult::Output(output))
             }
 
+            // History management commands
+            Command::ClearSessionHistory { session_hash } => {
+                let history_manager = match crate::history_manager::SessionHistoryManager::new(config) {
+                    Ok(manager) => manager,
+                    Err(e) => return Ok(CommandResult::Error(format!("Failed to create history manager: {}", e))),
+                };
+
+                match session_hash {
+                    Some(hash) => {
+                        // Clear specific session history
+                        let histories = match history_manager.list_session_histories() {
+                            Ok(h) => h,
+                            Err(e) => return Ok(CommandResult::Error(format!("Failed to list histories: {}", e))),
+                        };
+                        
+                        if let Some(history) = histories.iter().find(|h| h.session_hash == *hash) {
+                            match std::fs::remove_file(&history.path) {
+                                Ok(_) => Ok(CommandResult::Output(format!("Cleared history for session hash: {}", hash))),
+                                Err(e) => Ok(CommandResult::Error(format!("Failed to clear history: {}", e))),
+                            }
+                        } else {
+                            Ok(CommandResult::Error(format!("No history found for session hash: {}", hash)))
+                        }
+                    }
+                    None => {
+                        // Clear current session history
+                        let db_guard = database.lock().unwrap();
+                        if let Some(session_id) = crate::history_manager::SessionId::from_database(&db_guard) {
+                            let history_filename = session_id.history_filename();
+                            let config_dir = match crate::config::Config::get_config_dir() {
+                                Ok(dir) => dir,
+                                Err(e) => return Ok(CommandResult::Error(format!("Failed to get config directory: {}", e))),
+                            };
+                            let history_path = config_dir.join(&history_filename);
+                            
+                            if history_path.exists() {
+                                match std::fs::remove_file(&history_path) {
+                                    Ok(_) => Ok(CommandResult::Output(format!("Cleared history for current session: {}", session_id.display_name))),
+                                    Err(e) => Ok(CommandResult::Error(format!("Failed to clear current session history: {}", e))),
+                                }
+                            } else {
+                                Ok(CommandResult::Output("No history found for current session.".to_string()))
+                            }
+                        } else {
+                            Ok(CommandResult::Error("No session information available for current connection.".to_string()))
+                        }
+                    }
+                }
+            }
+
+
         }
     }
     
@@ -1252,6 +1324,7 @@ impl CommandExecutor for Command {
             Command::ConnectSession { .. } => "Connect to a saved session",
             Command::ListRecentConnections => "List recent connections",
             Command::ClearRecentConnections => "Clear recent connection history",
+            Command::ClearSessionHistory { .. } => "Clear session command history",
             Command::ListNamedQueries => "List named queries",
             Command::SaveNamedQuery { .. } => "Save a named query",
             Command::DeleteNamedQuery { .. } => "Delete a named query",
@@ -1310,6 +1383,7 @@ impl CommandExecutor for Command {
             Command::ConnectSession { .. } => "\\s <name>",
             Command::ListRecentConnections => "\\r",
             Command::ClearRecentConnections => "\\rc",
+            Command::ClearSessionHistory { .. } => "\\hc [session_hash]",
             Command::ListUsers => "\\du",
             Command::ListIndexes => "\\di",
             Command::ListPragmas => "\\dp",
@@ -1346,6 +1420,7 @@ impl CommandExecutor for Command {
             Command::ListNamedQueries | Command::SaveNamedQuery { .. } | Command::DeleteNamedQuery { .. } | Command::ExecuteNamedQuery { .. } => CommandCategory::NamedQueries,
             Command::ListSessions | Command::SaveSession { .. } | Command::DeleteSession { .. } | Command::ConnectSession { .. } => CommandCategory::SessionManagement,
             Command::ListRecentConnections | Command::ClearRecentConnections => CommandCategory::ConnectionHistory,
+            Command::ClearSessionHistory { .. } => CommandCategory::HistoryManagement,
             Command::ListUsers | Command::ListIndexes | Command::ListPragmas | Command::ShowPgpass | Command::ShowMyconf | Command::ListDockerContainers => CommandCategory::DatabaseSpecific,
             Command::ExplainRaw { .. } | Command::ExplainFormatted { .. } | Command::ExplainExport { .. } | Command::ShowPoolStats => CommandCategory::Advanced,
             Command::SetMultilineIndicator { .. } | Command::TogglePager | Command::ToggleBanner | Command::ToggleAutocomplete | Command::ToggleColumnSelection | Command::SetColumnSelectionThreshold { .. } | Command::ClearColumnViews | Command::ResetView => CommandCategory::DisplayOptions,

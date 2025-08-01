@@ -188,6 +188,29 @@ impl Default for LoggingConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HistoryConfig {
+    /// Enable per-session history (default: true)
+    #[serde(default = "default_per_session_enabled")]
+    pub per_session_enabled: bool,
+    /// Maximum number of history files to keep (default: 50)
+    #[serde(default = "default_max_history_files")]
+    pub max_history_files: usize,
+    /// Clean up old unused history files after N days (default: 90)
+    #[serde(default = "default_cleanup_after_days")]
+    pub cleanup_after_days: u64,
+}
+
+impl Default for HistoryConfig {
+    fn default() -> Self {
+        HistoryConfig {
+            per_session_enabled: default_per_session_enabled(),
+            max_history_files: default_max_history_files(),
+            cleanup_after_days: default_cleanup_after_days(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     #[serde(default = "default_default_limit")]
     pub default_limit: usize,
@@ -217,6 +240,9 @@ pub struct Config {
 
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    #[serde(default)]
+    pub history: HistoryConfig,
 
     #[serde(default = "default_show_banner")]
     pub show_banner: bool,
@@ -271,6 +297,7 @@ impl Default for Config {
             pager_command: default_pager_command(),
             pager_threshold_lines: default_pager_threshold_lines(),
             logging: LoggingConfig::default(),
+            history: HistoryConfig::default(),
             show_banner: default_show_banner(),
             verbosity_level: default_verbosity_level(),
             multiline_prompt_indicator: default_multiline_prompt_indicator(),
@@ -412,6 +439,18 @@ fn default_query_timeout() -> u64 {
 
 fn default_metadata_timeout() -> u64 {
     10 // 10 seconds default metadata timeout
+}
+
+fn default_per_session_enabled() -> bool {
+    true // Enable per-session history by default
+}
+
+fn default_max_history_files() -> usize {
+    50 // Keep up to 50 history files
+}
+
+fn default_cleanup_after_days() -> u64 {
+    90 // Clean up history files older than 90 days
 }
 
 fn default_database_type() -> DatabaseType {
@@ -1154,6 +1193,19 @@ impl Config {
             content.push_str(&format!("# Number of rotated log files to keep (default: 5)\n"));
             content.push_str(&format!("max_files = {}\n\n", self.logging.max_files));
 
+            // History Configuration
+            content.push_str("# ================================================================================\n");
+            content.push_str("# HISTORY CONFIGURATION\n");
+            content.push_str("# Configure per-session command history management\n");
+            content.push_str("# ================================================================================\n\n");
+            content.push_str("[history]\n");
+            content.push_str(&format!("# Enable per-session history (separate history per connection) (default: true)\n"));
+            content.push_str(&format!("per_session_enabled = {}\n\n", self.history.per_session_enabled));
+            content.push_str(&format!("# Maximum number of history files to keep (default: 50)\n"));
+            content.push_str(&format!("max_history_files = {}\n\n", self.history.max_history_files));
+            content.push_str(&format!("# Clean up old unused history files after N days (default: 90)\n"));
+            content.push_str(&format!("cleanup_after_days = {}\n\n", self.history.cleanup_after_days));
+
             // Named Queries
             if !self.named_queries.is_empty() {
                 content.push_str("# ================================================================================\n");
@@ -1197,6 +1249,10 @@ impl Config {
             "metadata_timeout_seconds",
             "max_recent_connections",
             "[logging]",
+            "[history]",
+            "per_session_enabled",
+            "max_history_files",
+            "cleanup_after_days",
             "[connection]"
         ];
         

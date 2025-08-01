@@ -5,6 +5,7 @@ use crate::config::{set_global_verbosity_override, Config as DbCrustConfig, Verb
 use crate::database::ConnectionInfo;
 use crate::db::Database;
 use crate::format::{format_query_results_expanded, format_query_results_psql_with_info};
+use crate::history_manager::{SessionHistoryManager, SessionId};
 use crate::prompt::DbPrompt;
 use crate::{logging, pager};
 use tracing::debug;
@@ -753,19 +754,39 @@ impl CliCore {
             DefaultHinter::default().with_style(Style::new().italic().fg(Color::LightGray)),
         );
 
-        // Set up history
-        let history_path = crate::config::Config::get_config_dir()
-            .map(|dir| dir.join("history"))
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .expect("Could not determine home directory")
-                    .join(".dbcrust_history")
-            });
+        // Set up session-based history
+        let history = match SessionHistoryManager::new(&self.config) {
+            Ok(mut history_manager) => {
+                // Try to generate session ID from database connection
+                let session_id = {
+                    let db_guard = db_arc.lock().unwrap();
+                    SessionId::from_database(&db_guard)
+                };
 
-        let history = Box::new({
-            FileBackedHistory::with_file(50, history_path)
-                .unwrap_or_else(|_| FileBackedHistory::default())
-        });
+                if let Some(session_id) = session_id {
+                    debug!("Using session-based history for: {}", session_id.display_name);
+                    history_manager.get_session_history(&session_id)
+                } else {
+                    debug!("No session info available, using default history");
+                    history_manager.get_default_history()
+                }
+            }
+            Err(e) => {
+                debug!("Failed to create session history manager: {}, using fallback history", e);
+                // Fallback to default history creation
+                let history_path = crate::config::Config::get_config_dir()
+                    .map(|dir| dir.join("history"))
+                    .unwrap_or_else(|_| {
+                        dirs::home_dir()
+                            .expect("Could not determine home directory")
+                            .join(".dbcrust_history")
+                    });
+                Box::new(
+                    FileBackedHistory::with_file(50, history_path)
+                        .unwrap_or_else(|_| FileBackedHistory::default())
+                )
+            }
+        };
 
         // Create completer and editor with full configuration
         let completer = if self.config.autocomplete_enabled {
