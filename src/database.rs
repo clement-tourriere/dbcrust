@@ -18,10 +18,187 @@ pub enum DatabaseType {
 
 impl fmt::Display for DatabaseType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.display_name())
+    }
+}
+
+/// Trait for database type specific behavior to eliminate match statements
+pub trait DatabaseTypeExt {
+    /// Get the default port for this database type
+    fn default_port(&self) -> Option<u16>;
+    
+    /// Get the display name for this database type
+    fn display_name(&self) -> &'static str;
+    
+    /// Check if this database type supports SSH tunneling
+    fn supports_ssh_tunnel(&self) -> bool;
+    
+    /// Get URL schemes supported by this database type
+    fn url_schemes(&self) -> &'static [&'static str];
+    
+    /// Check if this database type is file-based (no network connection)
+    fn is_file_based(&self) -> bool;
+    
+    /// Check if this database type supports JSON EXPLAIN output
+    fn supports_json_explain(&self) -> bool;
+    
+    /// Check if this database type requires authentication (password)
+    fn requires_authentication(&self) -> bool;
+    
+    /// Get the URL scheme for building URLs
+    fn url_scheme(&self) -> &'static str;
+    
+    /// Get function names for SQL completion
+    fn sql_functions(&self) -> &'static [&'static str];
+    
+    /// Check if from_unixtime is available
+    fn supports_from_unixtime(&self) -> bool;
+    
+    /// Get environment variable names for username lookup in Docker containers
+    fn docker_username_env_vars(&self) -> &'static [&'static str];
+    
+    /// Get environment variable names for password lookup in Docker containers
+    fn docker_password_env_vars(&self) -> &'static [&'static str];
+    
+    /// Get environment variable names for database name lookup in Docker containers
+    fn docker_database_env_vars(&self) -> &'static [&'static str];
+    
+    /// Get default username for this database type
+    fn default_username(&self) -> &'static str;
+}
+
+impl DatabaseTypeExt for DatabaseType {
+    fn default_port(&self) -> Option<u16> {
         match self {
-            DatabaseType::PostgreSQL => write!(f, "PostgreSQL"),
-            DatabaseType::SQLite => write!(f, "SQLite"),
-            DatabaseType::MySQL => write!(f, "MySQL"),
+            DatabaseType::PostgreSQL => Some(5432),
+            DatabaseType::MySQL => Some(3306),
+            DatabaseType::SQLite => None, // File-based
+        }
+    }
+    
+    fn display_name(&self) -> &'static str {
+        match self {
+            DatabaseType::PostgreSQL => "PostgreSQL",
+            DatabaseType::MySQL => "MySQL",
+            DatabaseType::SQLite => "SQLite",
+        }
+    }
+    
+    fn supports_ssh_tunnel(&self) -> bool {
+        match self {
+            DatabaseType::PostgreSQL | DatabaseType::MySQL => true,
+            DatabaseType::SQLite => false, // File-based, no network connection
+        }
+    }
+    
+    fn url_schemes(&self) -> &'static [&'static str] {
+        match self {
+            DatabaseType::PostgreSQL => &["postgresql", "postgres"],
+            DatabaseType::MySQL => &["mysql"],
+            DatabaseType::SQLite => &["sqlite"],
+        }
+    }
+    
+    fn is_file_based(&self) -> bool {
+        match self {
+            DatabaseType::SQLite => true,
+            DatabaseType::PostgreSQL | DatabaseType::MySQL => false,
+        }
+    }
+    
+    fn supports_json_explain(&self) -> bool {
+        match self {
+            DatabaseType::PostgreSQL => true,
+            DatabaseType::MySQL | DatabaseType::SQLite => false,
+        }
+    }
+    
+    fn requires_authentication(&self) -> bool {
+        match self {
+            DatabaseType::PostgreSQL | DatabaseType::MySQL => true,
+            DatabaseType::SQLite => false,
+        }
+    }
+    
+    fn url_scheme(&self) -> &'static str {
+        match self {
+            DatabaseType::PostgreSQL => "postgres",
+            DatabaseType::MySQL => "mysql",
+            DatabaseType::SQLite => "sqlite",
+        }
+    }
+    
+    fn sql_functions(&self) -> &'static [&'static str] {
+        match self {
+            DatabaseType::PostgreSQL => &[
+                "COALESCE", "NULLIF", "GREATEST", "LEAST", "NOW", "CURRENT_DATE",
+                "CURRENT_TIME", "CURRENT_TIMESTAMP", "AGE", "EXTRACT", "DATE_PART",
+                "TO_CHAR", "TO_DATE", "TO_TIMESTAMP", "ARRAY_AGG", "STRING_AGG",
+                "JSON_BUILD_OBJECT", "JSON_AGG", "JSONB_BUILD_OBJECT",
+            ],
+            DatabaseType::MySQL => &[
+                "COALESCE", "IFNULL", "NULLIF", "GREATEST", "LEAST", "NOW",
+                "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "DATE_FORMAT",
+                "STR_TO_DATE", "FROM_UNIXTIME", "UNIX_TIMESTAMP", "GROUP_CONCAT",
+                "JSON_OBJECT", "JSON_ARRAY",
+            ],
+            DatabaseType::SQLite => &[
+                "COALESCE", "IFNULL", "NULLIF", "MAX", "MIN", "DATE", "TIME",
+                "DATETIME", "STRFTIME", "JULIANDAY", "GROUP_CONCAT", "JSON_OBJECT",
+                "JSON_ARRAY",
+            ],
+        }
+    }
+    
+    fn supports_from_unixtime(&self) -> bool {
+        match self {
+            DatabaseType::MySQL => true,
+            DatabaseType::PostgreSQL | DatabaseType::SQLite => false,
+        }
+    }
+    
+    fn docker_username_env_vars(&self) -> &'static [&'static str] {
+        match self {
+            DatabaseType::PostgreSQL => &["POSTGRES_USER", "PGUSER"],
+            DatabaseType::MySQL => &["MYSQL_USER"],
+            DatabaseType::SQLite => &[],
+        }
+    }
+    
+    fn docker_password_env_vars(&self) -> &'static [&'static str] {
+        match self {
+            DatabaseType::PostgreSQL => &["POSTGRES_PASSWORD", "PGPASSWORD"],
+            DatabaseType::MySQL => &["MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD"],
+            DatabaseType::SQLite => &[],
+        }
+    }
+    
+    fn docker_database_env_vars(&self) -> &'static [&'static str] {
+        match self {
+            DatabaseType::PostgreSQL => &["POSTGRES_DB", "PGDATABASE"],
+            DatabaseType::MySQL => &["MYSQL_DATABASE"],
+            DatabaseType::SQLite => &[],
+        }
+    }
+    
+    fn default_username(&self) -> &'static str {
+        match self {
+            DatabaseType::PostgreSQL => "postgres",
+            DatabaseType::MySQL => "root",
+            DatabaseType::SQLite => "",
+        }
+    }
+}
+
+impl DatabaseType {
+    /// Create DatabaseType from URL scheme
+    pub fn from_scheme(scheme: &str) -> Result<Self, DatabaseError> {
+        match scheme {
+            "postgresql" | "postgres" => Ok(DatabaseType::PostgreSQL),
+            "sqlite" => Ok(DatabaseType::SQLite),
+            "mysql" => Ok(DatabaseType::MySQL),
+            "docker" => Ok(DatabaseType::PostgreSQL), // Default to PostgreSQL for docker:// URLs
+            scheme => Err(DatabaseError::UnsupportedScheme(scheme.to_string())),
         }
     }
 }
@@ -97,17 +274,7 @@ impl ConnectionInfo {
         let url = Url::parse(url_str)
             .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to parse URL: {e}")))?;
 
-        let database_type = match url.scheme() {
-            "postgresql" | "postgres" => DatabaseType::PostgreSQL,
-            "sqlite" => DatabaseType::SQLite,
-            "mysql" => DatabaseType::MySQL,
-            "docker" => {
-                // Docker URL parsing will be handled separately
-                // For now, return a placeholder - will be resolved later
-                DatabaseType::PostgreSQL // Default to PostgreSQL for docker:// URLs
-            },
-            scheme => return Err(DatabaseError::UnsupportedScheme(scheme.to_string())),
-        };
+        let database_type = DatabaseType::from_scheme(url.scheme())?;
 
         let mut connection_info = ConnectionInfo {
             database_type: database_type.clone(),
@@ -137,63 +304,60 @@ impl ConnectionInfo {
         }
 
         // Parse database-specific connection details
-        match database_type {
-            DatabaseType::SQLite => {
-                // For SQLite: sqlite:///path/to/file.db or sqlite://./relative/path.db
-                let path = url.path();
-                
-                // Handle different SQLite URL formats:
-                // sqlite:///absolute/path -> /absolute/path (absolute)
-                // sqlite://./relative/path -> ./relative/path (relative)
-                // sqlite:///./relative/path -> ./relative/path (relative)
-                // sqlite:///relative/path -> relative/path (relative if starts with single slash)
-                
-                let file_path = if path.starts_with("/./") {
-                    // sqlite:///./relative/path -> ./relative/path
-                    path[1..].to_string()
-                } else if path.starts_with("./") {
-                    // sqlite://./relative/path -> ./relative/path
+        if database_type.is_file_based() {
+            // For SQLite: sqlite:///path/to/file.db or sqlite://./relative/path.db
+            let path = url.path();
+            
+            // Handle different SQLite URL formats:
+            // sqlite:///absolute/path -> /absolute/path (absolute)
+            // sqlite://./relative/path -> ./relative/path (relative)
+            // sqlite:///./relative/path -> ./relative/path (relative)
+            // sqlite:///relative/path -> relative/path (relative if starts with single slash)
+            
+            let file_path = if path.starts_with("/./") {
+                // sqlite:///./relative/path -> ./relative/path
+                path[1..].to_string()
+            } else if path.starts_with("./") {
+                // sqlite://./relative/path -> ./relative/path
+                path.to_string()
+            } else if path.starts_with("//") {
+                // sqlite:////absolute/path -> /absolute/path (absolute)
+                path[1..].to_string()
+            } else if path.starts_with("/") && path.len() > 1 {
+                // sqlite:///relative/path -> relative/path (treat as relative)
+                // Only make it absolute if it looks like a real absolute path
+                if path.starts_with("/home/") || path.starts_with("/Users/") || path.starts_with("/tmp/") || path.starts_with("/var/") {
                     path.to_string()
-                } else if path.starts_with("//") {
-                    // sqlite:////absolute/path -> /absolute/path (absolute)
-                    path[1..].to_string()
-                } else if path.starts_with("/") && path.len() > 1 {
-                    // sqlite:///relative/path -> relative/path (treat as relative)
-                    // Only make it absolute if it looks like a real absolute path
-                    if path.starts_with("/home/") || path.starts_with("/Users/") || path.starts_with("/tmp/") || path.starts_with("/var/") {
-                        path.to_string()
-                    } else {
-                        path[1..].to_string()
-                    }
                 } else {
-                    // sqlite:///path -> path or empty path
-                    path.to_string()
-                };
-                
-                connection_info.file_path = Some(file_path);
-            }
-            DatabaseType::PostgreSQL | DatabaseType::MySQL => {
-                // For network databases
-                connection_info.host = url.host_str().map(|h| h.to_string());
-                connection_info.port = url.port();
-                connection_info.username = if url.username().is_empty() { 
-                    None 
-                } else { 
-                    Some(url.username().to_string()) 
-                };
-                connection_info.password = url.password().map(|p| p.to_string());
-                
-                // Database name is the path without leading slash - URL decode it
-                if let Some(mut segments) = url.path_segments() {
-                    if let Some(db_name) = segments.next() {
-                        if !db_name.is_empty() {
-                            // URL-decode the database name to handle special characters like %3A (colon)
-                            let decoded_db_name = percent_encoding::percent_decode_str(db_name)
-                                .decode_utf8()
-                                .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to decode database name '{}': {}", db_name, e)))?
-                                .to_string();
-                            connection_info.database = Some(decoded_db_name);
-                        }
+                    path[1..].to_string()
+                }
+            } else {
+                // sqlite:///path -> path or empty path
+                path.to_string()
+            };
+            
+            connection_info.file_path = Some(file_path);
+        } else {
+            // For network databases
+            connection_info.host = url.host_str().map(|h| h.to_string());
+            connection_info.port = url.port();
+            connection_info.username = if url.username().is_empty() { 
+                None 
+            } else { 
+                Some(url.username().to_string()) 
+            };
+            connection_info.password = url.password().map(|p| p.to_string());
+            
+            // Database name is the path without leading slash - URL decode it
+            if let Some(mut segments) = url.path_segments() {
+                if let Some(db_name) = segments.next() {
+                    if !db_name.is_empty() {
+                        // URL-decode the database name to handle special characters like %3A (colon)
+                        let decoded_db_name = percent_encoding::percent_decode_str(db_name)
+                            .decode_utf8()
+                            .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to decode database name '{}': {}", db_name, e)))?
+                            .to_string();
+                        connection_info.database = Some(decoded_db_name);
                     }
                 }
             }
@@ -210,10 +374,7 @@ impl ConnectionInfo {
 
     /// Check if SSH tunneling is applicable for this database type
     pub fn supports_ssh_tunnel(&self) -> bool {
-        match self.database_type {
-            DatabaseType::PostgreSQL | DatabaseType::MySQL => true,
-            DatabaseType::SQLite => false, // File-based, no network connection
-        }
+        self.database_type.supports_ssh_tunnel()
     }
 
     /// Check if this connection is for a Docker container
@@ -223,11 +384,7 @@ impl ConnectionInfo {
 
     /// Get the default port for this database type
     pub fn default_port(&self) -> Option<u16> {
-        match self.database_type {
-            DatabaseType::PostgreSQL => Some(5432),
-            DatabaseType::MySQL => Some(3306),
-            DatabaseType::SQLite => None, // File-based
-        }
+        self.database_type.default_port()
     }
 
     /// Check if this connection info represents the same logical connection as another
@@ -237,80 +394,50 @@ impl ConnectionInfo {
             return false;
         }
 
-        match self.database_type {
-            DatabaseType::SQLite => self.file_path == other.file_path,
-            DatabaseType::PostgreSQL | DatabaseType::MySQL => {
-                self.host == other.host
-                    && self.port == other.port
-                    && self.username == other.username
-                    && self.database == other.database
-            }
+        if self.database_type.is_file_based() {
+            self.file_path == other.file_path
+        } else {
+            self.host == other.host
+                && self.port == other.port
+                && self.username == other.username
+                && self.database == other.database
         }
     }
     
     /// Build a complete connection URL from connection information
     /// This is useful for storing in connection history
     pub fn to_url(&self) -> String {
-        match self.database_type {
-            DatabaseType::SQLite => {
-                if let Some(ref file_path) = self.file_path {
-                    format!("sqlite://{file_path}")
-                } else {
-                    "sqlite://".to_string()
-                }
-            },
-            DatabaseType::PostgreSQL => {
-                let mut url = "postgres://".to_string();
-                
-                // Build standard PostgreSQL URL with resolved connection details
-                if let Some(ref username) = self.username {
-                    url.push_str(username);
-                    url.push('@');
-                }
-                if let Some(ref host) = self.host {
-                    url.push_str(host);
-                    if let Some(port) = self.port {
-                        url.push(':');
-                        url.push_str(&port.to_string());
-                    }
-                }
-                if let Some(ref database) = self.database {
-                    url.push('/');
-                    url.push_str(database);
-                }
-                
-                // Add docker container info as a comment-like suffix if present
-                if let Some(ref container) = self.docker_container {
-                    url.push_str(&format!(" # Docker: {container}"));
-                }
-                url
-            },
-            DatabaseType::MySQL => {
-                let mut url = "mysql://".to_string();
-                
-                // Build standard MySQL URL with resolved connection details
-                if let Some(ref username) = self.username {
-                    url.push_str(username);
-                    url.push('@');
-                }
-                if let Some(ref host) = self.host {
-                    url.push_str(host);
-                    if let Some(port) = self.port {
-                        url.push(':');
-                        url.push_str(&port.to_string());
-                    }
-                }
-                if let Some(ref database) = self.database {
-                    url.push('/');
-                    url.push_str(database);
-                }
-                
-                // Add docker container info as a comment-like suffix if present
-                if let Some(ref container) = self.docker_container {
-                    url.push_str(&format!(" # Docker: {container}"));
-                }
-                url
+        if self.database_type.is_file_based() {
+            if let Some(ref file_path) = self.file_path {
+                format!("{}://{}", self.database_type.url_scheme(), file_path)
+            } else {
+                format!("{}://", self.database_type.url_scheme())
             }
+        } else {
+            let mut url = format!("{}://", self.database_type.url_scheme());
+            
+            // Build standard network database URL with resolved connection details
+            if let Some(ref username) = self.username {
+                url.push_str(username);
+                url.push('@');
+            }
+            if let Some(ref host) = self.host {
+                url.push_str(host);
+                if let Some(port) = self.port {
+                    url.push(':');
+                    url.push_str(&port.to_string());
+                }
+            }
+            if let Some(ref database) = self.database {
+                url.push('/');
+                url.push_str(database);
+            }
+            
+            // Add docker container info as a comment-like suffix if present
+            if let Some(ref container) = self.docker_container {
+                url.push_str(&format!(" # Docker: {container}"));
+            }
+            url
         }
     }
 }

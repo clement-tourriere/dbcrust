@@ -42,6 +42,11 @@ jobs:
         run: |
           uv run --only-group docs mkdocs build --clean --strict
 
+      - name: Copy install scripts to site root
+        run: |
+          cp docs/install.sh site/install.sh
+          cp docs/install.ps1 site/install.ps1
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

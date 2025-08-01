@@ -3,7 +3,7 @@ use bollard::query_parameters::{InspectContainerOptions, ListContainersOptions};
 use bollard::models::{ContainerSummary, ContainerInspectResponse};
 use std::collections::HashMap;
 use thiserror::Error;
-use crate::database::DatabaseType;
+use crate::database::{DatabaseType, DatabaseTypeExt};
 
 #[derive(Error, Debug)]
 pub enum DockerError {
@@ -288,11 +288,7 @@ impl DockerClient {
 
     /// Get default port for database type
     fn get_default_port(database_type: &DatabaseType) -> u16 {
-        match database_type {
-            DatabaseType::PostgreSQL => 5432,
-            DatabaseType::MySQL => 3306,
-            DatabaseType::SQLite => 0, // SQLite doesn't use ports
-        }
+        database_type.default_port().unwrap_or(0)
     }
 
     /// Build database connection info from container info
@@ -320,36 +316,31 @@ impl DockerClient {
             }
         };
 
-        let (username, password, database_name) = match database_type {
-            DatabaseType::PostgreSQL => {
-                let username = container_info.environment.get("POSTGRES_USER")
-                    .or_else(|| container_info.environment.get("PGUSER")).cloned()
-                    .unwrap_or_else(|| "postgres".to_string());
-                
-                let password = container_info.environment.get("POSTGRES_PASSWORD")
-                    .or_else(|| container_info.environment.get("PGPASSWORD")).cloned();
-                
-                let database_name = container_info.environment.get("POSTGRES_DB")
-                    .or_else(|| container_info.environment.get("PGDATABASE")).cloned()
-                    .unwrap_or_else(|| username.clone());
-                
-                (Some(username), password, Some(database_name))
-            }
-            DatabaseType::MySQL => {
-                let username = container_info.environment.get("MYSQL_USER").cloned()
-                    .unwrap_or_else(|| "root".to_string());
-                
-                let password = container_info.environment.get("MYSQL_PASSWORD")
-                    .or_else(|| container_info.environment.get("MYSQL_ROOT_PASSWORD")).cloned();
-                
-                let database_name = container_info.environment.get("MYSQL_DATABASE").cloned();
-                
-                (Some(username), password, database_name)
-            }
-            DatabaseType::SQLite => {
-                // SQLite doesn't use network connections
-                (None, None, None)
-            }
+        let (username, password, database_name) = if database_type.is_file_based() {
+            // SQLite doesn't use network connections
+            (None, None, None)
+        } else {
+            // Extract username from environment variables
+            let username = database_type.docker_username_env_vars()
+                .iter()
+                .find_map(|var| container_info.environment.get(*var))
+                .cloned()
+                .unwrap_or_else(|| database_type.default_username().to_string());
+            
+            // Extract password from environment variables
+            let password = database_type.docker_password_env_vars()
+                .iter()
+                .find_map(|var| container_info.environment.get(*var))
+                .cloned();
+            
+            // Extract database name from environment variables
+            let database_name = database_type.docker_database_env_vars()
+                .iter()
+                .find_map(|var| container_info.environment.get(*var))
+                .cloned()
+                .unwrap_or_else(|| username.clone());
+            
+            (Some(username), password, Some(database_name))
         };
 
         Ok(DockerDatabaseConnection {

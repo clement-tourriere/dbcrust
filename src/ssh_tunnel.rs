@@ -11,14 +11,8 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::time::timeout;
-use tracing::debug;
+use tracing::{debug, info};
 
-// Status logging macro that always shows important status messages
-macro_rules! status_log {
-    ($($arg:tt)*) => {
-        println!($($arg)*);
-    };
-}
 
 #[derive(Error, Debug, Clone)]
 pub enum SSHTunnelError {
@@ -152,7 +146,7 @@ impl SSHTunnel {
         );
 
         // Log that we're initiating the SSH tunnel
-        status_log!(
+        info!(
             "Initiating SSH tunnel to {}:{} via {}@{}...",
             self.remote_host,
             self.remote_port,
@@ -441,7 +435,7 @@ impl Drop for SSHTunnel {
                 if let Err(e) = child.start_kill() {
                     eprintln!("Error attempting to kill SSH tunnel process in drop: {e}");
                 } else {
-                    status_log!("SSH tunnel closed");
+                    info!("SSH tunnel closed");
                     debug!("SSH tunnel process kill signal sent from drop.");
                 }
             }
