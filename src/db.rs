@@ -79,6 +79,9 @@ pub struct Database {
     // Connection info override for special cases like Vault connections
     connection_info_override: Option<crate::database::ConnectionInfo>,
     
+    // SSH tunnel management
+    ssh_tunnel: Option<crate::ssh_tunnel::SSHTunnel>,
+    
     // Application settings and state
     expanded_display: bool,
     default_limit: usize,
@@ -332,16 +335,32 @@ impl Database {
         let config = crate::config::Config::load();
         
         // For SSH tunnel scenarios, we need to create a modified connection info
-        let final_connection_info = if let Some(ref tunnel_config) = ssh_tunnel_config {
+        let (final_connection_info, ssh_tunnel) = if let Some(ref tunnel_config) = ssh_tunnel_config {
             if tunnel_config.enabled {
-                // TODO: SSH tunnel support should be implemented in the database clients themselves
-                // For now, return an error for SSH tunnel scenarios
-                return Err("SSH tunnel support needs to be implemented in the new database abstraction layer".into());
+                // Establish SSH tunnel
+                let mut ssh_tunnel = crate::ssh_tunnel::SSHTunnel::new()
+                    .ok_or("Failed to create SSH tunnel")?;
+                
+                let original_host = connection_info.host.as_ref()
+                    .ok_or("Host is required for SSH tunnel")?;
+                let original_port = connection_info.port
+                    .or_else(|| connection_info.default_port())
+                    .ok_or("Port is required for SSH tunnel")?;
+                
+                let local_port = ssh_tunnel.establish(tunnel_config, original_host, original_port).await
+                    .map_err(|e| format!("Failed to establish SSH tunnel: {}", e))?;
+                
+                // Create modified connection info to use the local tunnel port
+                let mut modified_connection_info = connection_info.clone();
+                modified_connection_info.host = Some("127.0.0.1".to_string());
+                modified_connection_info.port = Some(local_port);
+                
+                (modified_connection_info, Some(ssh_tunnel))
             } else {
-                connection_info
+                (connection_info, None)
             }
         } else {
-            connection_info
+            (connection_info, None)
         };
         
         // Create database client using the new abstraction layer
@@ -352,13 +371,14 @@ impl Database {
         let db = Self {
             database_client: Some(database_client),
             connection_info_override: None,
+            ssh_tunnel,
             expanded_display: expanded_display_default.unwrap_or(false),
             default_limit: default_limit.unwrap_or(100),
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: config.explain_mode_default,
             column_select_mode: false,
             banner_enabled: config.show_banner,
-            column_selection_threshold: config.column_selection_threshold,
+            column_selection_threshold: config.column_selection_threshold,  
             column_selection_default_all: config.column_selection_default_all,
             column_views: HashMap::new(),
             last_view_key: None,
@@ -963,6 +983,7 @@ impl Database {
         Self {
             database_client: None, // No database client in test mode
             connection_info_override: None,
+            ssh_tunnel: None, // No SSH tunnel in test mode
             expanded_display: false,
             default_limit: 100,
             autocomplete_enabled: config.autocomplete_enabled,
@@ -1339,5 +1360,15 @@ mod tests {
         assert!(!is_query_explainable("COMMIT"));
         assert!(!is_query_explainable("ROLLBACK"));
         assert!(!is_query_explainable("-- comment only"));
+    }
+}
+
+impl Drop for Database {
+    fn drop(&mut self) {
+        if let Some(_ssh_tunnel) = &mut self.ssh_tunnel {
+            // The SSH tunnel will be automatically cleaned up when dropped
+            // due to its internal Drop implementation
+            debug!("Cleaning up SSH tunnel on Database drop");
+        }
     }
 }
