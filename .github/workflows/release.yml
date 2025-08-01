@@ -142,6 +142,9 @@ jobs:
           files: |
             artifacts/wheels_*/*.whl
             artifacts/wheels_*/*.tar.gz
+            artifacts/binaries_*/*.tar.gz
+            artifacts/binaries_*/*.zip
+            artifacts/binaries_*/*.sha256
           tag_name: ${{ fromJson(needs.plan.outputs.plan).tag }}
           draft: false
           prerelease: ${{ contains(fromJson(needs.plan.outputs.plan).tag, '-') }}

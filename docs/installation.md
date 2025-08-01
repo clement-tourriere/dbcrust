@@ -2,6 +2,63 @@
 
 DBCrust offers multiple installation methods to fit your workflow. Choose the one that works best for you.
 
+## 🚀 One-Line Install (Recommended)
+
+Get DBCrust installed instantly with our automated installers:
+
+=== "Unix (macOS, Linux)"
+
+    ```bash
+    # Install DBCrust with a single command
+    curl -fsSL https://clement-tourriere.github.io/install.sh | sh
+    
+    # Then use it immediately
+    dbcrust postgres://user:pass@localhost/mydb
+    dbc postgres://user:pass@localhost/mydb  # Short alias
+    ```
+
+=== "Windows"
+
+    ```powershell
+    # Install DBCrust with PowerShell
+    irm https://clement-tourriere.github.io/install.ps1 | iex
+    
+    # Then use it immediately
+    dbcrust postgres://user:pass@localhost/mydb
+    dbc postgres://user:pass@localhost/mydb  # Short alias
+    ```
+
+=== "Custom Installation"
+
+    ```bash
+    # Install specific version (Unix)
+    DBCRUST_VERSION=v0.12.2 curl -fsSL https://clement-tourriere.github.io/install.sh | sh
+    
+    # Install to custom directory (Unix)
+    DBCRUST_INSTALL_DIR=/usr/local/bin curl -fsSL https://clement-tourriere.github.io/install.sh | sh
+    
+    # Verbose installation (Unix)
+    curl -fsSL https://clement-tourriere.github.io/install.sh | sh -s -- --verbose
+    ```
+
+    ```powershell
+    # Install specific version (Windows)
+    $env:DBCRUST_VERSION = "v0.12.2"; irm https://clement-tourriere.github.io/install.ps1 | iex
+    
+    # Install to custom directory (Windows)
+    .\install.ps1 -InstallDir "C:\Tools\dbcrust" -NoModifyPath
+    
+    # Verbose installation (Windows)
+    .\install.ps1 -Verbose
+    ```
+
+!!! success "Benefits of Native Installers"
+    - **Fast**: No Python dependencies required
+    - **Standalone**: Self-contained binaries
+    - **Automatic PATH**: Configures your shell automatically
+    - **Cross-platform**: Works on macOS, Linux, and Windows
+    - **Latest version**: Always installs the newest release
+
 ## 📦 Package Manager Installation
 
 ### uv (Recommended)

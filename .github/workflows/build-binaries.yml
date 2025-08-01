@@ -250,3 +250,168 @@ jobs:
         with:
           name: wheels_${{ env.PACKAGE_NAME }}-aarch64-unknown-linux-musl
           path: dist
+
+  native-binaries:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Rust"
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: "Install cross-compilation tools"
+        run: |
+          sudo apt-get update
+          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
+            sudo apt-get install -y musl-tools
+          fi
+
+      - name: "Build native binaries"
+        run: |
+          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc
+          mkdir -p dist
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../dist/dbcrust-${{ matrix.target }}.tar.gz dbcrust dbc
+          cd ../../../dist
+          sha256sum dbcrust-${{ matrix.target }}.tar.gz > dbcrust-${{ matrix.target }}.tar.gz.sha256
+
+      - name: "Upload binary artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries_${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: dist
+
+  native-binaries-linux-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Rust"
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+
+      - name: "Install cross tool"
+        run: |
+          cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: "Build native binaries with cross"
+        run: |
+          cross build --release --target aarch64-unknown-linux-gnu --bin dbcrust --bin dbc
+          mkdir -p dist
+          cd target/aarch64-unknown-linux-gnu/release
+          tar czf ../../../dist/dbcrust-aarch64-unknown-linux-gnu.tar.gz dbcrust dbc
+          cd ../../../dist
+          sha256sum dbcrust-aarch64-unknown-linux-gnu.tar.gz > dbcrust-aarch64-unknown-linux-gnu.tar.gz.sha256
+
+      - name: "Upload binary artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries_${{ env.PACKAGE_NAME }}-aarch64-unknown-linux-gnu
+          path: dist
+
+  native-binaries-windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Rust"
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: "Build native binaries"
+        run: |
+          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc
+          mkdir dist
+          cd target/${{ matrix.target }}/release
+          Compress-Archive -Path dbcrust.exe,dbc.exe -DestinationPath ../../../dist/dbcrust-${{ matrix.target }}.zip
+          cd ../../../dist
+          Get-FileHash -Algorithm SHA256 dbcrust-${{ matrix.target }}.zip | ForEach-Object { "$($_.Hash.ToLower())  dbcrust-${{ matrix.target }}.zip" } | Out-File -Encoding ASCII dbcrust-${{ matrix.target }}.zip.sha256
+        shell: powershell
+
+      - name: "Upload binary artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries_${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: dist
+
+  native-binaries-macos:
+    strategy:
+      matrix:
+        include:
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Rust"
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: "Build native binaries"
+        run: |
+          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc
+          mkdir -p dist
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../dist/dbcrust-${{ matrix.target }}.tar.gz dbcrust dbc
+          cd ../../../dist
+          shasum -a 256 dbcrust-${{ matrix.target }}.tar.gz > dbcrust-${{ matrix.target }}.tar.gz.sha256
+
+      - name: "Upload binary artifacts"
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries_${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: dist
+
+  windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: "Build wheels"
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: >
+            --release
+            --locked
+            --out dist
+            --features python
+
+      - name: "Test wheel"
+        run: |
+          pip install (Get-ChildItem dist/$env:PACKAGE_NAME-*.whl | Select-Object -First 1).FullName --force-reinstall
+          & $env:PACKAGE_NAME --help
+        shell: powershell
+
+      - name: "Upload wheels"
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels_${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          path: dist
+
