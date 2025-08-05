@@ -1090,6 +1090,19 @@ impl Database {
         }
     }
 
+    /// Simplified column getter for the new completion system
+    pub async fn get_columns(&mut self, table_name: &str) -> std::result::Result<Vec<String>, Box<dyn StdError>> {
+        // Try to parse schema from table name if it contains a dot
+        let (schema, table) = if table_name.contains('.') {
+            let parts: Vec<&str> = table_name.splitn(2, '.').collect();
+            (Some(parts[0]), parts[1])
+        } else {
+            (None, table_name)
+        };
+        
+        self.get_columns_for_table(table, schema).await
+    }
+
     pub fn is_column_select_mode(&self) -> bool {
         self.column_select_mode
     }

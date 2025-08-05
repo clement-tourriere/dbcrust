@@ -121,10 +121,11 @@ DBCrust automatically detects what SQL clause you're in and suggests appropriate
 ```sql
 SELECT [TAB]
 -- Suggests: *, COUNT(, SUM(, AVG(, MAX(, MIN(, DISTINCT
+-- Note: Cannot suggest table columns here (table context comes after cursor)
 
-SELECT * FROM users; SELECT [TAB]  
--- When FROM tables are present, also suggests actual column names:
--- id, name, email, created_at, status (from users table)
+-- Column completion works when table is visible before cursor:
+SELECT * FROM users WHERE [TAB]  
+-- Suggests: id, name, email, created_at, status (from users table)
 ```
 
 #### WHERE Clause Intelligence
@@ -216,12 +217,20 @@ WHERE [TAB]
 
 !!! tip "Context-Aware Benefits"
     
-    The new context-aware completion eliminates irrelevant suggestions:
+    The context-aware completion provides intelligent suggestions:
     
-    - **No more table suggestions after SELECT** - only columns, aggregates, and *
-    - **No more * or functions after WHERE** - only relevant column names  
-    - **Smarter FROM clause parsing** - extracts tables from complex queries
-    - **Backwards compatible** - all existing completion still works perfectly
+    - **Smart SELECT suggestions** - aggregates, functions, and * (columns when table context available)
+    - **Precise WHERE completions** - only relevant column names from visible tables
+    - **Smart FROM clause parsing** - extracts tables from complex queries
+    - **Table-qualified completions** - `table.[TAB]` suggests columns from that table
+
+!!! warning "Completion Limitations"
+    
+    Due to terminal limitations, some patterns don't work:
+    
+    - **`SELECT [TAB] FROM table`** - Cannot suggest table columns (table comes after cursor)
+    - **Moving cursor back** - Only works within same editing session
+    - **Use patterns that work**: `SELECT * FROM table WHERE [TAB]` or `SELECT table.[TAB]`
 
 !!! note "Performance"
     

@@ -472,13 +472,13 @@ DBCrust analyzes your SQL statement in real-time to provide relevant suggestions
 #### SELECT Context Intelligence
 
 ```sql
--- After SELECT keyword, suggests columns, aggregates, and wildcards
+-- After SELECT keyword, suggests aggregates and wildcards
 SELECT [TAB]
 -- Suggestions: *, COUNT(, SUM(, AVG(, MAX(, MIN(, DISTINCT
 
--- When FROM clause is present, also suggests actual columns
-SELECT [TAB] FROM users
--- Suggestions: *, id, name, email, created_at, status, COUNT(, SUM(, ...
+-- Column suggestions work when table is visible before cursor
+SELECT * FROM users WHERE [TAB]
+-- Suggestions: id, name, email, created_at, status
 ```
 
 #### WHERE Clause Precision  

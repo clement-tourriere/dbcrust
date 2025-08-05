@@ -692,6 +692,7 @@ impl CliCore {
         }
 
         let db_arc = Arc::new(Mutex::new(database));
+        let config_arc = Arc::new(Mutex::new(self.config.clone()));
         let mut last_script = String::new();
         let interrupt_flag = Arc::new(AtomicBool::new(false));
 
@@ -783,7 +784,7 @@ impl CliCore {
 
         // Create completer and editor with full configuration
         let completer = if self.config.autocomplete_enabled {
-            Box::new(SqlCompleter::new(db_arc.clone())) as Box<dyn reedline::Completer>
+            Box::new(SqlCompleter::new(db_arc.clone(), config_arc.clone())) as Box<dyn reedline::Completer>
         } else {
             Box::new(NoopCompleter {}) as Box<dyn reedline::Completer>
         };
@@ -835,6 +836,7 @@ impl CliCore {
                             .execute_backslash_command_interactive(
                                 line,
                                 &db_arc,
+                                &config_arc,
                                 &mut last_script,
                                 &interrupt_flag,
                                 &mut prompt,
@@ -892,6 +894,21 @@ impl CliCore {
             }
         }
 
+        // Update config reference to persist changes from command execution
+        match Arc::try_unwrap(config_arc) {
+            Ok(mutex) => match mutex.into_inner() {
+                Ok(updated_config) => {
+                    self.config = updated_config;
+                }
+                Err(_) => {
+                    debug!("Failed to unwrap config mutex");
+                }
+            },
+            Err(_) => {
+                debug!("Failed to unwrap config Arc");
+            }
+        }
+
         Ok(())
     }
 
@@ -901,6 +918,7 @@ impl CliCore {
         &mut self,
         command_str: &str,
         db_arc: &Arc<Mutex<Database>>,
+        config_arc: &Arc<Mutex<DbCrustConfig>>,
         last_script: &mut String,
         interrupt_flag: &Arc<AtomicBool>,
         prompt: &mut DbPrompt,
@@ -913,7 +931,7 @@ impl CliCore {
         match command
             .execute(
                 db_arc,
-                &mut self.config,
+                &mut *config_arc.lock().unwrap(),
                 last_script,
                 interrupt_flag,
                 prompt,

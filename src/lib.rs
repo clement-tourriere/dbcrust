@@ -4,8 +4,9 @@
 pub mod cli;
 pub mod cli_core; // New unified CLI core
 pub mod commands; // New type-safe enum-based command system
-// mod completion; // Removed pub mod completion;
+pub mod command_completion; // Trait-based command completion system
 pub mod completion;
+pub mod completion_provider; // Database-agnostic completion trait
 pub mod config;
 pub mod database; // New database abstraction layer
 pub mod database_mysql; // MySQL implementation
@@ -27,10 +28,12 @@ pub mod prompt;
 pub mod script;
 pub mod shell_completion; // Custom shell completion with URL schemes
 pub mod sql_context; // SQL context analysis for better autocompletion
+pub mod sql_parser; // Enhanced SQL parser for autocompletion
 pub mod ssh_tunnel; // Add the SSH tunnel module
 pub mod url_scheme; // URL scheme autocompletion support
 pub mod vault_client; // Add backslash commands module
 pub mod vault_encryption; // Vault credential encryption utilities
+
 
 // Note: main.rs functions are not directly accessible as modules in lib.rs
 // We'll create PyO3 wrappers that call the main functionality directly
