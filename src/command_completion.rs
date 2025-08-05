@@ -417,6 +417,7 @@ impl CommandCompleter for ConfigCompleter {
     }
 }
 
+
 /// Main completion coordinator that manages all command completers
 pub struct CommandCompletionManager {
     completers: Vec<Box<dyn CommandCompleter>>,

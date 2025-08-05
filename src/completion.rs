@@ -810,6 +810,62 @@ impl SqlCompleter {
         suggestions
     }
 
+    /// Complete SQL query - reuses the main SQL completion logic for SQL-based commands
+    fn complete_sql_query(&mut self, sql_part: &str, sql_pos: usize, offset: usize) -> Vec<Suggestion> {
+        debug!("SQL completion for command: sql_part='{}', sql_pos={}, offset={}", sql_part, sql_pos, offset);
+
+        // Reuse the same logic as the main complete method but adjust spans for the offset
+        let full_line = sql_part.to_string();
+        
+        // Determine word boundaries for SQL completion
+        let word_start = sql_part[..sql_pos]
+            .rfind(|c: char| c.is_whitespace() || c == '(' || c == ',')
+            .map_or(0, |idx| idx + 1);
+        let current_word = &sql_part[word_start..sql_pos];
+        
+        // Get database type and create appropriate parser
+        let database_type = self.get_database_type();
+        let parser = SqlParserFactory::create_parser(database_type.clone());
+        
+        // Parse SQL context using database-specific parser
+        let enhanced_context = parser.parse_at_cursor(&full_line, sql_pos);
+        debug!("[SqlCompleter] SQL Command Context Analysis:");
+        debug!("  Database type: {:?}", enhanced_context.database_type);
+        debug!("  Current clause: {:?}", enhanced_context.base_context.current_clause);
+        debug!("  Tables in context: {} tables", enhanced_context.base_context.tables.len());
+        for (i, table) in enhanced_context.base_context.tables.iter().enumerate() {
+            debug!("    Table {}: {} (alias: {:?}, schema: {:?})", 
+                   i, table.table, table.alias, table.schema);
+        }
+        debug!("  Expecting: {:?}", enhanced_context.base_context.expecting);
+        debug!("  Current word: '{}'", current_word);
+
+        // Generate suggestions based on enhanced context
+        let mut suggestions = self.generate_enhanced_sql_suggestions(
+            &enhanced_context,
+            &parser,
+            current_word,
+            word_start,
+            sql_pos,
+            &full_line,
+        );
+
+        // Adjust the spans to account for the command prefix offset
+        for suggestion in &mut suggestions {
+            suggestion.span.start += offset;
+            suggestion.span.end += offset;
+        }
+
+        debug!("[SqlCompleter] SQL Command results: Generated {} suggestions", suggestions.len());
+        for (i, suggestion) in suggestions.iter().enumerate() {
+            debug!("  Suggestion {}: '{}' - {}", 
+                   i, suggestion.value, 
+                   suggestion.description.as_ref().unwrap_or(&"No description".to_string()));
+        }
+        
+        suggestions
+    }
+
 }
 
 impl Completer for SqlCompleter {
@@ -949,6 +1005,34 @@ impl Completer for SqlCompleter {
                     }
                 }
                 return suggestions;
+            }
+            
+            // Handle SQL-based commands (\ef, \er, \ex) by redirecting to SQL completion
+            if (line.starts_with("\\ef ") && pos > 4) ||
+               (line.starts_with("\\er ") && pos > 4) ||
+               (line.starts_with("\\ex ") && pos > 4) {
+                
+                // Extract the SQL portion and treat it as a regular SQL query
+                let sql_start = if line.starts_with("\\ex ") {
+                    // For \ex, we need to be careful about the filename at the end
+                    // For now, treat everything after \ex as SQL (we can improve this later)
+                    4
+                } else {
+                    4 // \ef and \er both have 4 characters including space
+                };
+                
+                let sql_part = &line[sql_start..];
+                let sql_pos = pos - sql_start;
+                
+                // Use the existing SQL completion logic by creating a new line
+                // that looks like a regular SQL query
+                debug!("SQL-based command detected: '{}', SQL part: '{}', SQL pos: {}", 
+                       &line[..sql_start], sql_part, sql_pos);
+                
+                // Call the same logic that handles regular SQL queries (starting at line ~1081)
+                // by temporarily treating this as a regular SQL line
+                let sql_suggestions = self.complete_sql_query(sql_part, sql_pos, sql_start);
+                return sql_suggestions;
             }
             
             // For other backslash commands or when typing the command itself
