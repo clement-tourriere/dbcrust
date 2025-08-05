@@ -1,6 +1,6 @@
 [package]
 name = "dbcrust"
-version = "0.14.1"
+version = "0.15.0"
 edition = "2024"
 description = "Multi-database interactive client (PostgreSQL, SQLite, MySQL) with tab completion"
 authors = ["dbcrust authors"]
