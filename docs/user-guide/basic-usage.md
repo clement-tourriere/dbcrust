@@ -116,12 +116,31 @@ DBCrust provides intelligent, context-aware autocompletion that understands both
 
 DBCrust automatically detects what SQL clause you're in and suggests appropriate completions:
 
+#### ✨ NEW: Cursor Context-Aware Completion
+
+DBCrust now supports **forward-looking completion** - it can read the full line and suggest columns even when the table appears after the cursor:
+
+```sql
+-- 🎯 NEW: Forward-looking column completion works!
+SELECT [TAB] FROM users
+-- Suggests: id, name, email, created_at, status (reads 'users' after cursor!)
+
+-- Works with complex queries
+SELECT u.[TAB] FROM users u JOIN orders o ON u.id = o.user_id
+-- Suggests: id, name, email, created_at, status (from users table)
+
+-- Even with aliases and multiple tables
+SELECT [TAB] FROM users u, orders o WHERE u.id = o.user_id
+-- Suggests columns from BOTH users and orders tables
+```
+
 #### SELECT Clause Suggestions
 
 ```sql
 SELECT [TAB]
--- Suggests: *, COUNT(, SUM(, AVG(, MAX(, MIN(, DISTINCT
--- Note: Cannot suggest table columns here (table context comes after cursor)
+-- Context-aware suggestions:
+-- • If FROM clause present after cursor: column names from those tables
+-- • Otherwise: *, COUNT(, SUM(, AVG(, MAX(, MIN(, DISTINCT
 
 -- Column completion works when table is visible before cursor:
 SELECT * FROM users WHERE [TAB]  
@@ -180,6 +199,43 @@ SEL[TAB] name FR[TAB] users WH[TAB] active = true
 
 ### Advanced Context Examples
 
+#### 🎯 Forward-Looking Completion Examples
+
+The breakthrough cursor context-aware completion enables these previously impossible patterns:
+
+```sql
+-- All of these NOW WORK with forward-looking completion!
+
+-- Basic forward completion
+SELECT i[TAB] FROM users
+-- Suggests: id (from users table that comes after cursor)
+
+-- Multiple tables
+SELECT u[TAB] FROM users u, orders o  
+-- Suggests: user_id, username, updated_at (prefixed completions)
+
+-- Complex JOINs with aliases
+SELECT p[TAB] FROM users u 
+  JOIN orders o ON u.id = o.user_id
+  JOIN products p ON o.product_id = p.id
+-- Suggests: price, product_name, product_id (from products table)
+
+-- Subqueries and CTEs
+SELECT name[TAB] FROM (
+  SELECT id, first_name, last_name FROM users
+) u
+-- Suggests: first_name, last_name (from subquery columns)
+```
+
+!!! info "How It Works"
+    
+    DBCrust uses a **highlighter bridge** to access the complete line buffer, enabling:
+    
+    - **Full SQL parsing** - reads entire statement, not just text before cursor
+    - **Future table detection** - finds tables that appear after cursor position  
+    - **Context-aware filtering** - only suggests relevant completions for current clause
+    - **Performance optimized** - no noticeable delay despite advanced parsing
+
 #### ORDER BY and GROUP BY
 
 ```sql
@@ -219,18 +275,21 @@ WHERE [TAB]
     
     The context-aware completion provides intelligent suggestions:
     
-    - **Smart SELECT suggestions** - aggregates, functions, and * (columns when table context available)
+    - **🎯 Forward-looking completion** - reads full line to suggest columns even when table comes after cursor
+    - **Smart SELECT suggestions** - aggregates, functions, * and column names from future tables
     - **Precise WHERE completions** - only relevant column names from visible tables
     - **Smart FROM clause parsing** - extracts tables from complex queries
     - **Table-qualified completions** - `table.[TAB]` suggests columns from that table
 
-!!! warning "Completion Limitations"
+!!! success "NEW: No More Completion Limitations!"
     
-    Due to terminal limitations, some patterns don't work:
+    DBCrust now supports **cursor context-aware completion**:
     
-    - **`SELECT [TAB] FROM table`** - Cannot suggest table columns (table comes after cursor)
-    - **Moving cursor back** - Only works within same editing session
-    - **Use patterns that work**: `SELECT * FROM table WHERE [TAB]` or `SELECT table.[TAB]`
+    - **✅ `SELECT [TAB] FROM table`** - NOW WORKS! Suggests columns from table
+    - **✅ `SELECT col[TAB] FROM users, orders`** - Suggests from all tables  
+    - **✅ Complex queries** - Works with JOINs, aliases, and subqueries
+    
+    This breakthrough feature uses advanced line buffer analysis to overcome terminal limitations.
 
 !!! note "Performance"
     

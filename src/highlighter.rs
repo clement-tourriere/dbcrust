@@ -1,22 +1,25 @@
 use nu_ansi_term::{Color, Style};
 use reedline::{Highlighter, StyledText};
 use regex::Regex;
+use std::sync::{Arc, Mutex};
 
 pub struct SqlHighlighter {
     sql_keywords: Vec<String>,
     sql_types: Vec<String>,
     sql_functions: Vec<String>,
+    /// Shared state to pass full line content to the completer
+    full_line_buffer: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for SqlHighlighter {
     fn default() -> Self {
-        Self::new()
+        Self::new(Arc::new(Mutex::new(None)))
     }
 }
 
 impl SqlHighlighter {
     #[allow(dead_code)]
-    pub fn new() -> Self {
+    pub fn new(full_line_buffer: Arc<Mutex<Option<String>>>) -> Self {
         // SQL keywords (commands)
         let sql_keywords = vec![
             "SELECT",
@@ -211,12 +214,19 @@ impl SqlHighlighter {
             sql_keywords: sql_keywords.into_iter().map(String::from).collect(),
             sql_types: sql_types.into_iter().map(String::from).collect(),
             sql_functions: sql_functions.into_iter().map(String::from).collect(),
+            full_line_buffer,
         }
     }
 }
 
 impl Highlighter for SqlHighlighter {
     fn highlight(&self, line: &str, _cursor: usize) -> StyledText {
+        // 🎯 CAPTURE FULL LINE FOR COMPLETER ACCESS!
+        // This is the breakthrough - highlighter gets full line before completer runs
+        if let Ok(mut buffer_guard) = self.full_line_buffer.lock() {
+            *buffer_guard = Some(line.to_string());
+        }
+        
         let mut styled_text = StyledText::new();
         let mut last_end = 0;
 

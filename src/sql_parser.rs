@@ -62,6 +62,8 @@ pub struct SqlContext {
     pub current_clause: SqlClause,
     pub cursor_token: Option<Token>,
     pub expecting: Vec<ExpectedElement>,
+    /// Tables that appear after the cursor position (for forward-looking completion)
+    pub future_tables: Vec<TableRef>,
 }
 
 /// SQL clauses that affect completion behavior
@@ -121,7 +123,7 @@ impl SqlParser {
     /// Parse SQL and return context at cursor position
     pub fn parse_at_cursor(&self, cursor_pos: usize) -> SqlContext {
         let statement_type = self.detect_statement_type();
-        let tables = self.extract_tables();
+        let (tables, future_tables) = self.extract_tables_with_cursor_context(cursor_pos);
         let columns = self.extract_columns();
         let current_clause = self.determine_clause_at_position(cursor_pos);
         let cursor_token = self.find_token_at_position(cursor_pos);
@@ -135,6 +137,7 @@ impl SqlParser {
             current_clause,
             cursor_token,
             expecting,
+            future_tables,
         }
     }
 
@@ -328,6 +331,7 @@ impl SqlParser {
         None
     }
 
+    #[allow(dead_code)]
     fn extract_tables(&self) -> Vec<TableRef> {
         let mut tables = Vec::new();
         let mut i = 0;
@@ -357,6 +361,49 @@ impl SqlParser {
         }
         
         tables
+    }
+
+    /// Extract tables with cursor context - separates tables before and after cursor position
+    fn extract_tables_with_cursor_context(&self, cursor_pos: usize) -> (Vec<TableRef>, Vec<TableRef>) {
+        let mut tables_before = Vec::new();
+        let mut tables_after = Vec::new();
+        let mut i = 0;
+        
+        while i < self.tokens.len() {
+            let token = &self.tokens[i];
+            
+            if token.token_type == TokenType::Keyword {
+                match token.value.to_uppercase().as_str() {
+                    "FROM" | "JOIN" | "INTO" => {
+                        // Look for table after these keywords
+                        if let Some(table_ref) = self.parse_table_ref(i + 1) {
+                            // Determine if this table appears before or after cursor
+                            if table_ref.position < cursor_pos {
+                                tables_before.push(table_ref);
+                            } else {
+                                tables_after.push(table_ref);
+                            }
+                        }
+                    }
+                    "UPDATE" => {
+                        // UPDATE directly followed by table
+                        if let Some(table_ref) = self.parse_table_ref(i + 1) {
+                            // Determine if this table appears before or after cursor
+                            if table_ref.position < cursor_pos {
+                                tables_before.push(table_ref);
+                            } else {
+                                tables_after.push(table_ref);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            
+            i += 1;
+        }
+        
+        (tables_before, tables_after)
     }
 
     fn parse_table_ref(&self, start_idx: usize) -> Option<TableRef> {
@@ -633,5 +680,44 @@ mod tests {
         assert_eq!(context.tables.len(), 1);
         assert_eq!(context.tables[0].table, "users");
         assert!(context.expecting.contains(&ExpectedElement::Value));
+        // Should have no future tables since cursor is at end
+        assert_eq!(context.future_tables.len(), 0);
+    }
+
+    #[test]
+    fn test_forward_looking_table_detection() {
+        // Test case: cursor is in SELECT clause but FROM clause appears later
+        let sql = "SELECT  FROM users";
+        let cursor_pos = 7; // Right after "SELECT "
+        let parser = SqlParser::new(sql.to_string());
+        let context = parser.parse_at_cursor(cursor_pos);
+
+        assert_eq!(context.statement_type, StatementType::Select);
+        assert_eq!(context.current_clause, SqlClause::Select);
+        // No tables before cursor
+        assert_eq!(context.tables.len(), 0);
+        // One table after cursor (users)
+        assert_eq!(context.future_tables.len(), 1);
+        assert_eq!(context.future_tables[0].table, "users");
+    }
+
+    #[test]
+    fn test_forward_looking_with_joins() {
+        // Test case: cursor in SELECT with multiple tables in FROM/JOIN clauses
+        let sql = "SELECT  FROM users u JOIN orders o ON u.id = o.user_id";
+        let cursor_pos = 7; // Right after "SELECT "
+        let parser = SqlParser::new(sql.to_string());
+        let context = parser.parse_at_cursor(cursor_pos);
+
+        assert_eq!(context.statement_type, StatementType::Select);
+        assert_eq!(context.current_clause, SqlClause::Select);
+        // No tables before cursor
+        assert_eq!(context.tables.len(), 0);
+        // Two tables after cursor (users and orders)
+        assert_eq!(context.future_tables.len(), 2);
+        assert_eq!(context.future_tables[0].table, "users");
+        assert_eq!(context.future_tables[0].alias, Some("u".to_string()));
+        assert_eq!(context.future_tables[1].table, "orders");
+        assert_eq!(context.future_tables[1].alias, Some("o".to_string()));
     }
 }

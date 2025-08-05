@@ -711,8 +711,11 @@ impl CliCore {
             self.config.multiline_prompt_indicator.clone(),
         );
 
+        // Create shared state for full line buffer access
+        let full_line_buffer = Arc::new(Mutex::new(None::<String>));
+
         // Create highlighter for SQL syntax
-        let highlighter = SqlHighlighter::new();
+        let highlighter = SqlHighlighter::new(full_line_buffer.clone());
 
         // Set up reedline components exactly as in the working version
         use reedline::{
@@ -784,7 +787,11 @@ impl CliCore {
 
         // Create completer and editor with full configuration
         let completer = if self.config.autocomplete_enabled {
-            Box::new(SqlCompleter::new(db_arc.clone(), config_arc.clone())) as Box<dyn reedline::Completer>
+            Box::new(SqlCompleter::new_with_line_buffer(
+                db_arc.clone(), 
+                config_arc.clone(),
+                full_line_buffer.clone()
+            )) as Box<dyn reedline::Completer>
         } else {
             Box::new(NoopCompleter {}) as Box<dyn reedline::Completer>
         };
