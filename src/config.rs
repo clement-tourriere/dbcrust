@@ -1,6 +1,5 @@
 use crate::database::{DatabaseType, DatabaseTypeExt};
 use chrono::{DateTime, Utc};
-use clap::ValueEnum;
 use dirs::home_dir;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -11,19 +10,6 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::debug;
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, ValueEnum)]
-pub enum VerbosityLevel {
-    Quiet,   // Only essential info and SSH tunnels
-    Normal,  // Default - minimal connection info
-    Verbose, // Current behavior - all connection steps
-}
-
-impl Default for VerbosityLevel {
-    fn default() -> Self {
-        VerbosityLevel::Normal
-    }
-}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SSHTunnelConfig {
@@ -241,9 +227,6 @@ pub struct Config {
     #[serde(default = "default_show_banner")]
     pub show_banner: bool,
 
-    #[serde(default = "default_verbosity_level")]
-    pub verbosity_level: VerbosityLevel,
-
     #[serde(default = "default_multiline_prompt_indicator")]
     pub multiline_prompt_indicator: String,
 
@@ -292,7 +275,6 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             history: HistoryConfig::default(),
             show_banner: default_show_banner(),
-            verbosity_level: default_verbosity_level(),
             multiline_prompt_indicator: default_multiline_prompt_indicator(),
             vault_credential_cache_enabled: default_vault_cache_enabled(),
             vault_cache_renewal_threshold: default_vault_renewal_threshold(),
@@ -415,10 +397,6 @@ fn default_show_banner() -> bool {
     false
 }
 
-fn default_verbosity_level() -> VerbosityLevel {
-    VerbosityLevel::Normal
-}
-
 fn default_multiline_prompt_indicator() -> String {
     String::new() // Empty string by default (no indicator)
 }
@@ -459,34 +437,11 @@ fn default_database_type() -> DatabaseType {
     DatabaseType::PostgreSQL
 }
 
-// Global verbosity override for command-line arguments
-static VERBOSITY_OVERRIDE: std::sync::OnceLock<std::sync::Mutex<Option<VerbosityLevel>>> =
-    std::sync::OnceLock::new();
-
 // Global config loading lock to prevent simultaneous config loads during error recovery
 static CONFIG_LOADING_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 // Global config saving lock to prevent recursive config saves during error recovery
 static CONFIG_SAVING_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-
-/// Set a global verbosity override that will be used instead of the config file setting
-pub fn set_global_verbosity_override(level: Option<VerbosityLevel>) {
-    if let Ok(mut override_val) = VERBOSITY_OVERRIDE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-    {
-        *override_val = level;
-    }
-}
-
-/// Get the current verbosity override, if any
-pub fn get_global_verbosity_override() -> Option<VerbosityLevel> {
-    VERBOSITY_OVERRIDE
-        .get_or_init(|| std::sync::Mutex::new(None))
-        .lock()
-        .ok()
-        .and_then(|val| *val)
-}
 
 impl Config {
     /// Get the configuration directory path - single source of truth for all config files
@@ -814,11 +769,6 @@ impl Config {
             config.saved_sessions_storage = Self::load_saved_sessions();
             config.vault_credential_storage = Self::load_vault_credentials();
 
-            // Apply global verbosity override if set
-            if let Some(override_level) = get_global_verbosity_override() {
-                config.verbosity_level = override_level;
-            }
-
             return config;
         }
 
@@ -849,11 +799,6 @@ impl Config {
             config.recent_connections_storage = Self::load_recent_connections();
             config.saved_sessions_storage = Self::load_saved_sessions();
             config.vault_credential_storage = Self::load_vault_credentials();
-
-            // Apply global verbosity override if set
-            if let Some(override_level) = get_global_verbosity_override() {
-                config.verbosity_level = override_level;
-            }
 
             return config;
         }
@@ -898,11 +843,6 @@ impl Config {
                             config.recent_connections_storage = Self::load_recent_connections();
                             config.saved_sessions_storage = Self::load_saved_sessions();
                             config.vault_credential_storage = Self::load_vault_credentials();
-
-                            // Apply global verbosity override if set
-                            if let Some(override_level) = get_global_verbosity_override() {
-                                config.verbosity_level = override_level;
-                            }
 
                             // Check if config file is missing any fields and upgrade if needed
                             if !config.has_all_fields(&content) {
@@ -1001,10 +941,6 @@ impl Config {
                                     config.vault_credential_storage =
                                         Self::load_vault_credentials();
 
-                                    if let Some(override_level) = get_global_verbosity_override() {
-                                        config.verbosity_level = override_level;
-                                    }
-
                                     return config;
                                 }
 
@@ -1012,11 +948,6 @@ impl Config {
                                 config.recent_connections_storage = Self::load_recent_connections();
                                 config.saved_sessions_storage = Self::load_saved_sessions();
                                 config.vault_credential_storage = Self::load_vault_credentials();
-
-                                // Apply global verbosity override if set
-                                if let Some(override_level) = get_global_verbosity_override() {
-                                    config.verbosity_level = override_level;
-                                }
 
                                 // Retry loading the freshly created config
                                 eprintln!("Retrying config load after creating fresh config...");
@@ -1036,10 +967,6 @@ impl Config {
                                 config.saved_sessions_storage = Self::load_saved_sessions();
                                 config.vault_credential_storage = Self::load_vault_credentials();
 
-                                if let Some(override_level) = get_global_verbosity_override() {
-                                    config.verbosity_level = override_level;
-                                }
-
                                 config
                             }
                         }
@@ -1051,11 +978,6 @@ impl Config {
                     config.recent_connections_storage = Self::load_recent_connections();
                     config.saved_sessions_storage = Self::load_saved_sessions();
                     config.vault_credential_storage = Self::load_vault_credentials();
-
-                    // Apply global verbosity override if set
-                    if let Some(override_level) = get_global_verbosity_override() {
-                        config.verbosity_level = override_level;
-                    }
 
                     // Create the config file with comprehensive documentation
                     if let Err(e) = config.save_with_documentation() {
@@ -1072,11 +994,6 @@ impl Config {
             config.recent_connections_storage = Self::load_recent_connections();
             config.saved_sessions_storage = Self::load_saved_sessions();
             config.vault_credential_storage = Self::load_vault_credentials();
-
-            // Apply global verbosity override if set
-            if let Some(override_level) = get_global_verbosity_override() {
-                config.verbosity_level = override_level;
-            }
 
             config
         }
@@ -1152,14 +1069,6 @@ impl Config {
 
             content.push_str(&format!("# Show banner on startup (default: false)\n"));
             content.push_str(&format!("show_banner = {}\n\n", self.show_banner));
-
-            content.push_str(&format!(
-                "# Verbosity level: \"Quiet\", \"Normal\", or \"Verbose\" (default: Normal)\n"
-            ));
-            content.push_str(&format!(
-                "verbosity_level = \"{:?}\"\n\n",
-                self.verbosity_level
-            ));
 
             content.push_str(&format!(
                 "# Indicator for multiline prompts (default: empty)\n"
@@ -1413,7 +1322,6 @@ impl Config {
             "pager_command",
             "pager_threshold_lines",
             "show_banner",
-            "verbosity_level",
             "multiline_prompt_indicator",
             "vault_credential_cache_enabled",
             "vault_cache_renewal_threshold",

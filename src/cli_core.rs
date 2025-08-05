@@ -1,7 +1,7 @@
 use crate::cli::Args;
 use crate::commands::{CommandExecutor, CommandParser, CommandResult};
 use crate::completion::{NoopCompleter, SqlCompleter};
-use crate::config::{set_global_verbosity_override, Config as DbCrustConfig, VerbosityLevel};
+use crate::config::Config as DbCrustConfig;
 use crate::database::{ConnectionInfo, DatabaseTypeExt};
 use crate::db::Database;
 use crate::format::{format_query_results_expanded, format_query_results_psql_with_info};
@@ -187,20 +187,6 @@ impl CliCore {
             cli_core.config = temp_config;
         }
 
-        // Override verbosity level if provided via command line
-        if let Some(verbosity_str) = &args.verbosity {
-            let verbosity = match verbosity_str.to_lowercase().as_str() {
-                "quiet" => VerbosityLevel::Quiet,
-                "normal" => VerbosityLevel::Normal,
-                "verbose" => VerbosityLevel::Verbose,
-                _ => {
-                    eprintln!("Invalid verbosity level '{}', using normal", verbosity_str);
-                    VerbosityLevel::Normal
-                }
-            };
-            cli_core.config.verbosity_level = verbosity;
-            set_global_verbosity_override(Some(verbosity));
-        }
 
         // Check if commands can be handled without database connection first
         if !args.command.is_empty()
@@ -552,13 +538,8 @@ impl CliCore {
         self.database = Some(database);
         self.connection_info = connection_info;
 
-        // Show success message based on verbosity level
-        match self.config.verbosity_level {
-            VerbosityLevel::Quiet => {} // No success message in quiet mode
-            VerbosityLevel::Normal | VerbosityLevel::Verbose => {
-                println!("✓ Successfully connected to database");
-            }
-        }
+        // Show success message
+        println!("✓ Successfully connected to database");
         Ok(())
     }
 
