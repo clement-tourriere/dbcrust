@@ -415,7 +415,7 @@ impl SqlCompleter {
                 keywords.extend(operators);
                 keywords
             },
-            SqlClause::Join => vec!["ON", "USING"],
+            SqlClause::Join => vec!["ON", "USING", "WHERE", "GROUP", "ORDER", "LIMIT", "HAVING"],
             SqlClause::On => {
                 let mut keywords = vec!["AND", "OR"];
                 let operators = parser.get_keywords_by_category(KeywordCategory::Operators);
@@ -493,7 +493,7 @@ impl SqlCompleter {
                                         value: format!("{}.{}", table_prefix, column),
                                         description: Some(format!("Column from {}", table_ref.table)),
                                         span: Span { start: word_start, end: pos },
-                                        append_whitespace: true,
+                                        append_whitespace: false,
                                         extra: None,
                                         style: Some(Style::new().fg(Color::Cyan)),
                                     });
@@ -522,7 +522,7 @@ impl SqlCompleter {
                                 value: column,
                                 description: Some(desc),
                                 span: Span { start: word_start, end: pos },
-                                append_whitespace: true,
+                                append_whitespace: false,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Cyan)),
                             });
@@ -635,7 +635,7 @@ impl SqlCompleter {
                                             value: format!("{}.{}", table_prefix, column),
                                             description: Some(format!("Column from {} (forward-looking)", table_ref.table)),
                                             span: Span { start: word_start, end: pos },
-                                            append_whitespace: true,
+                                            append_whitespace: false,
                                             extra: None,
                                             style: Some(Style::new().fg(Color::Cyan)),
                                         });
@@ -663,7 +663,7 @@ impl SqlCompleter {
                                     value: column,
                                     description: Some(desc),
                                     span: Span { start: word_start, end: pos },
-                                    append_whitespace: true,
+                                    append_whitespace: false,
                                     extra: None,
                                     style: Some(Style::new().fg(Color::Cyan)),
                                 });
@@ -700,6 +700,29 @@ impl SqlCompleter {
                     }
                 } else {
                     debug!("[SqlCompleter] ✅ Columns were added, skipping SQL keywords to prioritize column completion");
+                }
+            }
+            SqlClause::Join | SqlClause::On => {
+                // In JOIN or ON clauses, add both join-specific keywords AND clause transition keywords
+                debug!("[SqlCompleter] JOIN/ON clause: adding join keywords AND clause transition keywords");
+                let join_keywords = vec![
+                    // Join-specific keywords
+                    "ON", "USING", "AND", "OR", 
+                    // Clause transition keywords (the missing piece!)
+                    "WHERE", "GROUP", "ORDER", "LIMIT", "HAVING", "UNION", "INTERSECT", "EXCEPT"
+                ];
+                
+                for keyword in join_keywords {
+                    if keyword.to_lowercase().starts_with(&lower_word) {
+                        suggestions.push(Suggestion {
+                            value: keyword.to_string(),
+                            description: Some("SQL Keyword".to_string()),
+                            span: Span { start: word_start, end: pos },
+                            append_whitespace: true,
+                            extra: None,
+                            style: Some(Style::new().fg(Color::Blue)),
+                        });
+                    }
                 }
             }
             _ => {
@@ -778,7 +801,7 @@ impl SqlCompleter {
                                                 value: format!("{}.{}", table_prefix, column),
                                                 description: Some(format!("Column from {}", table_ref.table)),
                                                 span: Span { start: word_start, end: pos },
-                                                append_whitespace: true,
+                                                append_whitespace: false,
                                                 extra: None,
                                                 style: Some(Style::new().fg(Color::Cyan)),
                                             });
@@ -811,7 +834,7 @@ impl SqlCompleter {
                                         value: column,
                                         description: Some(desc),
                                         span: Span { start: word_start, end: pos },
-                                        append_whitespace: true,
+                                        append_whitespace: false,
                                         extra: None,
                                         style: Some(Style::new().fg(Color::Cyan)),
                                     });
