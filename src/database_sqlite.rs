@@ -554,6 +554,17 @@ impl DatabaseClient for SqliteClient {
         Ok(results)
     }
 
+    async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
+        debug!("[SqliteClient::test_query] Testing query for validation");
+        // For SQLite, we can use EXPLAIN QUERY PLAN to validate query syntax without executing it
+        let explain_sql = format!("EXPLAIN QUERY PLAN {}", sql);
+        
+        match sqlx::query(&explain_sql).fetch_all(&self.pool).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(DatabaseError::QueryError(format!("Query validation failed: {}", e))),
+        }
+    }
+
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[SqliteClient::explain_query] Executing EXPLAIN QUERY PLAN for query");
         

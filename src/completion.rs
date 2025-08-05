@@ -337,6 +337,88 @@ impl SqlCompleter {
     }
 
 
+    /// Complete \ns command with complex syntax: \ns query_name SQL_QUERY [--flags]
+    fn complete_ns_command(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        debug!("Completing \\ns command: '{}', pos: {}", line, pos);
+        
+        // Parse the \ns command structure
+        let content = &line[4..]; // Remove "\ns "
+        let parts: Vec<&str> = content.split_whitespace().collect();
+        
+        if parts.is_empty() || (parts.len() == 1 && pos <= 4 + parts[0].len()) {
+            // Completing query name (first argument)
+            debug!("Completing query name for \\ns");
+            return self.complete_backslash_commands(line, pos);
+        }
+        
+        // Find the position ranges for different parts
+        let query_name_end = if let Some(first_space) = content.find(' ') {
+            4 + first_space // \ns + space + query_name + space
+        } else {
+            line.len()
+        };
+        
+        // Check if we're completing flags (position after --)
+        let mut flag_start_pos = None;
+        let mut in_flags = false;
+        
+        // Look for flag patterns in the line
+        for (i, part) in parts.iter().enumerate().skip(1) { // Skip query name
+            if part.starts_with("--") {
+                // Calculate the position of this flag in the original line
+                let parts_before: String = parts[..i].join(" ");
+                flag_start_pos = Some(4 + parts_before.len() + 1); // \ns + space + parts before + space
+                
+                // Check if cursor is in the flag area
+                let flag_area_start = flag_start_pos.unwrap();
+                if pos >= flag_area_start {
+                    in_flags = true;
+                    break;
+                }
+            }
+        }
+        
+        if in_flags {
+            // Completing flags - delegate to CommandCompletionManager
+            debug!("Completing flags for \\ns command");
+            return self.complete_backslash_commands(line, pos);
+        }
+        
+        // We're in the SQL portion - extract it and use SQL completion
+        let sql_start = query_name_end + 1; // After query name and space
+        
+        if pos <= sql_start {
+            // Still in the transition area, no completion
+            return Vec::new();
+        }
+        
+        // Find where SQL ends (before flags, if any)
+        let sql_end = if let Some(flag_pos) = flag_start_pos {
+            // SQL ends before the first flag
+            flag_pos - 1 // Before the space before the flag
+        } else {
+            // No flags, SQL goes to end of line
+            line.len()
+        };
+        
+        if pos > sql_end {
+            // Past the SQL area, no completion
+            return Vec::new();
+        }
+        
+        // Extract SQL portion and delegate to SQL completion
+        let sql_part = &line[sql_start..sql_end];
+        let sql_pos = pos - sql_start;
+        
+        debug!("\\ns SQL completion: SQL='{}', sql_pos={}", sql_part, sql_pos);
+        
+        // Use the existing SQL completion logic
+        let sql_suggestions = self.complete_sql_query(sql_part, sql_pos, sql_start);
+        debug!("\\ns SQL completion returned {} suggestions", sql_suggestions.len());
+        
+        sql_suggestions
+    }
+
     /// Complete backslash commands using the new trait-based system
     fn complete_backslash_commands(&self, line: &str, pos: usize) -> Vec<Suggestion> {
         // Parse the command line to determine if we're completing command name or arguments
@@ -1114,7 +1196,7 @@ impl SqlCompleter {
             }
             
             if line.starts_with("\\n ") && pos > 2 {
-                // Complete named query names
+                // Complete named query names using scoped system
                 let word_start = 3; // After "\n "
                 let current_word = if pos > word_start {
                     &line[word_start..pos]
@@ -1122,14 +1204,43 @@ impl SqlCompleter {
                     ""
                 };
                 
-                // Get named queries from config
+                // Get current database context for scoped queries
+                let (current_database_type, current_session_id) = {
+                    let db = self.database.lock().unwrap();
+                    let db_type = db.get_connection_info().map(|info| info.database_type.clone());
+                    let session_id = if let Some(info) = db.get_connection_info() {
+                        Some(crate::history_manager::SessionId::from_connection_info(info).identifier)
+                    } else {
+                        None
+                    };
+                    (db_type, session_id)
+                };
+                
+                // Get scoped named queries from config
                 let config = self.config.lock().unwrap();
+                let available_queries = config.list_available_named_queries(
+                    current_database_type.as_ref(), 
+                    current_session_id.as_deref()
+                );
+                
                 let mut suggestions = Vec::new();
-                for (query_name, _query) in &config.named_queries {
+                for (query_name, _query_sql, scope) in available_queries {
                     if query_name.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                        let scope_str = match scope {
+                            crate::config::NamedQueryScope::Global => "[global]",
+                            crate::config::NamedQueryScope::DatabaseType(ref db_type) => {
+                                match db_type {
+                                    crate::database::DatabaseType::PostgreSQL => "[postgres]",
+                                    crate::database::DatabaseType::MySQL => "[mysql]", 
+                                    crate::database::DatabaseType::SQLite => "[sqlite]",
+                                }
+                            },
+                            crate::config::NamedQueryScope::Session(_) => "[session]",
+                        };
+                        
                         suggestions.push(Suggestion {
                             value: query_name.clone(),
-                            description: Some("Execute named query".to_string()),
+                            description: Some(format!("Execute named query {}", scope_str)),
                             span: Span { start: word_start, end: pos },
                             append_whitespace: true,
                             extra: None,
@@ -1141,7 +1252,7 @@ impl SqlCompleter {
             }
             
             if line.starts_with("\\nd ") && pos > 3 {
-                // Complete named query names for deletion
+                // Complete named query names for deletion using scoped system
                 let word_start = 4; // After "\nd "
                 let current_word = if pos > word_start {
                     &line[word_start..pos]
@@ -1149,14 +1260,43 @@ impl SqlCompleter {
                     ""
                 };
                 
-                // Get named queries from config
+                // Get current database context for scoped queries
+                let (current_database_type, current_session_id) = {
+                    let db = self.database.lock().unwrap();
+                    let db_type = db.get_connection_info().map(|info| info.database_type.clone());
+                    let session_id = if let Some(info) = db.get_connection_info() {
+                        Some(crate::history_manager::SessionId::from_connection_info(info).identifier)
+                    } else {
+                        None
+                    };
+                    (db_type, session_id)
+                };
+                
+                // Get scoped named queries from config
                 let config = self.config.lock().unwrap();
+                let available_queries = config.list_available_named_queries(
+                    current_database_type.as_ref(), 
+                    current_session_id.as_deref()
+                );
+                
                 let mut suggestions = Vec::new();
-                for (query_name, _query) in &config.named_queries {
+                for (query_name, _query_sql, scope) in available_queries {
                     if query_name.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                        let scope_str = match scope {
+                            crate::config::NamedQueryScope::Global => "[global]",
+                            crate::config::NamedQueryScope::DatabaseType(ref db_type) => {
+                                match db_type {
+                                    crate::database::DatabaseType::PostgreSQL => "[postgres]",
+                                    crate::database::DatabaseType::MySQL => "[mysql]", 
+                                    crate::database::DatabaseType::SQLite => "[sqlite]",
+                                }
+                            },
+                            crate::config::NamedQueryScope::Session(_) => "[session]",
+                        };
+                        
                         suggestions.push(Suggestion {
                             value: query_name.clone(),
-                            description: Some("Delete named query".to_string()),
+                            description: Some(format!("Delete named query {}", scope_str)),
                             span: Span { start: word_start, end: pos },
                             append_whitespace: true,
                             extra: None,
@@ -1165,6 +1305,11 @@ impl SqlCompleter {
                     }
                 }
                 return suggestions;
+            }
+            
+            // Handle \ns command with complex syntax: \ns query_name SQL_QUERY [--flags]
+            if line.starts_with("\\ns ") && pos > 4 {
+                return self.complete_ns_command(line, pos);
             }
             
             // Handle SQL-based commands (\ef, \er, \ex) by redirecting to SQL completion

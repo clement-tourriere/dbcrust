@@ -106,6 +106,142 @@ pub struct SavedSession {
     pub options: HashMap<String, String>,
 }
 
+/// Scope for named queries
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum NamedQueryScope {
+    Global,
+    DatabaseType(DatabaseType),
+    Session(String), // session identifier from SessionId
+}
+
+/// A named query with scope and metadata
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct NamedQuery {
+    pub query: String,
+    pub scope: NamedQueryScope,
+    pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Named queries storage - stored in a separate file
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct NamedQueriesStorage {
+    #[serde(default)]
+    pub queries: HashMap<String, NamedQuery>,
+}
+
+impl NamedQueriesStorage {
+    /// Generate a unique key for a named query based on name and scope
+    pub fn generate_key(name: &str, scope: &NamedQueryScope) -> String {
+        match scope {
+            NamedQueryScope::Global => format!("global::{}", name),
+            NamedQueryScope::DatabaseType(db_type) => {
+                format!("{}::{}", db_type.to_string().to_lowercase(), name)
+            }
+            NamedQueryScope::Session(session_id) => format!("session::{}::{}", session_id, name),
+        }
+    }
+
+    /// Insert a named query with proper scoped key
+    pub fn insert(&mut self, name: &str, query: NamedQuery) {
+        let key = Self::generate_key(name, &query.scope);
+        self.queries.insert(key, query);
+    }
+
+    /// Get a named query by name and scope
+    pub fn get(&self, name: &str, scope: &NamedQueryScope) -> Option<&NamedQuery> {
+        let key = Self::generate_key(name, scope);
+        self.queries.get(&key)
+    }
+
+    /// Remove a named query by name and scope
+    pub fn remove(&mut self, name: &str, scope: &NamedQueryScope) -> Option<NamedQuery> {
+        let key = Self::generate_key(name, scope);
+        self.queries.remove(&key)
+    }
+
+    /// Get all queries that match the given criteria
+    pub fn get_available_queries(
+        &self,
+        current_database_type: Option<&DatabaseType>,
+        current_session_id: Option<&str>,
+    ) -> Vec<(String, &NamedQuery)> {
+        self.queries
+            .iter()
+            .filter_map(|(key, query)| {
+                let is_available = match &query.scope {
+                    NamedQueryScope::Global => true,
+                    NamedQueryScope::DatabaseType(db_type) => current_database_type
+                        .map(|current| current == db_type)
+                        .unwrap_or(false),
+                    NamedQueryScope::Session(session_id) => current_session_id
+                        .map(|current| current == session_id)
+                        .unwrap_or(false),
+                };
+
+                if is_available {
+                    // Extract the actual name from the key
+                    let name = match &query.scope {
+                        NamedQueryScope::Global => key.strip_prefix("global::").unwrap_or(key),
+                        NamedQueryScope::DatabaseType(_) => {
+                            if let Some(pos) = key.find("::") {
+                                &key[pos + 2..]
+                            } else {
+                                key
+                            }
+                        }
+                        NamedQueryScope::Session(_) => {
+                            // Format: "session::{session_id}::{name}"
+                            if let Some(pos) = key.rfind("::") {
+                                &key[pos + 2..]
+                            } else {
+                                key
+                            }
+                        }
+                    };
+                    Some((name.to_string(), query))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Find a query by name, trying different scopes in priority order
+    pub fn find_by_name(
+        &self,
+        name: &str,
+        current_database_type: Option<&DatabaseType>,
+        current_session_id: Option<&str>,
+    ) -> Option<&NamedQuery> {
+        // Try session scope first (most specific)
+        if let Some(session_id) = current_session_id {
+            let session_scope = NamedQueryScope::Session(session_id.to_string());
+            if let Some(query) = self.get(name, &session_scope) {
+                return Some(query);
+            }
+        }
+
+        // Try database type scope
+        if let Some(db_type) = current_database_type {
+            let db_scope = NamedQueryScope::DatabaseType(db_type.clone());
+            if let Some(query) = self.get(name, &db_scope) {
+                return Some(query);
+            }
+        }
+
+        // Try global scope last
+        let global_scope = NamedQueryScope::Global;
+        self.get(name, &global_scope)
+    }
+
+    /// Delete a query by name and scope, returns true if query existed
+    pub fn delete_by_name_and_scope(&mut self, name: &str, scope: &NamedQueryScope) -> bool {
+        self.remove(name, scope).is_some()
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum LogLevel {
     #[serde(rename = "trace")]
@@ -204,6 +340,8 @@ pub struct Config {
     pub column_selection_threshold: usize,
     #[serde(default = "default_column_selection_default_all")]
     pub column_selection_default_all: bool,
+    #[serde(default = "default_test_named_query_before_saving")]
+    pub test_named_query_before_saving: bool,
     #[serde(default)]
     pub named_queries: HashMap<String, String>,
     #[serde(default)]
@@ -255,6 +393,9 @@ pub struct Config {
     // Vault credentials - not serialized with main config, stored separately in encrypted file
     #[serde(skip)]
     vault_credential_storage: VaultCredentialStorage,
+    // Named queries - not serialized with main config, stored separately
+    #[serde(skip)]
+    named_queries_storage: NamedQueriesStorage,
 }
 
 impl Default for Config {
@@ -266,6 +407,7 @@ impl Default for Config {
             explain_mode_default: false,
             column_selection_threshold: default_column_selection_threshold(),
             column_selection_default_all: default_column_selection_default_all(),
+            test_named_query_before_saving: default_test_named_query_before_saving(),
             named_queries: HashMap::new(),
             ssh_tunnel_patterns: HashMap::new(),
             max_recent_connections: default_max_recent_connections(),
@@ -323,6 +465,19 @@ impl Default for Config {
                     Self::load_vault_credentials()
                 }
             },
+            named_queries_storage: {
+                // For tests, use empty storage to avoid loading user data
+                let is_test = std::env::var("RUST_TEST_MODE").is_ok()
+                    || std::thread::current()
+                        .name()
+                        .map(|name| name.contains("test"))
+                        .unwrap_or(false);
+                if is_test {
+                    NamedQueriesStorage::default()
+                } else {
+                    Self::load_named_queries()
+                }
+            },
         }
     }
 }
@@ -349,6 +504,9 @@ fn default_column_selection_threshold() -> usize {
 
 fn default_column_selection_default_all() -> bool {
     false // Default to no columns pre-selected (opt-in behavior)
+}
+fn default_test_named_query_before_saving() -> bool {
+    true // Default to testing queries before saving
 }
 
 fn default_max_recent_connections() -> usize {
@@ -495,6 +653,10 @@ impl Config {
     /// Get the path to the vault credentials file (encrypted)
     pub fn get_vault_credentials_path() -> Result<PathBuf, Box<dyn Error>> {
         Ok(Self::get_config_directory()?.join("vault_credentials.enc"))
+    }
+    /// Get the path to the named queries file
+    pub fn get_named_queries_path() -> Result<PathBuf, Box<dyn Error>> {
+        Ok(Self::get_config_directory()?.join("named_queries.toml"))
     }
 
     /// Load recent connections from separate file
@@ -768,6 +930,7 @@ impl Config {
             config.recent_connections_storage = Self::load_recent_connections();
             config.saved_sessions_storage = Self::load_saved_sessions();
             config.vault_credential_storage = Self::load_vault_credentials();
+            config.named_queries_storage = Self::load_named_queries();
 
             return config;
         }
@@ -799,6 +962,7 @@ impl Config {
             config.recent_connections_storage = Self::load_recent_connections();
             config.saved_sessions_storage = Self::load_saved_sessions();
             config.vault_credential_storage = Self::load_vault_credentials();
+            config.named_queries_storage = Self::load_named_queries();
 
             return config;
         }
@@ -843,6 +1007,7 @@ impl Config {
                             config.recent_connections_storage = Self::load_recent_connections();
                             config.saved_sessions_storage = Self::load_saved_sessions();
                             config.vault_credential_storage = Self::load_vault_credentials();
+                            config.named_queries_storage = Self::load_named_queries();
 
                             // Check if config file is missing any fields and upgrade if needed
                             if !config.has_all_fields(&content) {
@@ -940,6 +1105,7 @@ impl Config {
                                     config.saved_sessions_storage = Self::load_saved_sessions();
                                     config.vault_credential_storage =
                                         Self::load_vault_credentials();
+                                    config.named_queries_storage = Self::load_named_queries();
 
                                     return config;
                                 }
@@ -948,6 +1114,7 @@ impl Config {
                                 config.recent_connections_storage = Self::load_recent_connections();
                                 config.saved_sessions_storage = Self::load_saved_sessions();
                                 config.vault_credential_storage = Self::load_vault_credentials();
+                                config.named_queries_storage = Self::load_named_queries();
 
                                 // Retry loading the freshly created config
                                 eprintln!("Retrying config load after creating fresh config...");
@@ -966,6 +1133,7 @@ impl Config {
                                 config.recent_connections_storage = Self::load_recent_connections();
                                 config.saved_sessions_storage = Self::load_saved_sessions();
                                 config.vault_credential_storage = Self::load_vault_credentials();
+                                config.named_queries_storage = Self::load_named_queries();
 
                                 config
                             }
@@ -978,6 +1146,7 @@ impl Config {
                     config.recent_connections_storage = Self::load_recent_connections();
                     config.saved_sessions_storage = Self::load_saved_sessions();
                     config.vault_credential_storage = Self::load_vault_credentials();
+                    config.named_queries_storage = Self::load_named_queries();
 
                     // Create the config file with comprehensive documentation
                     if let Err(e) = config.save_with_documentation() {
@@ -994,6 +1163,7 @@ impl Config {
             config.recent_connections_storage = Self::load_recent_connections();
             config.saved_sessions_storage = Self::load_saved_sessions();
             config.vault_credential_storage = Self::load_vault_credentials();
+            config.named_queries_storage = Self::load_named_queries();
 
             config
         }
@@ -1093,6 +1263,17 @@ impl Config {
             content.push_str(&format!(
                 "column_selection_default_all = {}\n\n",
                 self.column_selection_default_all
+            ));
+
+            content.push_str(&format!(
+                "# Test named queries before saving them (default: true)\n"
+            ));
+            content.push_str(&format!(
+                "# When enabled, queries are validated by running EXPLAIN before saving\n"
+            ));
+            content.push_str(&format!(
+                "test_named_query_before_saving = {}\n\n",
+                self.test_named_query_before_saving
             ));
 
             // Pager Settings
@@ -1288,20 +1469,6 @@ impl Config {
                 self.history.cleanup_after_days
             ));
 
-            // Named Queries
-            if !self.named_queries.is_empty() {
-                content.push_str("# ================================================================================\n");
-                content.push_str("# NAMED QUERIES\n");
-                content.push_str("# Save frequently used queries with memorable names\n");
-                content.push_str("# Use \\nq <name> to execute, \\nq to list all\n");
-                content.push_str("# ================================================================================\n\n");
-                content.push_str("[named_queries]\n");
-                for (name, query) in &self.named_queries {
-                    content.push_str(&format!("{} = \"{}\"\n", name, query.replace('"', "\\\"")));
-                }
-                content.push_str("\n");
-            }
-
             let mut file = File::create(&config_path)?;
             file.write_all(content.as_bytes())?;
         }
@@ -1350,6 +1517,25 @@ impl Config {
         Ok(())
     }
 
+    /// Add a named query with scope support (new API)
+    pub fn add_named_query_with_scope(
+        &mut self,
+        name: &str,
+        query: &str,
+        scope: NamedQueryScope,
+    ) -> Result<(), Box<dyn Error>> {
+        let named_query = NamedQuery {
+            query: query.to_string(),
+            scope,
+            created_at: chrono::Utc::now(),
+            description: None,
+        };
+
+        self.named_queries_storage.insert(name, named_query);
+        self.save_named_queries()?;
+        Ok(())
+    }
+
     pub fn delete_named_query(&mut self, name: &str) -> Result<bool, Box<dyn Error>> {
         let existed = self.named_queries.remove(name).is_some();
         if existed {
@@ -1358,14 +1544,98 @@ impl Config {
         Ok(existed)
     }
 
+    /// Delete a named query from the new storage (new API)
+    pub fn delete_named_query_with_scope(
+        &mut self,
+        name: &str,
+        scope: &NamedQueryScope,
+    ) -> Result<bool, Box<dyn Error>> {
+        let existed = self
+            .named_queries_storage
+            .delete_by_name_and_scope(name, scope);
+        if existed {
+            self.save_named_queries()?;
+        }
+        Ok(existed)
+    }
+
     pub fn get_named_query(&self, name: &str) -> Option<&String> {
         self.named_queries.get(name)
+    }
+
+    /// Get a named query from the new storage (new API)
+    pub fn get_named_query_with_scope(&self, name: &str) -> Option<&NamedQuery> {
+        self.named_queries_storage.queries.get(name)
+    }
+
+    /// Get a named query that's available in the current context
+    pub fn get_available_named_query(
+        &self,
+        name: &str,
+        current_database_type: Option<&DatabaseType>,
+        current_session_id: Option<&str>,
+    ) -> Option<&NamedQuery> {
+        self.named_queries_storage
+            .find_by_name(name, current_database_type, current_session_id)
     }
 
     pub fn list_named_queries(&self) -> Vec<(String, String)> {
         self.named_queries
             .iter()
             .map(|(name, query)| (name.clone(), query.clone()))
+            .collect()
+    }
+
+    /// List all named queries with scope information (new API)
+    pub fn list_named_queries_with_scope(&self) -> Vec<(String, String, NamedQueryScope)> {
+        self.named_queries_storage
+            .queries
+            .iter()
+            .map(|(name, query)| (name.clone(), query.query.clone(), query.scope.clone()))
+            .collect()
+    }
+
+    /// List named queries available in current context (filtered by scope)
+    pub fn list_available_named_queries(
+        &self,
+        current_database_type: Option<&DatabaseType>,
+        current_session_id: Option<&str>,
+    ) -> Vec<(String, String, NamedQueryScope)> {
+        self.named_queries_storage
+            .get_available_queries(current_database_type, current_session_id)
+            .into_iter()
+            .map(|(name, query)| (name, query.query.clone(), query.scope.clone()))
+            .collect()
+    }
+
+    /// Get available named query names only (for autocomplete)
+    pub fn get_available_named_queries(&self) -> Vec<(String, String)> {
+        // For autocomplete, we don't have access to current context, so return all
+        self.named_queries_storage
+            .queries
+            .iter()
+            .map(|(key, query)| {
+                // Extract the actual name from the key
+                let name = match &query.scope {
+                    NamedQueryScope::Global => key.strip_prefix("global::").unwrap_or(key),
+                    NamedQueryScope::DatabaseType(_) => {
+                        if let Some(pos) = key.find("::") {
+                            &key[pos + 2..]
+                        } else {
+                            key
+                        }
+                    }
+                    NamedQueryScope::Session(_) => {
+                        // Format: "session::{session_id}::{name}"
+                        if let Some(pos) = key.rfind("::") {
+                            &key[pos + 2..]
+                        } else {
+                            key
+                        }
+                    }
+                };
+                (name.to_string(), query.query.clone())
+            })
             .collect()
     }
 
@@ -1947,6 +2217,43 @@ impl Config {
         self.save_vault_credentials()
     }
 
+    /// Load named queries from separate file
+    fn load_named_queries() -> NamedQueriesStorage {
+        match Self::get_named_queries_path() {
+            Ok(path) => {
+                if path.exists() {
+                    match fs::read_to_string(&path) {
+                        Ok(content) => match toml::from_str(&content) {
+                            Ok(storage) => storage,
+                            Err(e) => {
+                                eprintln!("Error parsing named queries file: {e}");
+                                NamedQueriesStorage::default()
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error reading named queries file: {e}");
+                            NamedQueriesStorage::default()
+                        }
+                    }
+                } else {
+                    NamedQueriesStorage::default()
+                }
+            }
+            Err(e) => {
+                eprintln!("Error getting named queries path: {e}");
+                NamedQueriesStorage::default()
+            }
+        }
+    }
+
+    /// Save named queries to separate file
+    fn save_named_queries(&self) -> Result<(), Box<dyn Error>> {
+        let path = Self::get_named_queries_path()?;
+        let content = toml::to_string_pretty(&self.named_queries_storage)?;
+        fs::write(path, content)?;
+        Ok(())
+    }
+
     /// Get all cached vault credentials (for display/debugging)
     pub fn list_cached_vault_credentials(&self) -> Vec<(String, &CachedVaultCredentials)> {
         self.vault_credential_storage
@@ -1959,6 +2266,11 @@ impl Config {
     /// Force refresh vault credentials storage from file
     pub fn reload_vault_credentials(&mut self) {
         self.vault_credential_storage = Self::load_vault_credentials();
+    }
+
+    /// Reload named queries from file (for development/testing)
+    pub fn reload_named_queries(&mut self) {
+        self.named_queries_storage = Self::load_named_queries();
     }
 }
 

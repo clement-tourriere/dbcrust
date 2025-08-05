@@ -9,6 +9,7 @@ DBCrust stores its configuration in a TOML file located at `~/.config/dbcrust/co
 ~/.config/dbcrust/
 ├── config.toml             # Main configuration file
 ├── recent.toml             # Recent connections storage
+├── named_queries.toml      # Scoped named queries storage
 ├── vault_credentials.enc   # Encrypted vault credentials cache
 └── history.txt             # Command history
 ```
@@ -26,6 +27,9 @@ expanded_display_default = false
 show_execution_time = true
 auto_explain_threshold = 1000  # ms
 null_display = "NULL"
+
+# Named Query Settings
+test_named_query_before_saving = true  # Validate queries before saving
 
 [display]
 border_style = 1  # 0=none, 1=light, 2=heavy
@@ -144,6 +148,7 @@ Controls default database connection and query behavior.
 | `show_execution_time` | boolean | `true` | Show query execution time |
 | `auto_explain_threshold` | integer | `1000` | Auto-enable EXPLAIN for slow queries (ms) |
 | `null_display` | string | `"NULL"` | How to display NULL values |
+| `test_named_query_before_saving` | boolean | `true` | Validate named queries with EXPLAIN before saving |
 
 **Example:**
 ```toml
@@ -153,6 +158,7 @@ expanded_display_default = true
 show_execution_time = true
 auto_explain_threshold = 2000
 null_display = "∅"
+test_named_query_before_saving = false  # Skip validation for faster saves
 ```
 
 ### [display] - Output Formatting

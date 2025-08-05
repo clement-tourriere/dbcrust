@@ -715,6 +715,18 @@ impl Database {
     ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
         self.execute_query_with_interrupt(query, &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))).await
     }
+    
+    /// Test query execution without side effects (for validating named queries before saving)
+    pub async fn test_query_execution(&mut self, query: &str) -> std::result::Result<(), Box<dyn StdError>> {
+        if let Some(ref database_client) = self.database_client {
+            // For file-based databases (SQLite), we can't use transactions in the same way
+            // so we'll just do a basic validation query execution
+            database_client.test_query(query).await
+                .map_err(|e| e.into())
+        } else {
+            Err("No database client available".into())
+        }
+    }
 
     pub async fn execute_query_with_info(
         &mut self,

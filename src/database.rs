@@ -473,6 +473,9 @@ pub trait DatabaseClient: Send + Sync {
     /// Execute a query and return results as Vec<Vec<String>>
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError>;
 
+    /// Test query execution without side effects (for validation)
+    async fn test_query(&self, sql: &str) -> Result<(), DatabaseError>;
+
     /// Execute a query with EXPLAIN prefix
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError>;
 

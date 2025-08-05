@@ -215,18 +215,32 @@ Hash Join
 
 ### 2. Named Queries
 
-Save frequently used queries:
+Save frequently used queries with scope control:
 
 ```sql
--- Save a query with parameters
+-- Save a session-local query (default)
 \ns daily_active SELECT * FROM users WHERE last_login >= current_date - interval '$1 days';
 
--- Use it later
-daily_active 7  -- Shows users active in last 7 days
-daily_active 30 -- Shows users active in last 30 days
+-- Save a global query (available across all databases)
+\ns user_count SELECT COUNT(*) FROM users --global
 
--- List all saved queries
+-- Save a PostgreSQL-specific query
+\ns pg_activity SELECT * FROM pg_stat_activity --postgres
+
+-- Use saved queries
+daily_active 7  -- Shows users active in last 7 days
+user_count      -- Shows total user count
+
+-- List all available queries (shows scope indicators)
 \n
+```
+
+**Output:**
+```
+Named queries:
+  daily_active     [session]    - SELECT * FROM users WHERE last_login >= ...
+  user_count       [global]     - SELECT COUNT(*) FROM users
+  pg_activity      [postgres]   - SELECT * FROM pg_stat_activity
 ```
 
 ### 3. External Editor

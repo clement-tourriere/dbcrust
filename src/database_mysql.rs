@@ -799,6 +799,17 @@ impl DatabaseClient for MySqlClient {
         Ok(results)
     }
 
+    async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
+        debug!("[MySqlClient::test_query] Testing query for validation");
+        // For MySQL, we can use EXPLAIN to validate query syntax without executing it
+        let explain_sql = format!("EXPLAIN {}", sql);
+        
+        match sqlx::query(&explain_sql).fetch_all(&self.pool).await {
+            Ok(_) => Ok(()),
+            Err(e) => Err(DatabaseError::QueryError(format!("Query validation failed: {}", e))),
+        }
+    }
+
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[MySqlClient::explain_query] Executing EXPLAIN for query");
         

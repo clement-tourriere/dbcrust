@@ -567,6 +567,22 @@ impl DatabaseClient for PostgreSQLClient {
         Ok(results)
     }
 
+    async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
+        debug!("[PostgreSQLClient::test_query] Testing query for validation");
+        // For PostgreSQL, we can use EXPLAIN to validate query syntax without executing it
+        let explain_sql = format!("EXPLAIN {}", sql);
+        let timeout_duration = std::time::Duration::from_secs(10); // Shorter timeout for tests
+        
+        match tokio::time::timeout(
+            timeout_duration,
+            sqlx::query(&explain_sql).fetch_all(&self.pool)
+        ).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(DatabaseError::QueryError(format!("Query validation failed: {}", e))),
+            Err(_) => Err(DatabaseError::QueryError("Query validation timed out".to_string())),
+        }
+    }
+
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         let explain_sql = format!("EXPLAIN (FORMAT JSON) {sql}");
         let raw_results = self.execute_query(&explain_sql).await?;

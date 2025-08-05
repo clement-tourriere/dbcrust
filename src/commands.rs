@@ -1,9 +1,10 @@
 //! Type-safe enum-based command system with traits for compile-time validation
 //! This replaces the string-based BackslashCommandRegistry with a robust type system
 
-use crate::config::Config as DbCrustConfig;
-use crate::database::DatabaseTypeExt;
+use crate::config::{Config as DbCrustConfig, NamedQueryScope};
+use crate::database::{DatabaseType, DatabaseTypeExt};
 use crate::db::Database;
+use crate::history_manager::SessionId;
 use crate::prompt::DbPrompt;
 use std::error::Error as StdError;
 use std::sync::{Arc, Mutex};
@@ -36,7 +37,14 @@ pub enum Command {
     
     // Named queries
     ListNamedQueries,
-    SaveNamedQuery { name: String, query: String },
+    SaveNamedQuery { 
+        name: String, 
+        query: String,
+        global: bool,
+        postgres: bool,
+        mysql: bool,
+        sqlite: bool,
+    },
     DeleteNamedQuery { name: String },
     ExecuteNamedQuery { name: String, args: Vec<String> },
     
@@ -413,14 +421,56 @@ impl CommandParser {
                 }
             },
             "ns" => {
-                let mut ns_parts = args.splitn(2, ' ');
-                let name = ns_parts.next()
-                    .ok_or_else(|| CommandError::MissingArgument("query name".to_string()))?;
-                let query = ns_parts.next()
-                    .ok_or_else(|| CommandError::MissingArgument("query".to_string()))?;
+                // Parse scope flags
+                let args_parts: Vec<&str> = args.split_whitespace().collect();
+                if args_parts.len() < 2 {
+                    return Err(CommandError::MissingArgument("query name and query".to_string()));
+                }
+                
+                let mut global = false;
+                let mut postgres = false;
+                let mut mysql = false;
+                let mut sqlite = false;
+                let mut name_index = 0;
+                
+                // Check for scope flags at the beginning
+                for (i, part) in args_parts.iter().enumerate() {
+                    match *part {
+                        "-g" | "--global" => {
+                            global = true;
+                            name_index = i + 1;
+                        }
+                        "--postgres" => {
+                            postgres = true;
+                            name_index = i + 1;
+                        }
+                        "--mysql" => {
+                            mysql = true;
+                            name_index = i + 1;
+                        }
+                        "--sqlite" => {
+                            sqlite = true;
+                            name_index = i + 1;
+                        }
+                        _ => break,
+                    }
+                }
+                
+                // Ensure we have at least name and query after flags
+                if name_index + 1 >= args_parts.len() {
+                    return Err(CommandError::MissingArgument("query name and query after flags".to_string()));
+                }
+                
+                let name = args_parts[name_index].to_string();
+                let query = args_parts[name_index + 1..].join(" ");
+                
                 Ok(Command::SaveNamedQuery { 
-                    name: name.to_string(), 
-                    query: query.to_string() 
+                    name, 
+                    query,
+                    global,
+                    postgres,
+                    mysql,
+                    sqlite,
                 })
             },
             "nd" => {
@@ -793,45 +843,140 @@ impl CommandExecutor for Command {
             }
 
             Command::ListNamedQueries => {
-                let named_queries = config.list_named_queries();
-                if named_queries.is_empty() {
-                    Ok(CommandResult::Output("No named queries found. Use \\ns <name> <query> to save a query.".to_string()))
+                // Get current context for filtering
+                let (current_database_type, current_session_id) = {
+                    let db = database.lock().unwrap();
+                    let db_type = db.get_connection_info().map(|info| info.database_type.clone());
+                    let session_id = SessionId::from_database(&db).map(|sid| sid.identifier);
+                    (db_type, session_id)
+                };
+                
+                // Use new API to list available queries with scope information
+                let available_queries = config.list_available_named_queries(
+                    current_database_type.as_ref(), 
+                    current_session_id.as_deref()
+                );
+                
+                if available_queries.is_empty() {
+                    Ok(CommandResult::Output("No named queries available in current context.\nUse \\ns <name> <query> to save a session query.\nUse \\ns -g <name> <query> for global queries.\nUse \\ns --postgres <name> <query> for PostgreSQL-only queries.".to_string()))
                 } else {
                     let mut output = String::new();
                     output.push_str("Named queries:\n");
-                    for (name, query) in named_queries.iter() {
-                        let preview = if query.len() > 60 {
-                            format!("{}...", &query[..57])
+                    for (name, query, scope) in available_queries.iter() {
+                        let preview = if query.len() > 45 {
+                            format!("{}...", &query[..42])
                         } else {
                             query.clone()
                         };
-                        output.push_str(&format!("  {name} - {preview}\n"));
+                        
+                        let scope_str = match scope {
+                            NamedQueryScope::Global => "[global]".to_string(),
+                            NamedQueryScope::DatabaseType(db_type) => format!("[{}]", db_type.to_string().to_lowercase()),
+                            NamedQueryScope::Session(_) => "[session]".to_string(),
+                        };
+                        
+                        output.push_str(&format!("  {name:<15} {scope_str:<10} - {preview}\n"));
                     }
                     Ok(CommandResult::Output(output))
                 }
             }
 
-            Command::SaveNamedQuery { name, query } => {
-                match config.add_named_query(name, query) {
-                    Ok(_) => Ok(CommandResult::Output(format!("Named query '{name}' saved successfully."))),
+            Command::SaveNamedQuery { name, query, global, postgres, mysql, sqlite } => {
+                // Determine scope based on flags
+                let scope = if *global {
+                    NamedQueryScope::Global
+                } else if *postgres {
+                    NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL)
+                } else if *mysql {
+                    NamedQueryScope::DatabaseType(DatabaseType::MySQL)
+                } else if *sqlite {
+                    NamedQueryScope::DatabaseType(DatabaseType::SQLite)
+                } else {
+                    // Default to session scope
+                    let session_id = {
+                        let db = database.lock().unwrap();
+                        SessionId::from_database(&db)
+                            .map(|sid| sid.identifier)
+                            .unwrap_or_else(|| "unknown".to_string())
+                    };
+                    NamedQueryScope::Session(session_id)
+                };
+                
+                // Test query before saving if enabled
+                if config.test_named_query_before_saving {
+                    let mut db = database.lock().unwrap();
+                    // Try to execute the query in a transaction (rollback to avoid side effects)
+                    match db.test_query_execution(query).await {
+                        Ok(_) => {
+                            // Query is valid, proceed with saving
+                        }
+                        Err(e) => {
+                            return Ok(CommandResult::Error(format!("Query test failed: {e}\nQuery not saved. Use config option 'test_named_query_before_saving = false' to disable testing.")));
+                        }
+                    }
+                }
+                
+                match config.add_named_query_with_scope(name, query, scope.clone()) {
+                    Ok(_) => {
+                        let scope_str = match scope {
+                            NamedQueryScope::Global => "global".to_string(),
+                            NamedQueryScope::DatabaseType(db_type) => db_type.to_string().to_lowercase(),
+                            NamedQueryScope::Session(_) => "session".to_string(),
+                        };
+                        Ok(CommandResult::Output(format!("Named query '{name}' saved successfully (scope: {scope_str}).")))
+                    },
                     Err(e) => Ok(CommandResult::Error(format!("Failed to save named query '{name}': {e}"))),
                 }
             }
 
             Command::DeleteNamedQuery { name } => {
-                match config.delete_named_query(name) {
-                    Ok(_) => Ok(CommandResult::Output(format!("Named query '{name}' deleted successfully."))),
-                    Err(e) => Ok(CommandResult::Error(format!("Failed to delete named query '{name}': {e}"))),
+                // Get current context for scoped query lookup
+                let (current_database_type, current_session_id) = {
+                    let db = database.lock().unwrap();
+                    let db_type = db.get_connection_info().map(|info| info.database_type.clone());
+                    let session_id = if let Some(info) = db.get_connection_info() {
+                        Some(SessionId::from_connection_info(info).identifier)
+                    } else {
+                        None
+                    };
+                    (db_type, session_id)
+                };
+                
+                // Try to find the query first to determine which scope to delete from
+                if let Some(query) = config.get_available_named_query(name, current_database_type.as_ref(), current_session_id.as_deref()) {
+                    let scope = query.scope.clone();
+                    match config.delete_named_query_with_scope(name, &scope) {
+                        Ok(true) => {
+                            let scope_str = match scope {
+                                crate::config::NamedQueryScope::Global => "global",
+                                crate::config::NamedQueryScope::DatabaseType(ref db_type) => &format!("{}", db_type),
+                                crate::config::NamedQueryScope::Session(_) => "session-local",
+                            };
+                            Ok(CommandResult::Output(format!("Named query '{name}' deleted successfully (scope: {scope_str}).")))
+                        },
+                        Ok(false) => Ok(CommandResult::Error(format!("Named query '{name}' not found."))),
+                        Err(e) => Ok(CommandResult::Error(format!("Failed to delete named query '{name}': {e}"))),
+                    }
+                } else {
+                    Ok(CommandResult::Error(format!("Named query '{name}' not found in current context.")))
                 }
             }
 
             Command::ExecuteNamedQuery { name, args } => {
-                match config.get_named_query(name) {
-                    Some(query_template) => {
+                // Get current context for scoped query lookup
+                let (current_database_type, current_session_id) = {
+                    let db = database.lock().unwrap();
+                    let db_type = db.get_connection_info().map(|info| info.database_type.clone());
+                    let session_id = SessionId::from_database(&db).map(|sid| sid.identifier);
+                    (db_type, session_id)
+                };
+                
+                match config.get_available_named_query(name, current_database_type.as_ref(), current_session_id.as_deref()) {
+                    Some(named_query) => {
                         let mut db = database.lock().unwrap();
                         // Apply parameter substitution
                         let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-                        let final_query = crate::named_queries::process_query(query_template, &args_refs);
+                        let final_query = crate::named_queries::process_query(&named_query.query, &args_refs);
                         
                         // Execute the query
                         match db.execute_query(&final_query).await {
@@ -851,7 +996,7 @@ impl CommandExecutor for Command {
                             Err(e) => Ok(CommandResult::Error(format!("Error executing named query '{name}': {e}"))),
                         }
                     }
-                    None => Ok(CommandResult::Error(format!("Named query '{name}' not found."))),
+                    None => Ok(CommandResult::Error(format!("Named query '{name}' not found or not available in current context.\nUse \\n to list available queries."))),
                 }
             }
 
@@ -1363,7 +1508,7 @@ impl CommandExecutor for Command {
             Command::WriteScript { .. } => "\\w <filename>",
             Command::LoadScript { .. } => "\\i <filename>",
             Command::EditMultiline => "\\ed",
-            Command::SaveNamedQuery { .. } => "\\ns <name> <query>",
+            Command::SaveNamedQuery { .. } => "\\ns [--global|--postgres|--mysql|--sqlite] <name> <query>",
             Command::DeleteNamedQuery { .. } => "\\nd <name>",
             Command::ExecuteNamedQuery { .. } => "\\n <name> [args...]",
             Command::ListNamedQueries => "\\n",
@@ -1457,7 +1602,11 @@ mod tests {
         // Test named queries
         assert_eq!(CommandParser::parse("\\ns test SELECT 1").unwrap(), Command::SaveNamedQuery { 
             name: "test".to_string(), 
-            query: "SELECT 1".to_string() 
+            query: "SELECT 1".to_string(),
+            global: false,
+            postgres: false,
+            mysql: false,
+            sqlite: false,
         });
         
         // Test error cases
@@ -1555,12 +1704,38 @@ mod tests {
         assert_eq!(CommandParser::parse("\\ns get_all SELECT * FROM users").unwrap(),
                    Command::SaveNamedQuery { 
                        name: "get_all".to_string(),
-                       query: "SELECT * FROM users".to_string()
+                       query: "SELECT * FROM users".to_string(),
+                       global: false,
+                       postgres: false,
+                       mysql: false,
+                       sqlite: false,
                    });
         
         // Test named query deletion
         assert_eq!(CommandParser::parse("\\nd old_query").unwrap(),
                    Command::DeleteNamedQuery { name: "old_query".to_string() });
+                   
+        // Test named query saving with global scope
+        assert_eq!(CommandParser::parse("\\ns -g global_query SELECT 1").unwrap(),
+                   Command::SaveNamedQuery { 
+                       name: "global_query".to_string(),
+                       query: "SELECT 1".to_string(),
+                       global: true,
+                       postgres: false,
+                       mysql: false,
+                       sqlite: false,
+                   });
+                   
+        // Test named query saving with database type scope
+        assert_eq!(CommandParser::parse("\\ns --postgres pg_query SELECT version()").unwrap(),
+                   Command::SaveNamedQuery { 
+                       name: "pg_query".to_string(),
+                       query: "SELECT version()".to_string(),
+                       global: false,
+                       postgres: true,
+                       mysql: false,
+                       sqlite: false,
+                   });
     }
 
     #[test]

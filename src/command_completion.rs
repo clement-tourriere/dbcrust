@@ -285,7 +285,17 @@ impl NamedQueryCompleter {
     
     fn get_named_query_names(&self) -> Vec<String> {
         let config = self.config.lock().unwrap();
-        config.named_queries.keys().cloned().collect()
+        // Use the new scoped named queries API
+        config.get_available_named_queries().into_iter().map(|(name, _)| name).collect()
+    }
+    
+    fn get_scope_flags(&self) -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("--global", "Save to global scope"),
+            ("--postgres", "Save to PostgreSQL scope"),
+            ("--mysql", "Save to MySQL scope"),
+            ("--sqlite", "Save to SQLite scope"),
+        ]
     }
 }
 
@@ -302,15 +312,14 @@ impl CommandCompleter for NamedQueryCompleter {
         let word_start = args[..pos.min(args.len())].rfind(' ').map_or(0, |i| i + 1);
         let current_word = &args[word_start..pos.min(args.len())];
         
-        let queries = self.get_named_query_names();
-        
         match command {
-            "\\n" | "\\ns" | "\\nd" => {
+            "\\n" | "\\nd" => {
+                // For \n and \nd, complete with existing named query names only
+                let queries = self.get_named_query_names();
                 for query_name in queries {
                     if query_name.to_lowercase().starts_with(&current_word.to_lowercase()) {
                         let description = match command {
                             "\\n" => "Execute named query",
-                            "\\ns" => "Overwrite named query",
                             "\\nd" => "Delete named query",
                             _ => "Named query",
                         };
@@ -319,11 +328,51 @@ impl CommandCompleter for NamedQueryCompleter {
                             value: query_name,
                             description: Some(description.to_string()),
                             span: Span { start: word_start, end: pos },
-                            append_whitespace: command != "\\ns", // Don't add space for \ns (user will type query)
+                            append_whitespace: true,
                             extra: None,
                             style: None,
                         });
                     }
+                }
+            }
+            "\\ns" => {
+                // For \ns, we need to parse the arguments to determine what to complete
+                let args_parts: Vec<&str> = args.split_whitespace().collect();
+                
+                if args_parts.is_empty() || (args_parts.len() == 1 && pos <= args_parts[0].len()) {
+                    // First argument: complete with existing named query names for overwriting
+                    let queries = self.get_named_query_names();
+                    for query_name in queries {
+                        if query_name.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                            suggestions.push(Suggestion {
+                                value: query_name,
+                                description: Some("Overwrite existing named query".to_string()),
+                                span: Span { start: word_start, end: pos },
+                                append_whitespace: true,
+                                extra: None,
+                                style: None,
+                            });
+                        }
+                    }
+                } else {
+                    // Check if we're completing a flag
+                    if current_word.starts_with('-') {
+                        let scope_flags = self.get_scope_flags();
+                        for (flag, description) in scope_flags {
+                            if flag.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                                suggestions.push(Suggestion {
+                                    value: flag.to_string(),
+                                    description: Some(description.to_string()),
+                                    span: Span { start: word_start, end: pos },
+                                    append_whitespace: true,
+                                    extra: None,
+                                    style: None,
+                                });
+                            }
+                        }
+                    }
+                    // For SQL completion after the query name and flags, we don't provide suggestions
+                    // The SQL autocomplete system will handle that
                 }
             }
             _ => {}

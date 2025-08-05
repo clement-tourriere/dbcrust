@@ -39,7 +39,7 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
     | Command | Description | Example |
     |---------|-------------|---------|
     | `\n` | List named queries | `\n` |
-    | `\ns <name> <query>` | Save named query | `\ns users SELECT * FROM users` |
+    | `\ns <name> <query> [--scope]` | Save named query with scope | `\ns users SELECT * FROM users --global` |
     | `\nd <name>` | Delete named query | `\nd users` |
 
 === "Sessions & History"
@@ -439,9 +439,17 @@ export EDITOR="nano"         # Nano
 
 ### Named Queries
 
+DBCrust provides a powerful scoped named query system that allows you to organize queries by visibility scope: **global**, **database-type specific**, or **session-local**.
+
+#### Query Scopes
+
+**Global Scope** - Available across all database connections and sessions
+**Database-Type Scope** - Available only for specific database types (PostgreSQL, MySQL, SQLite)  
+**Session-Local Scope** - Available only for the current database session (host+port+database+user)
+
 #### `\n` - List Named Queries
 
-Shows all saved named queries.
+Shows all named queries available in the current context, with scope indicators.
 
 ```sql
 \n
@@ -449,46 +457,93 @@ Shows all saved named queries.
 
 **Output:**
 ```
-Named Queries:
-╭─────────────────┬────────────────────────────────────────────╮
-│ Name            │ Query                                      │
-├─────────────────┼────────────────────────────────────────────┤
-│ active_users    │ SELECT * FROM users WHERE status = 'act.. │
-│ daily_orders    │ SELECT DATE(created_at), COUNT(*) FROM .. │
-│ user_summary    │ SELECT COUNT(*), MAX(created_at) FROM ..  │
-╰─────────────────┴────────────────────────────────────────────╯
+Named queries:
+  active_users     [global]     - SELECT * FROM users WHERE status = 'active'
+  pg_stats         [postgres]   - SELECT * FROM pg_stat_activity
+  daily_summary    [session]    - SELECT DATE(created_at), COUNT(*) FROM orders
+  user_report      [global]     - SELECT u.*, COUNT(o.id) FROM users u LEFT JOIN orders o ON u.id = o.user_id
 ```
 
-#### `\ns <name> <query>` - Save Named Query
+**Scope Priority:** Session-local queries take precedence over database-type queries, which take precedence over global queries when names conflict.
 
-Saves a query with a name for later use. Supports parameter substitution.
+#### `\ns <name> <query> [--scope]` - Save Named Query with Scope
 
+Saves a query with a name and optional scope specification. Supports parameter substitution.
+
+**Scope Options:**
+- `--global` - Available for all database connections
+- `--postgres` - Available only for PostgreSQL connections  
+- `--mysql` - Available only for MySQL connections
+- `--sqlite` - Available only for SQLite connections
+- No flag (default) - Session-local scope (current database session only)
+
+**Basic Examples:**
 ```sql
--- Simple named query
+-- Session-local query (default)
 \ns active_users SELECT * FROM users WHERE status = 'active'
 
--- With parameters
-\ns user_by_id SELECT * FROM users WHERE id = $1
+-- Global query (all databases)
+\ns count_all SELECT COUNT(*) FROM $1 --global
+
+-- PostgreSQL-specific query
+\ns pg_activity SELECT * FROM pg_stat_activity --postgres
+
+-- MySQL-specific query  
+\ns mysql_status SHOW GLOBAL STATUS LIKE 'Connections' --mysql
+
+-- SQLite-specific query
+\ns sqlite_tables SELECT name FROM sqlite_master WHERE type='table' --sqlite
+```
+
+**Parameter Substitution:**
+```sql
+-- Single parameter
+\ns user_by_id SELECT * FROM users WHERE id = $1 --global
 
 -- Multiple parameters
 \ns user_orders SELECT * FROM orders WHERE user_id = $1 AND status = '$2'
 
--- All remaining parameters
-\ns search_users SELECT * FROM users WHERE name ILIKE '%$*%'
+-- All remaining parameters (space-separated)
+\ns search_users SELECT * FROM users WHERE name ILIKE '%$*%' --global
+
+-- All remaining parameters (single string)
+\ns full_search SELECT * FROM users WHERE CONCAT(first_name, ' ', last_name) ILIKE '%$@%'
 ```
 
-**Usage:**
+**Advanced Scope Examples:**
 ```sql
--- Execute named queries
+-- Database-type specific reporting queries
+\ns pg_table_sizes SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size FROM pg_tables --postgres
+
+\ns mysql_table_info SELECT table_name, table_rows, data_length FROM information_schema.tables WHERE table_schema = DATABASE() --mysql
+
+-- Global utility queries
+\ns today_records SELECT * FROM $1 WHERE DATE(created_at) = CURRENT_DATE --global
+
+-- Session-specific queries (no flag needed)
+\ns my_analysis SELECT customer_id, SUM(amount) FROM local_sales_data GROUP BY customer_id
+```
+
+**Query Execution:**
+```sql
+-- Execute named queries with parameters
 active_users
 user_by_id 123
-user_orders 123 completed
+user_orders 123 completed  
 search_users John Doe
+pg_table_sizes
+```
+
+**Save Confirmation:**
+```
+Named query 'active_users' saved successfully (scope: session-local).
+Named query 'pg_activity' saved successfully (scope: postgres).
+Named query 'count_all' saved successfully (scope: global).
 ```
 
 #### `\nd <name>` - Delete Named Query
 
-Removes a saved named query.
+Removes a named query from the current context. Automatically detects the scope of the query to delete.
 
 ```sql
 \nd active_users
@@ -496,8 +551,79 @@ Removes a saved named query.
 
 **Output:**
 ```
-Named query 'active_users' deleted.
+Named query 'active_users' deleted successfully (scope: session-local).
 ```
+
+**Scope Resolution:** When deleting, DBCrust follows the same priority order as execution - it will delete the session-local query first, then database-type, then global if multiple queries exist with the same name.
+
+#### Practical Usage Patterns
+
+**Development Workflow:**
+```sql
+-- Create session-specific analysis queries during development
+\ns debug_orders SELECT * FROM orders WHERE created_at > '2024-01-01' AND status = 'pending'
+
+-- Create global utilities for reuse across projects
+\ns table_info SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema = '$1' --global
+
+-- Create database-specific maintenance queries
+\ns pg_vacuum_analyze VACUUM ANALYZE $1 --postgres
+```
+
+**Team Collaboration:**
+```sql
+-- Global queries shared across team
+\ns daily_metrics SELECT DATE(created_at), COUNT(*), AVG(amount) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) --global
+
+-- Database-specific performance queries
+\ns pg_slow_queries SELECT query, calls, total_time, mean_time FROM pg_stat_statements ORDER BY mean_time DESC LIMIT 10 --postgres
+```
+
+**Multi-Database Projects:**
+```sql
+-- PostgreSQL analytics
+\ns user_engagement SELECT user_id, COUNT(*) as actions FROM user_events WHERE created_at > $1 GROUP BY user_id --postgres
+
+-- MySQL equivalent  
+\ns user_engagement SELECT user_id, COUNT(*) as actions FROM user_events WHERE created_at > '$1' GROUP BY user_id --mysql
+
+-- Global fallback
+\ns simple_count SELECT COUNT(*) FROM $1 --global
+```
+
+#### Autocomplete Support
+
+The named query system provides intelligent autocomplete:
+
+**Query Name Completion:**
+```sql
+\n act[TAB]          -- Shows: active_users
+\ns my_qu[TAB]       -- Shows existing query names for overwriting
+\nd debug[TAB]       -- Shows: debug_orders
+```
+
+**Scope Flag Completion:**
+```sql
+\ns myquery SELECT 1 --glo[TAB]    -- Shows: --global
+\ns test SELECT 1 --post[TAB]      -- Shows: --postgres  
+```
+
+**SQL Completion:**
+```sql
+\ns myquery SELE[TAB]              -- Shows: SELECT, SELECT *, etc.
+\ns myquery SELECT * FROM use[TAB]  -- Shows: users table
+```
+
+#### Storage and Migration
+
+Named queries are stored separately by scope:
+- **Global**: Available across all sessions and database types
+- **Database-type**: Available for all sessions of that database type
+- **Session-local**: Available only for the specific database session
+
+**Storage Location:** `~/.config/dbcrust/named_queries.toml`
+
+**Migration:** Existing named queries from older versions are automatically migrated to the new scoped system as global queries during the first run.
 
 ### Session Management
 
