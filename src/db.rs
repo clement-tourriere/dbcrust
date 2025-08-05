@@ -833,6 +833,25 @@ impl Database {
         // Use new database abstraction layer for EXPLAIN queries
         if let Some(ref database_client) = self.database_client {
             debug!("Using database abstraction layer for execute_explain_query");
+            
+            // First get the raw JSON plan for \ecopy
+            match database_client.explain_query_raw(query).await {
+                Ok(raw_results) => {
+                    // Store the raw JSON plan for \ecopy command
+                    if raw_results.len() > 1 && !raw_results[1].is_empty() {
+                        let json_plan = &raw_results[1][0]; // First data row, first column contains JSON
+                        self.last_json_plan = Some(json_plan.clone());
+                        debug!("Stored JSON plan for \\ecopy ({} characters)", json_plan.len());
+                    } else {
+                        debug!("No JSON plan data found in raw results");
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to get raw JSON plan: {}", e);
+                    // Continue with formatted query even if raw JSON fails
+                }
+            }
+            
             return database_client.explain_query(query).await.map_err(|e| e.into());
         } else {
             return Err("No database client available".into());
@@ -859,6 +878,26 @@ impl Database {
         // Use new database abstraction layer for formatted EXPLAIN queries  
         if let Some(ref database_client) = self.database_client {
             debug!("Using database abstraction layer for execute_explain_query_formatted");
+            
+            // First get the raw JSON plan for \ecopy
+            match database_client.explain_query_raw(query).await {
+                Ok(raw_results) => {
+                    // Store the raw JSON plan for \ecopy command
+                    if raw_results.len() > 1 && !raw_results[1].is_empty() {
+                        let json_plan = &raw_results[1][0]; // First data row, first column contains JSON
+                        self.last_json_plan = Some(json_plan.clone());
+                        debug!("Stored JSON plan for \\ecopy ({} characters)", json_plan.len());
+                    } else {
+                        debug!("No JSON plan data found in raw results");
+                    }
+                }
+                Err(e) => {
+                    debug!("Failed to get raw JSON plan: {}", e);
+                    // Continue with formatted query even if raw JSON fails
+                }
+            }
+            
+            // Then get the formatted output for display
             let results = database_client.explain_query(query).await?;
             return Ok(results);
         } else {
