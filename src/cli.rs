@@ -25,9 +25,6 @@ pub struct Args {
     #[arg(long)]
     pub ssh_tunnel: Option<String>,
 
-    /// Enable debug mode
-    #[arg(long, short)]
-    pub debug: bool,
 
     /// Generate shell completions
     #[arg(long, value_enum)]
@@ -37,9 +34,6 @@ pub struct Args {
     #[arg(short, long, action = clap::ArgAction::Append)]
     pub command: Vec<String>,
 
-    /// Don't display the banner
-    #[arg(long)]
-    pub no_banner: bool,
 }
 
 impl std::fmt::Debug for Args {
@@ -59,10 +53,8 @@ impl std::fmt::Debug for Args {
                     .as_ref()
                     .map(|tunnel| sanitize_ssh_tunnel_string(tunnel)),
             )
-            .field("debug", &self.debug)
             .field("completions", &self.completions)
             .field("command", &self.command)
-            .field("no_banner", &self.no_banner)
             .finish()
     }
 }

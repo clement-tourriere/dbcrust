@@ -366,10 +366,7 @@ pub async fn run_interactive_cli(url: &str) -> Result<(), Box<dyn std::error::Er
         connection_url: Some(url.to_string()),
         command: Vec::new(),
         ssh_tunnel: None,
-        debug: false,
         completions: None,
-        no_banner: false,
-        verbosity: None,
     };
     
     // Run the CLI with the constructed args

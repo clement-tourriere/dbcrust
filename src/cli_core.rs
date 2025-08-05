@@ -52,7 +52,7 @@ impl std::fmt::Display for CliError {
                                   2. Ensure the token is valid: vault token lookup\n\
                                   3. If expired, authenticate again: vault login\n\
                                   4. Verify you have permissions for the database mount path\n\n\
-                                  For more details, run with --debug flag."
+                                  For more details, set 'level = \"debug\"' in config.toml."
                         )
                     } else if msg.contains("permission denied") {
                         write!(
@@ -63,7 +63,7 @@ impl std::fmt::Display for CliError {
                                   1. Check your Vault policies: vault token lookup\n\
                                   2. Verify the mount path is correct (default: 'database')\n\
                                   3. Contact your Vault administrator for access\n\n\
-                                  For more details, run with --debug flag."
+                                  For more details, set 'level = \"debug\"' in config.toml."
                         )
                     } else {
                         write!(f, "❌ Vault authentication failed (403 Forbidden)\n\n{msg}")
@@ -175,18 +175,6 @@ impl CliCore {
 
         // SSH tunnel debug output now handled by tracing system
 
-        // Also enable debug logging if --debug flag is provided, overriding config
-        if args.debug {
-            let mut temp_config = cli_core.config.clone();
-            temp_config.logging.level = crate::config::LogLevel::Debug;
-
-            if temp_config.logging.level != crate::config::LogLevel::Debug {
-                debug!("Debug logging enabled via command line flag");
-            }
-
-            cli_core.config = temp_config;
-        }
-
 
         // Check if commands can be handled without database connection first
         if !args.command.is_empty()
@@ -209,7 +197,7 @@ impl CliCore {
             }
 
             // Start interactive mode with database connection
-            cli_core.run_interactive_mode(&args).await?;
+            cli_core.run_interactive_mode().await?;
         } else {
             // No connection URL provided
             if !args.command.is_empty() {
@@ -219,7 +207,7 @@ impl CliCore {
             }
 
             // Start interactive mode without initial connection
-            cli_core.run_interactive_mode_no_connection(&args).await?;
+            cli_core.run_interactive_mode_no_connection().await?;
         }
 
         Ok(0)
@@ -368,9 +356,9 @@ impl CliCore {
     }
 
     /// Interactive mode without initial database connection
-    async fn run_interactive_mode_no_connection(&mut self, args: &Args) -> Result<(), CliError> {
-        // Show banner if not explicitly disabled by --no-banner flag AND config allows it
-        if !args.no_banner && self.config.show_banner {
+    async fn run_interactive_mode_no_connection(&mut self) -> Result<(), CliError> {
+        // Show banner if config allows it
+        if self.config.show_banner {
             Self::print_banner(&self.config);
         }
 
@@ -658,7 +646,7 @@ impl CliCore {
     }
 
     /// Run interactive mode - core interactive logic
-    pub async fn run_interactive_mode(&mut self, args: &Args) -> Result<(), CliError> {
+    pub async fn run_interactive_mode(&mut self) -> Result<(), CliError> {
         use crate::highlighter::SqlHighlighter;
         use reedline::{Reedline, Signal};
 
@@ -667,8 +655,8 @@ impl CliCore {
             .take()
             .ok_or_else(|| CliError::CommandError("No database connection".to_string()))?;
 
-        // Show banner if not explicitly disabled by --no-banner flag AND config allows it
-        if !args.no_banner && self.config.show_banner {
+        // Show banner if config allows it
+        if self.config.show_banner {
             Self::print_banner(&self.config);
         }
 
