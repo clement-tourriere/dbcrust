@@ -29,6 +29,10 @@ pub mod script;
 pub mod shell_completion; // Custom shell completion with URL schemes
 pub mod sql_context; // SQL context analysis for better autocompletion
 pub mod sql_parser; // Enhanced SQL parser for autocompletion
+pub mod sql_parser_trait; // Database-specific SQL parser trait system
+pub mod sql_parser_postgresql; // PostgreSQL-specific SQL parser
+pub mod sql_parser_mysql; // MySQL-specific SQL parser
+pub mod sql_parser_sqlite; // SQLite-specific SQL parser
 pub mod ssh_tunnel; // Add the SSH tunnel module
 pub mod url_scheme; // URL scheme autocompletion support
 pub mod vault_client; // Add backslash commands module

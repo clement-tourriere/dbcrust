@@ -5,8 +5,10 @@ use crate::command_completion::CommandCompletionManager;
 use crate::commands::CommandParser;
 use crate::completion_provider::TableInfo;
 use crate::config::Config;
+use crate::database::DatabaseType;
 use crate::db::Database;
-use crate::sql_parser::{parse_sql_at_cursor, SqlContext, ExpectedElement, SqlClause};
+use crate::sql_parser::{SqlContext, ExpectedElement, SqlClause};
+use crate::sql_parser_trait::{SqlParserEngine, SqlParserFactory, EnhancedSqlContext, CompletionHintCategory};
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Span, Suggestion};
 use std::collections::{HashMap, HashSet};
@@ -36,6 +38,19 @@ pub struct SqlCompleter {
     column_cache: HashMap<String, Vec<String>>,
     /// Last database name for cache invalidation
     last_db_name: Option<String>,
+}
+
+/// FROM clause completion states
+#[derive(Debug, PartialEq)]
+enum FromClauseState {
+    /// Right after FROM keyword - expecting table name
+    ExpectingTable,
+    /// Partially typing a table name (e.g., "cat" → "categories")
+    TypingTable,
+    /// Complete table specified - expecting keywords (WHERE, JOIN, etc.)
+    AfterTable,
+    /// Partially typing a keyword after table (e.g., "wh" → "WHERE")
+    TypingKeyword,
 }
 
 impl SqlCompleter {
@@ -165,6 +180,83 @@ impl SqlCompleter {
         tables
     }
 
+    /// Get the database type from the connection info
+    fn get_database_type(&self) -> DatabaseType {
+        let db_guard = self.database.lock().unwrap();
+        if let Some(connection_info) = db_guard.get_connection_info() {
+            connection_info.database_type.clone()
+        } else {
+            // Default to PostgreSQL if we can't determine the type
+            DatabaseType::PostgreSQL
+        }
+    }
+
+    /// Analyze the current state in FROM clause for accurate completion
+    fn analyze_from_clause_state(&self, sql: &str, cursor_pos: usize, context: &SqlContext, current_word: &str) -> FromClauseState {
+        debug!("[SqlCompleter] Analyzing FROM clause state: sql='{}', cursor_pos={}, current_word='{}'", 
+               sql, cursor_pos, current_word);
+               
+        // If no tables parsed yet, we're expecting/typing a table name
+        if context.tables.is_empty() {
+            if current_word.is_empty() {
+                return FromClauseState::ExpectingTable;
+            } else {
+                return FromClauseState::TypingTable;
+            }
+        }
+        
+        // We have parsed tables - check if cursor is after a complete table reference
+        for table_ref in &context.tables {
+            let table_end_pos = table_ref.position + table_ref.table.len();
+            
+            // Add alias length if present
+            let total_table_ref_end = if let Some(alias) = &table_ref.alias {
+                // Account for "table alias" pattern (table + space + alias)
+                table_end_pos + 1 + alias.len()
+            } else {
+                table_end_pos
+            };
+            
+            debug!("[SqlCompleter] Table '{}' ends at position {}, cursor at {}", 
+                   table_ref.table, total_table_ref_end, cursor_pos);
+            
+            // If cursor is after this table reference
+            if cursor_pos > total_table_ref_end {
+                // Check if we're typing a keyword
+                if !current_word.is_empty() {
+                    // Check if current word could be a SQL keyword
+                    if self.could_be_sql_keyword(current_word) {
+                        return FromClauseState::TypingKeyword;
+                    }
+                }
+                return FromClauseState::AfterTable;
+            }
+        }
+        
+        // Fallback: if we have tables but cursor position analysis failed
+        if current_word.is_empty() {
+            FromClauseState::AfterTable
+        } else if self.could_be_sql_keyword(current_word) {
+            FromClauseState::TypingKeyword
+        } else {
+            FromClauseState::TypingTable
+        }
+    }
+    
+    /// Check if a partial word could be a SQL keyword
+    fn could_be_sql_keyword(&self, word: &str) -> bool {
+        let upper_word = word.to_uppercase();
+        let sql_keywords = [
+            "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS",
+            "ON", "USING", "GROUP", "ORDER", "HAVING", "LIMIT", "OFFSET",
+            "UNION", "INTERSECT", "EXCEPT", "AND", "OR", "NOT"
+        ];
+        
+        // Check if any SQL keyword starts with this word
+        sql_keywords.iter().any(|keyword| keyword.starts_with(&upper_word))
+    }
+
+
     /// Get columns for a table (with caching)
     fn get_columns(&mut self, table: &str) -> Vec<String> {
         debug!("[SqlCompleter] get_columns for table: '{}'", table);
@@ -278,38 +370,247 @@ impl SqlCompleter {
         completions
     }
 
-    /// Get SQL keywords based on context
-    fn get_contextual_keywords(&self, context: &SqlContext) -> Vec<&'static str> {
-        match context.current_clause {
-            SqlClause::Select => vec!["DISTINCT", "ALL", "*", "FROM"],
-            SqlClause::From => vec!["WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ORDER", "GROUP"],
-            SqlClause::Where => vec!["AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE", "IS", "NULL", "ORDER", "GROUP"],
-            SqlClause::Join => vec!["ON"],
-            SqlClause::On => vec!["AND", "OR"],
+    /// Get enhanced SQL keywords based on context using database-specific parser
+    fn get_enhanced_contextual_keywords(&self, context: &EnhancedSqlContext, parser: &Box<dyn SqlParserEngine>) -> Vec<&'static str> {
+        // Use database-specific keywords based on the current clause, but prioritize basic SQL structure
+        use crate::sql_parser_trait::KeywordCategory;
+        
+        match context.base_context.current_clause {
+            SqlClause::Select => {
+                // For SELECT, prioritize structural keywords, then add functions
+                let mut keywords = vec!["FROM", "WHERE", "GROUP", "ORDER", "LIMIT", "UNION", "DISTINCT", "*"];
+                let functions = parser.get_keywords_by_category(KeywordCategory::Functions);
+                keywords.extend(functions);
+                keywords
+            },
+            SqlClause::From => {
+                // Only suggest keywords after a table has been specified
+                vec!["WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ORDER", "GROUP"]
+            },
+            SqlClause::Where => {
+                let mut keywords = vec!["AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE", "IS", "NULL", "ORDER", "GROUP"];
+                let operators = parser.get_keywords_by_category(KeywordCategory::Operators);
+                keywords.extend(operators);
+                keywords
+            },
+            SqlClause::Join => vec!["ON", "USING"],
+            SqlClause::On => {
+                let mut keywords = vec!["AND", "OR"];
+                let operators = parser.get_keywords_by_category(KeywordCategory::Operators);
+                keywords.extend(operators);
+                keywords
+            },
             SqlClause::OrderBy => vec!["ASC", "DESC", "LIMIT"],
             SqlClause::GroupBy => vec!["HAVING", "ORDER"],
-            SqlClause::Having => vec!["AND", "OR", "ORDER"],
+            SqlClause::Having => {
+                let mut keywords = vec!["AND", "OR", "ORDER"];
+                let operators = parser.get_keywords_by_category(KeywordCategory::Operators);
+                keywords.extend(operators);
+                keywords
+            },
             SqlClause::Update => vec!["SET"],
             SqlClause::UpdateSet => vec!["WHERE"],
-            SqlClause::Insert => vec!["INTO"],
+            SqlClause::Insert => vec!["INTO", "VALUES"],
             SqlClause::Delete => vec!["FROM"],
-            _ => vec!["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP"],
+            _ => {
+                let mut keywords = vec!["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP"];
+                let dml = parser.get_keywords_by_category(KeywordCategory::DML);
+                keywords.extend(dml);
+                keywords
+            },
         }
     }
 
-    /// Generate suggestions based on SQL context
-    fn generate_sql_suggestions(
+
+    /// Generate suggestions based on enhanced SQL context with database-specific parsing
+    fn generate_enhanced_sql_suggestions(
         &mut self,
-        context: &SqlContext,
+        context: &EnhancedSqlContext,
+        parser: &Box<dyn SqlParserEngine>,
         current_word: &str,
         word_start: usize,
         pos: usize,
+        sql: &str,
     ) -> Vec<Suggestion> {
         let mut suggestions = Vec::new();
         let lower_word = current_word.to_lowercase();
 
-        // Process each expected element type
-        for expected in &context.expecting {
+        // PRIORITY 1: Columns first in WHERE clause, then handle specific context logic
+        let mut columns_added = false;
+        
+        // Add columns first if we're in WHERE clause
+        if context.base_context.current_clause == SqlClause::Where {
+            debug!("[SqlCompleter] WHERE clause: prioritizing columns over keywords");
+            for table_ref in &context.base_context.tables {
+                debug!("[SqlCompleter] Fetching columns for table: {}", table_ref.table);
+                let columns = self.get_columns(&table_ref.table);
+                debug!("[SqlCompleter] Got {} columns from {}", columns.len(), table_ref.table);
+                
+                // If user typed table prefix (e.g., "users.")
+                if current_word.contains('.') {
+                    let parts: Vec<&str> = current_word.splitn(2, '.').collect();
+                    if parts.len() == 2 {
+                        let table_prefix = parts[0];
+                        let column_prefix = parts[1];
+                        
+                        debug!("[SqlCompleter] Table-qualified column completion: {}.{}", 
+                               table_prefix, column_prefix);
+                        
+                        // Check if this table matches
+                        let matches = table_ref.alias.as_ref()
+                            .map(|a| a == table_prefix)
+                            .unwrap_or(false) || table_ref.table == table_prefix;
+                        
+                        debug!("[SqlCompleter] Table match for '{}': {}", table_prefix, matches);
+                        
+                        if matches {
+                            let mut added_count = 0;
+                            for column in columns {
+                                if column.to_lowercase().starts_with(&column_prefix.to_lowercase()) {
+                                    suggestions.push(Suggestion {
+                                        value: format!("{}.{}", table_prefix, column),
+                                        description: Some(format!("Column from {}", table_ref.table)),
+                                        span: Span { start: word_start, end: pos },
+                                        append_whitespace: true,
+                                        extra: None,
+                                        style: Some(Style::new().fg(Color::Cyan)),
+                                    });
+                                    added_count += 1;
+                                    columns_added = true;
+                                }
+                            }
+                            debug!("[SqlCompleter] Added {} qualified column suggestions", added_count);
+                        }
+                    }
+                } else {
+                    // No table prefix, suggest all columns
+                    debug!("[SqlCompleter] Unqualified column completion, filtering with: '{}'", lower_word);
+                    let mut added_count = 0;
+                    
+                    for column in columns {
+                        if lower_word.is_empty() || column.to_lowercase().starts_with(&lower_word) {
+                            let desc = if let Some(alias) = &table_ref.alias {
+                                format!("Column from {} ({})", alias, table_ref.table)
+                            } else {
+                                format!("Column from {}", table_ref.table)
+                            };
+                            
+                            debug!("[SqlCompleter] Adding column suggestion: {} -> {}", column, desc);
+                            suggestions.push(Suggestion {
+                                value: column,
+                                description: Some(desc),
+                                span: Span { start: word_start, end: pos },
+                                append_whitespace: true,
+                                extra: None,
+                                style: Some(Style::new().fg(Color::Cyan)),
+                            });
+                            added_count += 1;
+                            columns_added = true;
+                        }
+                    }
+                    debug!("[SqlCompleter] Added {} unqualified column suggestions from {}", 
+                           added_count, table_ref.table);
+                }
+            }
+        }
+
+        // PRIORITY 2: Context-specific logic - handle different SQL clauses
+        match context.base_context.current_clause {
+            SqlClause::From => {
+                // Use the enhanced FROM clause state machine
+                let state = self.analyze_from_clause_state(sql, pos, &context.base_context, current_word);
+                debug!("[SqlCompleter] FROM clause state: {:?}", state);
+                
+                match state {
+                    FromClauseState::ExpectingTable | FromClauseState::TypingTable => {
+                        // Only show tables, no keywords
+                        debug!("[SqlCompleter] FROM clause: showing tables only");
+                        let tables = self.get_tables(None);
+                        for table in tables {
+                            if table.name.to_lowercase().starts_with(&lower_word) {
+                                suggestions.push(Suggestion {
+                                    value: table.name.clone(),
+                                    description: Some("Table".to_string()),
+                                    span: Span { start: word_start, end: pos },
+                                    append_whitespace: true,
+                                    extra: None,
+                                    style: Some(Style::new().fg(Color::Green)),
+                                });
+                            }
+                        }
+                    },
+                    FromClauseState::AfterTable | FromClauseState::TypingKeyword => {
+                        // After table name, show JOIN/WHERE keywords only
+                        debug!("[SqlCompleter] FROM clause: showing keywords only");
+                        let from_keywords = vec!["WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ORDER", "GROUP", "LIMIT"];
+                        for keyword in from_keywords {
+                            if keyword.to_lowercase().starts_with(&lower_word) {
+                                suggestions.push(Suggestion {
+                                    value: keyword.to_string(),
+                                    description: Some("SQL Keyword".to_string()),
+                                    span: Span { start: word_start, end: pos },
+                                    append_whitespace: true,
+                                    extra: None,
+                                    style: Some(Style::new().fg(Color::Blue)),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            SqlClause::Where => {
+                // Add WHERE keywords after columns (columns already added above)
+                debug!("[SqlCompleter] WHERE clause: adding keywords after columns");
+                let where_keywords = vec!["AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE", "IS", "NULL", "ORDER", "GROUP"];
+                for keyword in where_keywords {
+                    if keyword.to_lowercase().starts_with(&lower_word) {
+                        suggestions.push(Suggestion {
+                            value: keyword.to_string(),
+                            description: Some("SQL Keyword".to_string()),
+                            span: Span { start: word_start, end: pos },
+                            append_whitespace: true,
+                            extra: None,
+                            style: Some(Style::new().fg(Color::Blue)),
+                        });
+                    }
+                }
+            }
+            SqlClause::Select => {
+                // For SELECT, add structural keywords
+                let select_keywords = vec!["FROM", "WHERE", "GROUP", "ORDER", "LIMIT", "UNION", "INTERSECT", "EXCEPT"];
+                for keyword in select_keywords {
+                    if keyword.to_lowercase().starts_with(&lower_word) {
+                        suggestions.push(Suggestion {
+                            value: keyword.to_string(),
+                            description: Some("SQL Clause".to_string()),
+                            span: Span { start: word_start, end: pos },
+                            append_whitespace: true,
+                            extra: None,
+                            style: Some(Style::new().fg(Color::Blue)),
+                        });
+                    }
+                }
+            }
+            _ => {
+                // For other clauses, add contextual keywords
+                let basic_keywords = self.get_enhanced_contextual_keywords(context, parser);
+                for keyword in basic_keywords {
+                    if keyword.to_lowercase().starts_with(&lower_word) && !keyword.is_empty() {
+                        suggestions.push(Suggestion {
+                            value: keyword.to_string(),
+                            description: Some("SQL Keyword".to_string()),
+                            span: Span { start: word_start, end: pos },
+                            append_whitespace: true,
+                            extra: None,
+                            style: Some(Style::new().fg(Color::Blue)),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Process each expected element type (using base context for compatibility)
+        for expected in &context.base_context.expecting {
             match expected {
                 ExpectedElement::Table => {
                     // Get all tables
@@ -328,9 +629,15 @@ impl SqlCompleter {
                     }
                 }
                 ExpectedElement::Column => {
-                    debug!("[SqlCompleter] Processing Column suggestions");
+                    // Skip if we already added columns for WHERE clause
+                    if context.base_context.current_clause == SqlClause::Where && columns_added {
+                        debug!("[SqlCompleter] Skipping duplicate column processing for WHERE clause");
+                        continue;
+                    }
+                    
+                    debug!("[SqlCompleter] Processing Column suggestions for non-WHERE clause");
                     // Get columns from tables in context
-                    for table_ref in &context.tables {
+                    for table_ref in &context.base_context.tables {
                         debug!("[SqlCompleter] Fetching columns for table: {}", table_ref.table);
                         let columns = self.get_columns(&table_ref.table);
                         debug!("[SqlCompleter] Got {} columns from {}", columns.len(), table_ref.table);
@@ -422,27 +729,24 @@ impl SqlCompleter {
                     }
                 }
                 ExpectedElement::Function => {
-                    let functions = vec![
-                        ("COUNT(", "Count rows"),
-                        ("SUM(", "Sum values"),
-                        ("AVG(", "Average values"),
-                        ("MAX(", "Maximum value"),
-                        ("MIN(", "Minimum value"),
-                        ("UPPER(", "Convert to uppercase"),
-                        ("LOWER(", "Convert to lowercase"),
-                        ("LENGTH(", "String length"),
-                        ("NOW()", "Current timestamp"),
-                        ("CURRENT_DATE", "Current date"),
-                        ("CURRENT_TIMESTAMP", "Current timestamp"),
-                    ];
-                    
-                    for (func, desc) in functions {
-                        if func.to_lowercase().starts_with(&lower_word) {
+                    // Use database-specific functions instead of hardcoded ones
+                    let functions = parser.get_functions();
+                    for func_name in functions {
+                        if func_name.to_lowercase().starts_with(&lower_word) {
+                            let requires_parens = parser.database_type() != DatabaseType::PostgreSQL || 
+                                                 !matches!(func_name.to_uppercase().as_str(), 
+                                                          "CURRENT_DATE" | "CURRENT_TIME" | "CURRENT_TIMESTAMP");
+                            let display_name = if requires_parens && !func_name.ends_with('(') {
+                                format!("{}(", func_name)
+                            } else {
+                                func_name.to_string()
+                            };
+                            
                             suggestions.push(Suggestion {
-                                value: func.to_string(),
-                                description: Some(desc.to_string()),
+                                value: display_name,
+                                description: Some(format!("{} function", func_name)),
                                 span: Span { start: word_start, end: pos },
-                                append_whitespace: !func.ends_with("("),
+                                append_whitespace: !requires_parens,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Magenta)),
                             });
@@ -453,17 +757,48 @@ impl SqlCompleter {
             }
         }
 
-        // Add contextual keywords
-        let keywords = self.get_contextual_keywords(context);
-        for keyword in keywords {
-            if keyword.to_lowercase().starts_with(&lower_word) && !keyword.is_empty() {
+        // PRIORITY 3: Get database-specific completion hints (lower priority)
+        let hints = parser.get_completion_hints(context);
+        
+        // Convert hints to suggestions
+        for hint in hints {
+            if hint.text.to_lowercase().starts_with(&lower_word) {
+                // Skip if we already have this suggestion
+                if suggestions.iter().any(|s| s.value == hint.text) {
+                    continue;
+                }
+                
+                let style = match hint.category {
+                    CompletionHintCategory::Keyword => Some(Style::new().fg(Color::Blue)),
+                    CompletionHintCategory::Function => Some(Style::new().fg(Color::Magenta)),
+                    CompletionHintCategory::Operator => Some(Style::new().fg(Color::Yellow)),
+                    CompletionHintCategory::DataType => Some(Style::new().fg(Color::Green)),
+                    CompletionHintCategory::DatabaseSpecific => Some(Style::new().fg(Color::Cyan)),
+                    _ => Some(Style::new().fg(Color::White)),
+                };
+                
                 suggestions.push(Suggestion {
-                    value: keyword.to_string(),
-                    description: Some("SQL Keyword".to_string()),
+                    value: hint.text,
+                    description: Some(hint.description),
+                    span: Span { start: word_start, end: pos },
+                    append_whitespace: !hint.requires_parentheses,
+                    extra: None,
+                    style,
+                });
+            }
+        }
+
+        // PRIORITY 4: Get database-specific context suggestions
+        let context_suggestions = parser.get_context_suggestions(context, current_word);
+        for suggestion_text in context_suggestions {
+            if !suggestions.iter().any(|s| s.value == suggestion_text) {
+                suggestions.push(Suggestion {
+                    value: suggestion_text.clone(),
+                    description: Some("Database-specific suggestion".to_string()),
                     span: Span { start: word_start, end: pos },
                     append_whitespace: true,
                     extra: None,
-                    style: Some(Style::new().fg(Color::Blue)),
+                    style: Some(Style::new().fg(Color::Cyan)),
                 });
             }
         }
@@ -474,6 +809,7 @@ impl SqlCompleter {
 
         suggestions
     }
+
 }
 
 impl Completer for SqlCompleter {
@@ -747,24 +1083,32 @@ impl Completer for SqlCompleter {
             .map_or(0, |idx| idx + 1);
         let current_word = &line[word_start..pos];
         
-        // Parse SQL context using full line
-        let context = parse_sql_at_cursor(&full_line, pos);
-        debug!("[SqlCompleter] SQL Context Analysis:");
-        debug!("  Current clause: {:?}", context.current_clause);
-        debug!("  Tables in context: {} tables", context.tables.len());
-        for (i, table) in context.tables.iter().enumerate() {
+        // Get database type and create appropriate parser
+        let database_type = self.get_database_type();
+        let parser = SqlParserFactory::create_parser(database_type.clone());
+        
+        // Parse SQL context using database-specific parser
+        let enhanced_context = parser.parse_at_cursor(&full_line, pos);
+        debug!("[SqlCompleter] Enhanced SQL Context Analysis:");
+        debug!("  Database type: {:?}", enhanced_context.database_type);
+        debug!("  Current clause: {:?}", enhanced_context.base_context.current_clause);
+        debug!("  Tables in context: {} tables", enhanced_context.base_context.tables.len());
+        for (i, table) in enhanced_context.base_context.tables.iter().enumerate() {
             debug!("    Table {}: {} (alias: {:?}, schema: {:?})", 
                    i, table.table, table.alias, table.schema);
         }
-        debug!("  Expecting: {:?}", context.expecting);
+        debug!("  Expecting: {:?}", enhanced_context.base_context.expecting);
+        debug!("  Database-specific context: {:?}", enhanced_context.database_context);
         debug!("  Current word: '{}'", current_word);
 
-        // Generate suggestions based on context
-        let suggestions = self.generate_sql_suggestions(
-            &context,
+        // Generate suggestions based on enhanced context
+        let suggestions = self.generate_enhanced_sql_suggestions(
+            &enhanced_context,
+            &parser,
             current_word,
             word_start,
             pos,
+            &full_line,
         );
 
         debug!("[SqlCompleter] Final results: Generated {} suggestions", suggestions.len());
