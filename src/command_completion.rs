@@ -535,7 +535,7 @@ mod tests {
     
     #[tokio::test]
     async fn test_basic_command_handling() {
-        let manager = create_test_manager().await;
+        let _manager = create_test_manager().await;
         let basic_completer = BasicCommandCompleter;
         
         assert!(basic_completer.handles_command("\\q"));

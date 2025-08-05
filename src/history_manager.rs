@@ -331,7 +331,7 @@ mod tests {
 
     #[test]
     fn test_session_id_docker() {
-        let mut connection_info = ConnectionInfo {
+        let connection_info = ConnectionInfo {
             database_type: DatabaseType::PostgreSQL,
             host: Some("localhost".to_string()),
             port: Some(5432),
