@@ -1,4 +1,4 @@
-use crate::database::{ConnectionInfo, DatabaseType, DatabaseTypeExt};
+use crate::database::{DatabaseType, DatabaseTypeExt};
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
 use dirs::home_dir;
@@ -2079,6 +2079,7 @@ fn ensure_config_dir(config_path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::ConnectionInfo;
     use rstest::rstest;
 
     // Test helper function to get a clean config for tests
