@@ -82,7 +82,7 @@ class QueryCollector:
         
         # Capture stack trace for analysis
         stack = traceback.extract_stack()[:-2]  # Exclude this wrapper
-        stack_trace = [f"{frame.filename}:{frame.lineno} in {frame.name}" for frame in stack]
+        stack_trace = self._extract_meaningful_stack_trace(stack)
         
         # Extract query type and table names
         query_type = self._extract_query_type(sql)
@@ -249,3 +249,117 @@ class QueryCollector:
                 unique_tables.append(table)
         
         return unique_tables
+    
+    def _extract_meaningful_stack_trace(self, stack) -> List[str]:
+        """Extract hierarchical stack trace with primary and secondary locations."""
+        # Categorize frames by relevance level
+        primary_frames = []      # Most actionable user code
+        secondary_frames = []    # Supporting context
+        
+        # Patterns to identify Django ORM method calls
+        orm_patterns = [
+            '.objects.',
+            '.filter(',
+            '.get(',
+            '.all(',
+            '.first(',
+            '.last(',
+            '.count(',
+            '.exists(',
+            '.create(',
+            '.update(',
+            '.delete(',
+            '.annotate(',
+            '.aggregate(',
+            '.values(',
+            '.values_list(',
+            '.select_related(',
+            '.prefetch_related(',
+            '.distinct(',
+            '.order_by(',
+            '.exclude(',
+        ]
+        
+        # High-relevance patterns (Django admin, user views, models)
+        high_relevance_patterns = [
+            '/admin/',
+            '/contrib/admin/',
+            'admin.py',
+            'views.py', 
+            'models.py',
+            'forms.py',
+            'serializers.py'
+        ]
+        
+        # Medium-relevance patterns (Django framework that provides context)
+        medium_relevance_patterns = [
+            'django/contrib/admin/',
+            'django/views/',
+            'django/forms/',
+            'rest_framework/'
+        ]
+        
+        # Skip completely (truly low-level internals)
+        skip_patterns = [
+            'socketserver.py',
+            'threading.py', 
+            'contextlib.py',
+            'django/db/models/sql/',
+            'django/db/backends/',
+            'django/core/handlers/base.py',
+            'django/core/handlers/wsgi.py',
+            'site-packages/gunicorn/',
+            'site-packages/uwsgi/',
+            'dbcrust/django/',
+            'query_collector.py'
+        ]
+        
+        for frame in reversed(stack):
+            filename = frame.filename
+            code_line = getattr(frame, 'line', '') or ''
+            
+            # Skip truly low-level internals
+            if any(skip_pattern in filename for skip_pattern in skip_patterns):
+                continue
+            
+            # Format frame info
+            frame_info = f"{filename}:{frame.lineno} in {frame.name}"
+            
+            # Add code context if it contains Django ORM patterns
+            if any(pattern in code_line for pattern in orm_patterns):
+                frame_info += f" ({code_line.strip()})"
+            
+            # Categorize by relevance
+            is_high_relevance = any(pattern in filename for pattern in high_relevance_patterns)
+            is_medium_relevance = any(pattern in filename for pattern in medium_relevance_patterns)
+            
+            if is_high_relevance or any(pattern in code_line for pattern in orm_patterns):
+                # High relevance: user code or ORM calls
+                if frame_info not in [f.split(' (')[0] for f in primary_frames]:  # Avoid duplicates
+                    primary_frames.append(frame_info)
+                    
+            elif is_medium_relevance and len(secondary_frames) < 2:
+                # Medium relevance: Django framework context  
+                if frame_info not in [f.split(' (')[0] for f in secondary_frames]:  # Avoid duplicates
+                    secondary_frames.append(frame_info)
+        
+        # If no primary frames found, promote the best secondary frames
+        if not primary_frames and secondary_frames:
+            primary_frames = secondary_frames[:1]
+            secondary_frames = secondary_frames[1:]
+        
+        # If still no meaningful frames, do a broader search
+        if not primary_frames:
+            for frame in reversed(stack):
+                filename = frame.filename
+                
+                # Look for any non-system code
+                if not any(skip in filename for skip in skip_patterns + ['site-packages/']):
+                    frame_info = f"{filename}:{frame.lineno} in {frame.name}"
+                    primary_frames = [frame_info]
+                    break
+        
+        # Combine primary and secondary, with primary first
+        meaningful_frames = primary_frames + secondary_frames
+        
+        return meaningful_frames or ["unknown location"]

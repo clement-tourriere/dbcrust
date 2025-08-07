@@ -26,70 +26,118 @@ except ImportError:
 class DBCrustIntegration:
     """Integrates Django analyzer with DBCrust for advanced query analysis."""
     
-    def __init__(self, connection_url: Optional[str] = None):
+    def __init__(self, connection_url: Optional[str] = None, database_instance: Optional['PyDatabase'] = None):
         """
         Initialize DBCrust integration.
         
         Args:
             connection_url: DBCrust-compatible database URL
+            database_instance: Pre-existing PyDatabase instance to use
         """
         if not DBCRUST_AVAILABLE:
             raise ImportError("DBCrust is not available. This should not happen in a DBCrust installation.")
         
         self.connection_url = connection_url
-        self._database = None
-        self._loop = None
-        self._thread = None
+        self._database = database_instance
+        self._connected = False
         self._executor = ThreadPoolExecutor(max_workers=1)
     
     def connect(self):
         """Establish connection to database using DBCrust."""
+        if self._database is not None:
+            self._connected = True
+            return
+        
         if not self.connection_url:
             return
         
-        # Parse connection URL and create PyDatabase instance
-        # This is simplified - real implementation would parse the URL properly
         try:
-            # For now, we'll use a placeholder since full implementation
-            # requires proper URL parsing and async setup
-            pass
+            # Parse connection URL to extract connection parameters
+            from urllib.parse import urlparse
+            
+            parsed = urlparse(self.connection_url)
+            if parsed.scheme not in ['postgres', 'postgresql']:
+                raise ValueError(f"Unsupported database type: {parsed.scheme}")
+            
+            # Create PyDatabase instance
+            self._database = PyDatabase(
+                host=parsed.hostname or 'localhost',
+                port=parsed.port or 5432,
+                user=parsed.username or 'postgres',
+                password=parsed.password or '',
+                dbname=parsed.path.lstrip('/') or 'postgres'
+            )
+            
+            self._connected = True
+            print(f"✅ Connected to database: {parsed.hostname}")
+            
         except Exception as e:
-            print(f"Failed to connect to database: {e}")
+            print(f"❌ Failed to connect to database: {e}")
+            self._database = None
+            self._connected = False
     
-    async def _analyze_query_async(self, query: CapturedQuery) -> Dict[str, Any]:
-        """Analyze a single query using EXPLAIN ANALYZE (async)."""
-        if not self._database:
-            return {}
+    def _analyze_query_sync(self, query: CapturedQuery) -> Dict[str, Any]:
+        """Analyze a single query using EXPLAIN ANALYZE (synchronous version)."""
+        if not self._database or not self._connected:
+            return {"error": "Database not connected"}
         
         try:
             # Run EXPLAIN ANALYZE
             explain_sql = f"EXPLAIN (ANALYZE, FORMAT JSON) {query.sql}"
             
-            # Execute the explain query
-            result = await self._database.execute_query(explain_sql, query.params)
+            # Execute the explain query using PyDatabase.execute()
+            result = self._database.execute(explain_sql)
             
-            if result and len(result) > 0 and len(result[0]) > 0:
-                # Parse the JSON result
-                explain_json = json.loads(result[0][0])
+            # Convert Python result to expected format
+            if hasattr(result, '__iter__') and result:
+                # Result should be a list of rows, each row a list of columns
+                rows = list(result)
+                if rows and len(rows) > 0:
+                    # First column of first row should contain the JSON
+                    explain_json_str = rows[0][0] if isinstance(rows[0], (list, tuple)) else rows[0]
+                    
+                    if isinstance(explain_json_str, str):
+                        explain_json = json.loads(explain_json_str)
+                    else:
+                        explain_json = explain_json_str
+                    
+                    # Import our query plan analyzer
+                    from .query_plan_analyzer import analyze_explain_output
+                    
+                    # Analyze the plan
+                    suggestions, summary = analyze_explain_output(explain_json)
+                    
+                    return {
+                        "query": query.sql,
+                        "execution_time": query.duration * 1000,  # Convert to ms
+                        "explain_plan": explain_json,
+                        "performance_insights": self._extract_performance_insights(explain_json),
+                        "optimization_suggestions": [
+                            {
+                                "priority": s.priority,
+                                "category": s.category,
+                                "title": s.title,
+                                "description": s.description,
+                                "django_suggestion": s.django_suggestion,
+                                "sql_suggestion": s.sql_suggestion,
+                                "estimated_improvement": s.estimated_improvement
+                            } for s in suggestions
+                        ],
+                        "plan_summary": summary
+                    }
                 
-                # Import Rust performance analyzer through PyO3
-                # This would need to be exposed in the Rust lib.rs
-                # For now, we'll process the raw explain output
-                
-                return {
-                    "query": query.sql,
-                    "execution_time": query.duration * 1000,  # Convert to ms
-                    "explain_plan": explain_json,
-                    "performance_insights": self._extract_performance_insights(explain_json)
-                }
-                
+        except json.JSONDecodeError as e:
+            return {
+                "query": query.sql,
+                "error": f"Failed to parse EXPLAIN output: {e}"
+            }
         except Exception as e:
             return {
                 "query": query.sql,
-                "error": str(e)
+                "error": f"EXPLAIN query failed: {e}"
             }
         
-        return {}
+        return {"error": "No result returned from EXPLAIN query"}
     
     def analyze_queries(self, queries: List[CapturedQuery], limit: int = 10) -> List[Dict[str, Any]]:
         """
@@ -105,32 +153,30 @@ class DBCrustIntegration:
         if not DBCRUST_AVAILABLE or not queries:
             return []
         
+        # Connect if not already connected
+        if not self._connected:
+            self.connect()
+        
+        if not self._connected:
+            return [{"error": "Failed to connect to database"}]
+        
         # Filter queries suitable for EXPLAIN
         analyzable_queries = self._filter_analyzable_queries(queries)[:limit]
         
         if not analyzable_queries:
-            return []
+            return [{"info": "No queries suitable for EXPLAIN analysis"}]
         
-        # Run async analysis in a separate thread
-        def run_async_analysis():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+        print(f"🔍 Analyzing {len(analyzable_queries)} queries with EXPLAIN...")
+        
+        results = []
+        for i, query in enumerate(analyzable_queries):
+            print(f"  Analyzing query {i+1}/{len(analyzable_queries)}...")
+            result = self._analyze_query_sync(query)
+            results.append(result)
             
-            try:
-                # Connect to database
-                self.connect()
-                
-                # Analyze queries
-                tasks = [self._analyze_query_async(q) for q in analyzable_queries]
-                results = loop.run_until_complete(asyncio.gather(*tasks))
-                
-                return results
-            finally:
-                loop.close()
-        
-        # Execute in thread pool
-        future = self._executor.submit(run_async_analysis)
-        results = future.result(timeout=30)  # 30 second timeout
+            # Add a small delay to avoid overwhelming the database
+            import time
+            time.sleep(0.1)
         
         return results
     
@@ -324,15 +370,16 @@ class DBCrustIntegration:
         if self._executor:
             self._executor.shutdown(wait=False)
         
-        if self._database:
-            # Close database connection
-            pass
+        # PyDatabase handles connection cleanup automatically
+        self._connected = False
+        print("🔌 Database connection cleaned up")
 
 
 # Integration function for the main analyzer
 def enhance_analysis_with_dbcrust(
     queries: List[CapturedQuery],
     connection_url: Optional[str] = None,
+    database_instance: Optional['PyDatabase'] = None,
     max_queries: int = 10
 ) -> Tuple[List[Dict[str, Any]], str]:
     """
@@ -340,16 +387,17 @@ def enhance_analysis_with_dbcrust(
     
     Args:
         queries: List of captured queries
-        connection_url: DBCrust database connection URL
+        connection_url: DBCrust database connection URL (if database_instance not provided)
+        database_instance: Pre-existing PyDatabase instance to use
         max_queries: Maximum number of queries to analyze
     
     Returns:
         Tuple of (analysis results, performance report)
     """
-    if not connection_url or not queries:
-        return [], "No DBCrust analysis performed."
+    if not (connection_url or database_instance) or not queries:
+        return [], "No DBCrust analysis performed - no connection provided."
     
-    integration = DBCrustIntegration(connection_url)
+    integration = DBCrustIntegration(connection_url, database_instance)
     
     try:
         # Analyze queries
@@ -360,5 +408,40 @@ def enhance_analysis_with_dbcrust(
         
         return results, report
         
+    finally:
+        integration.cleanup()
+
+
+# Convenience function for direct analysis
+def analyze_single_query(query: str, connection_url: str, params: Optional[tuple] = None) -> Dict[str, Any]:
+    """
+    Analyze a single SQL query with EXPLAIN.
+    
+    Args:
+        query: SQL query to analyze
+        connection_url: Database connection URL
+        params: Query parameters (optional)
+    
+    Returns:
+        Analysis result dictionary
+    """
+    from datetime import datetime
+    
+    # Create a mock CapturedQuery
+    captured = type('CapturedQuery', (), {
+        'sql': query,
+        'params': params or (),
+        'duration': 0.0,
+        'timestamp': datetime.now(),
+        'query_type': 'SELECT',
+        'table_names': [],
+        'status': 'ok'
+    })()
+    
+    integration = DBCrustIntegration(connection_url)
+    
+    try:
+        integration.connect()
+        return integration._analyze_query_sync(captured)
     finally:
         integration.cleanup()

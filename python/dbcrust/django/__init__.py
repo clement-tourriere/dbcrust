@@ -6,5 +6,6 @@ and missing optimizations like select_related and prefetch_related.
 """
 
 from .analyzer import DjangoAnalyzer, analyze
+from .middleware import PerformanceAnalysisMiddleware
 
-__all__ = ["DjangoAnalyzer", "analyze"]
+__all__ = ["DjangoAnalyzer", "analyze", "PerformanceAnalysisMiddleware"]
