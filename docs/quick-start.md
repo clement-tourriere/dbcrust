@@ -1,6 +1,6 @@
 # Quick Start
 
-Get up and running with DBCrust in under 2 minutes! This guide will have you querying databases like a pro in no time.
+Get up and running with DBCrust in under 2 minutes! This guide will have you connecting to databases, analyzing queries, and optimizing performance in no time.
 
 ## 🚀 Installation
 
@@ -43,8 +43,11 @@ Get up and running with DBCrust in under 2 minutes! This guide will have you que
 === "pip"
 
     ```bash
+    # For Python projects
     pip install dbcrust
     dbcrust --version
+
+    # Note: For CLI usage, prefer 'uv tool install' over global pip
     ```
 
 === "From Source"
@@ -72,10 +75,10 @@ dbc ses[TAB] → session://
     # Standard connection (both schemes work)
     dbcrust postgres://username:password@localhost:5432/database_name
     dbcrust postgres://username:password@localhost:5432/database_name
-    
+
     # With SSL (recommended)
     dbcrust postgres://username:password@localhost:5432/database_name?sslmode=require
-    
+
     # Short alias with autocompletion
     dbc pos[TAB] → postgres://
     ```
@@ -85,7 +88,7 @@ dbc ses[TAB] → session://
     ```bash
     # Standard connection
     dbcrust mysql://username:password@localhost:3306/database_name
-    
+
     # With SSL
     dbcrust mysql://username:password@localhost:3306/database_name?ssl-mode=REQUIRED
     ```
@@ -95,10 +98,10 @@ dbc ses[TAB] → session://
     ```bash
     # Local file
     dbcrust sqlite:///path/to/database.db
-    
+
     # Relative path
     dbcrust sqlite://./myapp.db
-    
+
     # Memory database
     dbcrust sqlite://:memory:
     ```
@@ -108,11 +111,11 @@ dbc ses[TAB] → session://
     ```bash
     # Interactive container selection
     dbcrust docker://
-    
+
     # Smart container autocompletion (shows running containers)
     dbcrust docker://post[TAB] → docker://postgres-dev
     dbcrust docker://my[TAB]   → docker://mysql-test
-    
+
     # With credentials
     dbcrust docker://user:pass@container-name/database
     ```
@@ -122,7 +125,7 @@ dbc ses[TAB] → session://
     ```bash
     # Interactive session selection
     dbcrust session://
-    
+
     # Smart session autocompletion (shows your saved sessions)
     dbcrust session://prod[TAB] → session://production_db
     dbcrust session://dev[TAB]  → session://development
@@ -274,7 +277,7 @@ Enable intelligent shell autocompletion for URL schemes and contextual suggestio
     # Install completion script
     dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
     source ~/.bashrc
-    
+
     # Test autocompletion
     dbc pos[TAB]  # Should complete to postgres://
     ```
@@ -284,18 +287,18 @@ Enable intelligent shell autocompletion for URL schemes and contextual suggestio
     ```bash
     # Create completions directory if it doesn't exist
     mkdir -p ~/.zfunc
-    
+
     # Install completion scripts for both binaries
     dbcrust --completions zsh > ~/.zfunc/_dbcrust
     dbc --completions zsh > ~/.zfunc/_dbc
-    
+
     # Add these lines to your .zshrc (before oh-my-zsh if you use it):
     fpath+=~/.zfunc
     autoload -U compinit && compinit
-    
+
     # If you use oh-my-zsh, make sure these lines come BEFORE:
     # source $ZSH/oh-my-zsh.sh
-    
+
     # Reload your shell
     source ~/.zshrc
     ```
@@ -305,7 +308,7 @@ Enable intelligent shell autocompletion for URL schemes and contextual suggestio
     ```bash
     # Install completion script
     dbcrust --completions fish > ~/.config/fish/completions/dbcrust.fish
-    
+
     # Reload fish completions
     fish -c "complete --erase --command dbcrust; source ~/.config/fish/completions/dbcrust.fish"
     ```
@@ -359,26 +362,39 @@ print(result)
 dbcrust.run_cli("postgres://user:pass@localhost/mydb")
 ```
 
-### Django ORM Performance Analysis
+### Django Integration
 
-For Django developers, DBCrust includes a powerful ORM analyzer:
+For Django developers, DBCrust provides specialized database tools:
 
+```bash
+# Connect using Django database settings
+cd your_django_project/
+python manage.py dbcrust
+
+# Or connect directly to Django databases
+dbcrust postgres://user:pass@localhost/django_db
+```
+
+**Performance Analysis:**
 ```python
 from dbcrust.django import analyzer
 
-# Detect N+1 queries and optimization opportunities
+# Detect N+1 queries automatically
 with analyzer.analyze() as analysis:
     books = Book.objects.all()
     for book in books:
-        print(book.author.name)  # Will detect N+1 query
+        print(book.author.name)  # N+1 detected!
 
-results = analysis.get_results()
-print(results.summary)  # Shows performance insights
+print(analysis.get_results().optimization_suggestions)
 ```
 
-Perfect for catching performance issues during development!
+**Django Management Commands:**
+```bash
+python manage.py dbcrust                    # Connect to default DB
+python manage.py dbcrust --database analytics  # Specific database
+```
 
-[**Learn more about Django ORM Analysis →**](/dbcrust/django-analyzer/)
+[**📖 Complete Django Integration Guide →**](/dbcrust/django-analyzer/)
 
 ## 📚 What's Next?
 
@@ -387,13 +403,13 @@ Now that you're up and running:
 1. **[Django ORM Analyzer](/dbcrust/django-analyzer/)** - Performance analysis for Django applications
 2. **[URL Schemes & Autocompletion](/dbcrust/reference/url-schemes/)** - Master all connection methods
 3. **[Installation Guide](/dbcrust/installation/)** - Detailed installation options
-4. **[User Guide](/dbcrust/user-guide/basic-usage/)** - Complete feature walkthrough  
+4. **[User Guide](/dbcrust/user-guide/basic-usage/)** - Complete feature walkthrough
 5. **[Python API](/dbcrust/python-api/overview/)** - Integration with your Python projects
 
 ## 🆘 Common Issues
 
 !!! question "Connection refused?"
-    
+
     Make sure your database is running and accessible:
     ```bash
     # Test connectivity first
@@ -402,18 +418,18 @@ Now that you're up and running:
     ```
 
 !!! question "Permission denied?"
-    
+
     Check your credentials and database permissions:
     ```sql
     -- In PostgreSQL
     \du  -- List users and roles
-    
-    -- In MySQL  
+
+    -- In MySQL
     SHOW GRANTS FOR 'your_username'@'localhost';
     ```
 
 !!! question "SSL/TLS issues?"
-    
+
     Try disabling SSL first to test basic connectivity:
     ```bash
     dbcrust postgres://user:pass@localhost/db?sslmode=disable

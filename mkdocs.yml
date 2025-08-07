@@ -1,5 +1,5 @@
 site_name: DBCrust
-site_description: The modern database CLI that speaks your language — PostgreSQL, MySQL, SQLite with zero compromises
+site_description: High-performance database CLI engineered for Django developers — Advanced ORM analysis, performance optimization, SSH tunneling, and seamless multi-database support
 site_url: https://clement-tourriere.github.io/dbcrust
 repo_url: https://github.com/clement-tourriere/dbcrust
 repo_name: clement-tourriere/dbcrust
@@ -66,9 +66,7 @@ markdown_extensions:
       smart_enable: all
   - pymdownx.caret
   - pymdownx.details
-  - pymdownx.emoji:
-      emoji_generator: !!python/name:material.extensions.emoji.to_svg
-      emoji_index: !!python/name:material.extensions.emoji.twemoji
+  - pymdownx.emoji
   - pymdownx.highlight:
       anchor_linenums: true
       line_spans: __span
@@ -78,11 +76,7 @@ markdown_extensions:
   - pymdownx.mark
   - pymdownx.smartsymbols
   - pymdownx.snippets
-  - pymdownx.superfences:
-      custom_fences:
-        - name: mermaid
-          class: mermaid
-          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.tasklist:
@@ -107,9 +101,26 @@ nav:
     - Configuration: configuration.md
   - User Guide:
     - Basic Usage: user-guide/basic-usage.md
+    - Advanced Features: user-guide/advanced-features.md
+    - Performance Analysis: user-guide/performance-analysis.md
+    - Troubleshooting: user-guide/troubleshooting.md
+  - Django Integration:
+    - Django ORM Analyzer: django-analyzer.md
+    - Middleware Setup: django/middleware.md
+    - Management Commands: django/management-commands.md
+    - CI/CD Integration: django/ci-integration.md
+    - Team Workflows: django/team-workflows.md
   - Python API:
     - Overview: python-api/overview.md
-  - Django Analyzer: django-analyzer.md
+    - Direct Execution: python-api/direct-execution.md
+    - Client Classes: python-api/client-classes.md
+    - Examples & Use Cases: python-api/examples.md
+  - Advanced Features:
+    - SSH Tunneling: advanced/ssh-tunneling.md
+    - Vault Integration: advanced/vault-integration.md
+    - Docker Integration: advanced/docker-integration.md
+    - Security Guide: advanced/security.md
   - Reference:
     - URL Schemes & Autocompletion: reference/url-schemes.md
     - Backslash Commands: reference/backslash-commands.md
+    - Configuration Reference: reference/configuration-reference.md

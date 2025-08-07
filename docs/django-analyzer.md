@@ -118,10 +118,10 @@ MIDDLEWARE = [
    @admin.register(Post)
    class PostAdmin(ModelAdmin):
        readonly_fields = ("author", "created_at")
-       
+
        # BEFORE: Heavy foreign key filter causes counting queries
-       # list_filter = ('published', 'category')  
-       
+       # list_filter = ('published', 'category')
+
        # AFTER: Optimized admin configuration
        list_per_page = 25  # Reduce page size
        show_full_result_count = False  # Disable expensive counting
@@ -130,7 +130,7 @@ MIDDLEWARE = [
        autocomplete_fields = ('category', 'author')  # Use autocomplete for FK fields
        list_select_related = ('category', 'author')  # Optimize related queries
    ```
-   
+
    **Alternative:** If you need category filtering, register Category for autocomplete:
    ```python
    @admin.register(Category)
@@ -156,7 +156,7 @@ MIDDLEWARE = [
        'TRANSACTION_SAFE': False, # Avoid session conflicts (default: False)
        'DEBUG_TOOLBAR_COMPATIBILITY': True,  # Auto-disable with Debug Toolbar (default: True)
    }
-   
+
    # IMPORTANT: Add logging configuration to see performance issues
    LOGGING = {
        'version': 1,
@@ -189,7 +189,7 @@ MIDDLEWARE = [
    DBCRUST_PERFORMANCE_ANALYSIS = {
        'MAX_ISSUES_DISPLAYED': 50,  # Show up to 50 issues per request
    }
-   
+
    # Method 2: Use the management command for detailed analysis
    python manage.py dbcrust_analyze --model-query "MyModel.objects.all()" --all-issues --verbose
    ```
@@ -202,7 +202,7 @@ MIDDLEWARE = [
        'dbcrust.django.PerformanceAnalysisMiddleware',     # Second
        # ... other middleware
    ]
-   
+
    # To use both tools together (not recommended - may cause conflicts):
    DBCRUST_PERFORMANCE_ANALYSIS = {
        'DEBUG_TOOLBAR_COMPATIBILITY': False,
@@ -241,7 +241,7 @@ print(results.summary)
    ⚡ Quick fix: Book.objects.select_related('author')
    📈 Impact: Could reduce 15 queries to 1 query
 
-2. Missing Prefetch Related - MEDIUM  
+2. Missing Prefetch Related - MEDIUM
    💡 Suggested fields: 'reviews'
    📍 Code locations: views.py:16
    ⚡ Quick fix: Book.objects.prefetch_related('reviews')
@@ -272,7 +272,7 @@ with analyzer.analyze() as analysis:
 
 # Get comprehensive analysis including:
 # - Runtime query patterns
-# - Code analysis across entire project  
+# - Code analysis across entire project
 # - Model relationship analysis
 # - Database EXPLAIN insights
 comprehensive_report = analysis.generate_comprehensive_report()
@@ -376,7 +376,7 @@ for author in authors:
 **Problem Pattern:**
 
 ```python
-# views.py:42 - Sequential foreign key lookups  
+# views.py:42 - Sequential foreign key lookups
 orders = Order.objects.all()
 for order in orders:  # Line 43 - AST detected loop
     print(order.customer.name)  # Line 44 - specific access pattern
@@ -599,7 +599,7 @@ def product_list(request):
    ⚡ Quick fix: Product.objects.select_related('category', 'brand')
    📈 Impact: Could reduce 200+ queries to 1 query
 
-3. Missing Prefetch Related - HIGH  
+3. Missing Prefetch Related - HIGH
    💡 Suggested fields: 'reviews'
    📍 Code locations: views.py:14
    ⚡ Quick fix: Product.objects.prefetch_related('reviews')
@@ -621,7 +621,7 @@ from django.db.models import Count, Avg
 
 def product_list_optimized(request):
     # Fix 1: Add pagination to handle large result sets
-    # Fix 2: Use select_related for foreign key relationships  
+    # Fix 2: Use select_related for foreign key relationships
     # Fix 3: Use prefetch_related for reverse relationships
     # Fix 4: Use database aggregation
     products = (
@@ -772,7 +772,7 @@ def user_dashboard_optimized(request):
         items = [
             {
                 'name': item.product.name,  # No query - prefetched
-                'category': item.product.category.name,  # No query - prefetched  
+                'category': item.product.category.name,  # No query - prefetched
                 'price': item.price
             }
             for item in order.items.all()  # No query - prefetched
@@ -1338,7 +1338,7 @@ MIDDLEWARE = [
 
 # Optional configuration
 DBCRUST_PERFORMANCE_ANALYSIS = {
-    'ENABLED': True,  # Override DEBUG mode  
+    'ENABLED': True,  # Override DEBUG mode
     'QUERY_THRESHOLD': 10,  # Warn if > 10 queries
     'TIME_THRESHOLD': 100,  # Warn if > 100ms
     'LOG_ALL_REQUESTS': False,  # Only log problematic requests
@@ -1382,7 +1382,7 @@ The middleware adds helpful headers you can see in your browser's Network tab:
 
 ```
 X-DBCrust-Query-Count: 15
-X-DBCrust-Query-Time: 234.5ms  
+X-DBCrust-Query-Time: 234.5ms
 X-DBCrust-Issues-Total: 3
 X-DBCrust-Issues-Critical: 1
 X-DBCrust-Pattern-Types: n_plus_one,missing_select_related
@@ -1997,7 +1997,7 @@ def test_homepage_performance(self):
 
 #### **Production Monitoring**
 
-```python  
+```python
 # Safe analysis in production for critical paths
 with analyzer.analyze(transaction_safe=True) as analysis:
     process_checkout(cart_id)  # Monitor critical business logic
@@ -2109,3 +2109,19 @@ The enhanced Django ORM Query Analyzer transforms performance optimization from 
 
 The enhanced Django ORM Query Analyzer provides **production-ready performance analysis** that transforms Django
 optimization from guesswork into a **precise, automated, and actionable workflow**.
+
+## 📚 See Also
+
+- **[Django Middleware Setup](/dbcrust/django/middleware/)** - Real-time ORM analysis middleware
+- **[Django Management Commands](/dbcrust/django/management-commands/)** - CLI tools for Django projects
+- **[CI/CD Integration](/dbcrust/django/ci-integration/)** - Automated performance testing
+- **[Team Workflows](/dbcrust/django/team-workflows/)** - Collaborative optimization workflows
+- **[Quick Start Guide](/dbcrust/quick-start/)** - Get started with DBCrust in 2 minutes
+
+---
+
+<div align="center">
+    <strong>Ready to optimize your Django application?</strong><br>
+    <a href="/dbcrust/django/middleware/" class="md-button md-button--primary">Setup Middleware</a>
+    <a href="/dbcrust/django/management-commands/" class="md-button">Management Commands</a>
+</div>

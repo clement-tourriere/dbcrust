@@ -14,9 +14,10 @@ version_files = [
     "pyproject.toml:version"
 ]
 
-# Pre-bump hooks to update Cargo.lock before commit
+# Pre-bump hooks to update Cargo.lock and run pre-commit before commit
 pre_bump_hooks = [
-    "cargo check"
+    "cargo check", # Update Cargo.lock
+    "pre-commit run", # Fix before tagging
 ]
 
 

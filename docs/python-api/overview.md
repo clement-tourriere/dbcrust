@@ -1,55 +1,35 @@
 # Python API Overview
 
-DBCrust isn't just a CLI tool - it's also a powerful Python library that brings all the features of the command-line interface to your Python applications. Whether you're building data pipelines, automation scripts, or interactive notebooks, DBCrust's Python API provides a seamless bridge to your databases.
+DBCrust provides a comprehensive Python API for database operations, enabling direct integration into Python applications, scripts, and automation workflows. The API offers both high-level client classes and direct execution methods for maximum flexibility.
 
-## 🐍 Why Use DBCrust in Python?
+## 🚀 Quick Start
 
-### Unified Database Interface
+### Basic Python Integration
 
 ```python
 import dbcrust
 
-# Same API works with any database
-postgres_result = dbcrust.run_command(
-    "postgres://user@localhost/db", 
-    "SELECT COUNT(*) FROM users"
+# Direct command execution
+result = dbcrust.run_command(
+    "postgres://user@localhost/myapp",
+    "SELECT * FROM users WHERE active = true"
 )
 
-mysql_result = dbcrust.run_command(
-    "mysql://user@localhost/db", 
-    "SELECT COUNT(*) FROM customers"
-)
-
-sqlite_result = dbcrust.run_command(
-    "sqlite:///data.db", 
-    "SELECT COUNT(*) FROM products"
-)
+# Launch interactive CLI from Python
+dbcrust.run_cli("postgres://user@localhost/myapp")
 ```
 
-### Rich Feature Set
-
-- **Smart Autocompletion** - Tab completion in Jupyter notebooks
-- **Django ORM Analyzer** - Detect N+1 queries and optimization opportunities
-- **Query Analysis** - EXPLAIN plans accessible in Python
-- **Secure Connections** - SSH tunnels and Vault integration
-- **Performance** - Rust-powered speed with Python convenience
-- **Interactive CLI** - Launch full CLI from Python scripts
-
-## 🚀 Installation
-
-Install DBCrust with Python support:
+### Installation
 
 ```bash
-# Using uv (recommended)
+# Using uv (recommended for projects)
 uv add dbcrust
 
-# Using pip
-pip install dbcrust
+# Using uv tool (recommended for CLI usage)
+uv tool install dbcrust
 ```
 
-## 📚 API Patterns
-
-DBCrust provides four main patterns for Python integration:
+## 🏗️ API Patterns
 
 ### 1. Direct Command Execution
 
@@ -58,463 +38,199 @@ Execute SQL queries and backslash commands directly:
 ```python
 import dbcrust
 
-# Execute SQL queries
+# SQL queries
 result = dbcrust.run_command(
     "postgres://postgres@localhost/myapp",
-    "SELECT name, email FROM users WHERE created_at > current_date - interval '7 days'"
+    "SELECT name, email FROM users LIMIT 10"
 )
 
-# Execute backslash commands
-tables = dbcrust.run_command(
-    "postgres://postgres@localhost/myapp",
-    "\\dt"
-)
-
-databases = dbcrust.run_command(
-    "postgres://postgres@localhost/myapp", 
-    "\\l"
-)
+# Backslash commands
+tables = dbcrust.run_command("postgres://postgres@localhost/myapp", "\\dt")
+databases = dbcrust.run_command("postgres://postgres@localhost/myapp", "\\l")
 ```
 
-### 2. Programmatic Execution with Arguments
-
-Execute commands with additional CLI arguments for automation scripts:
+### 2. Programmatic Execution with CLI Options
 
 ```python
 import dbcrust
 
-# Execute with additional CLI options
+# Execute with CLI arguments
 result = dbcrust.run_with_url(
     "postgres://postgres@localhost/myapp",
     ["--debug", "--no-banner", "-c", "\\dt"]
 )
 
-# Useful for automation where you need CLI flags
+# JSON output for automation
 dbcrust.run_with_url(
     "postgres://postgres@localhost/myapp",
     ["-o", "json", "-c", "SELECT * FROM users LIMIT 5"]
 )
-
-# Clean programmatic calls without sys.argv conflicts
-dbcrust.run_with_url("session://production")
 ```
 
 ### 3. Interactive CLI Integration
 
-Launch the full interactive CLI from Python:
-
 ```python
 import dbcrust
 
-# Launch interactive CLI
+# Launch full interactive CLI
 dbcrust.run_cli("postgres://postgres@localhost/myapp")
 
-# Or let user choose connection interactively
+# Interactive connection selection
 dbcrust.run_cli()
 ```
 
-### 4. Database Client Classes
-
-Use rich client objects for specific database types:
-
-```python
-from dbcrust import PostgresClient
-
-# Create client
-client = PostgresClient(
-    host="localhost",
-    port=5432,
-    user="postgres",
-    password="secret",
-    dbname="myapp"
-)
-
-# Execute queries
-results = client.execute("SELECT * FROM users LIMIT 10")
-tables = client.list_tables()
-databases = client.list_databases()
-```
-
-## 🔍 Django ORM Performance Analysis
-
-DBCrust includes a powerful Django ORM analyzer that automatically detects performance issues in your Django applications:
-
-```python
-from dbcrust.django import analyzer
-
-# Analyze Django ORM queries for performance issues
-with analyzer.analyze() as analysis:
-    # Your Django ORM code here
-    books = Book.objects.all()
-    for book in books:
-        print(book.author.name)  # Will detect N+1 query
-
-# Get detailed analysis results
-results = analysis.get_results()
-print(results.summary)
-```
-
-**Key Features:**
-- **N+1 Query Detection** - Automatically identifies N+1 query patterns
-- **Missing Optimizations** - Detects missing `select_related()` and `prefetch_related()`
-- **Transaction Safety** - Optional rollback mode for safe analysis
-- **EXPLAIN Integration** - Combines with DBCrust for database-level insights
-- **Actionable Recommendations** - Provides specific code suggestions
-
-**Example Output:**
-```
-Django Query Analysis Summary
-============================
-Total Queries: 15
-Total Duration: 245.67ms
-
-Performance Issues Detected:
-  🔴 N Plus One: 1
-  🟡 Missing Select Related: 2
-  🟡 Large Result Set: 1
-
-🚨 CRITICAL (1 issues):
-   - Fix N+1 Query Problem
-```
-
-**Perfect for:**
-- Development debugging
-- Performance testing in CI/CD
-- Production monitoring
-- Code review automation
-
-[**📖 Complete Django Analyzer Guide →**](/dbcrust/django-analyzer/)
-
 ## 🎯 Common Use Cases
 
-### Data Analysis Workflows
+### Data Analysis & ETL
 
 ```python
 import dbcrust
 import pandas as pd
+import json
 
-# Extract data with complex query
-query = """
-SELECT 
-    date_trunc('month', created_at) as month,
-    status,
-    COUNT(*) as count,
-    AVG(amount) as avg_amount
-FROM orders 
-WHERE created_at >= '2024-01-01'
-GROUP BY month, status
-ORDER BY month, status
-"""
-
+# Extract data
 result = dbcrust.run_command(
     "postgres://analyst@warehouse/analytics",
-    query
+    """
+    SELECT date_trunc('month', created_at) as month,
+           COUNT(*) as orders,
+           SUM(amount) as revenue
+    FROM orders
+    WHERE created_at >= '2024-01-01'
+    GROUP BY month ORDER BY month
+    """
 )
 
-# Convert to pandas DataFrame for analysis
-df = pd.read_json(result)
+# Convert to pandas DataFrame
+df = pd.DataFrame(json.loads(result))
 ```
 
 ### Database Administration
 
 ```python
 import dbcrust
-from datetime import datetime
 
-def database_health_check(connection_url):
-    """Comprehensive database health check"""
-    
-    # Check connection
+def health_check(connection_url):
+    """Database health check"""
+    # Check version
     version = dbcrust.run_command(connection_url, "SELECT version()")
-    
+
     # Check table sizes
     sizes = dbcrust.run_command(connection_url, """
-        SELECT 
-            schemaname,
-            tablename,
-            pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size
-        FROM pg_tables 
-        WHERE schemaname = 'public'
-        ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
-        LIMIT 10
+        SELECT tablename, pg_size_pretty(pg_total_relation_size(tablename))
+        FROM pg_tables WHERE schemaname = 'public'
+        ORDER BY pg_total_relation_size(tablename) DESC LIMIT 5
     """)
-    
-    # Check active connections
-    connections = dbcrust.run_command(connection_url, """
-        SELECT state, COUNT(*) 
-        FROM pg_stat_activity 
-        WHERE state IS NOT NULL 
-        GROUP BY state
-    """)
-    
-    return {
-        'timestamp': datetime.now(),
-        'version': version,
-        'top_tables': sizes,
-        'connections': connections
-    }
 
-# Run health check
-health = database_health_check("postgres://admin@prod-db/main")
-print(f"Health check completed at {health['timestamp']}")
+    return {"version": version, "top_tables": sizes}
 ```
 
-### ETL Pipelines
-
-```python
-import dbcrust
-import json
-
-def sync_user_data():
-    """Sync users from MySQL to PostgreSQL"""
-    
-    # Extract from MySQL
-    mysql_users = dbcrust.run_command(
-        "mysql://reader@legacy-db/crm",
-        """
-        SELECT 
-            id, 
-            email, 
-            first_name, 
-            last_name, 
-            created_at,
-            updated_at
-        FROM users 
-        WHERE updated_at >= DATE_SUB(NOW(), INTERVAL 1 HOUR)
-        """
-    )
-    
-    # Parse results
-    users = json.loads(mysql_users)
-    
-    # Load into PostgreSQL
-    for user in users:
-        query = f"""
-        INSERT INTO users (
-            legacy_id, email, first_name, last_name, created_at, updated_at
-        ) VALUES (
-            {user['id']}, 
-            '{user['email']}', 
-            '{user['first_name']}', 
-            '{user['last_name']}', 
-            '{user['created_at']}',
-            '{user['updated_at']}'
-        )
-        ON CONFLICT (legacy_id) DO UPDATE SET
-            email = EXCLUDED.email,
-            first_name = EXCLUDED.first_name,
-            last_name = EXCLUDED.last_name,
-            updated_at = EXCLUDED.updated_at
-        """
-        
-        dbcrust.run_command(
-            "postgres://writer@data-warehouse/analytics",
-            query
-        )
-    
-    print(f"Synced {len(users)} users")
-
-# Run ETL job
-sync_user_data()
-```
-
-### Testing and Development
+### Testing & Development
 
 ```python
 import dbcrust
 import pytest
 
-class TestUserQueries:
-    
-    @pytest.fixture
-    def test_db(self):
-        """Setup test database"""
-        # Create test data
-        dbcrust.run_command(
-            "postgres://test@localhost/test_db",
-            """
-            INSERT INTO users (name, email, status) VALUES 
-            ('Alice', 'alice@test.com', 'active'),
-            ('Bob', 'bob@test.com', 'inactive'),
-            ('Charlie', 'charlie@test.com', 'active')
-            """
-        )
-        yield "postgres://test@localhost/test_db"
-        
-        # Cleanup
-        dbcrust.run_command(
-            "postgres://test@localhost/test_db",
-            "TRUNCATE users"
-        )
-    
-    def test_active_user_count(self, test_db):
-        """Test active user counting"""
-        result = dbcrust.run_command(
-            test_db,
-            "SELECT COUNT(*) as count FROM users WHERE status = 'active'"
-        )
-        
-        data = json.loads(result)
-        assert data[0]['count'] == 2
+@pytest.fixture
+def test_db():
+    """Setup test database"""
+    dbcrust.run_command("sqlite:///test.db", """
+        CREATE TABLE IF NOT EXISTS users (id INTEGER, name TEXT, email TEXT);
+        INSERT INTO users VALUES (1, 'Alice', 'alice@test.com');
+    """)
+    yield "sqlite:///test.db"
+    dbcrust.run_command("sqlite:///test.db", "DROP TABLE users")
+
+def test_user_count(test_db):
+    result = dbcrust.run_command(test_db, "SELECT COUNT(*) as count FROM users")
+    data = json.loads(result)
+    assert data[0]['count'] == 1
 ```
 
 ## 🔧 Advanced Features
 
-### SSH Tunneling
+### All Connection Types Supported
 
 ```python
-import dbcrust
+# Standard databases
+dbcrust.run_command("postgres://user@host:5432/db", "SELECT 1")
+dbcrust.run_command("mysql://user@host:3306/db", "SELECT 1")
+dbcrust.run_command("sqlite:///path/to/file.db", "SELECT 1")
 
-# Automatic SSH tunneling (configured in ~/.config/dbcrust/config.toml)
+# Advanced connection types
+dbcrust.run_command("session://saved_session", "SELECT 1")
+dbcrust.run_command("docker://container/db", "SELECT 1")
+dbcrust.run_command("vault://role@mount/database", "SELECT 1")
+```
+
+### SSH Tunneling & Vault Integration
+
+```python
+# SSH tunneling (configured automatically)
 result = dbcrust.run_command(
     "postgres://user@db.internal.company.com/prod",
     "SELECT COUNT(*) FROM orders"
-    # SSH tunnel automatically established
 )
 
-# Manual SSH tunnel
-result = dbcrust.run_command(
-    "postgres://user@internal-db/prod",
-    "SELECT COUNT(*) FROM orders",
-    ssh_tunnel="user@jumphost.company.com:2222"
-)
-```
-
-### Vault Integration
-
-```python
-import dbcrust
-import os
-
-# Set Vault environment
-os.environ['VAULT_ADDR'] = 'https://vault.company.com'
-os.environ['VAULT_TOKEN'] = 'your-token'
-
-# Use Vault for dynamic credentials
+# Vault dynamic credentials
 result = dbcrust.run_command(
     "vault://app-role@database/postgres-prod",
-    "SELECT COUNT(*) FROM sensitive_table"
+    "SELECT COUNT(*) FROM sensitive_data"
 )
 ```
 
-### Docker Database Access
+### Error Handling
 
 ```python
-import dbcrust
-
-# Connect to containerized databases
-postgres_result = dbcrust.run_command(
-    "docker://postgres-container",
-    "SELECT version()"
-)
-
-# With explicit credentials
-mysql_result = dbcrust.run_command(
-    "docker://user:pass@mysql-container/testdb",
-    "SHOW TABLES"
-)
-```
-
-## 🔍 Error Handling
-
-```python
-import dbcrust
-import json
-
 def safe_query(connection_url, query):
-    """Execute query with proper error handling"""
+    """Execute query with error handling"""
     try:
         result = dbcrust.run_command(connection_url, query)
         return json.loads(result)
     except Exception as e:
         if "connection refused" in str(e):
-            print("Database is not reachable")
+            return {"error": "Database unreachable"}
         elif "authentication failed" in str(e):
-            print("Invalid credentials")
-        elif "syntax error" in str(e):
-            print(f"SQL syntax error: {e}")
+            return {"error": "Invalid credentials"}
         else:
-            print(f"Unexpected error: {e}")
-        return None
-
-# Use safe query execution
-data = safe_query(
-    "postgres://user@localhost/db",
-    "SELECT * FROM users LIMIT 10"
-)
-
-if data:
-    print(f"Found {len(data)} users")
+            return {"error": f"Query failed: {e}"}
 ```
 
-## 📊 Integration with Data Science Tools
+## 🔍 Django Integration
 
-### Pandas Integration
+DBCrust includes powerful Django ORM analysis capabilities:
 
 ```python
-import dbcrust
-import pandas as pd
-import json
+from dbcrust.django import analyzer
 
-def dbcrust_to_dataframe(connection_url, query):
-    """Convert DBCrust results to pandas DataFrame"""
-    result = dbcrust.run_command(connection_url, query)
-    data = json.loads(result)
-    return pd.DataFrame(data)
+# Analyze Django ORM performance issues
+with analyzer.analyze() as analysis:
+    books = Book.objects.all()
+    for book in books:
+        print(book.author.name)  # Detects N+1 queries
 
-# Use in data analysis
-df = dbcrust_to_dataframe(
-    "postgres://analyst@warehouse/sales",
-    """
-    SELECT 
-        product_category,
-        EXTRACT(month FROM order_date) as month,
-        SUM(amount) as revenue
-    FROM orders 
-    WHERE order_date >= '2024-01-01'
-    GROUP BY product_category, month
-    ORDER BY month, product_category
-    """
-)
-
-# Analyze with pandas
-monthly_revenue = df.groupby('month')['revenue'].sum()
-print(monthly_revenue)
+results = analysis.get_results()
+print(f"Found {len(results.n_plus_one_issues)} N+1 query issues")
 ```
 
-### Jupyter Notebook Integration
+**Key Features:**
+- N+1 query detection
+- Missing `select_related()` and `prefetch_related()` detection
+- Performance recommendations
+- CI/CD integration support
 
-```python
-# In Jupyter notebook
-import dbcrust
+[**📖 Complete Django Guide →**](/dbcrust/django-analyzer/)
 
-# Set up connection for the session
-CONNECTION = "postgres://analyst@warehouse/analytics"
+## 📚 See Also
 
-def query(sql):
-    """Convenience function for notebook queries"""
-    return dbcrust.run_command(CONNECTION, sql)
-
-# Use throughout notebook
-query("\\dt")  # List tables
-query("SELECT COUNT(*) FROM users")  # Quick counts
-query("\\d users")  # Describe table structure
-```
-
-## 📚 API Reference
-
-For more information, see:
-
-- **[Django ORM Analyzer](/dbcrust/django-analyzer/)** - Complete Django performance analysis guide
-- **[Quick Start](/dbcrust/quick-start/)** - Get started with DBCrust
-- **[User Guide](/dbcrust/user-guide/basic-usage/)** - Complete feature walkthrough
-- **[Installation](/dbcrust/installation/)** - Setup instructions
-- **[Configuration](/dbcrust/configuration/)** - Configuration options
+- **[Direct Execution](/dbcrust/python-api/direct-execution/)** - Detailed execution patterns
+- **[Client Classes](/dbcrust/python-api/client-classes/)** - Advanced client APIs
+- **[Examples & Use Cases](/dbcrust/python-api/examples/)** - Real-world integration patterns
 
 ---
 
 <div align="center">
-    <strong>Ready to integrate DBCrust into your Python workflow?</strong><br>
-    <a href="/dbcrust/quick-start/" class="md-button md-button--primary">Get Started</a>
-    <a href="/dbcrust/user-guide/basic-usage/" class="md-button">User Guide</a>
+    <strong>Ready to integrate DBCrust into your Python applications?</strong><br>
+    <a href="/dbcrust/python-api/direct-execution/" class="md-button md-button--primary">Direct Execution</a>
+    <a href="/dbcrust/python-api/examples/" class="md-button">Examples</a>
 </div>

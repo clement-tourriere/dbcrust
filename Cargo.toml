@@ -2,7 +2,7 @@
 name = "dbcrust"
 version = "0.16.0"
 edition = "2024"
-description = "Multi-database interactive client (PostgreSQL, SQLite, MySQL) with tab completion"
+description = "High-performance database CLI engineered for Django developers — Advanced ORM analysis, performance optimization, SSH tunneling, and seamless multi-database support"
 authors = ["dbcrust authors"]
 default-run = "dbcrust"
 

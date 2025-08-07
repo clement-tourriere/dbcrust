@@ -1,8 +1,8 @@
 <h1 align="center" style="font-size: 3em; font-weight: 800; margin: 0.5em 0; background: linear-gradient(to right, #7e57c2, #5e35b1); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">DBCrust</h1>
 
 <p align="center">
-<strong>The modern database CLI that speaks your language</strong><br>
-<em>PostgreSQL • MySQL • SQLite with zero compromises</em>
+<strong>High-performance database CLI for developers</strong><br>
+<em>Advanced ORM analysis • Multi-database support • SSH tunneling • Vault integration</em>
 </p>
 
 <p align="center">
@@ -16,14 +16,12 @@ L|Rust 2024|https://blog.rust-lang.org/2024/02/29/1.77.0.html|
 
 ## 🚀 Why DBCrust?
 
-DBCrust revolutionizes database interaction by combining the **speed of Rust** with the **simplicity of modern CLIs**.
-Whether you're debugging production issues, analyzing data, or automating workflows, DBCrust provides an unmatched
-developer experience.
+**A modern database CLI that speaks your language.** DBCrust combines the speed of Rust with intelligent features like context-aware autocompletion, SSH tunneling, Vault integration, and powerful Django ORM analysis. Whether you're debugging production issues, analyzing data, or optimizing Django applications, DBCrust provides an unmatched developer experience.
 
-!!! success "One Tool, All Databases"
-Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three languages fluently.
+!!! success "One Tool, All Databases + Advanced Django Analysis"
+    **PostgreSQL • MySQL • SQLite** with smart autocompletion • **SSH tunneling** for secure connections • **Vault integration** for dynamic credentials • **Django ORM analyzer** for performance optimization
 
-## ✨ Features That Matter
+## ✨ Core Features
 
 === "🧠 Smart & Intuitive"
 
@@ -40,7 +38,7 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     dbc docker://my[TAB] → docker://my-postgres-container
     dbc session://prod[TAB] → session://production_db
     ```
-    
+
     **Beautiful Query Visualization**
     ```
     ○ Execution Time: 1.23 ms • Planning Time: 0.15 ms
@@ -60,13 +58,17 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     dbcrust postgres://user@db.internal.company.com/prod
     # → Automatically routes through configured jumphost
     ```
-    
+
+    [**📖 Complete SSH Tunneling Guide →**](/dbcrust/advanced/ssh-tunneling/)
+
     **HashiCorp Vault Integration**
     ```bash
     # Dynamic credentials from Vault
     dbcrust vault://app-role@database/postgres-prod
     # → Fetches credentials automatically
     ```
+
+    [**📖 Complete Vault Integration Guide →**](/dbcrust/advanced/vault-integration/)
 
 === "🐳 DevOps Friendly"
 
@@ -77,59 +79,62 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     # → 1. postgres-dev (postgres:15)
     #   2. mysql-test (mysql:8.0)
     #   3. redis-cache (redis:7)
-    
+
     # Direct container access with autocompletion
     dbcrust docker://post[TAB] → docker://postgres-dev
     ```
-    
-    **OrbStack Support**
+
+    [**📖 Complete Docker Integration Guide →**](/dbcrust/advanced/docker-integration/)
+
+    **Session Management**
     ```bash
-    # Works with OrbStack DNS
-    dbcrust postgres://user@postgres.myproject.orb.local/db
+    # Save connections for easy reuse
+    \ss production_db
+
+    # Connect to saved sessions
+    dbcrust session://production_db
     ```
 
-=== "🐍 Python Integration"
+=== "🐍 Django ORM Analysis"
 
-    **Seamless API**
-    ```python
-    import dbcrust
-    
-    # Execute queries directly
-    result = dbcrust.run_command(
-        "postgres://user@localhost/db", 
-        "SELECT * FROM users LIMIT 10"
-    )
-    
-    # Launch interactive CLI
-    dbcrust.run_cli("postgres://user@localhost/db")
-    ```
-    
-    **Django ORM Analyzer**
+    **Real-Time N+1 Query Detection**
     ```python
     from dbcrust.django import analyzer
-    
-    # Detect N+1 queries and optimization opportunities
+
     with analyzer.analyze() as analysis:
+        # Your Django code
         books = Book.objects.all()
         for book in books:
-            print(book.author.name)  # Will detect N+1
-    
+            print(f"{book.title} by {book.author.name}")  # N+1 detected!
+
     results = analysis.get_results()
-    print(results.summary)  # Performance insights
+    print(results.optimization_suggestions)
     ```
-    
-    **Rich Client Class**
-    ```python
-    from dbcrust import PostgresClient
-    
-    client = PostgresClient(host="localhost", user="postgres")
-    results = client.execute("SELECT COUNT(*) FROM orders")
-    tables = client.list_tables()
+
+    **Performance Insights**
     ```
+    🚨 N+1 Query Detected (CRITICAL):
+      Query: SELECT * FROM books_book
+      Followed by: 25x SELECT * FROM authors_author WHERE id = ?
+
+    💡 Fix: books = Book.objects.select_related('author').all()
+    Performance: 156ms → 12ms (92% improvement)
+    ```
+
+    **Django Management Integration**
+    ```bash
+    # Connect using Django database settings
+    python manage.py dbcrust
+
+    # Analyze specific Django database
+    python manage.py dbcrust --database analytics
+    ```
+
+    [**📖 Complete Django Integration Guide →**](/dbcrust/django-analyzer/)
 
 ## 🏃‍♂️ Quick Start
 
-=== "Native Install (NEW! 🚀)"
+=== "Native Install (Fastest)"
 
     **Unix (macOS, Linux):**
     ```bash
@@ -147,32 +152,77 @@ Stop juggling between `psql`, `mysql`, and `sqlite3`. DBCrust speaks all three l
     dbc postgres://user:pass@localhost/mydb  # Short alias
     ```
 
-=== "uvx (Python)"
+=== "Python Package Managers"
 
     ```bash
+    # Install as a tool (recommended for CLI usage)
+    uv tool install dbcrust
+
     # Run immediately without installation
     uvx dbcrust postgres://user:pass@localhost/mydb
-    
-    # Or install globally
-    uv tool install dbcrust
-    dbcrust --help
-    ```
 
-=== "pip"
-
-    ```bash
-    pip install dbcrust
-    dbcrust postgres://user:pass@localhost/mydb
+    # Add to Python project
+    uv add dbcrust
+    pip install dbcrust  # traditional pip
     ```
 
 === "From Source"
 
     ```bash
-    git clone https://github.com/clement-tourriere/pgcrust.git
-    cd pgcrust
+    git clone https://github.com/clement-tourriere/dbcrust.git
+    cd dbcrust
     cargo install --path .
     dbcrust --help
     ```
+
+## 🎯 First Connection
+
+```bash
+# PostgreSQL
+dbcrust postgres://user:pass@localhost/myapp
+
+# MySQL
+dbcrust mysql://root:pass@localhost:3306/myapp
+
+# SQLite
+dbcrust sqlite:///./myapp.db
+
+# Docker containers (with auto-discovery)
+dbcrust docker://my-postgres-container
+dbcrust docker://   # Interactive selection
+
+# Saved sessions
+dbcrust session://production_db
+```
+
+## 🐍 Django Quick Start
+
+For Django developers, DBCrust provides specialized ORM analysis tools:
+
+```bash
+# Install in your Django project
+pip install dbcrust
+
+# Connect using Django settings
+cd your_django_project/
+python manage.py dbcrust
+
+# Test N+1 detection
+python manage.py shell
+```
+
+```python
+# In Django shell
+from dbcrust.django import analyzer
+
+with analyzer.analyze() as analysis:
+    for post in Post.objects.all():
+        print(post.author.name)  # N+1 detected!
+
+print(analysis.get_results().summary)
+```
+
+[**📖 Complete Django Setup Guide →**](/dbcrust/django-analyzer/)
 
 ## 🎯 Real-World Examples
 
@@ -300,3 +350,5 @@ dbcrust postgres://backup-user@replica.db.internal/app \
 
 *Built with ❤️ using [Rust](https://www.rust-lang.org/), [SQLx](https://github.com/launchbadge/sqlx),
 and [reedline](https://github.com/nushell/reedline)*
+
+*🤖 Proudly crafted with [Claude Code](https://claude.ai/code) — where AI meets thoughtful development.*

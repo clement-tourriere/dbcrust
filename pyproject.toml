@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "dbcrust"
 version = "0.16.0"
-description = "High-performance database CLI and Python library with Django ORM analysis, SSH tunneling, and multi-database support (PostgreSQL, MySQL, SQLite)"
+description = "High-performance database CLI engineered for Django developers — Advanced ORM analysis, performance optimization, SSH tunneling, and seamless multi-database support (PostgreSQL, MySQL, SQLite)"
 authors = [{ name = "Clément Tourrière", email = "clement.tourriere@gmail.com" }]
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -75,4 +75,3 @@ docs = [
 [project.scripts]
 dbc = "dbcrust.__main__:main"
 dbcrust = "dbcrust.__main__:main"
-
