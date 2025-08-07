@@ -60,9 +60,7 @@ pub fn page_output(content: &str, pager_cmd_str: &str) -> std::io::Result<()> {
             }
         }
         Err(e) => {
-            eprintln!(
-                "Failed to start pager '{pager_cmd_str}': {e}. Outputting directly."
-            );
+            eprintln!("Failed to start pager '{pager_cmd_str}': {e}. Outputting directly.");
             print!("{content}"); // Fallback to direct print
             Err(e)
         }

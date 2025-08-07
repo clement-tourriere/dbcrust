@@ -1,8 +1,8 @@
 use async_trait::async_trait;
-use strum::{Display, EnumIter, IntoStaticStr};
 use std::collections::HashMap;
 use std::error::Error;
 use std::str::FromStr;
+use strum::{Display, EnumIter, IntoStaticStr};
 use url::Url;
 
 use crate::config::Config;
@@ -83,7 +83,7 @@ pub enum UrlScheme {
 impl UrlScheme {
     /// Returns the URL prefix for this scheme (including ://)
     pub fn url_prefix(&self) -> String {
-        format!("{}://", self)
+        format!("{self}://")
     }
 
     /// Returns a description of what this scheme represents
@@ -108,14 +108,14 @@ impl UrlScheme {
     pub fn parse_url(url_string: &str) -> Result<ParsedUrl, UrlSchemeError> {
         // Handle URLs without scheme - default to postgres
         let full_url = if !url_string.contains("://") {
-            format!("postgres://{}", url_string)
+            format!("postgres://{url_string}")
         } else {
             url_string.to_string()
         };
 
         // Extract scheme from URL
         let scheme_end = full_url.find("://").ok_or_else(|| {
-            UrlSchemeError::InvalidUrl(format!("No scheme found in URL: {}", full_url))
+            UrlSchemeError::InvalidUrl(format!("No scheme found in URL: {full_url}"))
         })?;
         let scheme_str = &full_url[..scheme_end];
 
@@ -138,7 +138,7 @@ impl UrlScheme {
         } else {
             full_url.clone()
         };
-        
+
         let parsed_url = Url::parse(&normalized_url)?;
         Ok(ParsedUrl::new(scheme, normalized_url, Some(parsed_url)))
     }
@@ -221,9 +221,8 @@ impl UrlSchemeCompleter for DockerSchemeCompleter {
 
     async fn get_completions(&self, partial: &str) -> Result<Vec<String>, Box<dyn Error>> {
         // Create docker client
-        let docker_client = DockerClient::new().map_err(|e| {
-            format!("Failed to connect to Docker: {}", e)
-        })?;
+        let docker_client =
+            DockerClient::new().map_err(|e| format!("Failed to connect to Docker: {e}"))?;
 
         // Get database containers
         let containers = docker_client.list_database_containers().await?;
@@ -376,7 +375,7 @@ impl UrlSchemeManager {
                 // Format completions with the scheme prefix
                 Ok(completions
                     .into_iter()
-                    .map(|completion| format!("{}://{}", scheme_str, completion))
+                    .map(|completion| format!("{scheme_str}://{completion}"))
                     .collect())
             } else {
                 // Unknown scheme, no completions
@@ -502,19 +501,31 @@ mod tests {
         // Test unsupported scheme
         let result = UrlScheme::parse_url("unsupported://test");
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), UrlSchemeError::UnsupportedScheme(_)));
+        assert!(matches!(
+            result.unwrap_err(),
+            UrlSchemeError::UnsupportedScheme(_)
+        ));
     }
 
     #[test]
     fn test_scheme_from_string() {
-        assert_eq!(UrlScheme::from_str("postgresql").unwrap(), UrlScheme::Postgres);
-        assert_eq!(UrlScheme::from_str("postgres").unwrap(), UrlScheme::Postgres);
+        assert_eq!(
+            UrlScheme::from_str("postgresql").unwrap(),
+            UrlScheme::Postgres
+        );
+        assert_eq!(
+            UrlScheme::from_str("postgres").unwrap(),
+            UrlScheme::Postgres
+        );
         assert_eq!(UrlScheme::from_str("mysql").unwrap(), UrlScheme::MySQL);
         assert_eq!(UrlScheme::from_str("docker").unwrap(), UrlScheme::Docker);
         assert_eq!(UrlScheme::from_str("session").unwrap(), UrlScheme::Session);
-        
+
         // Case insensitive
-        assert_eq!(UrlScheme::from_str("POSTGRESQL").unwrap(), UrlScheme::Postgres);
+        assert_eq!(
+            UrlScheme::from_str("POSTGRESQL").unwrap(),
+            UrlScheme::Postgres
+        );
         assert_eq!(UrlScheme::from_str("MySQL").unwrap(), UrlScheme::MySQL);
 
         // Invalid scheme
@@ -527,7 +538,7 @@ mod tests {
         assert_eq!(UrlScheme::MySQL.to_database_type(), Some("MySQL"));
         assert_eq!(UrlScheme::SQLite.to_database_type(), Some("SQLite"));
         assert_eq!(UrlScheme::Docker.to_database_type(), Some("PostgreSQL")); // Default for docker
-        
+
         // Special schemes return None (resolved later)
         assert_eq!(UrlScheme::Session.to_database_type(), None);
         assert_eq!(UrlScheme::Recent.to_database_type(), None);

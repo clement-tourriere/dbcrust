@@ -226,7 +226,7 @@ impl Highlighter for SqlHighlighter {
         if let Ok(mut buffer_guard) = self.full_line_buffer.lock() {
             *buffer_guard = Some(line.to_string());
         }
-        
+
         let mut styled_text = StyledText::new();
         let mut last_end = 0;
 
@@ -404,7 +404,7 @@ mod tests {
 
     #[rstest]
     fn test_sql_keyword_highlighting() {
-        let highlighter = SqlHighlighter::new();
+        let highlighter = SqlHighlighter::new(Arc::new(Mutex::new(None)));
         let line = "SELECT * FROM users WHERE id = 123";
         let styled = highlighter.highlight(line, 0);
 
@@ -415,7 +415,7 @@ mod tests {
 
     #[rstest]
     fn test_sql_comment_highlighting() {
-        let highlighter = SqlHighlighter::new();
+        let highlighter = SqlHighlighter::new(Arc::new(Mutex::new(None)));
         let line = "SELECT * FROM users -- Get all users";
         let styled = highlighter.highlight(line, 0);
 
@@ -425,7 +425,7 @@ mod tests {
 
     #[rstest]
     fn test_sql_string_highlighting() {
-        let highlighter = SqlHighlighter::new();
+        let highlighter = SqlHighlighter::new(Arc::new(Mutex::new(None)));
         let line = "SELECT * FROM users WHERE name = 'John'";
         let styled = highlighter.highlight(line, 0);
 
@@ -435,34 +435,34 @@ mod tests {
 
     #[rstest]
     fn test_complex_sql_query() {
-        let highlighter = SqlHighlighter::new();
+        let highlighter = SqlHighlighter::new(Arc::new(Mutex::new(None)));
         let query = r#"
             WITH active_users AS (
-                SELECT 
-                    id, 
-                    first_name, 
+                SELECT
+                    id,
+                    first_name,
                     last_name,
                     CAST(created_at AS DATE) AS join_date
-                FROM 
+                FROM
                     users
-                WHERE 
+                WHERE
                     status = 'active' AND
                     created_at > '2023-01-01'
             )
-            SELECT 
+            SELECT
                 au.id,
                 au.first_name || ' ' || au.last_name AS full_name,
                 COUNT(o.id) AS total_orders,
                 SUM(o.amount) AS total_spent
-            FROM 
+            FROM
                 active_users au
-            LEFT JOIN 
+            LEFT JOIN
                 orders o ON au.id = o.user_id
-            GROUP BY 
+            GROUP BY
                 au.id, au.first_name, au.last_name
-            HAVING 
+            HAVING
                 COUNT(o.id) > 0
-            ORDER BY 
+            ORDER BY
                 total_spent DESC
             LIMIT 10;
             -- This query finds top 10 spending active users

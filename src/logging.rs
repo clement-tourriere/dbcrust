@@ -7,7 +7,6 @@ use std::time::SystemTime;
 
 use crate::config;
 
-
 static INIT: Once = Once::new();
 // Use a single Mutex instead of trying to manage raw pointers
 static mut LOG_FILE: Option<Mutex<Option<(File, PathBuf)>>> = None;
@@ -59,7 +58,6 @@ pub fn init() -> io::Result<()> {
             match OpenOptions::new()
                 .create(true)
                 .append(true)
-                
                 .open(&log_file_path)
             {
                 Ok(file) => {
@@ -129,7 +127,10 @@ fn log_message(message: &str) -> io::Result<()> {
 pub fn debug(message: &str) -> io::Result<()> {
     // Check if debug logging is enabled in the config before logging
     let config = config::Config::load();
-    if !matches!(config.logging.level, crate::config::LogLevel::Debug | crate::config::LogLevel::Trace) {
+    if !matches!(
+        config.logging.level,
+        crate::config::LogLevel::Debug | crate::config::LogLevel::Trace
+    ) {
         return Ok(());
     }
 

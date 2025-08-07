@@ -7,8 +7,10 @@ use crate::completion_provider::TableInfo;
 use crate::config::Config;
 use crate::database::DatabaseType;
 use crate::db::Database;
-use crate::sql_parser::{SqlContext, ExpectedElement, SqlClause};
-use crate::sql_parser_trait::{SqlParserEngine, SqlParserFactory, EnhancedSqlContext, CompletionHintCategory};
+use crate::sql_parser::{ExpectedElement, SqlClause, SqlContext};
+use crate::sql_parser_trait::{
+    CompletionHintCategory, EnhancedSqlContext, SqlParserEngine, SqlParserFactory,
+};
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Span, Suggestion};
 use std::collections::{HashMap, HashSet};
@@ -23,7 +25,6 @@ impl Completer for NoopCompleter {
         Vec::new()
     }
 }
-
 
 /// Enhanced SQL completer with proper parsing and context awareness
 pub struct SqlCompleter {
@@ -57,11 +58,9 @@ enum FromClauseState {
 
 impl SqlCompleter {
     pub fn new(database: Arc<Mutex<Database>>, config: Arc<Mutex<Config>>) -> Self {
-        let command_manager = CommandCompletionManager::new(
-            Arc::clone(&database),
-            Arc::clone(&config),
-        );
-        
+        let command_manager =
+            CommandCompletionManager::new(Arc::clone(&database), Arc::clone(&config));
+
         Self {
             database,
             config,
@@ -75,15 +74,13 @@ impl SqlCompleter {
     }
 
     pub fn new_with_line_buffer(
-        database: Arc<Mutex<Database>>, 
+        database: Arc<Mutex<Database>>,
         config: Arc<Mutex<Config>>,
         full_line_buffer: Arc<Mutex<Option<String>>>,
     ) -> Self {
-        let command_manager = CommandCompletionManager::new(
-            Arc::clone(&database),
-            Arc::clone(&config),
-        );
-        
+        let command_manager =
+            CommandCompletionManager::new(Arc::clone(&database), Arc::clone(&config));
+
         Self {
             database,
             config,
@@ -107,15 +104,16 @@ impl SqlCompleter {
     fn check_cache_validity(&mut self) {
         let (current_db, _has_connection) = {
             let db_guard = self.database.lock().unwrap();
-            (db_guard.get_current_db(), db_guard.has_database_connection())
+            (
+                db_guard.get_current_db(),
+                db_guard.has_database_connection(),
+            )
         };
-
 
         if self.last_db_name.as_ref() != Some(&current_db) {
             self.clear_cache();
             self.last_db_name = Some(current_db);
         }
-
     }
 
     /// Get schemas (with caching)
@@ -127,15 +125,13 @@ impl SqlCompleter {
 
         let db_clone = Arc::clone(&self.database);
         let schemas = match tokio::runtime::Handle::try_current() {
-            Ok(_) => {
-                tokio::task::block_in_place(|| {
-                    let handle = tokio::runtime::Handle::current();
-                    handle.block_on(async {
-                        let mut db_guard = db_clone.lock().unwrap();
-                        db_guard.get_schemas().await.unwrap_or_default()
-                    })
+            Ok(_) => tokio::task::block_in_place(|| {
+                let handle = tokio::runtime::Handle::current();
+                handle.block_on(async {
+                    let mut db_guard = db_clone.lock().unwrap();
+                    db_guard.get_schemas().await.unwrap_or_default()
                 })
-            }
+            }),
             Err(_) => {
                 error!("No tokio runtime for schema fetch");
                 vec![]
@@ -149,35 +145,38 @@ impl SqlCompleter {
     /// Get tables for a schema (with caching)
     fn get_tables(&mut self, schema: Option<&str>) -> Vec<TableInfo> {
         let cache_key = schema.unwrap_or("").to_string();
-        
+
         if let Some(tables) = self.table_cache.get(&cache_key) {
             return tables.clone();
         }
 
         let db_clone = Arc::clone(&self.database);
         let schema_owned = schema.map(|s| s.to_string());
-        
+
         let tables = match tokio::runtime::Handle::try_current() {
             Ok(_) => {
                 tokio::task::block_in_place(|| {
                     let handle = tokio::runtime::Handle::current();
                     handle.block_on(async {
                         let mut db_guard = db_clone.lock().unwrap();
-                        
+
                         // Get table names
                         let table_names = if let Some(client) = db_guard.get_database_client() {
-                            client.get_metadata_provider()
+                            client
+                                .get_metadata_provider()
                                 .get_tables(schema_owned.as_deref())
                                 .await
                                 .unwrap_or_default()
                         } else {
-                            db_guard.get_tables_and_views(schema_owned.as_deref())
+                            db_guard
+                                .get_tables_and_views(schema_owned.as_deref())
                                 .await
                                 .unwrap_or_default()
                         };
-                        
+
                         // Convert to TableInfo
-                        table_names.into_iter()
+                        table_names
+                            .into_iter()
                             .map(|name| TableInfo {
                                 schema: schema_owned.clone(),
                                 name,
@@ -209,8 +208,13 @@ impl SqlCompleter {
     }
 
     /// Analyze the current state in FROM clause for accurate completion
-    fn analyze_from_clause_state(&self, _sql: &str, cursor_pos: usize, context: &SqlContext, current_word: &str) -> FromClauseState {
-               
+    fn analyze_from_clause_state(
+        &self,
+        _sql: &str,
+        cursor_pos: usize,
+        context: &SqlContext,
+        current_word: &str,
+    ) -> FromClauseState {
         // If no tables parsed yet, we're expecting/typing a table name
         if context.tables.is_empty() {
             if current_word.is_empty() {
@@ -219,11 +223,11 @@ impl SqlCompleter {
                 return FromClauseState::TypingTable;
             }
         }
-        
+
         // We have parsed tables - check if cursor is after a complete table reference
         for table_ref in &context.tables {
             let table_end_pos = table_ref.position + table_ref.table.len();
-            
+
             // Add alias length if present
             let total_table_ref_end = if let Some(alias) = &table_ref.alias {
                 // Account for "table alias" pattern (table + space + alias)
@@ -231,8 +235,7 @@ impl SqlCompleter {
             } else {
                 table_end_pos
             };
-            
-            
+
             // If cursor is after this table reference
             if cursor_pos > total_table_ref_end {
                 // Check if we're typing a keyword
@@ -245,7 +248,7 @@ impl SqlCompleter {
                 return FromClauseState::AfterTable;
             }
         }
-        
+
         // Fallback: if we have tables but cursor position analysis failed
         if current_word.is_empty() {
             FromClauseState::AfterTable
@@ -255,60 +258,88 @@ impl SqlCompleter {
             FromClauseState::TypingTable
         }
     }
-    
+
     /// Check if a partial word could be a SQL keyword
     fn could_be_sql_keyword(&self, word: &str) -> bool {
         let upper_word = word.to_uppercase();
         let sql_keywords = [
-            "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS",
-            "ON", "USING", "GROUP", "ORDER", "HAVING", "LIMIT", "OFFSET",
-            "UNION", "INTERSECT", "EXCEPT", "AND", "OR", "NOT"
+            "WHERE",
+            "JOIN",
+            "INNER",
+            "LEFT",
+            "RIGHT",
+            "FULL",
+            "OUTER",
+            "CROSS",
+            "ON",
+            "USING",
+            "GROUP",
+            "ORDER",
+            "HAVING",
+            "LIMIT",
+            "OFFSET",
+            "UNION",
+            "INTERSECT",
+            "EXCEPT",
+            "AND",
+            "OR",
+            "NOT",
         ];
-        
-        // Check if any SQL keyword starts with this word
-        sql_keywords.iter().any(|keyword| keyword.starts_with(&upper_word))
-    }
 
+        // Check if any SQL keyword starts with this word
+        sql_keywords
+            .iter()
+            .any(|keyword| keyword.starts_with(&upper_word))
+    }
 
     /// Get columns for a table (with caching)
     fn get_columns(&mut self, table: &str) -> Vec<String> {
-        
         if let Some(columns) = self.column_cache.get(table) {
             return columns.clone();
         }
 
         let db_clone = Arc::clone(&self.database);
         let table_owned = table.to_string();
-        
+
         // Check database connection first with detailed debugging
         let has_connection = {
             let db_guard = db_clone.lock().unwrap();
             let has_conn = db_guard.has_database_connection();
             let conn_info = db_guard.get_connection_info();
-            debug!("[SqlCompleter] Database connection check: has_connection={}, connection_info={:?}", 
-                   has_conn, conn_info);
+            debug!(
+                "[SqlCompleter] Database connection check: has_connection={}, connection_info={:?}",
+                has_conn, conn_info
+            );
             has_conn
         };
 
         let columns = if !has_connection {
             vec![]
         } else {
-            debug!("[SqlCompleter] ✅ Database connection available! Attempting to fetch columns for '{}'", table);
+            debug!(
+                "[SqlCompleter] ✅ Database connection available! Attempting to fetch columns for '{}'",
+                table
+            );
             match tokio::runtime::Handle::try_current() {
                 Ok(_) => {
-                    debug!("[SqlCompleter] Tokio runtime available, proceeding with async column fetch");
+                    debug!(
+                        "[SqlCompleter] Tokio runtime available, proceeding with async column fetch"
+                    );
                     tokio::task::block_in_place(|| {
                         let handle = tokio::runtime::Handle::current();
                         handle.block_on(async {
                             let mut db_guard = db_clone.lock().unwrap();
-                            debug!("[SqlCompleter] Calling db_guard.get_columns('{}') ...", table_owned);
+                            debug!(
+                                "[SqlCompleter] Calling db_guard.get_columns('{}') ...",
+                                table_owned
+                            );
                             match db_guard.get_columns(&table_owned).await {
-                                Ok(cols) => {
-                                    cols
-                                }
+                                Ok(cols) => cols,
                                 Err(e) => {
-                                    error!("[SqlCompleter] ❌ Failed to fetch columns for '{}': {}", 
-                                           table_owned, e);
+                                    error!(
+                                        "[SqlCompleter] ❌ Failed to fetch columns for '{}': {}",
+                                        table_owned, e
+                                    );
                                     debug!("[SqlCompleter] Column fetch error details: {:?}", e);
                                     // Return empty list on error, don't crash
                                     vec![]
@@ -318,57 +349,71 @@ impl SqlCompleter {
                     })
                 }
                 Err(e) => {
-                    error!("[SqlCompleter] ❌ No tokio runtime for column fetch: {:?}", e);
+                    error!(
+                        "[SqlCompleter] ❌ No tokio runtime for column fetch: {:?}",
+                        e
+                    );
                     debug!("[SqlCompleter] This might be why column fetching is failing");
                     vec![]
                 }
             }
         };
 
-        debug!("[SqlCompleter] Caching {} columns for table '{}'", columns.len(), table);
+        debug!(
+            "[SqlCompleter] Caching {} columns for table '{}'",
+            columns.len(),
+            table
+        );
         if columns.is_empty() {
-            debug!("[SqlCompleter] ⚠️  WARNING: No columns found for table '{}' - this will cause empty completion!", table);
+            debug!(
+                "[SqlCompleter] ⚠️  WARNING: No columns found for table '{}' - this will cause empty completion!",
+                table
+            );
         } else {
-            debug!("[SqlCompleter] ✅ Successfully cached {} columns for table '{}'", columns.len(), table);
+            debug!(
+                "[SqlCompleter] ✅ Successfully cached {} columns for table '{}'",
+                columns.len(),
+                table
+            );
         }
         self.column_cache.insert(table.to_string(), columns.clone());
         debug!("[SqlCompleter] =================== get_columns END ===================");
         columns
     }
 
-
     /// Complete \ns command with complex syntax: \ns query_name SQL_QUERY [--flags]
     fn complete_ns_command(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         debug!("Completing \\ns command: '{}', pos: {}", line, pos);
-        
+
         // Parse the \ns command structure
         let content = &line[4..]; // Remove "\ns "
         let parts: Vec<&str> = content.split_whitespace().collect();
-        
+
         if parts.is_empty() || (parts.len() == 1 && pos <= 4 + parts[0].len()) {
             // Completing query name (first argument)
             debug!("Completing query name for \\ns");
             return self.complete_backslash_commands(line, pos);
         }
-        
+
         // Find the position ranges for different parts
         let query_name_end = if let Some(first_space) = content.find(' ') {
             4 + first_space // \ns + space + query_name + space
         } else {
             line.len()
         };
-        
+
         // Check if we're completing flags (position after --)
         let mut flag_start_pos = None;
         let mut in_flags = false;
-        
+
         // Look for flag patterns in the line
-        for (i, part) in parts.iter().enumerate().skip(1) { // Skip query name
+        for (i, part) in parts.iter().enumerate().skip(1) {
+            // Skip query name
             if part.starts_with("--") {
                 // Calculate the position of this flag in the original line
                 let parts_before: String = parts[..i].join(" ");
                 flag_start_pos = Some(4 + parts_before.len() + 1); // \ns + space + parts before + space
-                
+
                 // Check if cursor is in the flag area
                 let flag_area_start = flag_start_pos.unwrap();
                 if pos >= flag_area_start {
@@ -377,21 +422,21 @@ impl SqlCompleter {
                 }
             }
         }
-        
+
         if in_flags {
             // Completing flags - delegate to CommandCompletionManager
             debug!("Completing flags for \\ns command");
             return self.complete_backslash_commands(line, pos);
         }
-        
+
         // We're in the SQL portion - extract it and use SQL completion
         let sql_start = query_name_end + 1; // After query name and space
-        
+
         if pos <= sql_start {
             // Still in the transition area, no completion
             return Vec::new();
         }
-        
+
         // Find where SQL ends (before flags, if any)
         let sql_end = if let Some(flag_pos) = flag_start_pos {
             // SQL ends before the first flag
@@ -400,56 +445,65 @@ impl SqlCompleter {
             // No flags, SQL goes to end of line
             line.len()
         };
-        
+
         if pos > sql_end {
             // Past the SQL area, no completion
             return Vec::new();
         }
-        
+
         // Extract SQL portion and delegate to SQL completion
         let sql_part = &line[sql_start..sql_end];
         let sql_pos = pos - sql_start;
-        
-        debug!("\\ns SQL completion: SQL='{}', sql_pos={}", sql_part, sql_pos);
-        
+
+        debug!(
+            "\\ns SQL completion: SQL='{}', sql_pos={}",
+            sql_part, sql_pos
+        );
+
         // Use the existing SQL completion logic
         let sql_suggestions = self.complete_sql_query(sql_part, sql_pos, sql_start);
-        debug!("\\ns SQL completion returned {} suggestions", sql_suggestions.len());
-        
+        debug!(
+            "\\ns SQL completion returned {} suggestions",
+            sql_suggestions.len()
+        );
+
         sql_suggestions
     }
 
     /// Complete backslash commands using the new trait-based system
     fn complete_backslash_commands(&self, line: &str, pos: usize) -> Vec<Suggestion> {
         // Parse the command line to determine if we're completing command name or arguments
-        if let Some((command, args, args_pos)) = self.command_manager.parse_command_line(line, pos) {
+        if let Some((command, args, args_pos)) = self.command_manager.parse_command_line(line, pos)
+        {
             if pos <= command.len() {
                 // Completing command name (cursor is still within the command itself)
                 let word_start = line[..pos].rfind(' ').map_or(0, |idx| idx + 1);
                 let current_word = &line[word_start..pos];
-                return self.command_manager.get_command_completions(current_word, word_start, pos);
+                return self
+                    .command_manager
+                    .get_command_completions(current_word, word_start, pos);
             } else {
                 // Completing command arguments using tokio runtime
                 let argument_completions = match tokio::runtime::Handle::try_current() {
-                    Ok(_) => {
-                        tokio::task::block_in_place(|| {
-                            let handle = tokio::runtime::Handle::current();
-                            handle.block_on(async {
-                                self.command_manager.get_argument_completions(&command, &args, args_pos).await
-                            })
+                    Ok(_) => tokio::task::block_in_place(|| {
+                        let handle = tokio::runtime::Handle::current();
+                        handle.block_on(async {
+                            self.command_manager
+                                .get_argument_completions(&command, &args, args_pos)
+                                .await
                         })
-                    }
+                    }),
                     Err(_) => {
                         debug!("No tokio runtime for command argument completion");
                         Vec::new()
                     }
                 };
-                
+
                 // Return argument completions (even if empty - don't fall back to command completions)
                 return argument_completions;
             }
         }
-        
+
         // Fallback to old behavior if parsing fails
         let mut completions = Vec::new();
         let word_start = line[..pos].rfind(' ').map_or(0, |idx| idx + 1);
@@ -462,7 +516,10 @@ impl SqlCompleter {
                     completions.push(Suggestion {
                         value: cmd_name.to_string(),
                         description: Some(cmd_description.to_string()),
-                        span: Span { start: word_start, end: pos },
+                        span: Span {
+                            start: word_start,
+                            end: pos,
+                        },
                         append_whitespace: true,
                         extra: None,
                         style: None,
@@ -475,35 +532,46 @@ impl SqlCompleter {
     }
 
     /// Get enhanced SQL keywords based on context using database-specific parser
-    fn get_enhanced_contextual_keywords(&self, context: &EnhancedSqlContext, parser: &Box<dyn SqlParserEngine>) -> Vec<&'static str> {
+    fn get_enhanced_contextual_keywords(
+        &self,
+        context: &EnhancedSqlContext,
+        parser: &dyn SqlParserEngine,
+    ) -> Vec<&'static str> {
         // Use database-specific keywords based on the current clause, but prioritize basic SQL structure
         use crate::sql_parser_trait::KeywordCategory;
-        
+
         match context.base_context.current_clause {
             SqlClause::Select => {
                 // For SELECT, prioritize structural keywords, then add functions
-                let mut keywords = vec!["FROM", "WHERE", "GROUP", "ORDER", "LIMIT", "UNION", "DISTINCT", "*"];
+                let mut keywords = vec![
+                    "FROM", "WHERE", "GROUP", "ORDER", "LIMIT", "UNION", "DISTINCT", "*",
+                ];
                 let functions = parser.get_keywords_by_category(KeywordCategory::Functions);
                 keywords.extend(functions);
                 keywords
-            },
+            }
             SqlClause::From => {
                 // Only suggest keywords after a table has been specified
-                vec!["WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ORDER", "GROUP"]
-            },
+                vec![
+                    "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ORDER", "GROUP",
+                ]
+            }
             SqlClause::Where => {
-                let mut keywords = vec!["AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE", "IS", "NULL", "ORDER", "GROUP"];
+                let mut keywords = vec![
+                    "AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE", "IS", "NULL", "ORDER",
+                    "GROUP",
+                ];
                 let operators = parser.get_keywords_by_category(KeywordCategory::Operators);
                 keywords.extend(operators);
                 keywords
-            },
+            }
             SqlClause::Join => vec!["ON", "USING", "WHERE", "GROUP", "ORDER", "LIMIT", "HAVING"],
             SqlClause::On => {
                 let mut keywords = vec!["AND", "OR"];
                 let operators = parser.get_keywords_by_category(KeywordCategory::Operators);
                 keywords.extend(operators);
                 keywords
-            },
+            }
             SqlClause::OrderBy => vec!["ASC", "DESC", "LIMIT"],
             SqlClause::GroupBy => vec!["HAVING", "ORDER"],
             SqlClause::Having => {
@@ -511,26 +579,27 @@ impl SqlCompleter {
                 let operators = parser.get_keywords_by_category(KeywordCategory::Operators);
                 keywords.extend(operators);
                 keywords
-            },
+            }
             SqlClause::Update => vec!["SET"],
             SqlClause::UpdateSet => vec!["WHERE"],
             SqlClause::Insert => vec!["INTO", "VALUES"],
             SqlClause::Delete => vec!["FROM"],
             _ => {
-                let mut keywords = vec!["SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP"];
+                let mut keywords = vec![
+                    "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP",
+                ];
                 let dml = parser.get_keywords_by_category(KeywordCategory::DML);
                 keywords.extend(dml);
                 keywords
-            },
+            }
         }
     }
-
 
     /// Generate suggestions based on enhanced SQL context with database-specific parsing
     fn generate_enhanced_sql_suggestions(
         &mut self,
         context: &EnhancedSqlContext,
-        parser: &Box<dyn SqlParserEngine>,
+        parser: &dyn SqlParserEngine,
         current_word: &str,
         word_start: usize,
         pos: usize,
@@ -541,40 +610,64 @@ impl SqlCompleter {
 
         // PRIORITY 1: Columns first in WHERE clause, then handle specific context logic
         let mut columns_added = false;
-        
+
         // Add columns first if we're in WHERE clause
         if context.base_context.current_clause == SqlClause::Where {
             debug!("[SqlCompleter] WHERE clause: prioritizing columns over keywords");
             for table_ref in &context.base_context.tables {
-                debug!("[SqlCompleter] Fetching columns for table: {}", table_ref.table);
+                debug!(
+                    "[SqlCompleter] Fetching columns for table: {}",
+                    table_ref.table
+                );
                 let columns = self.get_columns(&table_ref.table);
-                debug!("[SqlCompleter] Got {} columns from {}", columns.len(), table_ref.table);
-                
+                debug!(
+                    "[SqlCompleter] Got {} columns from {}",
+                    columns.len(),
+                    table_ref.table
+                );
+
                 // If user typed table prefix (e.g., "users.")
                 if current_word.contains('.') {
                     let parts: Vec<&str> = current_word.splitn(2, '.').collect();
                     if parts.len() == 2 {
                         let table_prefix = parts[0];
                         let column_prefix = parts[1];
-                        
-                        debug!("[SqlCompleter] Table-qualified column completion: {}.{}", 
-                               table_prefix, column_prefix);
-                        
+
+                        debug!(
+                            "[SqlCompleter] Table-qualified column completion: {}.{}",
+                            table_prefix, column_prefix
+                        );
+
                         // Check if this table matches
-                        let matches = table_ref.alias.as_ref()
+                        let matches = table_ref
+                            .alias
+                            .as_ref()
                             .map(|a| a == table_prefix)
-                            .unwrap_or(false) || table_ref.table == table_prefix;
-                        
-                        debug!("[SqlCompleter] Table match for '{}': {}", table_prefix, matches);
-                        
+                            .unwrap_or(false)
+                            || table_ref.table == table_prefix;
+
+                        debug!(
+                            "[SqlCompleter] Table match for '{}': {}",
+                            table_prefix, matches
+                        );
+
                         if matches {
                             let mut added_count = 0;
                             for column in columns {
-                                if column.to_lowercase().starts_with(&column_prefix.to_lowercase()) {
+                                if column
+                                    .to_lowercase()
+                                    .starts_with(&column_prefix.to_lowercase())
+                                {
                                     suggestions.push(Suggestion {
-                                        value: format!("{}.{}", table_prefix, column),
-                                        description: Some(format!("Column from {}", table_ref.table)),
-                                        span: Span { start: word_start, end: pos },
+                                        value: format!("{table_prefix}.{column}"),
+                                        description: Some(format!(
+                                            "Column from {}",
+                                            table_ref.table
+                                        )),
+                                        span: Span {
+                                            start: word_start,
+                                            end: pos,
+                                        },
                                         append_whitespace: false,
                                         extra: None,
                                         style: Some(Style::new().fg(Color::Cyan)),
@@ -583,14 +676,20 @@ impl SqlCompleter {
                                     columns_added = true;
                                 }
                             }
-                            debug!("[SqlCompleter] Added {} qualified column suggestions", added_count);
+                            debug!(
+                                "[SqlCompleter] Added {} qualified column suggestions",
+                                added_count
+                            );
                         }
                     }
                 } else {
                     // No table prefix, suggest all columns
-                    debug!("[SqlCompleter] Unqualified column completion, filtering with: '{}'", lower_word);
+                    debug!(
+                        "[SqlCompleter] Unqualified column completion, filtering with: '{}'",
+                        lower_word
+                    );
                     let mut added_count = 0;
-                    
+
                     for column in columns {
                         if lower_word.is_empty() || column.to_lowercase().starts_with(&lower_word) {
                             let desc = if let Some(alias) = &table_ref.alias {
@@ -598,12 +697,18 @@ impl SqlCompleter {
                             } else {
                                 format!("Column from {}", table_ref.table)
                             };
-                            
-                            debug!("[SqlCompleter] Adding column suggestion: {} -> {}", column, desc);
+
+                            debug!(
+                                "[SqlCompleter] Adding column suggestion: {} -> {}",
+                                column, desc
+                            );
                             suggestions.push(Suggestion {
                                 value: column,
                                 description: Some(desc),
-                                span: Span { start: word_start, end: pos },
+                                span: Span {
+                                    start: word_start,
+                                    end: pos,
+                                },
                                 append_whitespace: false,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Cyan)),
@@ -612,8 +717,10 @@ impl SqlCompleter {
                             columns_added = true;
                         }
                     }
-                    debug!("[SqlCompleter] Added {} unqualified column suggestions from {}", 
-                           added_count, table_ref.table);
+                    debug!(
+                        "[SqlCompleter] Added {} unqualified column suggestions from {}",
+                        added_count, table_ref.table
+                    );
                 }
             }
         }
@@ -622,9 +729,10 @@ impl SqlCompleter {
         match context.base_context.current_clause {
             SqlClause::From => {
                 // Use the enhanced FROM clause state machine
-                let state = self.analyze_from_clause_state(sql, pos, &context.base_context, current_word);
+                let state =
+                    self.analyze_from_clause_state(sql, pos, &context.base_context, current_word);
                 debug!("[SqlCompleter] FROM clause state: {:?}", state);
-                
+
                 match state {
                     FromClauseState::ExpectingTable | FromClauseState::TypingTable => {
                         // Only show tables, no keywords
@@ -635,24 +743,33 @@ impl SqlCompleter {
                                 suggestions.push(Suggestion {
                                     value: table.name.clone(),
                                     description: Some("Table".to_string()),
-                                    span: Span { start: word_start, end: pos },
+                                    span: Span {
+                                        start: word_start,
+                                        end: pos,
+                                    },
                                     append_whitespace: true,
                                     extra: None,
                                     style: Some(Style::new().fg(Color::Green)),
                                 });
                             }
                         }
-                    },
+                    }
                     FromClauseState::AfterTable | FromClauseState::TypingKeyword => {
                         // After table name, show JOIN/WHERE keywords only
                         debug!("[SqlCompleter] FROM clause: showing keywords only");
-                        let from_keywords = vec!["WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ORDER", "GROUP", "LIMIT"];
+                        let from_keywords = vec![
+                            "WHERE", "JOIN", "INNER", "LEFT", "RIGHT", "FULL", "ORDER", "GROUP",
+                            "LIMIT",
+                        ];
                         for keyword in from_keywords {
                             if keyword.to_lowercase().starts_with(&lower_word) {
                                 suggestions.push(Suggestion {
                                     value: keyword.to_string(),
                                     description: Some("SQL Keyword".to_string()),
-                                    span: Span { start: word_start, end: pos },
+                                    span: Span {
+                                        start: word_start,
+                                        end: pos,
+                                    },
                                     append_whitespace: true,
                                     extra: None,
                                     style: Some(Style::new().fg(Color::Blue)),
@@ -665,13 +782,19 @@ impl SqlCompleter {
             SqlClause::Where => {
                 // Add WHERE keywords after columns (columns already added above)
                 debug!("[SqlCompleter] WHERE clause: adding keywords after columns");
-                let where_keywords = vec!["AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE", "IS", "NULL", "ORDER", "GROUP"];
+                let where_keywords = vec![
+                    "AND", "OR", "NOT", "IN", "EXISTS", "BETWEEN", "LIKE", "IS", "NULL", "ORDER",
+                    "GROUP",
+                ];
                 for keyword in where_keywords {
                     if keyword.to_lowercase().starts_with(&lower_word) {
                         suggestions.push(Suggestion {
                             value: keyword.to_string(),
                             description: Some("SQL Keyword".to_string()),
-                            span: Span { start: word_start, end: pos },
+                            span: Span {
+                                start: word_start,
+                                end: pos,
+                            },
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Blue)),
@@ -681,42 +804,65 @@ impl SqlCompleter {
             }
             SqlClause::Select => {
                 // PRIORITY 1: Add columns from future tables (forward-looking completion)
-                
+
                 let mut columns_added = false;
                 let mut total_columns_found = 0;
-                
+
                 for (i, table_ref) in context.base_context.future_tables.iter().enumerate() {
-                    debug!("[SqlCompleter] Processing future table {}: {} (alias: {:?})", 
-                           i, table_ref.table, table_ref.alias);
+                    debug!(
+                        "[SqlCompleter] Processing future table {}: {} (alias: {:?})",
+                        i, table_ref.table, table_ref.alias
+                    );
                     let columns = self.get_columns(&table_ref.table);
-                    debug!("[SqlCompleter] Got {} columns from future table {}", columns.len(), table_ref.table);
+                    debug!(
+                        "[SqlCompleter] Got {} columns from future table {}",
+                        columns.len(),
+                        table_ref.table
+                    );
                     total_columns_found += columns.len();
-                    
+
                     // Handle table-qualified columns (e.g., "users.")
                     if current_word.contains('.') {
                         let parts: Vec<&str> = current_word.splitn(2, '.').collect();
                         if parts.len() == 2 {
                             let table_prefix = parts[0];
                             let column_prefix = parts[1];
-                            
-                            debug!("[SqlCompleter] Table-qualified column completion for future table: {}.{}", 
-                                   table_prefix, column_prefix);
-                            
+
+                            debug!(
+                                "[SqlCompleter] Table-qualified column completion for future table: {}.{}",
+                                table_prefix, column_prefix
+                            );
+
                             // Check if this table matches
-                            let matches = table_ref.alias.as_ref()
+                            let matches = table_ref
+                                .alias
+                                .as_ref()
                                 .map(|a| a == table_prefix)
-                                .unwrap_or(false) || table_ref.table == table_prefix;
-                            
-                            debug!("[SqlCompleter] Future table match for '{}': {}", table_prefix, matches);
-                            
+                                .unwrap_or(false)
+                                || table_ref.table == table_prefix;
+
+                            debug!(
+                                "[SqlCompleter] Future table match for '{}': {}",
+                                table_prefix, matches
+                            );
+
                             if matches {
                                 let mut added_count = 0;
                                 for column in columns {
-                                    if column.to_lowercase().starts_with(&column_prefix.to_lowercase()) {
+                                    if column
+                                        .to_lowercase()
+                                        .starts_with(&column_prefix.to_lowercase())
+                                    {
                                         suggestions.push(Suggestion {
-                                            value: format!("{}.{}", table_prefix, column),
-                                            description: Some(format!("Column from {} (forward-looking)", table_ref.table)),
-                                            span: Span { start: word_start, end: pos },
+                                            value: format!("{table_prefix}.{column}"),
+                                            description: Some(format!(
+                                                "Column from {} (forward-looking)",
+                                                table_ref.table
+                                            )),
+                                            span: Span {
+                                                start: word_start,
+                                                end: pos,
+                                            },
                                             append_whitespace: false,
                                             extra: None,
                                             style: Some(Style::new().fg(Color::Cyan)),
@@ -724,27 +870,44 @@ impl SqlCompleter {
                                         added_count += 1;
                                     }
                                 }
-                                debug!("[SqlCompleter] Added {} qualified column suggestions from future table", added_count);
+                                debug!(
+                                    "[SqlCompleter] Added {} qualified column suggestions from future table",
+                                    added_count
+                                );
                             }
                         }
                     } else {
                         // Unqualified columns from future tables
-                        debug!("[SqlCompleter] Unqualified column completion for future table, filtering with: '{}'", lower_word);
+                        debug!(
+                            "[SqlCompleter] Unqualified column completion for future table, filtering with: '{}'",
+                            lower_word
+                        );
                         let mut added_count = 0;
-                        
+
                         for column in columns {
-                            if lower_word.is_empty() || column.to_lowercase().starts_with(&lower_word) {
+                            if lower_word.is_empty()
+                                || column.to_lowercase().starts_with(&lower_word)
+                            {
                                 let desc = if let Some(alias) = &table_ref.alias {
-                                    format!("Column from {} ({}) - forward-looking", alias, table_ref.table)
+                                    format!(
+                                        "Column from {} ({}) - forward-looking",
+                                        alias, table_ref.table
+                                    )
                                 } else {
                                     format!("Column from {} - forward-looking", table_ref.table)
                                 };
-                                
-                                debug!("[SqlCompleter] ✅ Adding forward-looking column suggestion: {} -> {}", column, desc);
+
+                                debug!(
+                                    "[SqlCompleter] ✅ Adding forward-looking column suggestion: {} -> {}",
+                                    column, desc
+                                );
                                 suggestions.push(Suggestion {
                                     value: column,
                                     description: Some(desc),
-                                    span: Span { start: word_start, end: pos },
+                                    span: Span {
+                                        start: word_start,
+                                        end: pos,
+                                    },
                                     append_whitespace: false,
                                     extra: None,
                                     style: Some(Style::new().fg(Color::Cyan)),
@@ -753,27 +916,50 @@ impl SqlCompleter {
                                 columns_added = true;
                             }
                         }
-                        debug!("[SqlCompleter] Added {} unqualified column suggestions from future table {}", 
-                               added_count, table_ref.table);
+                        debug!(
+                            "[SqlCompleter] Added {} unqualified column suggestions from future table {}",
+                            added_count, table_ref.table
+                        );
                     }
                 }
-                
+
                 debug!("[SqlCompleter] Forward-looking completion summary:");
-                debug!("[SqlCompleter] - Total columns found: {}", total_columns_found);
-                debug!("[SqlCompleter] - Columns added to suggestions: {}", columns_added);
-                debug!("[SqlCompleter] - Current suggestions count: {}", suggestions.len());
-                
+                debug!(
+                    "[SqlCompleter] - Total columns found: {}",
+                    total_columns_found
+                );
+                debug!(
+                    "[SqlCompleter] - Columns added to suggestions: {}",
+                    columns_added
+                );
+                debug!(
+                    "[SqlCompleter] - Current suggestions count: {}",
+                    suggestions.len()
+                );
+
                 // PRIORITY 2: Add structural keywords (but only if no columns were found)
                 if !columns_added || total_columns_found == 0 {
                     debug!("[SqlCompleter] No columns added, adding SQL keywords as fallback");
-                    let select_keywords = vec!["FROM", "WHERE", "GROUP", "ORDER", "LIMIT", "UNION", "INTERSECT", "EXCEPT"];
+                    let select_keywords = vec![
+                        "FROM",
+                        "WHERE",
+                        "GROUP",
+                        "ORDER",
+                        "LIMIT",
+                        "UNION",
+                        "INTERSECT",
+                        "EXCEPT",
+                    ];
                     for keyword in select_keywords {
                         if keyword.to_lowercase().starts_with(&lower_word) {
                             debug!("[SqlCompleter] Adding SQL keyword fallback: {}", keyword);
                             suggestions.push(Suggestion {
                                 value: keyword.to_string(),
                                 description: Some("SQL Clause".to_string()),
-                                span: Span { start: word_start, end: pos },
+                                span: Span {
+                                    start: word_start,
+                                    end: pos,
+                                },
                                 append_whitespace: true,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Blue)),
@@ -781,25 +967,42 @@ impl SqlCompleter {
                         }
                     }
                 } else {
-                    debug!("[SqlCompleter] ✅ Columns were added, skipping SQL keywords to prioritize column completion");
+                    debug!(
+                        "[SqlCompleter] ✅ Columns were added, skipping SQL keywords to prioritize column completion"
+                    );
                 }
             }
             SqlClause::Join | SqlClause::On => {
                 // In JOIN or ON clauses, add both join-specific keywords AND clause transition keywords
-                debug!("[SqlCompleter] JOIN/ON clause: adding join keywords AND clause transition keywords");
+                debug!(
+                    "[SqlCompleter] JOIN/ON clause: adding join keywords AND clause transition keywords"
+                );
                 let join_keywords = vec![
                     // Join-specific keywords
-                    "ON", "USING", "AND", "OR", 
+                    "ON",
+                    "USING",
+                    "AND",
+                    "OR",
                     // Clause transition keywords (the missing piece!)
-                    "WHERE", "GROUP", "ORDER", "LIMIT", "HAVING", "UNION", "INTERSECT", "EXCEPT"
+                    "WHERE",
+                    "GROUP",
+                    "ORDER",
+                    "LIMIT",
+                    "HAVING",
+                    "UNION",
+                    "INTERSECT",
+                    "EXCEPT",
                 ];
-                
+
                 for keyword in join_keywords {
                     if keyword.to_lowercase().starts_with(&lower_word) {
                         suggestions.push(Suggestion {
                             value: keyword.to_string(),
                             description: Some("SQL Keyword".to_string()),
-                            span: Span { start: word_start, end: pos },
+                            span: Span {
+                                start: word_start,
+                                end: pos,
+                            },
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Blue)),
@@ -815,7 +1018,10 @@ impl SqlCompleter {
                         suggestions.push(Suggestion {
                             value: keyword.to_string(),
                             description: Some("SQL Keyword".to_string()),
-                            span: Span { start: word_start, end: pos },
+                            span: Span {
+                                start: word_start,
+                                end: pos,
+                            },
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Blue)),
@@ -836,7 +1042,10 @@ impl SqlCompleter {
                             suggestions.push(Suggestion {
                                 value: table.name.clone(),
                                 description: Some("Table".to_string()),
-                                span: Span { start: word_start, end: pos },
+                                span: Span {
+                                    start: word_start,
+                                    end: pos,
+                                },
                                 append_whitespace: true,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Green)),
@@ -847,42 +1056,68 @@ impl SqlCompleter {
                 ExpectedElement::Column => {
                     // Skip if we already added columns for WHERE clause
                     if context.base_context.current_clause == SqlClause::Where && columns_added {
-                        debug!("[SqlCompleter] Skipping duplicate column processing for WHERE clause");
+                        debug!(
+                            "[SqlCompleter] Skipping duplicate column processing for WHERE clause"
+                        );
                         continue;
                     }
-                    
+
                     debug!("[SqlCompleter] Processing Column suggestions for non-WHERE clause");
                     // Get columns from tables in context
                     for table_ref in &context.base_context.tables {
-                        debug!("[SqlCompleter] Fetching columns for table: {}", table_ref.table);
+                        debug!(
+                            "[SqlCompleter] Fetching columns for table: {}",
+                            table_ref.table
+                        );
                         let columns = self.get_columns(&table_ref.table);
-                        debug!("[SqlCompleter] Got {} columns from {}", columns.len(), table_ref.table);
-                        
+                        debug!(
+                            "[SqlCompleter] Got {} columns from {}",
+                            columns.len(),
+                            table_ref.table
+                        );
+
                         // If user typed table prefix (e.g., "users.")
                         if current_word.contains('.') {
                             let parts: Vec<&str> = current_word.splitn(2, '.').collect();
                             if parts.len() == 2 {
                                 let table_prefix = parts[0];
                                 let column_prefix = parts[1];
-                                
-                                debug!("[SqlCompleter] Table-qualified column completion: {}.{}", 
-                                       table_prefix, column_prefix);
-                                
+
+                                debug!(
+                                    "[SqlCompleter] Table-qualified column completion: {}.{}",
+                                    table_prefix, column_prefix
+                                );
+
                                 // Check if this table matches
-                                let matches = table_ref.alias.as_ref()
+                                let matches = table_ref
+                                    .alias
+                                    .as_ref()
                                     .map(|a| a == table_prefix)
-                                    .unwrap_or(false) || table_ref.table == table_prefix;
-                                
-                                debug!("[SqlCompleter] Table match for '{}': {}", table_prefix, matches);
-                                
+                                    .unwrap_or(false)
+                                    || table_ref.table == table_prefix;
+
+                                debug!(
+                                    "[SqlCompleter] Table match for '{}': {}",
+                                    table_prefix, matches
+                                );
+
                                 if matches {
                                     let mut added_count = 0;
                                     for column in columns {
-                                        if column.to_lowercase().starts_with(&column_prefix.to_lowercase()) {
+                                        if column
+                                            .to_lowercase()
+                                            .starts_with(&column_prefix.to_lowercase())
+                                        {
                                             suggestions.push(Suggestion {
-                                                value: format!("{}.{}", table_prefix, column),
-                                                description: Some(format!("Column from {}", table_ref.table)),
-                                                span: Span { start: word_start, end: pos },
+                                                value: format!("{table_prefix}.{column}"),
+                                                description: Some(format!(
+                                                    "Column from {}",
+                                                    table_ref.table
+                                                )),
+                                                span: Span {
+                                                    start: word_start,
+                                                    end: pos,
+                                                },
                                                 append_whitespace: false,
                                                 extra: None,
                                                 style: Some(Style::new().fg(Color::Cyan)),
@@ -890,32 +1125,49 @@ impl SqlCompleter {
                                             added_count += 1;
                                         }
                                     }
-                                    debug!("[SqlCompleter] Added {} qualified column suggestions", added_count);
+                                    debug!(
+                                        "[SqlCompleter] Added {} qualified column suggestions",
+                                        added_count
+                                    );
                                 }
                             }
                         } else {
                             // No table prefix, suggest all columns
-                            debug!("[SqlCompleter] Unqualified column completion, filtering with: '{}'", lower_word);
+                            debug!(
+                                "[SqlCompleter] Unqualified column completion, filtering with: '{}'",
+                                lower_word
+                            );
                             let mut added_count = 0;
                             let mut filtered_count = 0;
-                            
+
                             if columns.is_empty() {
-                                debug!("[SqlCompleter] WARNING: No columns available for table '{}'", table_ref.table);
+                                debug!(
+                                    "[SqlCompleter] WARNING: No columns available for table '{}'",
+                                    table_ref.table
+                                );
                             }
-                            
+
                             for column in columns {
-                                if lower_word.is_empty() || column.to_lowercase().starts_with(&lower_word) {
+                                if lower_word.is_empty()
+                                    || column.to_lowercase().starts_with(&lower_word)
+                                {
                                     let desc = if let Some(alias) = &table_ref.alias {
                                         format!("Column from {} ({})", alias, table_ref.table)
                                     } else {
                                         format!("Column from {}", table_ref.table)
                                     };
-                                    
-                                    debug!("[SqlCompleter] Adding column suggestion: {} -> {}", column, desc);
+
+                                    debug!(
+                                        "[SqlCompleter] Adding column suggestion: {} -> {}",
+                                        column, desc
+                                    );
                                     suggestions.push(Suggestion {
                                         value: column,
                                         description: Some(desc),
-                                        span: Span { start: word_start, end: pos },
+                                        span: Span {
+                                            start: word_start,
+                                            end: pos,
+                                        },
                                         append_whitespace: false,
                                         extra: None,
                                         style: Some(Style::new().fg(Color::Cyan)),
@@ -925,8 +1177,10 @@ impl SqlCompleter {
                                     filtered_count += 1;
                                 }
                             }
-                            debug!("[SqlCompleter] Added {} unqualified column suggestions from {} (filtered out {})", 
-                                   added_count, table_ref.table, filtered_count);
+                            debug!(
+                                "[SqlCompleter] Added {} unqualified column suggestions from {} (filtered out {})",
+                                added_count, table_ref.table, filtered_count
+                            );
                         }
                     }
                 }
@@ -936,7 +1190,10 @@ impl SqlCompleter {
                             suggestions.push(Suggestion {
                                 value: keyword.to_string(),
                                 description: Some("SQL Keyword".to_string()),
-                                span: Span { start: word_start, end: pos },
+                                span: Span {
+                                    start: word_start,
+                                    end: pos,
+                                },
                                 append_whitespace: true,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Blue)),
@@ -949,19 +1206,25 @@ impl SqlCompleter {
                     let functions = parser.get_functions();
                     for func_name in functions {
                         if func_name.to_lowercase().starts_with(&lower_word) {
-                            let requires_parens = parser.database_type() != DatabaseType::PostgreSQL || 
-                                                 !matches!(func_name.to_uppercase().as_str(), 
-                                                          "CURRENT_DATE" | "CURRENT_TIME" | "CURRENT_TIMESTAMP");
+                            let requires_parens = parser.database_type()
+                                != DatabaseType::PostgreSQL
+                                || !matches!(
+                                    func_name.to_uppercase().as_str(),
+                                    "CURRENT_DATE" | "CURRENT_TIME" | "CURRENT_TIMESTAMP"
+                                );
                             let display_name = if requires_parens && !func_name.ends_with('(') {
-                                format!("{}(", func_name)
+                                format!("{func_name}(")
                             } else {
                                 func_name.to_string()
                             };
-                            
+
                             suggestions.push(Suggestion {
                                 value: display_name,
-                                description: Some(format!("{} function", func_name)),
-                                span: Span { start: word_start, end: pos },
+                                description: Some(format!("{func_name} function")),
+                                span: Span {
+                                    start: word_start,
+                                    end: pos,
+                                },
                                 append_whitespace: !requires_parens,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Magenta)),
@@ -975,7 +1238,7 @@ impl SqlCompleter {
 
         // PRIORITY 3: Get database-specific completion hints (lower priority)
         let hints = parser.get_completion_hints(context);
-        
+
         // Convert hints to suggestions
         for hint in hints {
             if hint.text.to_lowercase().starts_with(&lower_word) {
@@ -983,7 +1246,7 @@ impl SqlCompleter {
                 if suggestions.iter().any(|s| s.value == hint.text) {
                     continue;
                 }
-                
+
                 let style = match hint.category {
                     CompletionHintCategory::Keyword => Some(Style::new().fg(Color::Blue)),
                     CompletionHintCategory::Function => Some(Style::new().fg(Color::Magenta)),
@@ -992,11 +1255,14 @@ impl SqlCompleter {
                     CompletionHintCategory::DatabaseSpecific => Some(Style::new().fg(Color::Cyan)),
                     _ => Some(Style::new().fg(Color::White)),
                 };
-                
+
                 suggestions.push(Suggestion {
                     value: hint.text,
                     description: Some(hint.description),
-                    span: Span { start: word_start, end: pos },
+                    span: Span {
+                        start: word_start,
+                        end: pos,
+                    },
                     append_whitespace: !hint.requires_parentheses,
                     extra: None,
                     style,
@@ -1011,7 +1277,10 @@ impl SqlCompleter {
                 suggestions.push(Suggestion {
                     value: suggestion_text.clone(),
                     description: Some("Database-specific suggestion".to_string()),
-                    span: Span { start: word_start, end: pos },
+                    span: Span {
+                        start: word_start,
+                        end: pos,
+                    },
                     append_whitespace: true,
                     extra: None,
                     style: Some(Style::new().fg(Color::Cyan)),
@@ -1027,31 +1296,47 @@ impl SqlCompleter {
     }
 
     /// Complete SQL query - reuses the main SQL completion logic for SQL-based commands
-    fn complete_sql_query(&mut self, sql_part: &str, sql_pos: usize, offset: usize) -> Vec<Suggestion> {
-        debug!("SQL completion for command: sql_part='{}', sql_pos={}, offset={}", sql_part, sql_pos, offset);
+    fn complete_sql_query(
+        &mut self,
+        sql_part: &str,
+        sql_pos: usize,
+        offset: usize,
+    ) -> Vec<Suggestion> {
+        debug!(
+            "SQL completion for command: sql_part='{}', sql_pos={}, offset={}",
+            sql_part, sql_pos, offset
+        );
 
         // Reuse the same logic as the main complete method but adjust spans for the offset
         let full_line = sql_part.to_string();
-        
+
         // Determine word boundaries for SQL completion
         let word_start = sql_part[..sql_pos]
             .rfind(|c: char| c.is_whitespace() || c == '(' || c == ',')
             .map_or(0, |idx| idx + 1);
         let current_word = &sql_part[word_start..sql_pos];
-        
+
         // Get database type and create appropriate parser
         let database_type = self.get_database_type();
         let parser = SqlParserFactory::create_parser(database_type.clone());
-        
+
         // Parse SQL context using database-specific parser
         let enhanced_context = parser.parse_at_cursor(&full_line, sql_pos);
         debug!("[SqlCompleter] SQL Command Context Analysis:");
         debug!("  Database type: {:?}", enhanced_context.database_type);
-        debug!("  Current clause: {:?}", enhanced_context.base_context.current_clause);
-        debug!("  Tables in context: {} tables", enhanced_context.base_context.tables.len());
+        debug!(
+            "  Current clause: {:?}",
+            enhanced_context.base_context.current_clause
+        );
+        debug!(
+            "  Tables in context: {} tables",
+            enhanced_context.base_context.tables.len()
+        );
         for (i, table) in enhanced_context.base_context.tables.iter().enumerate() {
-            debug!("    Table {}: {} (alias: {:?}, schema: {:?})", 
-                   i, table.table, table.alias, table.schema);
+            debug!(
+                "    Table {}: {} (alias: {:?}, schema: {:?})",
+                i, table.table, table.alias, table.schema
+            );
         }
         debug!("  Expecting: {:?}", enhanced_context.base_context.expecting);
         debug!("  Current word: '{}'", current_word);
@@ -1059,7 +1344,7 @@ impl SqlCompleter {
         // Generate suggestions based on enhanced context
         let mut suggestions = self.generate_enhanced_sql_suggestions(
             &enhanced_context,
-            &parser,
+            parser.as_ref(),
             current_word,
             word_start,
             sql_pos,
@@ -1072,16 +1357,24 @@ impl SqlCompleter {
             suggestion.span.end += offset;
         }
 
-        debug!("[SqlCompleter] SQL Command results: Generated {} suggestions", suggestions.len());
+        debug!(
+            "[SqlCompleter] SQL Command results: Generated {} suggestions",
+            suggestions.len()
+        );
         for (i, suggestion) in suggestions.iter().enumerate() {
-            debug!("  Suggestion {}: '{}' - {}", 
-                   i, suggestion.value, 
-                   suggestion.description.as_ref().unwrap_or(&"No description".to_string()));
+            debug!(
+                "  Suggestion {}: '{}' - {}",
+                i,
+                suggestion.value,
+                suggestion
+                    .description
+                    .as_ref()
+                    .unwrap_or(&"No description".to_string())
+            );
         }
-        
+
         suggestions
     }
-
 }
 
 impl Completer for SqlCompleter {
@@ -1094,12 +1387,12 @@ impl Completer for SqlCompleter {
                 None
             }
         };
-        
+
         if let Some(full_line) = full_line_option {
             // Use full_line instead of the truncated line for parsing!
             return self.complete_with_full_line(&full_line, pos);
         }
-        
+
         self.complete_internal(line, pos)
     }
 }
@@ -1133,15 +1426,22 @@ impl SqlCompleter {
                 } else {
                     ""
                 };
-                
+
                 let tables = self.get_tables(None);
                 let mut suggestions = Vec::new();
                 for table in tables {
-                    if table.name.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                    if table
+                        .name
+                        .to_lowercase()
+                        .starts_with(&current_word.to_lowercase())
+                    {
                         suggestions.push(Suggestion {
                             value: table.name.clone(),
                             description: Some("Table".to_string()),
-                            span: Span { start: word_start, end: pos },
+                            span: Span {
+                                start: word_start,
+                                end: pos,
+                            },
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Green)),
@@ -1150,7 +1450,7 @@ impl SqlCompleter {
                 }
                 return suggestions;
             }
-            
+
             if line.starts_with("\\c ") && pos > 2 {
                 // Complete database names directly
                 let word_start = 3; // After "\c "
@@ -1159,32 +1459,36 @@ impl SqlCompleter {
                 } else {
                     ""
                 };
-                
+
                 // Get database names using the same pattern as get_tables
                 let db_clone = Arc::clone(&self.database);
                 let databases = match tokio::runtime::Handle::try_current() {
-                    Ok(_) => {
-                        tokio::task::block_in_place(|| {
-                            let handle = tokio::runtime::Handle::current();
-                            handle.block_on(async {
-                                let mut db_guard = db_clone.lock().unwrap();
-                                db_guard.list_databases().await.unwrap_or_default()
-                            })
+                    Ok(_) => tokio::task::block_in_place(|| {
+                        let handle = tokio::runtime::Handle::current();
+                        handle.block_on(async {
+                            let mut db_guard = db_clone.lock().unwrap();
+                            db_guard.list_databases().await.unwrap_or_default()
                         })
-                    }
+                    }),
                     Err(_) => {
                         vec![]
                     }
                 };
-                
+
                 let mut suggestions = Vec::new();
                 for db_row in databases {
-                    if let Some(db_name) = db_row.get(0) {
-                        if db_name.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                    if let Some(db_name) = db_row.first() {
+                        if db_name
+                            .to_lowercase()
+                            .starts_with(&current_word.to_lowercase())
+                        {
                             suggestions.push(Suggestion {
                                 value: db_name.clone(),
                                 description: Some("Database".to_string()),
-                                span: Span { start: word_start, end: pos },
+                                span: Span {
+                                    start: word_start,
+                                    end: pos,
+                                },
                                 append_whitespace: true,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Blue)),
@@ -1194,7 +1498,7 @@ impl SqlCompleter {
                 }
                 return suggestions;
             }
-            
+
             if line.starts_with("\\n ") && pos > 2 {
                 // Complete named query names using scoped system
                 let word_start = 3; // After "\n "
@@ -1203,45 +1507,51 @@ impl SqlCompleter {
                 } else {
                     ""
                 };
-                
+
                 // Get current database context for scoped queries
                 let (current_database_type, current_session_id) = {
                     let db = self.database.lock().unwrap();
-                    let db_type = db.get_connection_info().map(|info| info.database_type.clone());
-                    let session_id = if let Some(info) = db.get_connection_info() {
-                        Some(crate::history_manager::SessionId::from_connection_info(info).identifier)
-                    } else {
-                        None
-                    };
+                    let db_type = db
+                        .get_connection_info()
+                        .map(|info| info.database_type.clone());
+                    let session_id = db.get_connection_info().map(|info| {
+                        crate::history_manager::SessionId::from_connection_info(info).identifier
+                    });
                     (db_type, session_id)
                 };
-                
+
                 // Get scoped named queries from config
                 let config = self.config.lock().unwrap();
                 let available_queries = config.list_available_named_queries(
-                    current_database_type.as_ref(), 
-                    current_session_id.as_deref()
+                    current_database_type.as_ref(),
+                    current_session_id.as_deref(),
                 );
-                
+
                 let mut suggestions = Vec::new();
                 for (query_name, _query_sql, scope) in available_queries {
-                    if query_name.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                    if query_name
+                        .to_lowercase()
+                        .starts_with(&current_word.to_lowercase())
+                    {
                         let scope_str = match scope {
                             crate::config::NamedQueryScope::Global => "[global]",
                             crate::config::NamedQueryScope::DatabaseType(ref db_type) => {
                                 match db_type {
                                     crate::database::DatabaseType::PostgreSQL => "[postgres]",
-                                    crate::database::DatabaseType::MySQL => "[mysql]", 
+                                    crate::database::DatabaseType::MySQL => "[mysql]",
                                     crate::database::DatabaseType::SQLite => "[sqlite]",
                                 }
-                            },
+                            }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
                         };
-                        
+
                         suggestions.push(Suggestion {
                             value: query_name.clone(),
-                            description: Some(format!("Execute named query {}", scope_str)),
-                            span: Span { start: word_start, end: pos },
+                            description: Some(format!("Execute named query {scope_str}")),
+                            span: Span {
+                                start: word_start,
+                                end: pos,
+                            },
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Magenta)),
@@ -1250,7 +1560,7 @@ impl SqlCompleter {
                 }
                 return suggestions;
             }
-            
+
             if line.starts_with("\\nd ") && pos > 3 {
                 // Complete named query names for deletion using scoped system
                 let word_start = 4; // After "\nd "
@@ -1259,45 +1569,51 @@ impl SqlCompleter {
                 } else {
                     ""
                 };
-                
+
                 // Get current database context for scoped queries
                 let (current_database_type, current_session_id) = {
                     let db = self.database.lock().unwrap();
-                    let db_type = db.get_connection_info().map(|info| info.database_type.clone());
-                    let session_id = if let Some(info) = db.get_connection_info() {
-                        Some(crate::history_manager::SessionId::from_connection_info(info).identifier)
-                    } else {
-                        None
-                    };
+                    let db_type = db
+                        .get_connection_info()
+                        .map(|info| info.database_type.clone());
+                    let session_id = db.get_connection_info().map(|info| {
+                        crate::history_manager::SessionId::from_connection_info(info).identifier
+                    });
                     (db_type, session_id)
                 };
-                
+
                 // Get scoped named queries from config
                 let config = self.config.lock().unwrap();
                 let available_queries = config.list_available_named_queries(
-                    current_database_type.as_ref(), 
-                    current_session_id.as_deref()
+                    current_database_type.as_ref(),
+                    current_session_id.as_deref(),
                 );
-                
+
                 let mut suggestions = Vec::new();
                 for (query_name, _query_sql, scope) in available_queries {
-                    if query_name.to_lowercase().starts_with(&current_word.to_lowercase()) {
+                    if query_name
+                        .to_lowercase()
+                        .starts_with(&current_word.to_lowercase())
+                    {
                         let scope_str = match scope {
                             crate::config::NamedQueryScope::Global => "[global]",
                             crate::config::NamedQueryScope::DatabaseType(ref db_type) => {
                                 match db_type {
                                     crate::database::DatabaseType::PostgreSQL => "[postgres]",
-                                    crate::database::DatabaseType::MySQL => "[mysql]", 
+                                    crate::database::DatabaseType::MySQL => "[mysql]",
                                     crate::database::DatabaseType::SQLite => "[sqlite]",
                                 }
-                            },
+                            }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
                         };
-                        
+
                         suggestions.push(Suggestion {
                             value: query_name.clone(),
                             description: Some(format!("Delete named query {}", scope_str)),
-                            span: Span { start: word_start, end: pos },
+                            span: Span {
+                                start: word_start,
+                                end: pos,
+                            },
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Red)),
@@ -1306,17 +1622,16 @@ impl SqlCompleter {
                 }
                 return suggestions;
             }
-            
+
             // Handle \ns command with complex syntax: \ns query_name SQL_QUERY [--flags]
             if line.starts_with("\\ns ") && pos > 4 {
                 return self.complete_ns_command(line, pos);
             }
-            
+
             // Handle SQL-based commands (\ef, \er, \ex) by redirecting to SQL completion
-            if (line.starts_with("\\ef ") && pos > 4) ||
-               (line.starts_with("\\er ") && pos > 4) ||
-               (line.starts_with("\\ex ") && pos > 4) {
-                
+            if (line.starts_with("\\ex ") || line.starts_with("\\er ") || line.starts_with("\\ef "))
+                && pos > 4
+            {
                 // Extract the SQL portion and treat it as a regular SQL query
                 let sql_start = if line.starts_with("\\ex ") {
                     // For \ex, we need to be careful about the filename at the end
@@ -1325,28 +1640,32 @@ impl SqlCompleter {
                 } else {
                     4 // \ef and \er both have 4 characters including space
                 };
-                
+
                 let sql_part = &line[sql_start..];
                 let sql_pos = pos - sql_start;
-                
+
                 // Use the existing SQL completion logic by creating a new line
                 // that looks like a regular SQL query
-                debug!("SQL-based command detected: '{}', SQL part: '{}', SQL pos: {}", 
-                       &line[..sql_start], sql_part, sql_pos);
-                
+                debug!(
+                    "SQL-based command detected: '{}', SQL part: '{}', SQL pos: {}",
+                    &line[..sql_start],
+                    sql_part,
+                    sql_pos
+                );
+
                 // Call the same logic that handles regular SQL queries (starting at line ~1081)
                 // by temporarily treating this as a regular SQL line
                 let sql_suggestions = self.complete_sql_query(sql_part, sql_pos, sql_start);
                 return sql_suggestions;
             }
-            
+
             // For other backslash commands or when typing the command itself
             return self.complete_backslash_commands(line, pos);
         }
 
         // Fallback to existing SQL completion logic
         let full_line = line.to_string();
-        
+
         // Check for SQL commands that need special completion
         if line.to_uppercase().starts_with("DROP ") && pos >= 5 {
             let word_start = 5; // After "DROP "
@@ -1355,7 +1674,7 @@ impl SqlCompleter {
             } else {
                 ""
             };
-            
+
             let drop_objects = vec![
                 ("TABLE", "Drop a table"),
                 ("DATABASE", "Drop a database"),
@@ -1370,14 +1689,17 @@ impl SqlCompleter {
                 ("ROLE", "Drop a role"),
                 ("USER", "Drop a user"),
             ];
-            
+
             let mut suggestions = Vec::new();
             for (obj_type, desc) in drop_objects {
                 if obj_type.starts_with(&current_word.to_uppercase()) {
                     suggestions.push(Suggestion {
                         value: obj_type.to_string(),
                         description: Some(desc.to_string()),
-                        span: Span { start: word_start, end: pos },
+                        span: Span {
+                            start: word_start,
+                            end: pos,
+                        },
                         append_whitespace: true,
                         extra: None,
                         style: Some(Style::new().fg(Color::Blue)),
@@ -1386,7 +1708,7 @@ impl SqlCompleter {
             }
             return suggestions;
         }
-        
+
         if line.to_uppercase().starts_with("CREATE ") && pos >= 7 {
             let word_start = 7; // After "CREATE "
             let current_word = if pos > word_start {
@@ -1394,7 +1716,7 @@ impl SqlCompleter {
             } else {
                 ""
             };
-            
+
             let create_objects = vec![
                 ("TABLE", "Create a new table"),
                 ("DATABASE", "Create a new database"),
@@ -1410,14 +1732,17 @@ impl SqlCompleter {
                 ("USER", "Create a new user"),
                 ("OR REPLACE", "Create or replace object"),
             ];
-            
+
             let mut suggestions = Vec::new();
             for (obj_type, desc) in create_objects {
                 if obj_type.starts_with(&current_word.to_uppercase()) {
                     suggestions.push(Suggestion {
                         value: obj_type.to_string(),
                         description: Some(desc.to_string()),
-                        span: Span { start: word_start, end: pos },
+                        span: Span {
+                            start: word_start,
+                            end: pos,
+                        },
                         append_whitespace: true,
                         extra: None,
                         style: Some(Style::new().fg(Color::Blue)),
@@ -1426,7 +1751,7 @@ impl SqlCompleter {
             }
             return suggestions;
         }
-        
+
         if line.to_uppercase().starts_with("ALTER ") && pos >= 6 {
             let word_start = 6; // After "ALTER "
             let current_word = if pos > word_start {
@@ -1434,7 +1759,7 @@ impl SqlCompleter {
             } else {
                 ""
             };
-            
+
             let alter_objects = vec![
                 ("TABLE", "Alter a table"),
                 ("DATABASE", "Alter a database"),
@@ -1449,14 +1774,17 @@ impl SqlCompleter {
                 ("USER", "Alter a user"),
                 ("SYSTEM", "Alter system settings"),
             ];
-            
+
             let mut suggestions = Vec::new();
             for (obj_type, desc) in alter_objects {
                 if obj_type.starts_with(&current_word.to_uppercase()) {
                     suggestions.push(Suggestion {
                         value: obj_type.to_string(),
                         description: Some(desc.to_string()),
-                        span: Span { start: word_start, end: pos },
+                        span: Span {
+                            start: word_start,
+                            end: pos,
+                        },
                         append_whitespace: true,
                         extra: None,
                         style: Some(Style::new().fg(Color::Blue)),
@@ -1465,46 +1793,66 @@ impl SqlCompleter {
             }
             return suggestions;
         }
-        
+
         // Determine word boundaries for SQL completion
         let word_start = line[..pos]
             .rfind(|c: char| c.is_whitespace() || c == '(' || c == ',')
             .map_or(0, |idx| idx + 1);
         let current_word = &line[word_start..pos];
-        
+
         // Get database type and create appropriate parser
         let database_type = self.get_database_type();
         let parser = SqlParserFactory::create_parser(database_type.clone());
-        
+
         // Parse SQL context using database-specific parser
         let enhanced_context = parser.parse_at_cursor(&full_line, pos);
         debug!("[SqlCompleter] Enhanced SQL Context Analysis:");
         debug!("  Database type: {:?}", enhanced_context.database_type);
-        debug!("  Current clause: {:?}", enhanced_context.base_context.current_clause);
-        debug!("  Tables in context: {} tables", enhanced_context.base_context.tables.len());
+        debug!(
+            "  Current clause: {:?}",
+            enhanced_context.base_context.current_clause
+        );
+        debug!(
+            "  Tables in context: {} tables",
+            enhanced_context.base_context.tables.len()
+        );
         for (i, table) in enhanced_context.base_context.tables.iter().enumerate() {
-            debug!("    Table {}: {} (alias: {:?}, schema: {:?})", 
-                   i, table.table, table.alias, table.schema);
+            debug!(
+                "    Table {}: {} (alias: {:?}, schema: {:?})",
+                i, table.table, table.alias, table.schema
+            );
         }
         debug!("  Expecting: {:?}", enhanced_context.base_context.expecting);
-        debug!("  Database-specific context: {:?}", enhanced_context.database_context);
+        debug!(
+            "  Database-specific context: {:?}",
+            enhanced_context.database_context
+        );
         debug!("  Current word: '{}'", current_word);
 
         // Generate suggestions based on enhanced context
         let suggestions = self.generate_enhanced_sql_suggestions(
             &enhanced_context,
-            &parser,
+            parser.as_ref(),
             current_word,
             word_start,
             pos,
             &full_line,
         );
 
-        debug!("[SqlCompleter] Final results: Generated {} suggestions", suggestions.len());
+        debug!(
+            "[SqlCompleter] Final results: Generated {} suggestions",
+            suggestions.len()
+        );
         for (i, suggestion) in suggestions.iter().enumerate() {
-            debug!("  Suggestion {}: '{}' - {}", 
-                   i, suggestion.value, 
-                   suggestion.description.as_ref().unwrap_or(&"No description".to_string()));
+            debug!(
+                "  Suggestion {}: '{}' - {}",
+                i,
+                suggestion.value,
+                suggestion
+                    .description
+                    .as_ref()
+                    .unwrap_or(&"No description".to_string())
+            );
         }
         suggestions
     }
@@ -1525,9 +1873,9 @@ mod tests {
     async fn test_basic_select_completion() {
         let (db, config) = create_test_database_and_config().await;
         let mut completer = SqlCompleter::new(db, config);
-        
+
         let suggestions = completer.complete("SELECT ", 7);
-        
+
         // Should suggest *, DISTINCT, columns if tables are known
         assert!(suggestions.iter().any(|s| s.value == "*"));
         assert!(suggestions.iter().any(|s| s.value == "DISTINCT"));
@@ -1537,28 +1885,33 @@ mod tests {
     async fn test_from_clause_completion() {
         let (db, config) = create_test_database_and_config().await;
         let mut completer = SqlCompleter::new(db, config);
-        
+
         let suggestions = completer.complete("SELECT * FROM ", 14);
-        
+
         // Should suggest tables and SQL keywords
         // In test mode, might not have real tables but structure should work
         // The completion system may return database-specific suggestions, so check for non-empty results
-        assert!(!suggestions.is_empty(), "Should return some completion suggestions");
-        
+        assert!(
+            !suggestions.is_empty(),
+            "Should return some completion suggestions"
+        );
+
         // Verify that suggestions have descriptions (indicating they're properly formed)
-        assert!(suggestions.iter().all(|s| s.description.is_some()), 
-                "All suggestions should have descriptions");
+        assert!(
+            suggestions.iter().all(|s| s.description.is_some()),
+            "All suggestions should have descriptions"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn test_update_statement_completion() {
         let (db, config) = create_test_database_and_config().await;
         let mut completer = SqlCompleter::new(db, config);
-        
+
         // Test UPDATE table name completion
         let _suggestions = completer.complete("UPDATE ", 7);
         // Should suggest tables
-        
+
         // Test SET clause
         let _suggestions = completer.complete("UPDATE users SET ", 17);
         // Should suggest columns
@@ -1568,15 +1921,15 @@ mod tests {
     async fn test_backslash_command_completion() {
         let (db, config) = create_test_database_and_config().await;
         let mut completer = SqlCompleter::new(db, config);
-        
+
         // Test basic backslash completion
         let suggestions = completer.complete("\\", 1);
-        
+
         // Should suggest backslash commands
         assert!(!suggestions.is_empty());
         assert!(suggestions.iter().any(|s| s.value == "\\h"));
         assert!(suggestions.iter().any(|s| s.value == "\\q"));
-        
+
         // Test specific backslash command
         let suggestions = completer.complete("\\h", 2);
         assert!(suggestions.iter().any(|s| s.value == "\\h"));
@@ -1586,23 +1939,34 @@ mod tests {
     async fn test_forward_looking_completion_basic() {
         let (db, config) = create_test_database_and_config().await;
         let mut completer = SqlCompleter::new(db, config);
-        
+
         // Test case: cursor in SELECT, table appears later in FROM clause
         let suggestions = completer.complete("SELECT  FROM users", 7);
-        
+
         // Should return suggestions (might include keywords and database-specific completions)
-        assert!(!suggestions.is_empty(), "Should provide completion suggestions");
-        
+        assert!(
+            !suggestions.is_empty(),
+            "Should provide completion suggestions"
+        );
+
         // All suggestions should have descriptions
-        assert!(suggestions.iter().all(|s| s.description.is_some()),
-                "All suggestions should have descriptions");
-        
+        assert!(
+            suggestions.iter().all(|s| s.description.is_some()),
+            "All suggestions should have descriptions"
+        );
+
         // Should include forward-looking column suggestions if database connection exists
         // (In test environment, columns might not be available, but structure should work)
         println!("Forward-looking suggestions for 'SELECT  FROM users':");
         for suggestion in &suggestions {
-            println!("  '{}' - {}", suggestion.value, 
-                     suggestion.description.as_ref().unwrap_or(&"No description".to_string()));
+            println!(
+                "  '{}' - {}",
+                suggestion.value,
+                suggestion
+                    .description
+                    .as_ref()
+                    .unwrap_or(&"No description".to_string())
+            );
         }
     }
 
@@ -1610,18 +1974,30 @@ mod tests {
     async fn test_forward_looking_completion_with_joins() {
         let (db, config) = create_test_database_and_config().await;
         let mut completer = SqlCompleter::new(db, config);
-        
+
         // Test case: cursor in SELECT with multiple tables via JOIN
-        let suggestions = completer.complete("SELECT  FROM users u JOIN orders o ON u.id = o.user_id", 7);
-        
-        assert!(!suggestions.is_empty(), "Should provide completion suggestions");
-        assert!(suggestions.iter().all(|s| s.description.is_some()),
-                "All suggestions should have descriptions");
-        
+        let suggestions =
+            completer.complete("SELECT  FROM users u JOIN orders o ON u.id = o.user_id", 7);
+
+        assert!(
+            !suggestions.is_empty(),
+            "Should provide completion suggestions"
+        );
+        assert!(
+            suggestions.iter().all(|s| s.description.is_some()),
+            "All suggestions should have descriptions"
+        );
+
         println!("Forward-looking suggestions for JOIN query:");
         for suggestion in &suggestions {
-            println!("  '{}' - {}", suggestion.value, 
-                     suggestion.description.as_ref().unwrap_or(&"No description".to_string()));
+            println!(
+                "  '{}' - {}",
+                suggestion.value,
+                suggestion
+                    .description
+                    .as_ref()
+                    .unwrap_or(&"No description".to_string())
+            );
         }
     }
 
@@ -1629,18 +2005,27 @@ mod tests {
     async fn test_forward_looking_completion_qualified_columns() {
         let (db, config) = create_test_database_and_config().await;
         let mut completer = SqlCompleter::new(db, config);
-        
+
         // Test case: typing table-qualified column reference
         let suggestions = completer.complete("SELECT u. FROM users u", 9);
-        
+
         // Note: This specific case might not return suggestions in test environment
         // due to table/column resolution limitations, so we test the structure
-        println!("Qualified completion suggestions count: {}", suggestions.len());
-        
+        println!(
+            "Qualified completion suggestions count: {}",
+            suggestions.len()
+        );
+
         println!("Forward-looking qualified column suggestions:");
         for suggestion in &suggestions {
-            println!("  '{}' - {}", suggestion.value, 
-                     suggestion.description.as_ref().unwrap_or(&"No description".to_string()));
+            println!(
+                "  '{}' - {}",
+                suggestion.value,
+                suggestion
+                    .description
+                    .as_ref()
+                    .unwrap_or(&"No description".to_string())
+            );
         }
     }
 
@@ -1648,17 +2033,26 @@ mod tests {
     async fn test_forward_looking_completion_mixed_context() {
         let (db, config) = create_test_database_and_config().await;
         let mut completer = SqlCompleter::new(db, config);
-        
+
         // Test case: some tables before cursor, some after
         let suggestions = completer.complete("UPDATE users SET name =  FROM orders", 24);
-        
+
         // This is a malformed query, but completion should still work
-        assert!(!suggestions.is_empty(), "Should provide completion suggestions");
-        
+        assert!(
+            !suggestions.is_empty(),
+            "Should provide completion suggestions"
+        );
+
         println!("Mixed context suggestions:");
         for suggestion in &suggestions {
-            println!("  '{}' - {}", suggestion.value, 
-                     suggestion.description.as_ref().unwrap_or(&"No description".to_string()));
+            println!(
+                "  '{}' - {}",
+                suggestion.value,
+                suggestion
+                    .description
+                    .as_ref()
+                    .unwrap_or(&"No description".to_string())
+            );
         }
     }
 
@@ -1666,17 +2060,26 @@ mod tests {
     async fn test_forward_looking_completion_no_future_tables() {
         let (db, config) = create_test_database_and_config().await;
         let mut completer = SqlCompleter::new(db, config);
-        
+
         // Test case: cursor after all tables (no future tables)
         let suggestions = completer.complete("SELECT * FROM users WHERE ", 26);
-        
+
         // Should still provide completions (WHERE clause keywords, existing table columns)
-        assert!(!suggestions.is_empty(), "Should provide completion suggestions");
-        
+        assert!(
+            !suggestions.is_empty(),
+            "Should provide completion suggestions"
+        );
+
         println!("No future tables - WHERE clause suggestions:");
         for suggestion in &suggestions {
-            println!("  '{}' - {}", suggestion.value, 
-                     suggestion.description.as_ref().unwrap_or(&"No description".to_string()));
+            println!(
+                "  '{}' - {}",
+                suggestion.value,
+                suggestion
+                    .description
+                    .as_ref()
+                    .unwrap_or(&"No description".to_string())
+            );
         }
     }
 }

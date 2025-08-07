@@ -145,7 +145,7 @@ impl SqlParser {
     fn tokenize(text: &str) -> Vec<Token> {
         let mut tokens = Vec::new();
         let mut chars = text.char_indices().peekable();
-        
+
         while let Some((start, ch)) = chars.next() {
             let token = match ch {
                 ' ' | '\t' | '\n' | '\r' => {
@@ -171,7 +171,7 @@ impl SqlParser {
                     let quote = ch;
                     let mut end = start;
                     let mut escaped = false;
-                    while let Some((pos, c)) = chars.next() {
+                    for (pos, c) in chars.by_ref() {
                         end = pos;
                         if !escaped && c == quote {
                             break;
@@ -198,9 +198,10 @@ impl SqlParser {
                     // Operators
                     let mut end = start;
                     if let Some(&(pos, next_ch)) = chars.peek() {
-                        if (ch == '<' && (next_ch == '=' || next_ch == '>')) ||
-                           (ch == '>' && next_ch == '=') ||
-                           (ch == '!' && next_ch == '=') {
+                        if (ch == '<' && (next_ch == '=' || next_ch == '>'))
+                            || (ch == '>' && next_ch == '=')
+                            || (ch == '!' && next_ch == '=')
+                        {
                             end = pos;
                             chars.next();
                         }
@@ -268,26 +269,75 @@ impl SqlParser {
                     }
                 }
             };
-            
+
             tokens.push(token);
         }
-        
+
         tokens
     }
 
     fn is_keyword(word: &str) -> bool {
         matches!(
             word.to_uppercase().as_str(),
-            "SELECT" | "FROM" | "WHERE" | "INSERT" | "INTO" | "VALUES" | 
-            "UPDATE" | "SET" | "DELETE" | "JOIN" | "INNER" | "LEFT" | 
-            "RIGHT" | "FULL" | "OUTER" | "ON" | "AS" | "AND" | "OR" | 
-            "NOT" | "IN" | "EXISTS" | "BETWEEN" | "LIKE" | "ORDER" | 
-            "BY" | "GROUP" | "HAVING" | "LIMIT" | "OFFSET" | "UNION" | 
-            "INTERSECT" | "EXCEPT" | "CREATE" | "TABLE" | "INDEX" | 
-            "VIEW" | "DROP" | "ALTER" | "ADD" | "COLUMN" | "CONSTRAINT" |
-            "PRIMARY" | "KEY" | "FOREIGN" | "REFERENCES" | "UNIQUE" |
-            "DEFAULT" | "NULL" | "CASCADE" | "RESTRICT" | "WITH" |
-            "DISTINCT" | "ALL" | "CASE" | "WHEN" | "THEN" | "ELSE" | "END"
+            "SELECT"
+                | "FROM"
+                | "WHERE"
+                | "INSERT"
+                | "INTO"
+                | "VALUES"
+                | "UPDATE"
+                | "SET"
+                | "DELETE"
+                | "JOIN"
+                | "INNER"
+                | "LEFT"
+                | "RIGHT"
+                | "FULL"
+                | "OUTER"
+                | "ON"
+                | "AS"
+                | "AND"
+                | "OR"
+                | "NOT"
+                | "IN"
+                | "EXISTS"
+                | "BETWEEN"
+                | "LIKE"
+                | "ORDER"
+                | "BY"
+                | "GROUP"
+                | "HAVING"
+                | "LIMIT"
+                | "OFFSET"
+                | "UNION"
+                | "INTERSECT"
+                | "EXCEPT"
+                | "CREATE"
+                | "TABLE"
+                | "INDEX"
+                | "VIEW"
+                | "DROP"
+                | "ALTER"
+                | "ADD"
+                | "COLUMN"
+                | "CONSTRAINT"
+                | "PRIMARY"
+                | "KEY"
+                | "FOREIGN"
+                | "REFERENCES"
+                | "UNIQUE"
+                | "DEFAULT"
+                | "NULL"
+                | "CASCADE"
+                | "RESTRICT"
+                | "WITH"
+                | "DISTINCT"
+                | "ALL"
+                | "CASE"
+                | "WHEN"
+                | "THEN"
+                | "ELSE"
+                | "END"
         )
     }
 
@@ -301,7 +351,7 @@ impl SqlParser {
                     "DELETE" => return StatementType::Delete,
                     "CREATE" => {
                         // Look for next keyword
-                        if let Some(next) = self.find_next_keyword_after(&token) {
+                        if let Some(next) = self.find_next_keyword_after(token) {
                             match next.value.to_uppercase().as_str() {
                                 "TABLE" => return StatementType::CreateTable,
                                 "INDEX" => return StatementType::CreateIndex,
@@ -335,10 +385,10 @@ impl SqlParser {
     fn extract_tables(&self) -> Vec<TableRef> {
         let mut tables = Vec::new();
         let mut i = 0;
-        
+
         while i < self.tokens.len() {
             let token = &self.tokens[i];
-            
+
             if token.token_type == TokenType::Keyword {
                 match token.value.to_uppercase().as_str() {
                     "FROM" | "JOIN" | "INTO" => {
@@ -356,22 +406,25 @@ impl SqlParser {
                     _ => {}
                 }
             }
-            
+
             i += 1;
         }
-        
+
         tables
     }
 
     /// Extract tables with cursor context - separates tables before and after cursor position
-    fn extract_tables_with_cursor_context(&self, cursor_pos: usize) -> (Vec<TableRef>, Vec<TableRef>) {
+    fn extract_tables_with_cursor_context(
+        &self,
+        cursor_pos: usize,
+    ) -> (Vec<TableRef>, Vec<TableRef>) {
         let mut tables_before = Vec::new();
         let mut tables_after = Vec::new();
         let mut i = 0;
-        
+
         while i < self.tokens.len() {
             let token = &self.tokens[i];
-            
+
             if token.token_type == TokenType::Keyword {
                 match token.value.to_uppercase().as_str() {
                     "FROM" | "JOIN" | "INTO" => {
@@ -399,59 +452,70 @@ impl SqlParser {
                     _ => {}
                 }
             }
-            
+
             i += 1;
         }
-        
+
         (tables_before, tables_after)
     }
 
     fn parse_table_ref(&self, start_idx: usize) -> Option<TableRef> {
         let mut idx = start_idx;
-        
+
         // Skip whitespace
         while idx < self.tokens.len() && self.tokens[idx].token_type == TokenType::Whitespace {
             idx += 1;
         }
-        
+
         if idx >= self.tokens.len() {
             return None;
         }
-        
+
         let first_token = &self.tokens[idx];
         if first_token.token_type != TokenType::Identifier {
             return None;
         }
-        
+
         // Check for schema.table pattern
-        let (schema, table, next_idx) = if idx + 2 < self.tokens.len() 
-            && self.tokens[idx + 1].value == "." 
-            && self.tokens[idx + 2].token_type == TokenType::Identifier {
-            (Some(first_token.value.clone()), self.tokens[idx + 2].value.clone(), idx + 3)
+        let (schema, table, next_idx) = if idx + 2 < self.tokens.len()
+            && self.tokens[idx + 1].value == "."
+            && self.tokens[idx + 2].token_type == TokenType::Identifier
+        {
+            (
+                Some(first_token.value.clone()),
+                self.tokens[idx + 2].value.clone(),
+                idx + 3,
+            )
         } else {
             (None, first_token.value.clone(), idx + 1)
         };
-        
+
         // Look for alias
         let mut alias = None;
         let mut check_idx = next_idx;
-        
+
         // Skip whitespace
-        while check_idx < self.tokens.len() && self.tokens[check_idx].token_type == TokenType::Whitespace {
+        while check_idx < self.tokens.len()
+            && self.tokens[check_idx].token_type == TokenType::Whitespace
+        {
             check_idx += 1;
         }
-        
+
         if check_idx < self.tokens.len() {
             let token = &self.tokens[check_idx];
-            
+
             // Check for AS keyword
             if token.token_type == TokenType::Keyword && token.value.to_uppercase() == "AS" {
                 check_idx += 1;
                 // Skip whitespace
-                while check_idx < self.tokens.len() && self.tokens[check_idx].token_type == TokenType::Whitespace {
+                while check_idx < self.tokens.len()
+                    && self.tokens[check_idx].token_type == TokenType::Whitespace
+                {
                     check_idx += 1;
                 }
-                if check_idx < self.tokens.len() && self.tokens[check_idx].token_type == TokenType::Identifier {
+                if check_idx < self.tokens.len()
+                    && self.tokens[check_idx].token_type == TokenType::Identifier
+                {
                     alias = Some(self.tokens[check_idx].value.clone());
                 }
             } else if token.token_type == TokenType::Identifier {
@@ -459,7 +523,7 @@ impl SqlParser {
                 alias = Some(token.value.clone());
             }
         }
-        
+
         Some(TableRef {
             schema,
             table,
@@ -469,28 +533,28 @@ impl SqlParser {
     }
 
     fn extract_columns(&self) -> Vec<ColumnRef> {
-        let columns = Vec::new();
-        
         // This would parse column references from SELECT, SET clauses etc.
         // For now, keeping it simple
-        
-        columns
+
+        Vec::new()
     }
 
     fn determine_clause_at_position(&self, cursor_pos: usize) -> SqlClause {
         let mut current_clause = SqlClause::Unknown;
-        
+
         for token in &self.tokens {
             if token.start > cursor_pos {
                 break;
             }
-            
+
             if token.token_type == TokenType::Keyword {
                 match token.value.to_uppercase().as_str() {
                     "SELECT" => current_clause = SqlClause::Select,
                     "FROM" => current_clause = SqlClause::From,
                     "WHERE" => current_clause = SqlClause::Where,
-                    "JOIN" | "INNER" | "LEFT" | "RIGHT" | "FULL" => current_clause = SqlClause::Join,
+                    "JOIN" | "INNER" | "LEFT" | "RIGHT" | "FULL" => {
+                        current_clause = SqlClause::Join
+                    }
                     "ON" => current_clause = SqlClause::On,
                     "GROUP" => {
                         // Check if followed by BY
@@ -518,7 +582,7 @@ impl SqlParser {
                 }
             }
         }
-        
+
         current_clause
     }
 
@@ -545,13 +609,13 @@ impl SqlParser {
     }
 
     fn determine_expectations(
-        &self, 
-        clause: &SqlClause, 
+        &self,
+        clause: &SqlClause,
         _cursor_token: &Option<Token>,
-        cursor_pos: usize
+        cursor_pos: usize,
     ) -> Vec<ExpectedElement> {
         let mut expectations = Vec::new();
-        
+
         match clause {
             SqlClause::Select => {
                 expectations.push(ExpectedElement::Column);
@@ -592,11 +656,11 @@ impl SqlParser {
             _ => {
                 // General expectations
                 expectations.push(ExpectedElement::Keyword(vec![
-                    "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP"
+                    "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP",
                 ]));
             }
         }
-        
+
         expectations
     }
 
@@ -631,7 +695,7 @@ mod tests {
     fn test_tokenize_simple_select() {
         let sql = "SELECT * FROM users";
         let tokens = SqlParser::tokenize(sql);
-        
+
         assert_eq!(tokens[0].value, "SELECT");
         assert_eq!(tokens[0].token_type, TokenType::Keyword);
         assert_eq!(tokens[2].value, "*");

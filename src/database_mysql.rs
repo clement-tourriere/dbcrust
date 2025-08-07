@@ -1,12 +1,12 @@
 //! MySQL implementation of the database abstraction layer
-use async_trait::async_trait;
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
 use crate::db::TableDetails;
-use tracing::debug;
 use crate::performance_analyzer::PerformanceAnalyzer;
+use async_trait::async_trait;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
-use sqlx::{Row, Column};
 use sqlx::types::Decimal;
+use sqlx::{Column, Row};
+use tracing::debug;
 
 /// MySQL metadata provider implementation
 pub struct MySqlMetadataProvider {
@@ -23,7 +23,7 @@ impl MySqlMetadataProvider {
 impl MetadataProvider for MySqlMetadataProvider {
     async fn get_schemas(&self) -> Result<Vec<String>, DatabaseError> {
         debug!("[MySqlMetadataProvider::get_schemas] Starting query");
-        
+
         // MySQL schemas are essentially databases
         let rows = sqlx::query(
             r#"
@@ -53,12 +53,18 @@ impl MetadataProvider for MySqlMetadataProvider {
             })
             .collect();
 
-        debug!("[MySqlMetadataProvider::get_schemas] Found {} schemas", schemas.len());
+        debug!(
+            "[MySqlMetadataProvider::get_schemas] Found {} schemas",
+            schemas.len()
+        );
         Ok(schemas)
     }
 
     async fn get_tables(&self, schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug!("[MySqlMetadataProvider::get_tables] Starting query for schema: {:?}", schema);
+        debug!(
+            "[MySqlMetadataProvider::get_tables] Starting query for schema: {:?}",
+            schema
+        );
 
         let query = if let Some(schema_name) = schema {
             format!(
@@ -99,12 +105,22 @@ impl MetadataProvider for MySqlMetadataProvider {
             })
             .collect();
 
-        debug!("[MySqlMetadataProvider::get_tables] Found {} tables", tables.len());
+        debug!(
+            "[MySqlMetadataProvider::get_tables] Found {} tables",
+            tables.len()
+        );
         Ok(tables)
     }
 
-    async fn get_columns(&self, table: &str, schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
-        debug!("[MySqlMetadataProvider::get_columns] Starting query for table: '{}', schema: {:?}", table, schema);
+    async fn get_columns(
+        &self,
+        table: &str,
+        schema: Option<&str>,
+    ) -> Result<Vec<String>, DatabaseError> {
+        debug!(
+            "[MySqlMetadataProvider::get_columns] Starting query for table: '{}', schema: {:?}",
+            table, schema
+        );
 
         let query = if let Some(schema_name) = schema {
             format!(
@@ -146,7 +162,10 @@ impl MetadataProvider for MySqlMetadataProvider {
             })
             .collect();
 
-        debug!("[MySqlMetadataProvider::get_columns] Found {} columns", columns.len());
+        debug!(
+            "[MySqlMetadataProvider::get_columns] Found {} columns",
+            columns.len()
+        );
         Ok(columns)
     }
 
@@ -210,7 +229,10 @@ impl MetadataProvider for MySqlMetadataProvider {
                 "VERSION".to_string(),
                 "YEAR".to_string(),
             ];
-            debug!("[MySqlMetadataProvider::get_functions] Found {} built-in functions", builtin_functions.len());
+            debug!(
+                "[MySqlMetadataProvider::get_functions] Found {} built-in functions",
+                builtin_functions.len()
+            );
             return Ok(builtin_functions);
         };
 
@@ -220,15 +242,25 @@ impl MetadataProvider for MySqlMetadataProvider {
             .map(|row| row.get::<String, _>("function_name"))
             .collect();
 
-        debug!("[MySqlMetadataProvider::get_functions] Found {} functions", functions.len());
+        debug!(
+            "[MySqlMetadataProvider::get_functions] Found {} functions",
+            functions.len()
+        );
         Ok(functions)
     }
 
-    async fn get_table_details(&self, table: &str, schema: Option<&str>) -> Result<TableDetails, DatabaseError> {
-        debug!("[MySqlMetadataProvider::get_table_details] Getting details for table: {}", table);
-        
+    async fn get_table_details(
+        &self,
+        table: &str,
+        schema: Option<&str>,
+    ) -> Result<TableDetails, DatabaseError> {
+        debug!(
+            "[MySqlMetadataProvider::get_table_details] Getting details for table: {}",
+            table
+        );
+
         let schema_name = schema.unwrap_or("DATABASE()");
-        
+
         // First check if the table exists
         let table_exists_query = if schema.is_some() {
             format!(
@@ -251,16 +283,18 @@ impl MetadataProvider for MySqlMetadataProvider {
         let table_exists = sqlx::query(&table_exists_query)
             .fetch_optional(&self.pool)
             .await?;
-            
+
         if table_exists.is_none() {
-            return Err(DatabaseError::QueryError(format!("Table '{table}' does not exist")));
+            return Err(DatabaseError::QueryError(format!(
+                "Table '{table}' does not exist"
+            )));
         }
 
         // Get column information
         let columns_query = if schema.is_some() {
             format!(
                 r#"
-                SELECT 
+                SELECT
                     COLUMN_NAME,
                     COLUMN_TYPE,
                     IS_NULLABLE,
@@ -274,7 +308,7 @@ impl MetadataProvider for MySqlMetadataProvider {
         } else {
             format!(
                 r#"
-                SELECT 
+                SELECT
                     COLUMN_NAME,
                     COLUMN_TYPE,
                     IS_NULLABLE,
@@ -288,33 +322,35 @@ impl MetadataProvider for MySqlMetadataProvider {
         };
 
         let column_rows = sqlx::query(&columns_query).fetch_all(&self.pool).await?;
-        
+
         let mut columns = Vec::new();
         for row in column_rows {
             // Helper function to safely get string values
-            let get_string_value = |row: &sqlx::mysql::MySqlRow, column: &str, index: usize| -> String {
-                if let Ok(val) = row.try_get::<String, _>(column) {
-                    val
-                } else if let Ok(val) = row.try_get::<String, _>(index) {
-                    val
-                } else if let Ok(val) = row.try_get::<Vec<u8>, _>(index) {
-                    String::from_utf8_lossy(&val).to_string()
-                } else {
-                    "unknown".to_string()
-                }
-            };
+            let get_string_value =
+                |row: &sqlx::mysql::MySqlRow, column: &str, index: usize| -> String {
+                    if let Ok(val) = row.try_get::<String, _>(column) {
+                        val
+                    } else if let Ok(val) = row.try_get::<String, _>(index) {
+                        val
+                    } else if let Ok(val) = row.try_get::<Vec<u8>, _>(index) {
+                        String::from_utf8_lossy(&val).to_string()
+                    } else {
+                        "unknown".to_string()
+                    }
+                };
 
-            let get_optional_string = |row: &sqlx::mysql::MySqlRow, column: &str, index: usize| -> Option<String> {
-                if let Ok(val) = row.try_get::<Option<String>, _>(column) {
-                    val
-                } else if let Ok(val) = row.try_get::<Option<String>, _>(index) {
-                    val
-                } else if let Ok(val) = row.try_get::<Option<Vec<u8>>, _>(index) {
-                    val.map(|bytes| String::from_utf8_lossy(&bytes).to_string())
-                } else {
-                    None
-                }
-            };
+            let get_optional_string =
+                |row: &sqlx::mysql::MySqlRow, column: &str, index: usize| -> Option<String> {
+                    if let Ok(val) = row.try_get::<Option<String>, _>(column) {
+                        val
+                    } else if let Ok(val) = row.try_get::<Option<String>, _>(index) {
+                        val
+                    } else if let Ok(val) = row.try_get::<Option<Vec<u8>>, _>(index) {
+                        val.map(|bytes| String::from_utf8_lossy(&bytes).to_string())
+                    } else {
+                        None
+                    }
+                };
 
             let column = crate::db::ColumnInfo {
                 name: get_string_value(&row, "COLUMN_NAME", 0),
@@ -333,7 +369,7 @@ impl MetadataProvider for MySqlMetadataProvider {
         let indexes_query = if schema.is_some() {
             format!(
                 r#"
-                SELECT 
+                SELECT
                     INDEX_NAME as name,
                     GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) as columns,
                     NON_UNIQUE = 0 as is_unique,
@@ -348,7 +384,7 @@ impl MetadataProvider for MySqlMetadataProvider {
         } else {
             format!(
                 r#"
-                SELECT 
+                SELECT
                     INDEX_NAME as name,
                     GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX) as columns,
                     NON_UNIQUE = 0 as is_unique,
@@ -363,7 +399,7 @@ impl MetadataProvider for MySqlMetadataProvider {
         };
 
         let index_rows = sqlx::query(&indexes_query).fetch_all(&self.pool).await?;
-        
+
         let mut indexes = Vec::new();
         for row in index_rows {
             // Helper function to safely get values
@@ -388,13 +424,13 @@ impl MetadataProvider for MySqlMetadataProvider {
                     false
                 }
             };
-            
+
             let index_name = get_string_value(&row, "name");
             let columns_str = get_string_value(&row, "columns");
             let is_unique = get_bool_value(&row, "is_unique");
             let is_primary = get_bool_value(&row, "is_primary");
             let index_type = get_string_value(&row, "INDEX_TYPE");
-            
+
             let index_info = crate::db::IndexInfo {
                 name: index_name.clone(),
                 definition: format!("({columns_str})"),
@@ -411,13 +447,13 @@ impl MetadataProvider for MySqlMetadataProvider {
         let fk_query = if schema.is_some() {
             format!(
                 r#"
-                SELECT 
+                SELECT
                     CONSTRAINT_NAME as name,
                     COLUMN_NAME as from_column,
                     REFERENCED_TABLE_NAME as to_table,
                     REFERENCED_COLUMN_NAME as to_column
                 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                WHERE TABLE_SCHEMA = '{schema_name}' 
+                WHERE TABLE_SCHEMA = '{schema_name}'
                   AND TABLE_NAME = '{table}'
                   AND REFERENCED_TABLE_NAME IS NOT NULL
                 ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
@@ -426,13 +462,13 @@ impl MetadataProvider for MySqlMetadataProvider {
         } else {
             format!(
                 r#"
-                SELECT 
+                SELECT
                     CONSTRAINT_NAME as name,
                     COLUMN_NAME as from_column,
                     REFERENCED_TABLE_NAME as to_table,
                     REFERENCED_COLUMN_NAME as to_column
                 FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-                WHERE TABLE_SCHEMA = DATABASE() 
+                WHERE TABLE_SCHEMA = DATABASE()
                   AND TABLE_NAME = '{table}'
                   AND REFERENCED_TABLE_NAME IS NOT NULL
                 ORDER BY CONSTRAINT_NAME, ORDINAL_POSITION
@@ -441,7 +477,7 @@ impl MetadataProvider for MySqlMetadataProvider {
         };
 
         let fk_rows = sqlx::query(&fk_query).fetch_all(&self.pool).await?;
-        
+
         let mut foreign_keys = Vec::new();
         for row in fk_rows {
             // Helper function to safely get values
@@ -459,10 +495,12 @@ impl MetadataProvider for MySqlMetadataProvider {
             let from_column = get_string_value(&row, "from_column");
             let to_table = get_string_value(&row, "to_table");
             let to_column = get_string_value(&row, "to_column");
-            
+
             let fk_info = crate::db::ForeignKeyInfo {
                 name: constraint_name,
-                definition: format!("FOREIGN KEY ({from_column}) REFERENCES {to_table}({to_column})"),
+                definition: format!(
+                    "FOREIGN KEY ({from_column}) REFERENCES {to_table}({to_column})"
+                ),
             };
             foreign_keys.push(fk_info);
         }
@@ -511,8 +549,11 @@ impl MySqlClient {
         let host = connection_info.host.as_deref().unwrap_or("localhost");
         let port = connection_info.port.unwrap_or(3306);
         let username = connection_info.username.as_deref().unwrap_or("root");
-        let database = connection_info.database.clone().unwrap_or_else(|| "mysql".to_string());
-        
+        let database = connection_info
+            .database
+            .clone()
+            .unwrap_or_else(|| "mysql".to_string());
+
         let mut database_url = if let Some(password) = &connection_info.password {
             format!("mysql://{username}:{password}@{host}:{port}/{database}")
         } else {
@@ -530,7 +571,10 @@ impl MySqlClient {
             database_url.push_str(&params.join("&"));
         }
 
-        debug!("[MySqlClient::new] Connecting to: {}", crate::password_sanitizer::sanitize_connection_url(&database_url));
+        debug!(
+            "[MySqlClient::new] Connecting to: {}",
+            crate::password_sanitizer::sanitize_connection_url(&database_url)
+        );
 
         // Configure connection pool with MySQL-specific optimizations
         let pool = MySqlPoolOptions::new()
@@ -558,7 +602,7 @@ impl MySqlClient {
     /// Apply MySQL-specific performance optimizations
     async fn apply_mysql_optimizations(pool: &MySqlPool) -> Result<(), DatabaseError> {
         debug!("[MySqlClient] Applying MySQL optimizations");
-        
+
         // Set session-level optimizations for better performance
         sqlx::query("SET SESSION sql_mode = 'TRADITIONAL'")
             .execute(pool)
@@ -573,17 +617,20 @@ impl MySqlClient {
         debug!("[MySqlClient] MySQL optimizations applied successfully");
         Ok(())
     }
-    
+
     /// Format JSON EXPLAIN output into a readable format
-    async fn format_json_explain_output(&self, rows: Vec<MySqlRow>) -> Result<Vec<Vec<String>>, DatabaseError> {
+    async fn format_json_explain_output(
+        &self,
+        rows: Vec<MySqlRow>,
+    ) -> Result<Vec<Vec<String>>, DatabaseError> {
         use serde_json::Value;
-        
+
         debug!("[MySqlClient::format_json_explain_output] Formatting JSON EXPLAIN output");
-        
+
         let mut results = Vec::new();
         results.push(vec!["MySQL Query Plan".to_string()]);
         results.push(vec!["".to_string()]);
-        
+
         for row in rows {
             // Get the JSON string from the first column
             let json_str = if let Ok(val) = row.try_get::<String, _>(0) {
@@ -593,49 +640,60 @@ impl MySqlClient {
             } else {
                 continue;
             };
-            
+
             // Parse JSON
             match serde_json::from_str::<Value>(&json_str) {
                 Ok(json) => {
                     // Use performance analyzer to get metrics
                     let performance_metrics = PerformanceAnalyzer::analyze_mysql_plan(&json);
-                    
+
                     // Add performance summary header
-                    let performance_summary = PerformanceAnalyzer::format_metrics_with_colors(&performance_metrics);
+                    let performance_summary =
+                        PerformanceAnalyzer::format_metrics_with_colors(&performance_metrics);
                     for line in performance_summary {
                         results.push(vec![line]);
                     }
-                    
+
                     results.push(vec!["".to_string()]);
-                    results.push(vec!["💡 Use \\ecopy to copy the raw JSON plan to clipboard".to_string()]);
+                    results.push(vec![
+                        "💡 Use \\ecopy to copy the raw JSON plan to clipboard".to_string(),
+                    ]);
                     results.push(vec!["".to_string()]);
                     results.push(vec!["Detailed Plan Steps:".to_string()]);
                     results.push(vec!["".to_string()]);
-                    
+
                     // Add the detailed recursive formatting
                     self.format_explain_json_recursive(&json, &mut results, 0);
-                },
+                }
                 Err(e) => {
-                    debug!("[MySqlClient::format_json_explain_output] JSON parse error: {}", e);
+                    debug!(
+                        "[MySqlClient::format_json_explain_output] JSON parse error: {}",
+                        e
+                    );
                     results.push(vec![format!("JSON Parse Error: {}", e)]);
                     results.push(vec![json_str]);
                 }
             }
         }
-        
+
         if results.len() <= 2 {
             results.push(vec!["No query plan information available".to_string()]);
         }
-        
+
         Ok(results)
     }
-    
+
     /// Recursively format JSON EXPLAIN plan
-    fn format_explain_json_recursive(&self, json: &serde_json::Value, results: &mut Vec<Vec<String>>, indent: usize) {
+    fn format_explain_json_recursive(
+        &self,
+        json: &serde_json::Value,
+        results: &mut Vec<Vec<String>>,
+        indent: usize,
+    ) {
         use serde_json::Value;
-        
+
         let indent_str = "  ".repeat(indent);
-        
+
         match json {
             Value::Object(obj) => {
                 // Handle query_block or cost_info specially
@@ -657,13 +715,19 @@ impl MySqlClient {
                 } else if let Some(table_name) = obj.get("table_name") {
                     results.push(vec![format!("{}Table: {}", indent_str, table_name)]);
                     if let Some(access_type) = obj.get("access_type") {
-                        results.push(vec![format!("{}  Access Type: {}", indent_str, access_type)]);
+                        results.push(vec![format!(
+                            "{}  Access Type: {}",
+                            indent_str, access_type
+                        )]);
                     }
                     if let Some(key) = obj.get("key") {
                         results.push(vec![format!("{}  Key: {}", indent_str, key)]);
                     }
                     if let Some(rows_examined) = obj.get("rows_examined_per_scan") {
-                        results.push(vec![format!("{}  Rows Examined: {}", indent_str, rows_examined)]);
+                        results.push(vec![format!(
+                            "{}  Rows Examined: {}",
+                            indent_str, rows_examined
+                        )]);
                     }
                     if let Some(cost_info) = obj.get("cost_info") {
                         self.format_cost_info(cost_info, results, indent + 1);
@@ -675,30 +739,35 @@ impl MySqlClient {
                             Value::Object(_) | Value::Array(_) => {
                                 results.push(vec![format!("{}{}:", indent_str, key)]);
                                 self.format_explain_json_recursive(value, results, indent + 1);
-                            },
+                            }
                             _ => {
                                 results.push(vec![format!("{}{}: {}", indent_str, key, value)]);
                             }
                         }
                     }
                 }
-            },
+            }
             Value::Array(arr) => {
                 for (i, item) in arr.iter().enumerate() {
                     results.push(vec![format!("{}[{}]:", indent_str, i)]);
                     self.format_explain_json_recursive(item, results, indent + 1);
                 }
-            },
+            }
             _ => {
                 results.push(vec![format!("{}{}", indent_str, json)]);
             }
         }
     }
-    
+
     /// Format cost information
-    fn format_cost_info(&self, cost_info: &serde_json::Value, results: &mut Vec<Vec<String>>, indent: usize) {
+    fn format_cost_info(
+        &self,
+        cost_info: &serde_json::Value,
+        results: &mut Vec<Vec<String>>,
+        indent: usize,
+    ) {
         let indent_str = "  ".repeat(indent);
-        
+
         if let Some(obj) = cost_info.as_object() {
             results.push(vec![format!("{}Cost Info:", indent_str)]);
             if let Some(read_cost) = obj.get("read_cost") {
@@ -708,24 +777,38 @@ impl MySqlClient {
                 results.push(vec![format!("{}  Eval Cost: {}", indent_str, eval_cost)]);
             }
             if let Some(prefix_cost) = obj.get("prefix_cost") {
-                results.push(vec![format!("{}  Prefix Cost: {}", indent_str, prefix_cost)]);
+                results.push(vec![format!(
+                    "{}  Prefix Cost: {}",
+                    indent_str, prefix_cost
+                )]);
             }
             if let Some(data_read_per_join) = obj.get("data_read_per_join") {
-                results.push(vec![format!("{}  Data Read Per Join: {}", indent_str, data_read_per_join)]);
+                results.push(vec![format!(
+                    "{}  Data Read Per Join: {}",
+                    indent_str, data_read_per_join
+                )]);
             }
         }
     }
-    
+
     /// Format table information
-    fn format_table_info(&self, table: &serde_json::Value, results: &mut Vec<Vec<String>>, indent: usize) {
+    fn format_table_info(
+        &self,
+        table: &serde_json::Value,
+        results: &mut Vec<Vec<String>>,
+        indent: usize,
+    ) {
         let indent_str = "  ".repeat(indent);
-        
+
         if let Some(obj) = table.as_object() {
             if let Some(table_name) = obj.get("table_name") {
                 results.push(vec![format!("{}Table: {}", indent_str, table_name)]);
             }
             if let Some(access_type) = obj.get("access_type") {
-                results.push(vec![format!("{}  Access Type: {}", indent_str, access_type)]);
+                results.push(vec![format!(
+                    "{}  Access Type: {}",
+                    indent_str, access_type
+                )]);
             }
             if let Some(key) = obj.get("key") {
                 results.push(vec![format!("{}  Index: {}", indent_str, key)]);
@@ -734,10 +817,16 @@ impl MySqlClient {
                 results.push(vec![format!("{}  Key Length: {}", indent_str, key_length)]);
             }
             if let Some(rows_examined) = obj.get("rows_examined_per_scan") {
-                results.push(vec![format!("{}  Rows Examined per Scan: {}", indent_str, rows_examined)]);
+                results.push(vec![format!(
+                    "{}  Rows Examined per Scan: {}",
+                    indent_str, rows_examined
+                )]);
             }
             if let Some(rows_produced) = obj.get("rows_produced_per_join") {
-                results.push(vec![format!("{}  Rows Produced per Join: {}", indent_str, rows_produced)]);
+                results.push(vec![format!(
+                    "{}  Rows Produced per Join: {}",
+                    indent_str, rows_produced
+                )]);
             }
             if let Some(filtered) = obj.get("filtered") {
                 results.push(vec![format!("{}  Filtered: {}%", indent_str, filtered)]);
@@ -747,12 +836,17 @@ impl MySqlClient {
             }
             if let Some(used_columns) = obj.get("used_columns") {
                 if let Some(arr) = used_columns.as_array() {
-                    let columns: Vec<String> = arr.iter()
+                    let columns: Vec<String> = arr
+                        .iter()
                         .filter_map(|v| v.as_str())
                         .map(|s| s.to_string())
                         .collect();
                     if !columns.is_empty() {
-                        results.push(vec![format!("{}  Used Columns: {}", indent_str, columns.join(", "))]);
+                        results.push(vec![format!(
+                            "{}  Used Columns: {}",
+                            indent_str,
+                            columns.join(", ")
+                        )]);
                     }
                 }
             }
@@ -765,24 +859,20 @@ impl DatabaseClient for MySqlClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[MySqlClient::execute_query] Executing query");
 
-        let rows = sqlx::query(sql)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows = sqlx::query(sql).fetch_all(&self.pool).await?;
 
         if rows.is_empty() {
             return Ok(vec![]);
         }
 
         let mut results = Vec::new();
-        
+
         // Get column names from the first row
         let first_row = &rows[0];
         let column_names: Vec<String> = (0..first_row.len())
-            .map(|i| {
-                first_row.column(i).name().to_string()
-            })
+            .map(|i| first_row.column(i).name().to_string())
             .collect();
-        
+
         results.push(column_names);
 
         // Convert rows to strings
@@ -795,7 +885,10 @@ impl DatabaseClient for MySqlClient {
             results.push(string_row);
         }
 
-        debug!("[MySqlClient::execute_query] Query completed with {} rows", results.len() - 1);
+        debug!(
+            "[MySqlClient::execute_query] Query completed with {} rows",
+            results.len() - 1
+        );
         Ok(results)
     }
 
@@ -803,33 +896,41 @@ impl DatabaseClient for MySqlClient {
         debug!("[MySqlClient::test_query] Testing query for validation");
         // For MySQL, we can use EXPLAIN to validate query syntax without executing it
         let explain_sql = format!("EXPLAIN {}", sql);
-        
+
         match sqlx::query(&explain_sql).fetch_all(&self.pool).await {
             Ok(_) => Ok(()),
-            Err(e) => Err(DatabaseError::QueryError(format!("Query validation failed: {}", e))),
+            Err(e) => Err(DatabaseError::QueryError(format!(
+                "Query validation failed: {}",
+                e
+            ))),
         }
     }
 
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[MySqlClient::explain_query] Executing EXPLAIN for query");
-        
+
         // Try EXPLAIN FORMAT=JSON first for better structured output
         let json_explain_sql = format!("EXPLAIN FORMAT=JSON {sql}");
         let json_result = sqlx::query(&json_explain_sql).fetch_all(&self.pool).await;
-        
+
         match json_result {
             Ok(rows) if !rows.is_empty() => {
                 debug!("[MySqlClient::explain_query] Using JSON format");
                 return self.format_json_explain_output(rows).await;
-            },
+            }
             Err(e) => {
-                debug!("[MySqlClient::explain_query] JSON format failed: {}, falling back to standard", e);
-            },
+                debug!(
+                    "[MySqlClient::explain_query] JSON format failed: {}, falling back to standard",
+                    e
+                );
+            }
             _ => {
-                debug!("[MySqlClient::explain_query] JSON format returned empty, falling back to standard");
+                debug!(
+                    "[MySqlClient::explain_query] JSON format returned empty, falling back to standard"
+                );
             }
         }
-        
+
         // Fallback to standard EXPLAIN format
         debug!("[MySqlClient::explain_query] Using standard EXPLAIN format");
         let explain_sql = format!("EXPLAIN {sql}");
@@ -838,16 +939,16 @@ impl DatabaseClient for MySqlClient {
 
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[MySqlClient::explain_query_raw] Executing raw EXPLAIN for query");
-        
+
         // Try EXPLAIN FORMAT=JSON first for raw structured output
         let json_explain_sql = format!("EXPLAIN FORMAT=JSON {sql}");
         let json_result = self.execute_query(&json_explain_sql).await;
-        
+
         if json_result.is_ok() {
             debug!("[MySqlClient::explain_query_raw] Using JSON format");
             return json_result;
         }
-        
+
         // Fallback to standard EXPLAIN format if JSON fails
         debug!("[MySqlClient::explain_query_raw] JSON format failed, falling back to standard");
         let explain_sql = format!("EXPLAIN {sql}");
@@ -856,29 +957,31 @@ impl DatabaseClient for MySqlClient {
 
     async fn list_databases(&self) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[MySqlClient::list_databases] Listing databases with enhanced information");
-        
+
         // Try enhanced query first with character set and collation info
         let enhanced_query = r#"
-            SELECT 
+            SELECT
                 SCHEMA_NAME as 'Database',
                 DEFAULT_CHARACTER_SET_NAME as 'Charset',
                 DEFAULT_COLLATION_NAME as 'Collation'
             FROM INFORMATION_SCHEMA.SCHEMATA
             ORDER BY SCHEMA_NAME
         "#;
-        
+
         let enhanced_result = sqlx::query(enhanced_query).fetch_all(&self.pool).await;
-        
+
         match enhanced_result {
             Ok(rows) => {
-                debug!("[MySqlClient::list_databases] Using enhanced format with charset/collation");
+                debug!(
+                    "[MySqlClient::list_databases] Using enhanced format with charset/collation"
+                );
                 let mut results = Vec::new();
-                
+
                 // Add header row for enhanced format
                 results.push(vec![
                     "Database".to_string(),
-                    "Charset".to_string(), 
-                    "Collation".to_string()
+                    "Charset".to_string(),
+                    "Collation".to_string(),
                 ]);
 
                 // Add data rows with enhanced information
@@ -896,25 +999,31 @@ impl DatabaseClient for MySqlClient {
                     let db_name = get_string_value(&row, 0);
                     let charset = get_string_value(&row, 1);
                     let collation = get_string_value(&row, 2);
-                    
+
                     results.push(vec![db_name, charset, collation]);
                 }
 
-                debug!("[MySqlClient::list_databases] Found {} databases with enhanced info", results.len() - 1);
+                debug!(
+                    "[MySqlClient::list_databases] Found {} databases with enhanced info",
+                    results.len() - 1
+                );
                 return Ok(results);
-            },
+            }
             Err(e) => {
-                debug!("[MySqlClient::list_databases] Enhanced query failed: {}, falling back to basic", e);
+                debug!(
+                    "[MySqlClient::list_databases] Enhanced query failed: {}, falling back to basic",
+                    e
+                );
             }
         }
-        
+
         // Fallback to basic SHOW DATABASES
         debug!("[MySqlClient::list_databases] Using basic SHOW DATABASES format");
         let query = "SHOW DATABASES";
         let rows = sqlx::query(query).fetch_all(&self.pool).await?;
-        
+
         let mut results = Vec::new();
-        
+
         // Add header row
         results.push(vec!["Database".to_string()]);
 
@@ -930,21 +1039,25 @@ impl DatabaseClient for MySqlClient {
             results.push(vec![db_name]);
         }
 
-        debug!("[MySqlClient::list_databases] Found {} databases", results.len() - 1);
+        debug!(
+            "[MySqlClient::list_databases] Found {} databases",
+            results.len() - 1
+        );
         Ok(results)
     }
 
     async fn connect_to_database(&mut self, database: &str) -> Result<(), DatabaseError> {
-        debug!("[MySqlClient::connect_to_database] Connecting to database: {}", database);
-        
+        debug!(
+            "[MySqlClient::connect_to_database] Connecting to database: {}",
+            database
+        );
+
         // Execute USE statement to change database
         let use_query = format!("USE `{database}`");
-        sqlx::query(&use_query)
-            .execute(&self.pool)
-            .await?;
-        
+        sqlx::query(&use_query).execute(&self.pool).await?;
+
         self.current_database = database.to_string();
-        
+
         Ok(())
     }
 
@@ -976,110 +1089,116 @@ impl DatabaseClient for MySqlClient {
 fn format_mysql_value(row: &MySqlRow, column_index: usize) -> Result<String, DatabaseError> {
     use sqlx::TypeInfo;
     use sqlx::ValueRef;
-    
+
     let column = row.column(column_index);
     let type_info = column.type_info();
-    
+
     // First, try to get the raw value to check if it's NULL
     if let Ok(value_ref) = row.try_get_raw(column_index) {
         if value_ref.is_null() {
             return Ok("".to_string());
         }
     }
-    
+
     // Try different types in order of likelihood for MySQL
-    
+
     // Try as signed integers
     if let Ok(val) = row.try_get::<i64, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<i32, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<i16, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<i8, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     // Try as unsigned integers
     if let Ok(val) = row.try_get::<u64, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<u32, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<u16, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<u8, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     // Try as floating point
     if let Ok(val) = row.try_get::<f64, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<f32, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     // Try as decimal (for DECIMAL/NUMERIC types)
     if let Ok(val) = row.try_get::<Decimal, _>(column_index) {
         return Ok(val.to_string());
     }
-    
+
     // Try as string/text
     if let Ok(val) = row.try_get::<String, _>(column_index) {
         return Ok(val);
     }
-    
+
     // Try as boolean
     if let Ok(val) = row.try_get::<bool, _>(column_index) {
-        return Ok(if val { "1".to_string() } else { "0".to_string() });
+        return Ok(if val {
+            "1".to_string()
+        } else {
+            "0".to_string()
+        });
     }
-    
+
     // Try chrono types for dates/times first
     if let Ok(val) = row.try_get::<chrono::NaiveDateTime, _>(column_index) {
         return Ok(val.format("%Y-%m-%d %H:%M:%S").to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<chrono::DateTime<chrono::Utc>, _>(column_index) {
         return Ok(val.format("%Y-%m-%d %H:%M:%S").to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<chrono::DateTime<chrono::Local>, _>(column_index) {
         return Ok(val.format("%Y-%m-%d %H:%M:%S").to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<chrono::NaiveDate, _>(column_index) {
         return Ok(val.format("%Y-%m-%d").to_string());
     }
-    
+
     if let Ok(val) = row.try_get::<chrono::NaiveTime, _>(column_index) {
         return Ok(val.format("%H:%M:%S").to_string());
     }
-    
+
     // Try as bytes for timestamp/date fields (MySQL sometimes returns these as bytes)
     if let Ok(bytes) = row.try_get::<Vec<u8>, _>(column_index) {
         if let Ok(timestamp_str) = String::from_utf8(bytes.clone()) {
             // If it looks like a timestamp, return it as-is
-            if timestamp_str.contains("-") && (timestamp_str.contains(":") || timestamp_str.len() == 10) {
+            if timestamp_str.contains("-")
+                && (timestamp_str.contains(":") || timestamp_str.len() == 10)
+            {
                 return Ok(timestamp_str);
             }
         }
         // If it's not a timestamp-like string, treat as binary data
         return Ok(format!("\\x{}", hex::encode(bytes)));
     }
-    
+
     // If all else fails, try to convert via the type system
     match type_info.name() {
         "DECIMAL" | "NUMERIC" => {
@@ -1104,7 +1223,10 @@ fn format_mysql_value(row: &MySqlRow, column_index: usize) -> Result<String, Dat
         }
         _ => {
             // Final fallback: return a descriptive message for unknown types
-            Ok(format!("[MySQL {} type - conversion not implemented]", type_info.name()))
+            Ok(format!(
+                "[MySQL {} type - conversion not implemented]",
+                type_info.name()
+            ))
         }
     }
 }
@@ -1145,9 +1267,17 @@ mod tests {
     async fn test_mysql_metadata_provider_builtin_functions() {
         // This test can run without MySQL connection as it tests the built-in functions list
         let builtin_functions = vec![
-            "COUNT", "SUM", "AVG", "MAX", "MIN", "CONCAT", "NOW", "DATE", "JSON_EXTRACT"
+            "COUNT",
+            "SUM",
+            "AVG",
+            "MAX",
+            "MIN",
+            "CONCAT",
+            "NOW",
+            "DATE",
+            "JSON_EXTRACT",
         ];
-        
+
         // Simulate what the provider would return for built-in functions
         for func in builtin_functions {
             assert!(!func.is_empty());

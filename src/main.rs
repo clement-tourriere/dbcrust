@@ -10,23 +10,16 @@ mod script;
 
 use clap::Parser;
 use dbcrust::cli::Args;
-use std::error::Error as StdError;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use dbcrust::config::{Config, LogLevel};
+use std::error::Error as StdError;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 // For `std::io::stdout().flush()`
-
-
-
-
-
-
-
 
 /// Initialize the tracing system based on configuration
 fn init_tracing() -> Result<(), Box<dyn StdError>> {
     let config = Config::load();
-    
+
     // Convert our LogLevel to tracing filter
     let level_filter = match config.logging.level {
         LogLevel::Trace => "trace",
@@ -35,11 +28,10 @@ fn init_tracing() -> Result<(), Box<dyn StdError>> {
         LogLevel::Warn => "warn",
         LogLevel::Error => "error",
     };
-    
+
     // Create the base registry
-    let registry = tracing_subscriber::registry()
-        .with(EnvFilter::new(level_filter));
-    
+    let registry = tracing_subscriber::registry().with(EnvFilter::new(level_filter));
+
     // Build and initialize subscriber based on output preferences
     match (config.logging.console_output, config.logging.file_output) {
         (true, true) => {
@@ -48,27 +40,27 @@ fn init_tracing() -> Result<(), Box<dyn StdError>> {
             if let Some(parent) = std::path::Path::new(&config.logging.file_path).parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            
+
             let file_appender = RollingFileAppender::builder()
                 .rotation(Rotation::DAILY)
                 .max_log_files(config.logging.max_files)
                 .build(&config.logging.file_path)?;
-            
+
             registry
-                .with(fmt::layer().compact())  // Console layer
-                .with(fmt::layer()             // File layer
-                    .with_writer(file_appender)
-                    .with_ansi(false)
-                    .with_target(true)
-                    .with_file(true)
-                    .with_line_number(true))
+                .with(fmt::layer().compact()) // Console layer
+                .with(
+                    fmt::layer() // File layer
+                        .with_writer(file_appender)
+                        .with_ansi(false)
+                        .with_target(true)
+                        .with_file(true)
+                        .with_line_number(true),
+                )
                 .init();
         }
         (true, false) => {
             // Console output only
-            registry
-                .with(fmt::layer().compact())
-                .init();
+            registry.with(fmt::layer().compact()).init();
         }
         (false, true) => {
             // File output only
@@ -76,19 +68,21 @@ fn init_tracing() -> Result<(), Box<dyn StdError>> {
             if let Some(parent) = std::path::Path::new(&config.logging.file_path).parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            
+
             let file_appender = RollingFileAppender::builder()
                 .rotation(Rotation::DAILY)
                 .max_log_files(config.logging.max_files)
                 .build(&config.logging.file_path)?;
-            
+
             registry
-                .with(fmt::layer()
-                    .with_writer(file_appender)
-                    .with_ansi(false)
-                    .with_target(true)
-                    .with_file(true)
-                    .with_line_number(true))
+                .with(
+                    fmt::layer()
+                        .with_writer(file_appender)
+                        .with_ansi(false)
+                        .with_target(true)
+                        .with_file(true)
+                        .with_line_number(true),
+                )
                 .init();
         }
         (false, false) => {
@@ -96,7 +90,7 @@ fn init_tracing() -> Result<(), Box<dyn StdError>> {
             registry.init();
         }
     }
-    
+
     Ok(())
 }
 
@@ -104,11 +98,12 @@ fn init_tracing() -> Result<(), Box<dyn StdError>> {
 pub async fn async_main() -> Result<(), Box<dyn StdError>> {
     // Initialize tracing system
     if let Err(e) = init_tracing() {
-        eprintln!("Failed to initialize logging: {}", e);
+        eprintln!("Failed to initialize logging: {e}");
     }
-    
+
     let args = Args::parse();
-    dbcrust::cli_core::CliCore::run_with_args(args).await
+    dbcrust::cli_core::CliCore::run_with_args(args)
+        .await
         .map_err(|e| -> Box<dyn StdError> { Box::new(e) })?;
     Ok(())
 }
@@ -117,30 +112,29 @@ pub async fn async_main() -> Result<(), Box<dyn StdError>> {
 pub async fn async_main_with_args(args: Args) -> Result<(), Box<dyn StdError>> {
     // Initialize tracing system
     if let Err(e) = init_tracing() {
-        eprintln!("Failed to initialize logging: {}", e);
+        eprintln!("Failed to initialize logging: {e}");
     }
-    
-    dbcrust::cli_core::CliCore::run_with_args(args).await
+
+    dbcrust::cli_core::CliCore::run_with_args(args)
+        .await
         .map_err(|e| -> Box<dyn StdError> { Box::new(e) })?;
     Ok(())
 }
-
-
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn StdError>> {
     // Initialize tracing system before anything else
     if let Err(e) = init_tracing() {
-        eprintln!("Failed to initialize logging: {}", e);
+        eprintln!("Failed to initialize logging: {e}");
         // Continue without logging rather than exit
     }
-    
+
     let args = Args::parse();
     match dbcrust::cli_core::CliCore::run_with_args(args).await {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(e) => {
             // Display user-friendly error message instead of Debug representation
-            eprintln!("Error: {}", e);
+            eprintln!("Error: {e}");
             std::process::exit(1);
         }
     }

@@ -3,8 +3,8 @@
 
 pub mod cli;
 pub mod cli_core; // New unified CLI core
-pub mod commands; // New type-safe enum-based command system
 pub mod command_completion; // Trait-based command completion system
+pub mod commands; // New type-safe enum-based command system
 pub mod completion;
 pub mod completion_provider; // Database-agnostic completion trait
 pub mod config;
@@ -29,15 +29,14 @@ pub mod script;
 pub mod shell_completion; // Custom shell completion with URL schemes
 pub mod sql_context; // SQL context analysis for better autocompletion
 pub mod sql_parser; // Enhanced SQL parser for autocompletion
-pub mod sql_parser_trait; // Database-specific SQL parser trait system
-pub mod sql_parser_postgresql; // PostgreSQL-specific SQL parser
 pub mod sql_parser_mysql; // MySQL-specific SQL parser
+pub mod sql_parser_postgresql; // PostgreSQL-specific SQL parser
 pub mod sql_parser_sqlite; // SQLite-specific SQL parser
+pub mod sql_parser_trait; // Database-specific SQL parser trait system
 pub mod ssh_tunnel; // Add the SSH tunnel module
 pub mod url_scheme; // URL scheme autocompletion support
 pub mod vault_client; // Add backslash commands module
 pub mod vault_encryption; // Vault credential encryption utilities
-
 
 // Note: main.rs functions are not directly accessible as modules in lib.rs
 // We'll create PyO3 wrappers that call the main functionality directly
@@ -93,8 +92,7 @@ impl PyDatabase {
 
         let rt = Runtime::new().map_err(|e| {
             PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to create Tokio runtime: {}",
-                e
+                "Failed to create Tokio runtime: {e}"
             ))
         })?;
 
@@ -118,8 +116,7 @@ impl PyDatabase {
             })
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyConnectionError, _>(format!(
-                    "Failed to connect to database: {}",
-                    e
+                    "Failed to connect to database: {e}"
                 ))
             })?;
 
@@ -131,21 +128,19 @@ impl PyDatabase {
 
     /// Execute a query and return the results.
     pub fn execute(&self, query: &str) -> PyResult<PyObject> {
-        let results = self.rt
+        let results = self
+            .rt
             .block_on(async {
                 let mut db = self.inner.lock().await;
                 db.execute_query(query).await
             })
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "Query execution failed: {}",
-                    e
+                    "Query execution failed: {e}"
                 ))
             })?;
 
-        Python::with_gil(|py| {
-            Ok(results.into_pyobject(py)?.into_any().unbind())
-        })
+        Python::with_gil(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
     }
 
     /// Get connection info as a string.
@@ -164,53 +159,49 @@ impl PyDatabase {
 
     /// List all databases.
     pub fn list_databases(&self) -> PyResult<PyObject> {
-        let results = self.rt
+        let results = self
+            .rt
             .block_on(async {
                 let mut db = self.inner.lock().await;
                 db.list_databases().await
             })
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "Failed to list databases: {}",
-                    e
+                    "Failed to list databases: {e}"
                 ))
             })?;
 
-        Python::with_gil(|py| {
-            Ok(results.into_pyobject(py)?.into_any().unbind())
-        })
+        Python::with_gil(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
     }
 
     /// List all tables.
     pub fn list_tables(&self) -> PyResult<PyObject> {
-        let results = self.rt
+        let results = self
+            .rt
             .block_on(async {
                 let mut db = self.inner.lock().await;
                 db.list_tables().await
             })
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "Failed to list tables: {}",
-                    e
+                    "Failed to list tables: {e}"
                 ))
             })?;
 
-        Python::with_gil(|py| {
-            Ok(results.into_pyobject(py)?.into_any().unbind())
-        })
+        Python::with_gil(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
     }
 
     /// Describe a table.
     pub fn describe_table(&self, table_name: &str) -> PyResult<PyObject> {
-        let table_details = self.rt
+        let table_details = self
+            .rt
             .block_on(async {
                 let mut db = self.inner.lock().await;
                 db.get_table_details(table_name).await
             })
             .map_err(|e| {
                 PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                    "Failed to describe table: {}",
-                    e
+                    "Failed to describe table: {e}"
                 ))
             })?;
 
@@ -219,7 +210,7 @@ impl PyDatabase {
             dict.set_item("name", &table_details.name)?;
             dict.set_item("schema", &table_details.schema)?;
             dict.set_item("full_name", &table_details.full_name)?;
-            
+
             // Convert columns to list of dicts
             let columns_list = PyList::empty(py);
             for col in &table_details.columns {
@@ -232,9 +223,16 @@ impl PyDatabase {
                 columns_list.append(col_dict)?;
             }
             dict.set_item("columns", columns_list)?;
-            
+
             Ok(dict.into())
         })
+    }
+}
+
+#[cfg(feature = "python")]
+impl Default for PyConfig {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -271,10 +269,7 @@ impl PyConfig {
     /// Save the configuration.
     pub fn save(&self) -> PyResult<()> {
         self.inner.save().map_err(|e| {
-            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-                "Failed to save config: {}",
-                e
-            ))
+            PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to save config: {e}"))
         })
     }
 }
@@ -285,15 +280,13 @@ impl PyConfig {
 pub fn run_command(args: Vec<String>) -> PyResult<()> {
     let rt = Runtime::new().map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-            "Failed to create Tokio runtime: {}",
-            e
+            "Failed to create Tokio runtime: {e}"
         ))
     })?;
 
     rt.block_on(run_main_cli_workflow(args)).map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-            "CLI command execution failed: {}",
-            e
+            "CLI command execution failed: {e}"
         ))
     })
 }
@@ -304,8 +297,7 @@ pub fn run_command(args: Vec<String>) -> PyResult<()> {
 pub fn run_cli_loop(connection_url: Option<String>) -> PyResult<()> {
     let rt = Runtime::new().map_err(|e| {
         PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!(
-            "Failed to create Tokio runtime: {}",
-            e
+            "Failed to create Tokio runtime: {e}"
         ))
     })?;
 
@@ -319,7 +311,7 @@ pub fn run_cli_loop(connection_url: Option<String>) -> PyResult<()> {
         }
     })
     .map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Interactive CLI failed: {}", e))
+        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Interactive CLI failed: {e}"))
     })
 }
 
@@ -340,17 +332,17 @@ async fn run_main_cli_workflow(args: Vec<String>) -> Result<(), Box<dyn std::err
             if e.kind() == clap::error::ErrorKind::DisplayHelp
                 || e.kind() == clap::error::ErrorKind::DisplayVersion
             {
-                print!("{}", e);
+                print!("{e}");
                 return Ok(());
             }
-            return Err(format!("Error parsing arguments: {}", e).into());
+            return Err(format!("Error parsing arguments: {e}").into());
         }
     };
 
     // Use CliCore for all functionality - this provides 100% feature parity
     match crate::cli_core::CliCore::run_with_args_and_original(args, Some(original_args)).await {
         Ok(_exit_code) => Ok(()),
-        Err(e) => Err(format!("CLI execution failed: {}", e).into()),
+        Err(e) => Err(format!("CLI execution failed: {e}").into()),
     }
 }
 
@@ -358,9 +350,9 @@ async fn run_main_cli_workflow(args: Vec<String>) -> Result<(), Box<dyn std::err
 /// Run the interactive CLI with full connection URL handling
 #[cfg(feature = "python")]
 pub async fn run_interactive_cli(url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::cli_core::CliCore;
     use crate::cli::Args;
-    
+    use crate::cli_core::CliCore;
+
     // Create Args structure with the connection URL
     let args = Args {
         connection_url: Some(url.to_string()),
@@ -368,12 +360,10 @@ pub async fn run_interactive_cli(url: &str) -> Result<(), Box<dyn std::error::Er
         ssh_tunnel: None,
         completions: None,
     };
-    
+
     // Run the CLI with the constructed args
     CliCore::run_with_args(args).await.map(|_| ()).map_err(|e| {
-        Box::new(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("CLI execution failed: {}", e)
-        )) as Box<dyn std::error::Error>
+        Box::new(std::io::Error::other(format!("CLI execution failed: {e}")))
+            as Box<dyn std::error::Error>
     })
 }

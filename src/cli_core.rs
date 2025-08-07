@@ -8,7 +8,6 @@ use crate::format::{format_query_results_expanded, format_query_results_psql_wit
 use crate::history_manager::{SessionHistoryManager, SessionId};
 use crate::prompt::DbPrompt;
 use crate::{logging, pager};
-use tracing::debug;
 use clap::CommandFactory;
 use dirs;
 use inquire;
@@ -18,8 +17,8 @@ use std::io;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use terminal_size;
+use tracing::debug;
 use url;
-
 
 /// Core CLI functionality shared between Rust and Python interfaces
 pub struct CliCore {
@@ -127,7 +126,6 @@ impl Default for CliCore {
     }
 }
 
-
 impl CliCore {
     /// Create a new CLI core instance
     pub fn new() -> Self {
@@ -174,7 +172,6 @@ impl CliCore {
         cli_core.log_system_info(&args);
 
         // SSH tunnel debug output now handled by tracing system
-
 
         // Check if commands can be handled without database connection first
         if !args.command.is_empty()
@@ -232,7 +229,7 @@ impl CliCore {
         };
 
         generate_completion_with_url_schemes(shell_type, &mut cmd, binary_name, &mut io::stdout())
-            .map_err(|e| CliError::CommandError(format!("Failed to generate completion: {}", e)))?;
+            .map_err(|e| CliError::CommandError(format!("Failed to generate completion: {e}")))?;
         Ok(())
     }
 
@@ -431,7 +428,7 @@ impl CliCore {
                     if vault_role.is_empty() {
                         format!("vault://{vault_mount}/{vault_database}")
                     } else {
-                        format!("vault://{}@{vault_mount}/{vault_database}", vault_role)
+                        format!("vault://{vault_role}@{vault_mount}/{vault_database}")
                     }
                 } else {
                     full_url_str.to_string()
@@ -546,7 +543,10 @@ impl CliCore {
                     .as_mut()
                     .ok_or_else(|| CliError::CommandError("No database connection".to_string()))?;
 
-                match database.execute_query_with_info_no_column_selection(command_trimmed).await {
+                match database
+                    .execute_query_with_info_no_column_selection(command_trimmed)
+                    .await
+                {
                     Ok(results_with_info) => {
                         if !results_with_info.data.is_empty() {
                             let is_expanded = database.is_expanded_display();
@@ -558,7 +558,10 @@ impl CliCore {
                                 }
                                 Self::page_or_print(&combined_output, &self.config)?;
                             } else {
-                                let formatted_output = format_query_results_psql_with_info(&results_with_info.data, results_with_info.column_info.as_ref());
+                                let formatted_output = format_query_results_psql_with_info(
+                                    &results_with_info.data,
+                                    results_with_info.column_info.as_ref(),
+                                );
                                 Self::page_or_print(&formatted_output, &self.config)?;
                             }
                         }
@@ -688,8 +691,8 @@ impl CliCore {
 
         // Set up reedline components exactly as in the working version
         use reedline::{
-            default_emacs_keybindings, ColumnarMenu, DefaultHinter, Emacs, FileBackedHistory, KeyCode,
-            KeyModifiers, MenuBuilder, ReedlineEvent, ReedlineMenu,
+            ColumnarMenu, DefaultHinter, Emacs, FileBackedHistory, KeyCode, KeyModifiers,
+            MenuBuilder, ReedlineEvent, ReedlineMenu, default_emacs_keybindings,
         };
 
         // Set up completion menu
@@ -705,7 +708,7 @@ impl CliCore {
                 ReedlineEvent::MenuNext,
             ]),
         );
-        
+
         // Add Shift+Tab for navigating up through suggestions
         keybindings.add_binding(
             KeyModifiers::SHIFT,
@@ -730,7 +733,10 @@ impl CliCore {
                 };
 
                 if let Some(session_id) = session_id {
-                    debug!("Using session-based history for: {}", session_id.display_name);
+                    debug!(
+                        "Using session-based history for: {}",
+                        session_id.display_name
+                    );
                     history_manager.get_session_history(&session_id)
                 } else {
                     debug!("No session info available, using default history");
@@ -738,7 +744,10 @@ impl CliCore {
                 }
             }
             Err(e) => {
-                debug!("Failed to create session history manager: {}, using fallback history", e);
+                debug!(
+                    "Failed to create session history manager: {}, using fallback history",
+                    e
+                );
                 // Fallback to default history creation
                 let history_path = crate::config::Config::get_config_dir()
                     .map(|dir| dir.join("history"))
@@ -749,7 +758,7 @@ impl CliCore {
                     });
                 Box::new(
                     FileBackedHistory::with_file(50, history_path)
-                        .unwrap_or_else(|_| FileBackedHistory::default())
+                        .unwrap_or_else(|_| FileBackedHistory::default()),
                 )
             }
         };
@@ -757,16 +766,16 @@ impl CliCore {
         // Create completer and editor with full configuration
         let completer = if self.config.autocomplete_enabled {
             Box::new(SqlCompleter::new_with_line_buffer(
-                db_arc.clone(), 
+                db_arc.clone(),
                 config_arc.clone(),
-                full_line_buffer.clone()
+                full_line_buffer.clone(),
             )) as Box<dyn reedline::Completer>
         } else {
             Box::new(NoopCompleter {}) as Box<dyn reedline::Completer>
         };
 
         let mut line_editor = Reedline::create()
-            .use_bracketed_paste(true)  // Enable bracketed paste for multi-line pasted content
+            .use_bracketed_paste(true) // Enable bracketed paste for multi-line pasted content
             .with_completer(completer)
             .with_edit_mode(edit_mode)
             .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
@@ -888,7 +897,6 @@ impl CliCore {
         Ok(())
     }
 
-
     /// Execute backslash command in interactive mode - returns whether to exit
     async fn execute_backslash_command_interactive(
         &mut self,
@@ -907,7 +915,7 @@ impl CliCore {
         match command
             .execute(
                 db_arc,
-                &mut *config_arc.lock().unwrap(),
+                &mut config_arc.lock().unwrap(),
                 last_script,
                 interrupt_flag,
                 prompt,
@@ -970,7 +978,10 @@ impl CliCore {
                 }
                 Self::page_or_print(&combined_output, &self.config)?;
             } else {
-                let formatted_output = format_query_results_psql_with_info(&results_with_info.data, results_with_info.column_info.as_ref());
+                let formatted_output = format_query_results_psql_with_info(
+                    &results_with_info.data,
+                    results_with_info.column_info.as_ref(),
+                );
                 Self::page_or_print(&formatted_output, &self.config)?;
             }
         }
@@ -1062,81 +1073,94 @@ impl CliCore {
         match self.config.get_session(&final_session_name) {
             Some(session) => {
                 let session_url = if session.database_type.is_file_based() {
-                        if session.host.starts_with("DOCKER:") {
-                            let container_name = session
-                                .host
-                                .strip_prefix("DOCKER:")
-                                .unwrap_or(&session.host);
-                            println!(
-                                "🐳 Re-resolving Docker container for saved session: {container_name}"
-                            );
-                            format!("docker://{container_name}")
-                        } else if let Some(ref file_path) = session.file_path {
-                            format!("sqlite://{file_path}")
+                    if session.host.starts_with("DOCKER:") {
+                        let container_name = session
+                            .host
+                            .strip_prefix("DOCKER:")
+                            .unwrap_or(&session.host);
+                        println!(
+                            "🐳 Re-resolving Docker container for saved session: {container_name}"
+                        );
+                        format!("docker://{container_name}")
+                    } else if let Some(ref file_path) = session.file_path {
+                        format!("sqlite://{file_path}")
+                    } else {
+                        return Err(CliError::ConnectionError(
+                            "SQLite session missing file path".to_string(),
+                        ));
+                    }
+                } else {
+                    // Handle network-based database types (PostgreSQL, MySQL)
+                    if session.host.starts_with("DOCKER:") {
+                        let container_name = session
+                            .host
+                            .strip_prefix("DOCKER:")
+                            .unwrap_or(&session.host);
+                        println!(
+                            "🐳 Re-resolving Docker container for saved session: {container_name}"
+                        );
+                        format!("docker://{container_name}")
+                    } else if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
+                        session.options.get("vault_mount"),
+                        session.options.get("vault_database"),
+                        session.options.get("vault_role"),
+                    ) {
+                        // This is a Vault session, reconstruct vault:// URL for fresh credentials
+                        println!(
+                            "🔐 Re-obtaining Vault credentials for saved session: {vault_database}"
+                        );
+                        if vault_role.is_empty() {
+                            format!("vault://{vault_mount}/{vault_database}")
                         } else {
-                            return Err(CliError::ConnectionError(
-                                "SQLite session missing file path".to_string(),
-                            ));
+                            format!("vault://{vault_role}@{vault_mount}/{vault_database}")
                         }
                     } else {
-                        // Handle network-based database types (PostgreSQL, MySQL)
-                        if session.host.starts_with("DOCKER:") {
-                            let container_name = session
-                                .host
-                                .strip_prefix("DOCKER:")
-                                .unwrap_or(&session.host);
-                            println!(
-                                "🐳 Re-resolving Docker container for saved session: {container_name}"
-                            );
-                            format!("docker://{container_name}")
-                        } else if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
-                            session.options.get("vault_mount"),
-                            session.options.get("vault_database"),
-                            session.options.get("vault_role"),
-                        ) {
-                            // This is a Vault session, reconstruct vault:// URL for fresh credentials
-                            println!(
-                                "🔐 Re-obtaining Vault credentials for saved session: {vault_database}"
-                            );
-                            if vault_role.is_empty() {
-                                format!("vault://{vault_mount}/{vault_database}")
-                            } else {
-                                format!("vault://{}@{vault_mount}/{vault_database}", vault_role)
+                        // Use trait method to get URL scheme and handle password lookup
+                        let url_scheme = session.database_type.url_scheme();
+
+                        // Try to get password from appropriate credential store
+                        let password = match session.database_type {
+                            crate::database::DatabaseType::PostgreSQL => {
+                                crate::pgpass::lookup_password(
+                                    &session.host,
+                                    session.port,
+                                    &session.dbname,
+                                    &session.user,
+                                )
                             }
+                            crate::database::DatabaseType::MySQL => {
+                                crate::myconf::lookup_mysql_password(
+                                    &session.host,
+                                    session.port,
+                                    &session.dbname,
+                                    &session.user,
+                                )
+                            }
+                            _ => None,
+                        };
+
+                        if let Some(password) = password {
+                            format!(
+                                "{}://{}:{}@{}:{}/{}",
+                                url_scheme,
+                                session.user,
+                                password,
+                                session.host,
+                                session.port,
+                                session.dbname
+                            )
                         } else {
-                            // Use trait method to get URL scheme and handle password lookup
-                            let url_scheme = session.database_type.url_scheme();
-                            
-                            // Try to get password from appropriate credential store
-                            let password = match session.database_type {
-                                crate::database::DatabaseType::PostgreSQL => crate::pgpass::lookup_password(
-                                    &session.host,
-                                    session.port,
-                                    &session.dbname,
-                                    &session.user,
-                                ),
-                                crate::database::DatabaseType::MySQL => crate::myconf::lookup_mysql_password(
-                                    &session.host,
-                                    session.port,
-                                    &session.dbname,
-                                    &session.user,
-                                ),
-                                _ => None,
-                            };
-                            
-                            if let Some(password) = password {
-                                format!(
-                                    "{}://{}:{}@{}:{}/{}",
-                                    url_scheme, session.user, password, session.host, session.port, session.dbname
-                                )
-                            } else {
-                                format!(
-                                    "{}://{}@{}:{}/{}",
-                                    url_scheme, session.user, session.host, session.port, session.dbname
-                                )
-                            }
+                            format!(
+                                "{}://{}@{}:{}/{}",
+                                url_scheme,
+                                session.user,
+                                session.host,
+                                session.port,
+                                session.dbname
+                            )
                         }
-                    };
+                    }
+                };
 
                 println!("✓ Successfully retrieved session '{final_session_name}'");
 
@@ -1243,8 +1267,7 @@ impl CliCore {
                     return Ok(format!("vault://{vault_mount}/{vault_database}"));
                 } else {
                     return Ok(format!(
-                        "vault://{}@{vault_mount}/{vault_database}",
-                        vault_role
+                        "vault://{vault_role}@{vault_mount}/{vault_database}"
                     ));
                 }
             } else {
@@ -1294,16 +1317,18 @@ impl CliCore {
             original_url.clone()
         } else {
             let url_scheme = connection.database_type.url_scheme();
-            
+
             // Try to get password from appropriate credential store
             let password = match connection.database_type {
-                crate::database::DatabaseType::PostgreSQL => 
-                    crate::pgpass::lookup_password(host, port, database, username),
-                crate::database::DatabaseType::MySQL => 
-                    crate::myconf::lookup_mysql_password(host, port, database, username),
+                crate::database::DatabaseType::PostgreSQL => {
+                    crate::pgpass::lookup_password(host, port, database, username)
+                }
+                crate::database::DatabaseType::MySQL => {
+                    crate::myconf::lookup_mysql_password(host, port, database, username)
+                }
                 _ => None,
             };
-            
+
             if let Some(password) = password {
                 format!("{url_scheme}://{username}:{password}@{host}:{port}/{database}")
             } else {
@@ -1518,9 +1543,9 @@ impl CliCore {
             return false;
         }
 
-        // Count lines in output 
+        // Count lines in output
         let line_count = output.lines().count();
-        
+
         // Get the threshold
         let threshold = if config.pager_threshold_lines == 0 {
             // Use terminal height if available, otherwise default to 25
@@ -1545,13 +1570,13 @@ impl CliCore {
                 Err(e) => {
                     // Pager failed, fall back to direct output
                     debug!("Pager failed, falling back to direct output: {}", e);
-                    print!("{}", output);
+                    print!("{output}");
                     Ok(())
                 }
             }
         } else {
             // Direct output
-            print!("{}", output);
+            print!("{output}");
             Ok(())
         }
     }

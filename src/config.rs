@@ -979,7 +979,7 @@ impl Config {
                     // Debug: If parsing fails, show detailed information about the error
                     if let Err(ref e) = config_result {
                         eprintln!("TOML parsing error details:");
-                        eprintln!("  Error: {}", e);
+                        eprintln!("  Error: {e}");
 
                         // Check if it's specifically about autocomplete_enabled
                         if e.to_string().contains("autocomplete_enabled") {
@@ -2204,7 +2204,7 @@ impl Config {
         // Save if we removed any credentials
         if removed_count > 0 {
             if let Err(e) = self.save_vault_credentials() {
-                eprintln!("Error saving vault credentials after cleanup: {}", e);
+                eprintln!("Error saving vault credentials after cleanup: {e}");
             }
         }
 

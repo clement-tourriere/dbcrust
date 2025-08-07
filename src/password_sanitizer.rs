@@ -7,12 +7,12 @@ pub fn sanitize_connection_url(url: &str) -> String {
     if let Some(comment_pos) = url.find(" # Docker: ") {
         let main_url = &url[..comment_pos];
         let comment_part = &url[comment_pos..];
-        
+
         // Sanitize the main URL part and re-add the comment
         let sanitized_main = sanitize_connection_url(main_url);
         return format!("{sanitized_main}{comment_part}");
     }
-    
+
     // First check if this looks like a connection string without a proper scheme
     if !url.starts_with("postgres://")
         && !url.starts_with("postgresql://")
@@ -120,12 +120,18 @@ mod tests {
         // Test Docker URL with comment and password
         let docker_url = "postgres://user:password@host:5432/db # Docker: container-name";
         let sanitized = sanitize_connection_url(docker_url);
-        assert_eq!(sanitized, "postgres://user:[REDACTED]@host:5432/db # Docker: container-name");
-        
+        assert_eq!(
+            sanitized,
+            "postgres://user:[REDACTED]@host:5432/db # Docker: container-name"
+        );
+
         // Test Docker URL without password
         let docker_url_no_pass = "postgres://user@host:5432/db # Docker: container-name";
         let sanitized_no_pass = sanitize_connection_url(docker_url_no_pass);
-        assert_eq!(sanitized_no_pass, "postgres://user@host:5432/db # Docker: container-name");
+        assert_eq!(
+            sanitized_no_pass,
+            "postgres://user@host:5432/db # Docker: container-name"
+        );
     }
 
     #[test]

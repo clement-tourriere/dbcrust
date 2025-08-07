@@ -13,7 +13,6 @@ use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{debug, info};
 
-
 #[derive(Error, Debug, Clone)]
 pub enum SSHTunnelError {
     #[error("SSH authentication error: {0}")]
@@ -103,7 +102,7 @@ impl SSHTunnel {
         cmd.arg("-o");
         cmd.arg("BatchMode=yes");
         cmd.arg("-o");
-        cmd.arg("ConnectTimeout=3");  // Reduced from 5 to 3 seconds
+        cmd.arg("ConnectTimeout=3"); // Reduced from 5 to 3 seconds
         cmd.arg("-o");
         cmd.arg("ServerAliveInterval=10");
         cmd.arg("-o");
@@ -148,10 +147,7 @@ impl SSHTunnel {
         // Log that we're initiating the SSH tunnel
         info!(
             "Initiating SSH tunnel to {}:{} via {}@{}...",
-            self.remote_host,
-            self.remote_port,
-            self.ssh_user,
-            self.ssh_host
+            self.remote_host, self.remote_port, self.ssh_user, self.ssh_host
         );
 
         debug!(
@@ -175,12 +171,12 @@ impl SSHTunnel {
         *process_guard = Some(child);
         drop(process_guard);
 
-        let total_establishment_timeout = Duration::from_secs(8);  // Reduced from 12
-        let tcp_check_interval = Duration::from_millis(500);      // Check more frequently
-        let individual_tcp_connect_timeout = Duration::from_millis(500);  // Faster timeout
+        let total_establishment_timeout = Duration::from_secs(8); // Reduced from 12
+        let tcp_check_interval = Duration::from_millis(500); // Check more frequently
+        let individual_tcp_connect_timeout = Duration::from_millis(500); // Faster timeout
         let start_time = tokio::time::Instant::now();
         let local_addr = format!("127.0.0.1:{}", self.local_port);
-        
+
         // Give SSH a moment to establish before first check
         tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -205,12 +201,12 @@ impl SSHTunnel {
                             // Process is still running, continue
                         }
                         Err(e) => {
-                            debug!("Error checking SSH process status: {}", e);
+                            debug!("Error checking SSH process status: {e}");
                         }
                     }
                 }
             }
-            
+
             if start_time.elapsed() >= total_establishment_timeout {
                 eprintln!(
                     "Total timeout of {total_establishment_timeout:?} reached for SSH tunnel establishment to {local_addr}."
@@ -228,9 +224,9 @@ impl SSHTunnel {
                             .await
                             {
                                 Ok(Ok(_)) => { /* Successfully read stderr */ }
-                                Ok(Err(io_err)) => eprintln!(
-                                    "IO error reading SSH stderr after timeout: {io_err}"
-                                ),
+                                Ok(Err(io_err)) => {
+                                    eprintln!("IO error reading SSH stderr after timeout: {io_err}")
+                                }
                                 Err(_) => eprintln!(
                                     "Timeout reading SSH stderr after overall establishment timeout."
                                 ),
@@ -551,16 +547,12 @@ mod tests {
 
         match establish_result {
             Ok(local_port) => {
-                println!(
-                    "Tunnel unexpectedly established on local port: {local_port}"
-                );
+                println!("Tunnel unexpectedly established on local port: {local_port}");
                 assert_eq!(tunnel.ssh_host, basic_tunnel_config.ssh_host);
                 assert_ne!(local_port, 0);
 
                 tunnel.stop().await.unwrap_or_else(|e| {
-                    eprintln!(
-                        "Error stopping tunnel (might be ok if already stopped): {e}"
-                    );
+                    eprintln!("Error stopping tunnel (might be ok if already stopped): {e}");
                 });
                 assert!(
                     tunnel.tunnel_process.lock().unwrap().is_none(),
@@ -568,9 +560,7 @@ mod tests {
                 );
             }
             Err(e) => {
-                println!(
-                    "Tunnel establishment failed as expected (or due to actual error): {e}"
-                );
+                println!("Tunnel establishment failed as expected (or due to actual error): {e}");
                 assert!(matches!(
                     e,
                     SSHTunnelError::SshCommandFailed(_)

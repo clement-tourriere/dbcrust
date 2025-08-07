@@ -6,11 +6,11 @@ use serde_json::Value as JsonValue;
 /// Performance levels for color coding
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PerformanceLevel {
-    Excellent,  // Green
-    Good,       // Light Green
-    Warning,    // Yellow
-    Poor,       // Orange
-    Critical,   // Red
+    Excellent, // Green
+    Good,      // Light Green
+    Warning,   // Yellow
+    Poor,      // Orange
+    Critical,  // Red
 }
 
 impl PerformanceLevel {
@@ -24,7 +24,7 @@ impl PerformanceLevel {
             PerformanceLevel::Critical => Color::Red,
         }
     }
-    
+
     /// Get the emoji indicator for this performance level
     pub fn emoji(&self) -> &'static str {
         match self {
@@ -35,7 +35,7 @@ impl PerformanceLevel {
             PerformanceLevel::Critical => "🔴",
         }
     }
-    
+
     /// Get the text description for this performance level
     pub fn description(&self) -> &'static str {
         match self {
@@ -60,7 +60,7 @@ pub struct PerformanceMetrics {
     pub efficiency_percent: Option<f64>,
     pub recommendations: Vec<String>,
     pub warnings: Vec<String>,
-    
+
     // Enhanced context information
     pub table_name: Option<String>,
     pub index_name: Option<String>,
@@ -94,7 +94,7 @@ impl PerformanceMetrics {
             actual_loops: None,
         }
     }
-    
+
     /// Calculate efficiency percentage from rows examined vs returned
     pub fn calculate_efficiency(&mut self) {
         if let (Some(examined), Some(returned)) = (self.rows_examined, self.rows_returned) {
@@ -103,43 +103,44 @@ impl PerformanceMetrics {
             }
         }
     }
-    
+
     /// Add a performance recommendation
     pub fn add_recommendation(&mut self, recommendation: String) {
         self.recommendations.push(recommendation);
     }
-    
+
     /// Add a performance warning
     pub fn add_warning(&mut self, warning: String) {
         self.warnings.push(warning);
     }
-    
+
     /// Add contextual information about columns used in the operation
     pub fn add_column(&mut self, column: String) {
         if !self.columns_used.contains(&column) {
             self.columns_used.push(column);
         }
     }
-    
+
     /// Add filter condition for this operation
     pub fn add_filter_condition(&mut self, condition: String) {
         self.filter_conditions.push(condition);
     }
-    
+
     /// Add join condition for this operation
     pub fn add_join_condition(&mut self, condition: String) {
         self.join_conditions.push(condition);
     }
-    
+
     /// Generate specific index recommendation with DDL statement
     pub fn generate_index_recommendation(&self) -> Option<String> {
         if let Some(table) = &self.table_name {
             if !self.columns_used.is_empty() {
                 let columns = self.columns_used.join(", ");
-                return Some(format!("CREATE INDEX idx_{}_{} ON {} ({});", 
-                    table, 
-                    self.columns_used.join("_"), 
-                    table, 
+                return Some(format!(
+                    "CREATE INDEX idx_{}_{} ON {} ({});",
+                    table,
+                    self.columns_used.join("_"),
+                    table,
                     columns
                 ));
             }
@@ -155,7 +156,7 @@ impl PerformanceAnalyzer {
     /// Analyze PostgreSQL EXPLAIN JSON output
     pub fn analyze_postgresql_plan(plan_json: &JsonValue) -> Vec<PerformanceMetrics> {
         let mut metrics = Vec::new();
-        
+
         if let JsonValue::Array(plans) = plan_json {
             if let Some(plan) = plans.first() {
                 if let Some(plan_obj) = plan.as_object() {
@@ -165,54 +166,56 @@ impl PerformanceAnalyzer {
                 }
             }
         }
-        
+
         metrics
     }
-    
+
     /// Recursively analyze PostgreSQL plan nodes
     fn analyze_postgresql_node(node: &JsonValue, metrics: &mut Vec<PerformanceMetrics>) {
         if let Some(node_obj) = node.as_object() {
             let mut metric = PerformanceMetrics::new(
-                node_obj.get("Node Type")
+                node_obj
+                    .get("Node Type")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Unknown")
-                    .to_string()
+                    .to_string(),
             );
-            
+
             // Extract timing information
             if let Some(JsonValue::Number(actual_time)) = node_obj.get("Actual Total Time") {
                 metric.time_ms = actual_time.as_f64();
             }
-            
+
             // Extract cost information
             if let Some(JsonValue::Number(total_cost)) = node_obj.get("Total Cost") {
                 metric.cost_score = total_cost.as_f64().unwrap_or(0.0);
             }
-            
+
             // Extract row information
             if let Some(JsonValue::Number(rows)) = node_obj.get("Actual Rows") {
                 metric.rows_returned = rows.as_u64();
             }
-            
+
             if let Some(JsonValue::Number(plan_rows)) = node_obj.get("Plan Rows") {
                 metric.estimated_rows = plan_rows.as_u64();
             }
-            
+
             if let Some(JsonValue::Number(loops)) = node_obj.get("Actual Loops") {
                 metric.actual_loops = loops.as_u64();
             }
-            
+
             // Extract contextual information
             Self::extract_postgresql_context(&mut metric, node_obj);
-            
+
             // Calculate performance level based on operation type and metrics
-            metric.performance_level = Self::calculate_postgresql_performance_level(&metric, node_obj);
-            
+            metric.performance_level =
+                Self::calculate_postgresql_performance_level(&metric, node_obj);
+
             // Add recommendations based on operation type
             Self::add_postgresql_recommendations(&mut metric, node_obj);
-            
+
             metrics.push(metric);
-            
+
             // Recursively analyze child plans
             if let Some(JsonValue::Array(plans)) = node_obj.get("Plans") {
                 for plan in plans {
@@ -221,62 +224,65 @@ impl PerformanceAnalyzer {
             }
         }
     }
-    
+
     /// Extract contextual information from PostgreSQL plan node
-    fn extract_postgresql_context(metric: &mut PerformanceMetrics, node_obj: &serde_json::Map<String, JsonValue>) {
+    fn extract_postgresql_context(
+        metric: &mut PerformanceMetrics,
+        node_obj: &serde_json::Map<String, JsonValue>,
+    ) {
         // Extract table/relation name
         if let Some(JsonValue::String(relation)) = node_obj.get("Relation Name") {
             metric.table_name = Some(relation.clone());
         }
-        
+
         // Extract schema-qualified relation name if available
         if let Some(JsonValue::String(schema)) = node_obj.get("Schema") {
             if let Some(table) = &metric.table_name {
                 metric.table_name = Some(format!("{}.{}", schema, table));
             }
         }
-        
+
         // Extract index name
         if let Some(JsonValue::String(index)) = node_obj.get("Index Name") {
             metric.index_name = Some(index.clone());
         }
-        
+
         // Extract filter conditions
         if let Some(JsonValue::String(filter)) = node_obj.get("Filter") {
             metric.add_filter_condition(filter.clone());
         }
-        
+
         // Extract index conditions
         if let Some(JsonValue::String(index_cond)) = node_obj.get("Index Cond") {
             metric.add_filter_condition(format!("Index condition: {}", index_cond));
             // Parse column names from index condition
             Self::extract_columns_from_condition(index_cond, &mut metric.columns_used);
         }
-        
+
         // Extract recheck conditions
         if let Some(JsonValue::String(recheck_cond)) = node_obj.get("Recheck Cond") {
             metric.add_filter_condition(format!("Recheck condition: {}", recheck_cond));
             Self::extract_columns_from_condition(recheck_cond, &mut metric.columns_used);
         }
-        
+
         // Extract join filter
         if let Some(JsonValue::String(join_filter)) = node_obj.get("Join Filter") {
             metric.add_join_condition(join_filter.clone());
             Self::extract_columns_from_condition(join_filter, &mut metric.columns_used);
         }
-        
+
         // Extract hash condition for hash joins
         if let Some(JsonValue::String(hash_cond)) = node_obj.get("Hash Cond") {
             metric.add_join_condition(format!("Hash condition: {}", hash_cond));
             Self::extract_columns_from_condition(hash_cond, &mut metric.columns_used);
         }
-        
+
         // Extract merge condition for merge joins
         if let Some(JsonValue::String(merge_cond)) = node_obj.get("Merge Cond") {
             metric.add_join_condition(format!("Merge condition: {}", merge_cond));
             Self::extract_columns_from_condition(merge_cond, &mut metric.columns_used);
         }
-        
+
         // Extract sort keys
         if let Some(JsonValue::Array(sort_keys)) = node_obj.get("Sort Key") {
             for key in sort_keys {
@@ -285,7 +291,7 @@ impl PerformanceAnalyzer {
                 }
             }
         }
-        
+
         // Extract group keys
         if let Some(JsonValue::Array(group_keys)) = node_obj.get("Group Key") {
             for key in group_keys {
@@ -294,7 +300,7 @@ impl PerformanceAnalyzer {
                 }
             }
         }
-        
+
         // Extract output columns
         if let Some(JsonValue::Array(output)) = node_obj.get("Output") {
             for col in output {
@@ -306,7 +312,7 @@ impl PerformanceAnalyzer {
                 }
             }
         }
-        
+
         // Generate SQL fragment for context
         match metric.operation_type.as_str() {
             "Seq Scan" | "Index Scan" | "Index Only Scan" | "Bitmap Heap Scan" => {
@@ -317,59 +323,86 @@ impl PerformanceAnalyzer {
                         metric.sql_fragment = Some(format!("Scanning {}", table));
                     }
                 }
-            },
+            }
             "Hash Join" | "Nested Loop" | "Merge Join" => {
                 if !metric.join_conditions.is_empty() {
-                    metric.sql_fragment = Some(format!("Joining on: {}", metric.join_conditions.join(", ")));
+                    metric.sql_fragment =
+                        Some(format!("Joining on: {}", metric.join_conditions.join(", ")));
                 }
-            },
+            }
             "Sort" => {
                 if !metric.columns_used.is_empty() {
-                    metric.sql_fragment = Some(format!("Sorting by: {}", metric.columns_used.join(", ")));
+                    metric.sql_fragment =
+                        Some(format!("Sorting by: {}", metric.columns_used.join(", ")));
                 }
-            },
+            }
             "Aggregate" => {
                 if !metric.columns_used.is_empty() {
-                    metric.sql_fragment = Some(format!("Aggregating on: {}", metric.columns_used.join(", ")));
+                    metric.sql_fragment = Some(format!(
+                        "Aggregating on: {}",
+                        metric.columns_used.join(", ")
+                    ));
                 }
-            },
+            }
             "Gather Merge" => {
-                metric.sql_fragment = Some("Parallel query coordination and result merging".to_string());
-            },
+                metric.sql_fragment =
+                    Some("Parallel query coordination and result merging".to_string());
+            }
             "Subquery Scan" => {
                 if let Some(table) = &metric.table_name {
                     metric.sql_fragment = Some(format!("Processing subquery result: {}", table));
                 } else {
                     metric.sql_fragment = Some("Processing subquery result".to_string());
                 }
-            },
+            }
             _ => {}
         }
     }
-    
+
     /// Extract column names from SQL conditions using simple pattern matching
     fn extract_columns_from_condition(condition: &str, columns: &mut Vec<String>) {
         // Simple regex-like pattern matching for column names
         // Look for patterns like "table.column" or standalone column names before operators
         let words: Vec<&str> = condition.split_whitespace().collect();
-        
+
         for (i, word) in words.iter().enumerate() {
             // Skip operators and common SQL keywords
-            if matches!(word.to_lowercase().as_str(), "and" | "or" | "not" | "in" | "like" | "between" | "is" | "null" | "=" | "!=" | "<" | ">" | "<=" | ">=" | "~~" | "!~~") {
+            if matches!(
+                word.to_lowercase().as_str(),
+                "and"
+                    | "or"
+                    | "not"
+                    | "in"
+                    | "like"
+                    | "between"
+                    | "is"
+                    | "null"
+                    | "="
+                    | "!="
+                    | "<"
+                    | ">"
+                    | "<="
+                    | ">="
+                    | "~~"
+                    | "!~~"
+            ) {
                 continue;
             }
-            
+
             // Check if next word is an operator (indicating this might be a column)
             if i + 1 < words.len() {
                 let next_word = words[i + 1];
-                if matches!(next_word, "=" | "!=" | "<" | ">" | "<=" | ">=" | "~~" | "!~~" | "IS" | "LIKE" | "ILIKE") {
+                if matches!(
+                    next_word,
+                    "=" | "!=" | "<" | ">" | "<=" | ">=" | "~~" | "!~~" | "IS" | "LIKE" | "ILIKE"
+                ) {
                     let column = word.trim_matches(['(', ')', ',', '\'']).to_string();
                     if !column.is_empty() && !columns.contains(&column) {
                         columns.push(column);
                     }
                 }
             }
-            
+
             // Handle dot-notation (table.column)
             if word.contains('.') && !word.starts_with('$') {
                 let parts: Vec<&str> = word.split('.').collect();
@@ -382,14 +415,17 @@ impl PerformanceAnalyzer {
             }
         }
     }
-    
+
     /// Calculate performance level for PostgreSQL operations
-    fn calculate_postgresql_performance_level(metric: &PerformanceMetrics, node_obj: &serde_json::Map<String, JsonValue>) -> PerformanceLevel {
+    fn calculate_postgresql_performance_level(
+        metric: &PerformanceMetrics,
+        node_obj: &serde_json::Map<String, JsonValue>,
+    ) -> PerformanceLevel {
         // Check for slow operations
         if metric.operation_type.contains("Seq Scan") {
             return PerformanceLevel::Warning;
         }
-        
+
         // Check execution time thresholds
         if let Some(time) = metric.time_ms {
             if time > 1000.0 {
@@ -398,17 +434,18 @@ impl PerformanceAnalyzer {
                 return PerformanceLevel::Warning;
             }
         }
-        
+
         // Check cost thresholds
         if metric.cost_score > 10000.0 {
             return PerformanceLevel::Critical;
         } else if metric.cost_score > 1000.0 {
             return PerformanceLevel::Warning;
         }
-        
+
         // Check row estimation accuracy
-        if let (Some(JsonValue::Number(plan_rows)), Some(JsonValue::Number(actual_rows))) = 
-            (node_obj.get("Plan Rows"), node_obj.get("Actual Rows")) {
+        if let (Some(JsonValue::Number(plan_rows)), Some(JsonValue::Number(actual_rows))) =
+            (node_obj.get("Plan Rows"), node_obj.get("Actual Rows"))
+        {
             if let (Some(plan), Some(actual)) = (plan_rows.as_f64(), actual_rows.as_f64()) {
                 if actual > 0.0 {
                     let ratio = plan / actual;
@@ -418,153 +455,212 @@ impl PerformanceAnalyzer {
                 }
             }
         }
-        
+
         PerformanceLevel::Good
     }
-    
+
     /// Add PostgreSQL-specific recommendations
-    fn add_postgresql_recommendations(metric: &mut PerformanceMetrics, node_obj: &serde_json::Map<String, JsonValue>) {
+    fn add_postgresql_recommendations(
+        metric: &mut PerformanceMetrics,
+        node_obj: &serde_json::Map<String, JsonValue>,
+    ) {
         match metric.operation_type.as_str() {
             "Seq Scan" => {
                 metric.add_warning("Full table scan detected".to_string());
                 if let Some(table) = &metric.table_name {
                     if !metric.columns_used.is_empty() {
                         let columns = metric.columns_used.join(", ");
-                        metric.add_recommendation(format!("Consider adding index: CREATE INDEX idx_{}_{} ON {} ({});", 
-                            table.replace('.', "_"), 
-                            metric.columns_used.join("_"), 
-                            table, 
+                        metric.add_recommendation(format!(
+                            "Consider adding index: CREATE INDEX idx_{}_{} ON {} ({});",
+                            table.replace('.', "_"),
+                            metric.columns_used.join("_"),
+                            table,
                             columns
                         ));
                     } else {
-                        metric.add_recommendation(format!("Consider adding an index on table '{}'", table));
+                        metric.add_recommendation(format!(
+                            "Consider adding an index on table '{}'",
+                            table
+                        ));
                     }
                 }
-                
+
                 // Add filter-specific recommendations
                 if !metric.filter_conditions.is_empty() {
-                    metric.add_recommendation("Focus index on WHERE clause columns for better selectivity".to_string());
+                    metric.add_recommendation(
+                        "Focus index on WHERE clause columns for better selectivity".to_string(),
+                    );
                 }
-            },
+            }
             "Index Scan" | "Index Only Scan" => {
                 if let Some(index) = &metric.index_name {
                     metric.sql_fragment = Some(format!("Uses index: {}", index));
                 }
-                
+
                 // Check for index scan efficiency
                 if let (Some(est), Some(actual)) = (metric.estimated_rows, metric.rows_returned) {
-                    let ratio = if actual > 0 { est as f64 / actual as f64 } else { 1.0 };
+                    let ratio = if actual > 0 {
+                        est as f64 / actual as f64
+                    } else {
+                        1.0
+                    };
                     if ratio > 10.0 {
                         metric.add_warning("Poor cardinality estimate for index scan".to_string());
-                        metric.add_recommendation("Consider running ANALYZE to update table statistics".to_string());
+                        metric.add_recommendation(
+                            "Consider running ANALYZE to update table statistics".to_string(),
+                        );
                     }
                 }
-            },
+            }
             "Bitmap Heap Scan" => {
-                metric.add_recommendation("Bitmap scan indicates moderate selectivity - consider composite index".to_string());
+                metric.add_recommendation(
+                    "Bitmap scan indicates moderate selectivity - consider composite index"
+                        .to_string(),
+                );
                 if !metric.columns_used.is_empty() && metric.table_name.is_some() {
                     let columns = metric.columns_used.join(", ");
-                    metric.add_recommendation(format!("Composite index suggestion: CREATE INDEX ON {} ({});", 
-                        metric.table_name.as_ref().unwrap(), 
+                    metric.add_recommendation(format!(
+                        "Composite index suggestion: CREATE INDEX ON {} ({});",
+                        metric.table_name.as_ref().unwrap(),
                         columns
                     ));
                 }
-            },
+            }
             "Nested Loop" => {
                 if let Some(time) = metric.time_ms {
                     if time > 100.0 {
-                        metric.add_recommendation("Consider using a hash join instead of nested loop".to_string());
-                        metric.add_recommendation("Ensure join columns are indexed on both tables".to_string());
+                        metric.add_recommendation(
+                            "Consider using a hash join instead of nested loop".to_string(),
+                        );
+                        metric.add_recommendation(
+                            "Ensure join columns are indexed on both tables".to_string(),
+                        );
                     }
                 }
-                
+
                 if !metric.join_conditions.is_empty() {
-                    metric.add_recommendation("Ensure join columns have matching data types and are indexed".to_string());
+                    metric.add_recommendation(
+                        "Ensure join columns have matching data types and are indexed".to_string(),
+                    );
                 }
-            },
+            }
             "Hash Join" => {
                 if !metric.join_conditions.is_empty() {
-                    metric.sql_fragment = Some(format!("Hash join on: {}", metric.join_conditions.join(", ")));
+                    metric.sql_fragment = Some(format!(
+                        "Hash join on: {}",
+                        metric.join_conditions.join(", ")
+                    ));
                 }
-            },
+            }
             "Merge Join" => {
                 if !metric.join_conditions.is_empty() {
-                    metric.sql_fragment = Some(format!("Merge join on: {}", metric.join_conditions.join(", ")));
-                    metric.add_recommendation("Merge join is efficient when both inputs are pre-sorted".to_string());
+                    metric.sql_fragment = Some(format!(
+                        "Merge join on: {}",
+                        metric.join_conditions.join(", ")
+                    ));
+                    metric.add_recommendation(
+                        "Merge join is efficient when both inputs are pre-sorted".to_string(),
+                    );
                 }
-            },
+            }
             "Sort" => {
                 if let Some(JsonValue::String(sort_method)) = node_obj.get("Sort Method") {
                     if sort_method.contains("external") {
                         metric.add_warning("Sort spilled to disk".to_string());
-                        metric.add_recommendation("Consider increasing work_mem parameter".to_string());
+                        metric.add_recommendation(
+                            "Consider increasing work_mem parameter".to_string(),
+                        );
                         if let Some(table) = &metric.table_name {
                             if !metric.columns_used.is_empty() {
                                 let columns = metric.columns_used.join(", ");
-                                metric.add_recommendation(format!("Or add index to avoid sorting: CREATE INDEX ON {} ({});", table, columns));
+                                metric.add_recommendation(format!(
+                                    "Or add index to avoid sorting: CREATE INDEX ON {} ({});",
+                                    table, columns
+                                ));
                             }
                         }
                     } else {
-                        metric.sql_fragment = Some(format!("Sorting by: {}", metric.columns_used.join(", ")));
+                        metric.sql_fragment =
+                            Some(format!("Sorting by: {}", metric.columns_used.join(", ")));
                     }
                 }
-            },
+            }
             "Aggregate" => {
                 if !metric.columns_used.is_empty() {
-                    metric.sql_fragment = Some(format!("Aggregating on: {}", metric.columns_used.join(", ")));
+                    metric.sql_fragment = Some(format!(
+                        "Aggregating on: {}",
+                        metric.columns_used.join(", ")
+                    ));
                     if let Some(table) = &metric.table_name {
-                        metric.add_recommendation(format!("Consider index on GROUP BY columns: CREATE INDEX ON {} ({});", 
-                            table, 
+                        metric.add_recommendation(format!(
+                            "Consider index on GROUP BY columns: CREATE INDEX ON {} ({});",
+                            table,
                             metric.columns_used.join(", ")
                         ));
                     }
                 }
-            },
+            }
             "Gather Merge" => {
-                metric.add_recommendation("Parallel processing - ensure max_parallel_workers_per_gather is appropriate".to_string());
+                metric.add_recommendation(
+                    "Parallel processing - ensure max_parallel_workers_per_gather is appropriate"
+                        .to_string(),
+                );
                 if let Some(time) = metric.time_ms {
                     if time > 50.0 {
-                        metric.add_recommendation("Consider if parallel processing overhead is worth it for this query".to_string());
+                        metric.add_recommendation(
+                            "Consider if parallel processing overhead is worth it for this query"
+                                .to_string(),
+                        );
                     }
                 }
-            },
+            }
             "Subquery Scan" => {
-                metric.add_recommendation("Consider if subquery can be eliminated or rewritten as a JOIN".to_string());
+                metric.add_recommendation(
+                    "Consider if subquery can be eliminated or rewritten as a JOIN".to_string(),
+                );
                 if let Some(time) = metric.time_ms {
                     if time > 20.0 {
-                        metric.add_recommendation("Subquery processing is slow - review subquery logic".to_string());
+                        metric.add_recommendation(
+                            "Subquery processing is slow - review subquery logic".to_string(),
+                        );
                     }
                 }
-            },
+            }
             _ => {}
         }
-        
+
         // General cardinality estimate warnings
         if let (Some(estimated), Some(actual)) = (metric.estimated_rows, metric.rows_returned) {
             if estimated > 0 && actual > 0 {
                 let ratio = estimated as f64 / actual as f64;
                 if ratio > 100.0 || ratio < 0.01 {
-                    metric.add_warning(format!("Poor row estimate: expected {}, got {} ({}x off)", 
-                        estimated, actual, ratio.max(1.0/ratio) as u64));
-                    metric.add_recommendation("Run ANALYZE on involved tables to update statistics".to_string());
+                    metric.add_warning(format!(
+                        "Poor row estimate: expected {}, got {} ({}x off)",
+                        estimated,
+                        actual,
+                        ratio.max(1.0 / ratio) as u64
+                    ));
+                    metric.add_recommendation(
+                        "Run ANALYZE on involved tables to update statistics".to_string(),
+                    );
                 }
             }
         }
     }
-    
+
     /// Analyze MySQL EXPLAIN JSON output
     pub fn analyze_mysql_plan(plan_json: &JsonValue) -> Vec<PerformanceMetrics> {
         let mut metrics = Vec::new();
-        
+
         if let JsonValue::Object(obj) = plan_json {
             if let Some(query_block) = obj.get("query_block") {
                 Self::analyze_mysql_query_block(query_block, &mut metrics);
             }
         }
-        
+
         metrics
     }
-    
+
     /// Analyze MySQL query block
     fn analyze_mysql_query_block(query_block: &JsonValue, metrics: &mut Vec<PerformanceMetrics>) {
         if let Some(obj) = query_block.as_object() {
@@ -572,7 +668,7 @@ impl PerformanceAnalyzer {
             if let Some(table) = obj.get("table") {
                 Self::analyze_mysql_table(table, metrics);
             }
-            
+
             // Analyze nested loops
             if let Some(JsonValue::Array(nested_loop)) = obj.get("nested_loop") {
                 for table in nested_loop {
@@ -583,21 +679,23 @@ impl PerformanceAnalyzer {
             }
         }
     }
-    
+
     /// Analyze MySQL table information
     fn analyze_mysql_table(table: &JsonValue, metrics: &mut Vec<PerformanceMetrics>) {
         if let Some(obj) = table.as_object() {
-            let table_name = obj.get("table_name")
+            let table_name = obj
+                .get("table_name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown");
-            
+
             let mut metric = PerformanceMetrics::new(format!("Table: {table_name}"));
-            
+
             // Extract access type
-            let access_type = obj.get("access_type")
+            let access_type = obj
+                .get("access_type")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            
+
             // Extract cost information
             if let Some(cost_info) = obj.get("cost_info") {
                 if let Some(cost_obj) = cost_info.as_object() {
@@ -606,30 +704,34 @@ impl PerformanceAnalyzer {
                     }
                 }
             }
-            
+
             // Extract row information
             if let Some(JsonValue::Number(rows_examined)) = obj.get("rows_examined_per_scan") {
                 metric.rows_examined = rows_examined.as_u64();
             }
-            
+
             if let Some(JsonValue::Number(rows_produced)) = obj.get("rows_produced_per_join") {
                 metric.rows_returned = rows_produced.as_u64();
             }
-            
+
             metric.calculate_efficiency();
-            
+
             // Calculate performance level
-            metric.performance_level = Self::calculate_mysql_performance_level(&metric, access_type);
-            
+            metric.performance_level =
+                Self::calculate_mysql_performance_level(&metric, access_type);
+
             // Add MySQL-specific recommendations
             Self::add_mysql_recommendations(&mut metric, access_type, obj);
-            
+
             metrics.push(metric);
         }
     }
-    
+
     /// Calculate performance level for MySQL operations
-    fn calculate_mysql_performance_level(_metric: &PerformanceMetrics, access_type: &str) -> PerformanceLevel {
+    fn calculate_mysql_performance_level(
+        _metric: &PerformanceMetrics,
+        access_type: &str,
+    ) -> PerformanceLevel {
         // Check access type
         match access_type {
             "ALL" => PerformanceLevel::Critical,
@@ -641,66 +743,74 @@ impl PerformanceAnalyzer {
             _ => PerformanceLevel::Good,
         }
     }
-    
+
     /// Add MySQL-specific recommendations
-    fn add_mysql_recommendations(metric: &mut PerformanceMetrics, access_type: &str, obj: &serde_json::Map<String, JsonValue>) {
+    fn add_mysql_recommendations(
+        metric: &mut PerformanceMetrics,
+        access_type: &str,
+        obj: &serde_json::Map<String, JsonValue>,
+    ) {
         match access_type {
             "ALL" => {
                 metric.add_warning("Full table scan detected".to_string());
                 if let Some(JsonValue::String(table_name)) = obj.get("table_name") {
                     metric.add_recommendation(format!("Add an index to table '{table_name}'"));
                 }
-            },
+            }
             "index" => {
                 metric.add_warning("Full index scan detected".to_string());
                 metric.add_recommendation("Consider adding a more selective index".to_string());
-            },
+            }
             _ => {}
         }
-        
+
         // Check filtering efficiency
         if let Some(efficiency) = metric.efficiency_percent {
             if efficiency < 10.0 {
                 metric.add_warning(format!("Poor filtering efficiency: {efficiency:.1}%"));
-                metric.add_recommendation("Consider adding more selective WHERE conditions".to_string());
+                metric.add_recommendation(
+                    "Consider adding more selective WHERE conditions".to_string(),
+                );
             }
         }
     }
-    
+
     /// Analyze SQLite EXPLAIN QUERY PLAN output
     pub fn analyze_sqlite_plan(plan_rows: &[Vec<String>]) -> Vec<PerformanceMetrics> {
         let mut metrics = Vec::new();
-        
+
         // Skip header row if present
-        let data_rows = if plan_rows.len() > 1 && 
-                          plan_rows[0].iter().any(|col| col.to_lowercase().contains("id") || col.to_lowercase().contains("detail")) {
+        let data_rows = if plan_rows.len() > 1
+            && plan_rows[0].iter().any(|col| {
+                col.to_lowercase().contains("id") || col.to_lowercase().contains("detail")
+            }) {
             &plan_rows[1..]
         } else {
             plan_rows
         };
-        
+
         for (i, row) in data_rows.iter().enumerate() {
             if row.len() >= 4 {
                 let detail = &row[3];
                 let mut metric = PerformanceMetrics::new(format!("Step {}", i + 1));
-                
+
                 // Calculate performance level based on operation
                 metric.performance_level = Self::calculate_sqlite_performance_level(detail);
-                
+
                 // Add SQLite-specific recommendations
                 Self::add_sqlite_recommendations(&mut metric, detail);
-                
+
                 metrics.push(metric);
             }
         }
-        
+
         metrics
     }
-    
+
     /// Calculate performance level for SQLite operations
     fn calculate_sqlite_performance_level(detail: &str) -> PerformanceLevel {
         let detail_lower = detail.to_lowercase();
-        
+
         if detail_lower.contains("using covering index") {
             PerformanceLevel::Excellent
         } else if detail_lower.contains("using integer primary key") {
@@ -717,26 +827,27 @@ impl PerformanceAnalyzer {
             PerformanceLevel::Good
         }
     }
-    
+
     /// Add SQLite-specific recommendations
     fn add_sqlite_recommendations(metric: &mut PerformanceMetrics, detail: &str) {
         let detail_lower = detail.to_lowercase();
-        
+
         if detail_lower.contains("scan table") && !detail_lower.contains("using index") {
             metric.add_warning("Full table scan detected".to_string());
-            metric.add_recommendation("Consider adding an index to improve performance".to_string());
+            metric
+                .add_recommendation("Consider adding an index to improve performance".to_string());
         } else if detail_lower.contains("using temporary b-tree") {
             metric.add_warning("Temporary B-tree created for sorting".to_string());
             metric.add_recommendation("Consider adding an index to avoid sorting".to_string());
         }
     }
-    
+
     /// Calculate overall performance score (0-100)
     pub fn calculate_overall_score(metrics: &[PerformanceMetrics]) -> u8 {
         if metrics.is_empty() {
             return 100;
         }
-        
+
         let mut total_score = 0;
         for metric in metrics {
             let score = match metric.performance_level {
@@ -748,15 +859,15 @@ impl PerformanceAnalyzer {
             };
             total_score += score;
         }
-        
+
         (total_score / metrics.len()) as u8
     }
-    
+
     /// Format performance metrics with colors and enhanced dashboard
     pub fn format_metrics_with_colors(metrics: &[PerformanceMetrics]) -> Vec<String> {
         let mut formatted = Vec::new();
         let overall_score = Self::calculate_overall_score(metrics);
-        
+
         // Add header with overall score
         let score_color = if overall_score >= 80 {
             Color::Green
@@ -765,50 +876,63 @@ impl PerformanceAnalyzer {
         } else {
             Color::Red
         };
-        
-        formatted.push(format!("📊 {}",
-            score_color.bold().paint(format!("Query Performance Analysis (Score: {overall_score}/100)"))
+
+        formatted.push(format!(
+            "📊 {}",
+            score_color.bold().paint(format!(
+                "Query Performance Analysis (Score: {overall_score}/100)"
+            ))
         ));
-        
+
         // Add performance dashboard summary
         let dashboard_summary = Self::generate_performance_dashboard(metrics, overall_score);
         for line in dashboard_summary {
             formatted.push(line);
         }
-        
+
         formatted.push(String::new());
-        formatted.push(format!("🔍 {}", Color::White.bold().paint("Detailed Operation Analysis:")));
+        formatted.push(format!(
+            "🔍 {}",
+            Color::White.bold().paint("Detailed Operation Analysis:")
+        ));
         formatted.push(String::new());
-        
+
         // Add individual metrics
         for (i, metric) in metrics.iter().enumerate() {
             let color = metric.performance_level.color();
             let emoji = metric.performance_level.emoji();
-            
-            formatted.push(format!("{} {} {} (Step {})",
+
+            formatted.push(format!(
+                "{} {} {} (Step {})",
                 emoji,
                 color.bold().paint(&metric.operation_type),
                 color.paint(metric.performance_level.description()),
                 i + 1
             ));
-            
+
             // Add contextual information
             if let Some(table) = &metric.table_name {
                 formatted.push(format!("  🏷️  Table: {}", Color::Blue.paint(table)));
             }
-            
+
             if let Some(index) = &metric.index_name {
                 formatted.push(format!("  🔍 Index: {}", Color::Green.paint(index)));
             }
-            
+
             if !metric.columns_used.is_empty() {
-                formatted.push(format!("  📋 Columns: {}", Color::Purple.paint(metric.columns_used.join(", "))));
+                formatted.push(format!(
+                    "  📋 Columns: {}",
+                    Color::Purple.paint(metric.columns_used.join(", "))
+                ));
             }
-            
+
             if let Some(sql_fragment) = &metric.sql_fragment {
-                formatted.push(format!("  📝 Context: {}", Color::DarkGray.paint(sql_fragment)));
+                formatted.push(format!(
+                    "  📝 Context: {}",
+                    Color::DarkGray.paint(sql_fragment)
+                ));
             }
-            
+
             // Add timing information if available
             if let Some(time) = metric.time_ms {
                 let time_color = if time > 1000.0 {
@@ -818,11 +942,12 @@ impl PerformanceAnalyzer {
                 } else {
                     Color::Green
                 };
-                formatted.push(format!("  ⏱️  Duration: {}", 
+                formatted.push(format!(
+                    "  ⏱️  Duration: {}",
                     time_color.paint(format!("{time:.2} ms"))
                 ));
             }
-            
+
             // Add cost information
             if metric.cost_score > 0.0 {
                 let cost_color = if metric.cost_score > 10000.0 {
@@ -832,11 +957,12 @@ impl PerformanceAnalyzer {
                 } else {
                     Color::Green
                 };
-                formatted.push(format!("  💰 Cost: {}", 
+                formatted.push(format!(
+                    "  💰 Cost: {}",
                     cost_color.paint(format!("{:.0}", metric.cost_score))
                 ));
             }
-            
+
             // Add row information with estimates vs actuals
             if let (Some(estimated), Some(actual)) = (metric.estimated_rows, metric.rows_returned) {
                 let accuracy = if estimated > 0 {
@@ -851,22 +977,33 @@ impl PerformanceAnalyzer {
                 } else {
                     ("❓", Color::DarkGray)
                 };
-                
-                formatted.push(format!("  📊 Rows: {} estimated {} vs {} actual ({})",
+
+                formatted.push(format!(
+                    "  📊 Rows: {} estimated {} vs {} actual ({})",
                     accuracy.0,
                     Color::DarkGray.paint(format!("{}", estimated)),
                     accuracy.1.paint(format!("{}", actual)),
-                    if estimated > 0 { format!("{:.1}x", actual as f64 / estimated as f64) } else { "N/A".to_string() }
+                    if estimated > 0 {
+                        format!("{:.1}x", actual as f64 / estimated as f64)
+                    } else {
+                        "N/A".to_string()
+                    }
                 ));
             } else {
                 if let Some(examined) = metric.rows_examined {
-                    formatted.push(format!("  🔍 Rows Examined: {}", Color::Blue.paint(format!("{examined}"))));
+                    formatted.push(format!(
+                        "  🔍 Rows Examined: {}",
+                        Color::Blue.paint(format!("{examined}"))
+                    ));
                 }
                 if let Some(returned) = metric.rows_returned {
-                    formatted.push(format!("  📤 Rows Returned: {}", Color::Blue.paint(format!("{returned}"))));
+                    formatted.push(format!(
+                        "  📤 Rows Returned: {}",
+                        Color::Blue.paint(format!("{returned}"))
+                    ));
                 }
             }
-            
+
             // Add loops information
             if let Some(loops) = metric.actual_loops {
                 if loops > 1 {
@@ -877,10 +1014,13 @@ impl PerformanceAnalyzer {
                     } else {
                         Color::Green
                     };
-                    formatted.push(format!("  🔄 Loops: {}", loop_color.paint(format!("{}", loops))));
+                    formatted.push(format!(
+                        "  🔄 Loops: {}",
+                        loop_color.paint(format!("{}", loops))
+                    ));
                 }
             }
-            
+
             // Add efficiency information
             if let Some(efficiency) = metric.efficiency_percent {
                 let efficiency_color = if efficiency >= 50.0 {
@@ -890,62 +1030,81 @@ impl PerformanceAnalyzer {
                 } else {
                     Color::Red
                 };
-                formatted.push(format!("  📊 Efficiency: {}",
+                formatted.push(format!(
+                    "  📊 Efficiency: {}",
                     efficiency_color.paint(format!("{efficiency:.1}%"))
                 ));
             }
-            
+
             // Add filter conditions
             if !metric.filter_conditions.is_empty() {
-                formatted.push(format!("  🔍 Filters: {}", Color::Yellow.paint(metric.filter_conditions.join("; "))));
+                formatted.push(format!(
+                    "  🔍 Filters: {}",
+                    Color::Yellow.paint(metric.filter_conditions.join("; "))
+                ));
             }
-            
+
             // Add join conditions
             if !metric.join_conditions.is_empty() {
-                formatted.push(format!("  🔗 Joins: {}", Color::Cyan.paint(metric.join_conditions.join("; "))));
+                formatted.push(format!(
+                    "  🔗 Joins: {}",
+                    Color::Cyan.paint(metric.join_conditions.join("; "))
+                ));
             }
-            
+
             // Add warnings
             for warning in &metric.warnings {
                 formatted.push(format!("  🚨 {}", Color::Red.paint(warning)));
             }
-            
+
             // Add recommendations
             for recommendation in &metric.recommendations {
                 formatted.push(format!("  💡 {}", Color::Cyan.paint(recommendation)));
             }
-            
+
             formatted.push(String::new()); // Empty line between metrics
         }
-        
+
         // Add comprehensive recommendations
-        let comprehensive_recommendations = Self::generate_comprehensive_recommendations(metrics, overall_score);
+        let comprehensive_recommendations =
+            Self::generate_comprehensive_recommendations(metrics, overall_score);
         if !comprehensive_recommendations.is_empty() {
-            formatted.push(format!("🎯 {}", Color::White.bold().paint("Performance Optimization Summary:")));
+            formatted.push(format!(
+                "🎯 {}",
+                Color::White
+                    .bold()
+                    .paint("Performance Optimization Summary:")
+            ));
             formatted.push(String::new());
             for recommendation in comprehensive_recommendations {
                 formatted.push(recommendation);
             }
         }
-        
+
         formatted
     }
-    
+
     /// Generate performance dashboard summary
-    pub fn generate_performance_dashboard(metrics: &[PerformanceMetrics], overall_score: u8) -> Vec<String> {
+    pub fn generate_performance_dashboard(
+        metrics: &[PerformanceMetrics],
+        overall_score: u8,
+    ) -> Vec<String> {
         let mut dashboard = Vec::new();
-        
+
         dashboard.push(String::new());
-        dashboard.push(format!("📈 {}", Color::White.bold().paint("Performance Dashboard:")));
+        dashboard.push(format!(
+            "📈 {}",
+            Color::White.bold().paint("Performance Dashboard:")
+        ));
         dashboard.push("─".repeat(50));
-        
+
         // Performance level distribution
         let mut excellent_count = 0;
         let mut good_count = 0;
         let mut warning_count = 0;
         let mut poor_count = 0;
         let mut critical_count = 0;
-        
+
         for metric in metrics {
             match metric.performance_level {
                 PerformanceLevel::Excellent => excellent_count += 1,
@@ -955,50 +1114,96 @@ impl PerformanceAnalyzer {
                 PerformanceLevel::Critical => critical_count += 1,
             }
         }
-        
-        dashboard.push(format!("🟢 Excellent Operations: {}", Color::Green.paint(format!("{excellent_count}"))));
-        dashboard.push(format!("🟢 Good Operations: {}", Color::LightGreen.paint(format!("{good_count}"))));
+
+        dashboard.push(format!(
+            "🟢 Excellent Operations: {}",
+            Color::Green.paint(format!("{excellent_count}"))
+        ));
+        dashboard.push(format!(
+            "🟢 Good Operations: {}",
+            Color::LightGreen.paint(format!("{good_count}"))
+        ));
         if warning_count > 0 {
-            dashboard.push(format!("🟡 Warning Operations: {}", Color::Yellow.paint(format!("{warning_count}"))));
+            dashboard.push(format!(
+                "🟡 Warning Operations: {}",
+                Color::Yellow.paint(format!("{warning_count}"))
+            ));
         }
         if poor_count > 0 {
-            dashboard.push(format!("🟠 Poor Operations: {}", Color::LightRed.paint(format!("{poor_count}"))));
+            dashboard.push(format!(
+                "🟠 Poor Operations: {}",
+                Color::LightRed.paint(format!("{poor_count}"))
+            ));
         }
         if critical_count > 0 {
-            dashboard.push(format!("🔴 Critical Operations: {}", Color::Red.paint(format!("{critical_count}"))));
+            dashboard.push(format!(
+                "🔴 Critical Operations: {}",
+                Color::Red.paint(format!("{critical_count}"))
+            ));
         }
-        
+
         // Add contextual statistics
-        let total_tables = metrics.iter().filter_map(|m| m.table_name.as_ref()).collect::<std::collections::HashSet<_>>().len();
+        let total_tables = metrics
+            .iter()
+            .filter_map(|m| m.table_name.as_ref())
+            .collect::<std::collections::HashSet<_>>()
+            .len();
         let total_indexes = metrics.iter().filter_map(|m| m.index_name.as_ref()).count();
-        let total_filters = metrics.iter().map(|m| m.filter_conditions.len()).sum::<usize>();
-        let total_joins = metrics.iter().map(|m| m.join_conditions.len()).sum::<usize>();
-        
+        let total_filters = metrics
+            .iter()
+            .map(|m| m.filter_conditions.len())
+            .sum::<usize>();
+        let total_joins = metrics
+            .iter()
+            .map(|m| m.join_conditions.len())
+            .sum::<usize>();
+
         // Performance statistics
         let total_warnings = metrics.iter().map(|m| m.warnings.len()).sum::<usize>();
-        let total_recommendations = metrics.iter().map(|m| m.recommendations.len()).sum::<usize>();
-        
+        let total_recommendations = metrics
+            .iter()
+            .map(|m| m.recommendations.len())
+            .sum::<usize>();
+
         dashboard.push(String::new());
         dashboard.push(format!("📊 Total Operations: {}", metrics.len()));
         if total_tables > 0 {
-            dashboard.push(format!("🏷️  Tables Involved: {}", Color::Blue.paint(format!("{}", total_tables))));
+            dashboard.push(format!(
+                "🏷️  Tables Involved: {}",
+                Color::Blue.paint(format!("{}", total_tables))
+            ));
         }
         if total_indexes > 0 {
-            dashboard.push(format!("🔍 Indexes Used: {}", Color::Green.paint(format!("{}", total_indexes))));
+            dashboard.push(format!(
+                "🔍 Indexes Used: {}",
+                Color::Green.paint(format!("{}", total_indexes))
+            ));
         }
         if total_filters > 0 {
-            dashboard.push(format!("🔍 Filter Conditions: {}", Color::Yellow.paint(format!("{}", total_filters))));
+            dashboard.push(format!(
+                "🔍 Filter Conditions: {}",
+                Color::Yellow.paint(format!("{}", total_filters))
+            ));
         }
         if total_joins > 0 {
-            dashboard.push(format!("🔗 Join Operations: {}", Color::Cyan.paint(format!("{}", total_joins))));
+            dashboard.push(format!(
+                "🔗 Join Operations: {}",
+                Color::Cyan.paint(format!("{}", total_joins))
+            ));
         }
         if total_warnings > 0 {
-            dashboard.push(format!("⚠️  Total Warnings: {}", Color::Red.paint(format!("{total_warnings}"))));
+            dashboard.push(format!(
+                "⚠️  Total Warnings: {}",
+                Color::Red.paint(format!("{total_warnings}"))
+            ));
         }
         if total_recommendations > 0 {
-            dashboard.push(format!("💡 Optimization Opportunities: {}", Color::Cyan.paint(format!("{total_recommendations}"))));
+            dashboard.push(format!(
+                "💡 Optimization Opportunities: {}",
+                Color::Cyan.paint(format!("{total_recommendations}"))
+            ));
         }
-        
+
         // Performance grade
         let grade = if overall_score >= 90 {
             ("A+", Color::Green)
@@ -1013,10 +1218,13 @@ impl PerformanceAnalyzer {
         } else {
             ("F", Color::Red)
         };
-        
+
         dashboard.push(String::new());
-        dashboard.push(format!("🎓 Performance Grade: {}", grade.1.bold().paint(grade.0)));
-        
+        dashboard.push(format!(
+            "🎓 Performance Grade: {}",
+            grade.1.bold().paint(grade.0)
+        ));
+
         // Performance status
         let status = if overall_score >= 80 {
             ("✅ Excellent Performance", Color::Green)
@@ -1025,113 +1233,128 @@ impl PerformanceAnalyzer {
         } else {
             ("🚨 Requires Optimization", Color::Red)
         };
-        
+
         dashboard.push(format!("🏆 Status: {}", status.1.bold().paint(status.0)));
         dashboard.push("─".repeat(50));
-        
+
         dashboard
     }
-    
+
     /// Generate comprehensive optimization recommendations
-    pub fn generate_comprehensive_recommendations(metrics: &[PerformanceMetrics], overall_score: u8) -> Vec<String> {
+    pub fn generate_comprehensive_recommendations(
+        metrics: &[PerformanceMetrics],
+        overall_score: u8,
+    ) -> Vec<String> {
         let mut recommendations = Vec::new();
-        
+
         // Analyze patterns across all metrics
-        let has_table_scans = metrics.iter().any(|m| 
-            m.operation_type.contains("Seq Scan") || 
-            m.operation_type.contains("scan table") ||
-            m.warnings.iter().any(|w| w.contains("Full table scan"))
-        );
-        
-        let has_slow_operations = metrics.iter().any(|m| 
-            m.time_ms.is_some_and(|t| t > 100.0) ||
-            m.cost_score > 1000.0
-        );
-        
-        let has_inefficient_operations = metrics.iter().any(|m|
-            m.efficiency_percent.is_some_and(|e| e < 10.0)
-        );
-        
-        let has_sort_spill = metrics.iter().any(|m|
-            m.warnings.iter().any(|w| w.contains("spilled to disk"))
-        );
-        
+        let has_table_scans = metrics.iter().any(|m| {
+            m.operation_type.contains("Seq Scan")
+                || m.operation_type.contains("scan table")
+                || m.warnings.iter().any(|w| w.contains("Full table scan"))
+        });
+
+        let has_slow_operations = metrics
+            .iter()
+            .any(|m| m.time_ms.is_some_and(|t| t > 100.0) || m.cost_score > 1000.0);
+
+        let has_inefficient_operations = metrics
+            .iter()
+            .any(|m| m.efficiency_percent.is_some_and(|e| e < 10.0));
+
+        let has_sort_spill = metrics
+            .iter()
+            .any(|m| m.warnings.iter().any(|w| w.contains("spilled to disk")));
+
         // Priority recommendations based on overall score
         if overall_score < 60 {
             recommendations.push(format!("🚨 {}: This query has significant performance issues and requires immediate attention.",
                 Color::Red.bold().paint("CRITICAL")
             ));
         } else if overall_score < 80 {
-            recommendations.push(format!("⚠️  {}: This query has performance issues that should be addressed.",
+            recommendations.push(format!(
+                "⚠️  {}: This query has performance issues that should be addressed.",
                 Color::Yellow.bold().paint("WARNING")
             ));
         }
-        
+
         // Specific pattern-based recommendations
         if has_table_scans {
             recommendations.push(format!("🔍 {}: Add appropriate indexes to eliminate full table scans. Consider composite indexes for multi-column WHERE clauses.",
                 Color::Cyan.paint("INDEX OPTIMIZATION")
             ));
         }
-        
+
         if has_slow_operations {
             recommendations.push(format!("⏱️  {}: Review query structure and consider query rewriting, partitioning, or hardware upgrades.",
                 Color::Cyan.paint("EXECUTION TIME")
             ));
         }
-        
+
         if has_inefficient_operations {
             recommendations.push(format!("📊 {}: Improve WHERE clause selectivity and consider adding more specific filters.",
                 Color::Cyan.paint("FILTER EFFICIENCY")
             ));
         }
-        
+
         if has_sort_spill {
-            recommendations.push(format!("💾 {}: Increase work_mem setting or add indexes to support ORDER BY clauses.",
+            recommendations.push(format!(
+                "💾 {}: Increase work_mem setting or add indexes to support ORDER BY clauses.",
                 Color::Cyan.paint("MEMORY OPTIMIZATION")
             ));
         }
-        
+
         // General recommendations based on score ranges
         match overall_score {
             90..=100 => {
-                recommendations.push(format!("✨ {}: Excellent performance! Monitor regularly to maintain this level.",
+                recommendations.push(format!(
+                    "✨ {}: Excellent performance! Monitor regularly to maintain this level.",
                     Color::Green.paint("MONITORING")
                 ));
-            },
+            }
             80..=89 => {
-                recommendations.push(format!("👍 {}: Good performance with minor optimization opportunities.",
+                recommendations.push(format!(
+                    "👍 {}: Good performance with minor optimization opportunities.",
                     Color::LightGreen.paint("FINE-TUNING")
                 ));
-            },
+            }
             60..=79 => {
-                recommendations.push(format!("🔧 {}: Consider database statistics updates and index maintenance.",
+                recommendations.push(format!(
+                    "🔧 {}: Consider database statistics updates and index maintenance.",
                     Color::Yellow.paint("MAINTENANCE")
                 ));
-            },
+            }
             40..=59 => {
-                recommendations.push(format!("🏗️  {}: Review database schema design and consider query restructuring.",
+                recommendations.push(format!(
+                    "🏗️  {}: Review database schema design and consider query restructuring.",
                     Color::LightRed.paint("RESTRUCTURING")
                 ));
-            },
+            }
             _ => {
                 recommendations.push(format!("🆘 {}: Comprehensive performance review needed. Consider consulting a database specialist.",
                     Color::Red.paint("CRITICAL REVIEW")
                 ));
             }
         }
-        
+
         // Add general best practices if there are issues
         if overall_score < 80 {
             recommendations.push(String::new());
-            recommendations.push(format!("📚 {}", Color::White.bold().paint("General Best Practices:")));
-            recommendations.push("   • Update table statistics regularly (ANALYZE/UPDATE STATISTICS)".to_string());
+            recommendations.push(format!(
+                "📚 {}",
+                Color::White.bold().paint("General Best Practices:")
+            ));
+            recommendations.push(
+                "   • Update table statistics regularly (ANALYZE/UPDATE STATISTICS)".to_string(),
+            );
             recommendations.push("   • Monitor index usage and remove unused indexes".to_string());
-            recommendations.push("   • Consider query caching for frequently executed queries".to_string());
+            recommendations
+                .push("   • Consider query caching for frequently executed queries".to_string());
             recommendations.push("   • Review application-level caching strategies".to_string());
-            recommendations.push("   • Use EXPLAIN ANALYZE for detailed execution metrics".to_string());
+            recommendations
+                .push("   • Use EXPLAIN ANALYZE for detailed execution metrics".to_string());
         }
-        
+
         recommendations
     }
 }
@@ -1139,14 +1362,14 @@ impl PerformanceAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_performance_level_colors() {
         assert_eq!(PerformanceLevel::Excellent.color(), Color::Green);
         assert_eq!(PerformanceLevel::Critical.color(), Color::Red);
         assert_eq!(PerformanceLevel::Warning.color(), Color::Yellow);
     }
-    
+
     #[test]
     fn test_performance_metrics_new() {
         let metric = PerformanceMetrics::new("Test Operation".to_string());
@@ -1154,7 +1377,7 @@ mod tests {
         assert_eq!(metric.performance_level, PerformanceLevel::Good);
         assert_eq!(metric.cost_score, 0.0);
     }
-    
+
     #[test]
     fn test_calculate_efficiency() {
         let mut metric = PerformanceMetrics::new("Test".to_string());
@@ -1163,34 +1386,56 @@ mod tests {
         metric.calculate_efficiency();
         assert_eq!(metric.efficiency_percent, Some(10.0));
     }
-    
+
     #[test]
     fn test_mysql_performance_level_calculation() {
         let metric = PerformanceMetrics::new("Test".to_string());
-        assert_eq!(PerformanceAnalyzer::calculate_mysql_performance_level(&metric, "ALL"), PerformanceLevel::Critical);
-        assert_eq!(PerformanceAnalyzer::calculate_mysql_performance_level(&metric, "const"), PerformanceLevel::Excellent);
-        assert_eq!(PerformanceAnalyzer::calculate_mysql_performance_level(&metric, "ref"), PerformanceLevel::Good);
+        assert_eq!(
+            PerformanceAnalyzer::calculate_mysql_performance_level(&metric, "ALL"),
+            PerformanceLevel::Critical
+        );
+        assert_eq!(
+            PerformanceAnalyzer::calculate_mysql_performance_level(&metric, "const"),
+            PerformanceLevel::Excellent
+        );
+        assert_eq!(
+            PerformanceAnalyzer::calculate_mysql_performance_level(&metric, "ref"),
+            PerformanceLevel::Good
+        );
     }
-    
+
     #[test]
     fn test_sqlite_performance_level_calculation() {
-        assert_eq!(PerformanceAnalyzer::calculate_sqlite_performance_level("SCAN TABLE users"), PerformanceLevel::Critical);
-        assert_eq!(PerformanceAnalyzer::calculate_sqlite_performance_level("SEARCH TABLE users USING INDEX"), PerformanceLevel::Good);
-        assert_eq!(PerformanceAnalyzer::calculate_sqlite_performance_level("SEARCH TABLE users USING COVERING INDEX"), PerformanceLevel::Excellent);
+        assert_eq!(
+            PerformanceAnalyzer::calculate_sqlite_performance_level("SCAN TABLE users"),
+            PerformanceLevel::Critical
+        );
+        assert_eq!(
+            PerformanceAnalyzer::calculate_sqlite_performance_level(
+                "SEARCH TABLE users USING INDEX"
+            ),
+            PerformanceLevel::Good
+        );
+        assert_eq!(
+            PerformanceAnalyzer::calculate_sqlite_performance_level(
+                "SEARCH TABLE users USING COVERING INDEX"
+            ),
+            PerformanceLevel::Excellent
+        );
     }
-    
+
     #[test]
     fn test_overall_score_calculation() {
         let mut metric1 = PerformanceMetrics::new("Test1".to_string());
         metric1.performance_level = PerformanceLevel::Excellent;
-        
+
         let mut metric2 = PerformanceMetrics::new("Test2".to_string());
         metric2.performance_level = PerformanceLevel::Good;
-        
+
         let metrics = vec![metric1, metric2];
         assert_eq!(PerformanceAnalyzer::calculate_overall_score(&metrics), 90);
     }
-    
+
     #[test]
     fn test_performance_dashboard_generation() {
         let mut excellent_metric = PerformanceMetrics::new("Excellent Op".to_string());
@@ -1200,8 +1445,10 @@ mod tests {
         excellent_metric.rows_examined = Some(100);
         excellent_metric.rows_returned = Some(50);
         excellent_metric.efficiency_percent = Some(50.0);
-        excellent_metric.recommendations.push("Test recommendation".to_string());
-        
+        excellent_metric
+            .recommendations
+            .push("Test recommendation".to_string());
+
         let mut critical_metric = PerformanceMetrics::new("Critical Op".to_string());
         critical_metric.performance_level = PerformanceLevel::Critical;
         critical_metric.cost_score = 15000.0;
@@ -1209,23 +1456,57 @@ mod tests {
         critical_metric.rows_examined = Some(10000);
         critical_metric.rows_returned = Some(1);
         critical_metric.efficiency_percent = Some(0.01);
-        critical_metric.warnings.push("Full table scan detected".to_string());
-        
+        critical_metric
+            .warnings
+            .push("Full table scan detected".to_string());
+
         let metrics = vec![excellent_metric, critical_metric];
-        
+
         let dashboard = PerformanceAnalyzer::generate_performance_dashboard(&metrics, 60);
-        
+
         // Check that dashboard contains expected elements
-        assert!(dashboard.iter().any(|line| line.contains("Performance Dashboard:")));
-        assert!(dashboard.iter().any(|line| line.contains("Excellent Operations:")));
-        assert!(dashboard.iter().any(|line| line.contains("Critical Operations:")));
-        assert!(dashboard.iter().any(|line| line.contains("Total Operations: 2")));
-        assert!(dashboard.iter().any(|line| line.contains("Total Warnings:")));
-        assert!(dashboard.iter().any(|line| line.contains("Optimization Opportunities:")));
-        assert!(dashboard.iter().any(|line| line.contains("Performance Grade:")));
-        assert!(dashboard.iter().any(|line| line.contains("Needs Attention")));
+        assert!(
+            dashboard
+                .iter()
+                .any(|line| line.contains("Performance Dashboard:"))
+        );
+        assert!(
+            dashboard
+                .iter()
+                .any(|line| line.contains("Excellent Operations:"))
+        );
+        assert!(
+            dashboard
+                .iter()
+                .any(|line| line.contains("Critical Operations:"))
+        );
+        assert!(
+            dashboard
+                .iter()
+                .any(|line| line.contains("Total Operations: 2"))
+        );
+        assert!(
+            dashboard
+                .iter()
+                .any(|line| line.contains("Total Warnings:"))
+        );
+        assert!(
+            dashboard
+                .iter()
+                .any(|line| line.contains("Optimization Opportunities:"))
+        );
+        assert!(
+            dashboard
+                .iter()
+                .any(|line| line.contains("Performance Grade:"))
+        );
+        assert!(
+            dashboard
+                .iter()
+                .any(|line| line.contains("Needs Attention"))
+        );
     }
-    
+
     #[test]
     fn test_comprehensive_recommendations() {
         let mut seq_scan_metric = PerformanceMetrics::new("Seq Scan".to_string());
@@ -1235,24 +1516,51 @@ mod tests {
         seq_scan_metric.rows_examined = Some(100000);
         seq_scan_metric.rows_returned = Some(5);
         seq_scan_metric.efficiency_percent = Some(0.005);
-        seq_scan_metric.recommendations.push("Add index".to_string());
-        seq_scan_metric.warnings.push("Full table scan detected".to_string());
-        seq_scan_metric.warnings.push("Sort spilled to disk".to_string());
-        
+        seq_scan_metric
+            .recommendations
+            .push("Add index".to_string());
+        seq_scan_metric
+            .warnings
+            .push("Full table scan detected".to_string());
+        seq_scan_metric
+            .warnings
+            .push("Sort spilled to disk".to_string());
+
         let metrics = vec![seq_scan_metric];
-        
-        let recommendations = PerformanceAnalyzer::generate_comprehensive_recommendations(&metrics, 30);
-        
+
+        let recommendations =
+            PerformanceAnalyzer::generate_comprehensive_recommendations(&metrics, 30);
+
         // Check that comprehensive recommendations are generated
         assert!(recommendations.iter().any(|r| r.contains("CRITICAL")));
-        assert!(recommendations.iter().any(|r| r.contains("INDEX OPTIMIZATION")));
+        assert!(
+            recommendations
+                .iter()
+                .any(|r| r.contains("INDEX OPTIMIZATION"))
+        );
         assert!(recommendations.iter().any(|r| r.contains("EXECUTION TIME")));
-        assert!(recommendations.iter().any(|r| r.contains("FILTER EFFICIENCY")));
-        assert!(recommendations.iter().any(|r| r.contains("MEMORY OPTIMIZATION")));
-        assert!(recommendations.iter().any(|r| r.contains("CRITICAL REVIEW")));
-        assert!(recommendations.iter().any(|r| r.contains("General Best Practices")));
+        assert!(
+            recommendations
+                .iter()
+                .any(|r| r.contains("FILTER EFFICIENCY"))
+        );
+        assert!(
+            recommendations
+                .iter()
+                .any(|r| r.contains("MEMORY OPTIMIZATION"))
+        );
+        assert!(
+            recommendations
+                .iter()
+                .any(|r| r.contains("CRITICAL REVIEW"))
+        );
+        assert!(
+            recommendations
+                .iter()
+                .any(|r| r.contains("General Best Practices"))
+        );
     }
-    
+
     #[test]
     fn test_excellent_performance_recommendations() {
         let mut index_scan_metric = PerformanceMetrics::new("Index Scan".to_string());
@@ -1262,18 +1570,27 @@ mod tests {
         index_scan_metric.rows_examined = Some(10);
         index_scan_metric.rows_returned = Some(10);
         index_scan_metric.efficiency_percent = Some(100.0);
-        
+
         let metrics = vec![index_scan_metric];
-        
-        let recommendations = PerformanceAnalyzer::generate_comprehensive_recommendations(&metrics, 95);
-        
+
+        let recommendations =
+            PerformanceAnalyzer::generate_comprehensive_recommendations(&metrics, 95);
+
         // Check that monitoring recommendation is present for excellent performance
         assert!(recommendations.iter().any(|r| r.contains("MONITORING")));
-        assert!(recommendations.iter().any(|r| r.contains("Excellent performance")));
+        assert!(
+            recommendations
+                .iter()
+                .any(|r| r.contains("Excellent performance"))
+        );
         // Should not contain best practices section for excellent performance
-        assert!(!recommendations.iter().any(|r| r.contains("General Best Practices")));
+        assert!(
+            !recommendations
+                .iter()
+                .any(|r| r.contains("General Best Practices"))
+        );
     }
-    
+
     #[test]
     fn test_enhanced_formatting_output() {
         let mut test_metric = PerformanceMetrics::new("Test Operation".to_string());
@@ -1283,18 +1600,36 @@ mod tests {
         test_metric.rows_examined = Some(1000);
         test_metric.rows_returned = Some(100);
         test_metric.efficiency_percent = Some(10.0);
-        test_metric.recommendations.push("Test recommendation".to_string());
+        test_metric
+            .recommendations
+            .push("Test recommendation".to_string());
         test_metric.warnings.push("Test warning".to_string());
-        
+
         let metrics = vec![test_metric];
-        
+
         let formatted = PerformanceAnalyzer::format_metrics_with_colors(&metrics);
-        
+
         // Check that enhanced formatting includes all sections
-        assert!(formatted.iter().any(|line| line.contains("Query Performance Analysis")));
-        assert!(formatted.iter().any(|line| line.contains("Performance Dashboard:")));
-        assert!(formatted.iter().any(|line| line.contains("Detailed Operation Analysis:")));
-        assert!(formatted.iter().any(|line| line.contains("Performance Optimization Summary:")));
+        assert!(
+            formatted
+                .iter()
+                .any(|line| line.contains("Query Performance Analysis"))
+        );
+        assert!(
+            formatted
+                .iter()
+                .any(|line| line.contains("Performance Dashboard:"))
+        );
+        assert!(
+            formatted
+                .iter()
+                .any(|line| line.contains("Detailed Operation Analysis:"))
+        );
+        assert!(
+            formatted
+                .iter()
+                .any(|line| line.contains("Performance Optimization Summary:"))
+        );
         assert!(formatted.iter().any(|line| line.contains("Duration:")));
         assert!(formatted.iter().any(|line| line.contains("Cost:")));
         assert!(formatted.iter().any(|line| line.contains("Rows Examined:")));

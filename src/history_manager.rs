@@ -1,14 +1,14 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::fs;
-use std::time::SystemTime;
-use sha2::{Sha256, Digest};
-use tracing::{debug, warn};
 use reedline::{FileBackedHistory, History};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+use std::time::SystemTime;
+use tracing::{debug, warn};
 
+use crate::config::Config;
 use crate::database::{ConnectionInfo, DatabaseTypeExt};
 use crate::db::Database;
-use crate::config::Config;
 
 /// Session identifier for generating unique history files
 #[derive(Debug, Clone, PartialEq)]
@@ -27,13 +27,25 @@ impl SessionId {
                 "sqlite:memory".to_string()
             }
         } else {
-            let host = connection_info.host.as_ref().map(|s| s.as_str()).unwrap_or("localhost");
-            let port = connection_info.port.unwrap_or_else(|| 
-                connection_info.database_type.default_port().unwrap_or(0)
-            );
-            let username = connection_info.username.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
-            let database = connection_info.database.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
-            
+            let host = connection_info
+                .host
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("localhost");
+            let port = connection_info
+                .port
+                .unwrap_or_else(|| connection_info.database_type.default_port().unwrap_or(0));
+            let username = connection_info
+                .username
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("unknown");
+            let database = connection_info
+                .database
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("unknown");
+
             // Check for special cases
             if let Some(container) = &connection_info.docker_container {
                 format!("docker:{}:{}", container, database)
@@ -44,7 +56,14 @@ impl SessionId {
             ) {
                 format!("vault:{}:{}:{}", vault_mount, vault_database, vault_role)
             } else {
-                format!("{}:{}:{}:{}:{}", connection_info.database_type.display_name(), host, port, username, database)
+                format!(
+                    "{}:{}:{}:{}:{}",
+                    connection_info.database_type.display_name(),
+                    host,
+                    port,
+                    username,
+                    database
+                )
             }
         };
 
@@ -55,13 +74,25 @@ impl SessionId {
                 "sqlite:memory".to_string()
             }
         } else {
-            let host = connection_info.host.as_ref().map(|s| s.as_str()).unwrap_or("localhost");
-            let port = connection_info.port.unwrap_or_else(|| 
-                connection_info.database_type.default_port().unwrap_or(0)
-            );
-            let username = connection_info.username.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
-            let database = connection_info.database.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
-            
+            let host = connection_info
+                .host
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("localhost");
+            let port = connection_info
+                .port
+                .unwrap_or_else(|| connection_info.database_type.default_port().unwrap_or(0));
+            let username = connection_info
+                .username
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("unknown");
+            let database = connection_info
+                .database
+                .as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("unknown");
+
             if let Some(container) = &connection_info.docker_container {
                 format!("{}@docker:{}/{}", username, container, database)
             } else if let (Some(vault_mount), Some(vault_database), Some(_vault_role)) = (
@@ -83,7 +114,9 @@ impl SessionId {
 
     /// Generate a session ID from Database instance
     pub fn from_database(database: &Database) -> Option<Self> {
-        database.get_connection_info().map(|info| Self::from_connection_info(info))
+        database
+            .get_connection_info()
+            .map(|info| Self::from_connection_info(info))
     }
 
     /// Generate file-safe hash for the session identifier
@@ -114,7 +147,7 @@ impl SessionHistoryManager {
     /// Create a new session history manager
     pub fn new(config: &Config) -> Result<Self, Box<dyn std::error::Error>> {
         let config_dir = Config::get_config_dir()?;
-        
+
         Ok(Self {
             config_dir,
             per_session_enabled: config.history.per_session_enabled,
@@ -132,23 +165,30 @@ impl SessionHistoryManager {
         }
 
         let history_filename = session_id.history_filename();
-        
+
         // Check cache first
         if let Some(cached_history) = self.history_cache.remove(&history_filename) {
-            debug!("Using cached history for session: {}", session_id.display_name);
+            debug!(
+                "Using cached history for session: {}",
+                session_id.display_name
+            );
             return cached_history;
         }
 
         let history_path = self.config_dir.join(&history_filename);
-        debug!("Creating history for session '{}' at path: {:?}", 
-               session_id.display_name, history_path);
+        debug!(
+            "Creating history for session '{}' at path: {:?}",
+            session_id.display_name, history_path
+        );
 
         Box::new(
-            FileBackedHistory::with_file(50, history_path)
-                .unwrap_or_else(|e| {
-                    warn!("Failed to create session history file: {}, using default", e);
-                    FileBackedHistory::default()
-                })
+            FileBackedHistory::with_file(50, history_path).unwrap_or_else(|e| {
+                warn!(
+                    "Failed to create session history file: {}, using default",
+                    e
+                );
+                FileBackedHistory::default()
+            }),
         )
     }
 
@@ -158,18 +198,22 @@ impl SessionHistoryManager {
         debug!("Using default history at path: {:?}", history_path);
 
         Box::new(
-            FileBackedHistory::with_file(50, history_path)
-                .unwrap_or_else(|e| {
-                    warn!("Failed to create default history file: {}, using in-memory", e);
-                    FileBackedHistory::default()
-                })
+            FileBackedHistory::with_file(50, history_path).unwrap_or_else(|e| {
+                warn!(
+                    "Failed to create default history file: {}, using in-memory",
+                    e
+                );
+                FileBackedHistory::default()
+            }),
         )
     }
 
     /// List all session histories with metadata
-    pub fn list_session_histories(&self) -> Result<Vec<SessionHistoryInfo>, Box<dyn std::error::Error>> {
+    pub fn list_session_histories(
+        &self,
+    ) -> Result<Vec<SessionHistoryInfo>, Box<dyn std::error::Error>> {
         let mut histories = Vec::new();
-        
+
         if !self.config_dir.exists() {
             return Ok(histories);
         }
@@ -177,7 +221,7 @@ impl SessionHistoryManager {
         for entry in fs::read_dir(&self.config_dir)? {
             let entry = entry?;
             let path = entry.path();
-            
+
             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
                 if filename.starts_with("history_") && filename != "history" {
                     let metadata = entry.metadata()?;
@@ -185,7 +229,8 @@ impl SessionHistoryManager {
                     let age_days = SystemTime::now()
                         .duration_since(modified)
                         .unwrap_or_default()
-                        .as_secs() / 86400;
+                        .as_secs()
+                        / 86400;
 
                     // Try to estimate entry count by file size (rough heuristic)
                     let estimated_entries = (metadata.len() / 50).max(0) as usize; // ~50 bytes per entry average
@@ -205,7 +250,7 @@ impl SessionHistoryManager {
 
         // Sort by last modified (most recent first)
         histories.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
-        
+
         Ok(histories)
     }
 
@@ -217,10 +262,15 @@ impl SessionHistoryManager {
         // Clean up files older than the configured threshold
         for history in &histories {
             if history.age_days > self.cleanup_after_days {
-                debug!("Cleaning up old history file: {} (age: {} days)", 
-                       history.filename, history.age_days);
+                debug!(
+                    "Cleaning up old history file: {} (age: {} days)",
+                    history.filename, history.age_days
+                );
                 if let Err(e) = fs::remove_file(&history.path) {
-                    warn!("Failed to remove old history file {}: {}", history.filename, e);
+                    warn!(
+                        "Failed to remove old history file {}: {}",
+                        history.filename, e
+                    );
                 } else {
                     cleaned_count += 1;
                 }
@@ -228,7 +278,8 @@ impl SessionHistoryManager {
         }
 
         // If we still have too many files, remove the oldest ones
-        let remaining_histories: Vec<_> = histories.into_iter()
+        let remaining_histories: Vec<_> = histories
+            .into_iter()
             .filter(|h| h.age_days <= self.cleanup_after_days)
             .collect();
 
@@ -237,7 +288,10 @@ impl SessionHistoryManager {
             for history in remaining_histories.iter().rev().take(excess_count) {
                 debug!("Cleaning up excess history file: {}", history.filename);
                 if let Err(e) = fs::remove_file(&history.path) {
-                    warn!("Failed to remove excess history file {}: {}", history.filename, e);
+                    warn!(
+                        "Failed to remove excess history file {}: {}",
+                        history.filename, e
+                    );
                 } else {
                     cleaned_count += 1;
                 }
@@ -307,7 +361,10 @@ mod tests {
         assert_eq!(session_id.identifier, "PostgreSQL:localhost:5432:user:mydb");
         assert_eq!(session_id.display_name, "user@localhost:5432/mydb");
         assert!(!session_id.to_hash().is_empty());
-        assert_eq!(session_id.history_filename(), format!("history_{}", session_id.to_hash()));
+        assert_eq!(
+            session_id.history_filename(),
+            format!("history_{}", session_id.to_hash())
+        );
     }
 
     #[test]
@@ -345,7 +402,10 @@ mod tests {
 
         let session_id = SessionId::from_connection_info(&connection_info);
         assert_eq!(session_id.identifier, "docker:my-postgres-container:mydb");
-        assert_eq!(session_id.display_name, "user@docker:my-postgres-container/mydb");
+        assert_eq!(
+            session_id.display_name,
+            "user@docker:my-postgres-container/mydb"
+        );
     }
 
     #[test]
@@ -362,13 +422,22 @@ mod tests {
             docker_container: None,
         };
 
-        connection_info.options.insert("vault_mount".to_string(), "database".to_string());
-        connection_info.options.insert("vault_database".to_string(), "myapp-prod".to_string());
-        connection_info.options.insert("vault_role".to_string(), "readonly".to_string());
+        connection_info
+            .options
+            .insert("vault_mount".to_string(), "database".to_string());
+        connection_info
+            .options
+            .insert("vault_database".to_string(), "myapp-prod".to_string());
+        connection_info
+            .options
+            .insert("vault_role".to_string(), "readonly".to_string());
 
         let session_id = SessionId::from_connection_info(&connection_info);
         assert_eq!(session_id.identifier, "vault:database:myapp-prod:readonly");
-        assert_eq!(session_id.display_name, "v-root-readonly-xyz@vault:database/myapp-prod");
+        assert_eq!(
+            session_id.display_name,
+            "v-root-readonly-xyz@vault:database/myapp-prod"
+        );
     }
 
     #[test]
@@ -387,8 +456,11 @@ mod tests {
 
         let session_id1 = SessionId::from_connection_info(&connection_info);
         let session_id2 = SessionId::from_connection_info(&connection_info);
-        
+
         assert_eq!(session_id1.to_hash(), session_id2.to_hash());
-        assert_eq!(session_id1.history_filename(), session_id2.history_filename());
+        assert_eq!(
+            session_id1.history_filename(),
+            session_id2.history_filename()
+        );
     }
 }

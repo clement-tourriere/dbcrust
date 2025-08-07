@@ -36,9 +36,13 @@ pub fn parse_vault_url(url_str: &str) -> Option<(Option<String>, String, Option<
         if let Some(at_pos) = user_host_part.find('@') {
             let role = &user_host_part[..at_pos];
             let mount = &user_host_part[at_pos + 1..];
-            
+
             (
-                if role.is_empty() { None } else { Some(role.to_string()) },
+                if role.is_empty() {
+                    None
+                } else {
+                    Some(role.to_string())
+                },
                 if mount.is_empty() {
                     "database".to_string()
                 } else {
@@ -167,7 +171,8 @@ async fn create_vault_client() -> Result<(reqwest::Client, String), VaultError> 
     let vault_token = get_vault_token()?;
 
     let mut headers = HeaderMap::new();
-    let header_value = vault_token.parse()
+    let header_value = vault_token
+        .parse()
         .map_err(|e| VaultError::ApiError(format!("Invalid token header value: {e}")))?;
     headers.insert("X-Vault-Token", header_value);
 
@@ -187,28 +192,18 @@ pub async fn list_vault_databases(mount_path: &str) -> Result<Vec<String>, Vault
     if !response.status().is_success() {
         let status = response.status();
         let error_text = response.text().await?;
-        
+
         if status.as_u16() == 404 {
             return Err(VaultError::ApiError(format!(
                 "Path {mount_path}/config not found (404). Ensure DB secrets engine is at '{mount_path}' and you have permissions."
             )));
         } else if status.as_u16() == 403 {
-            // Parse the error to provide more specific guidance
-            if error_text.contains("invalid token") {
-                return Err(VaultError::ApiError(format!(
-                    "Vault API error (403 Forbidden): {error_text}"
-                )));
-            } else if error_text.contains("permission denied") {
-                return Err(VaultError::ApiError(format!(
-                    "Vault API error (403 Forbidden): {error_text}"
-                )));
-            } else {
-                return Err(VaultError::ApiError(format!(
-                    "Vault API error (403 Forbidden): {error_text}"
-                )));
-            }
+            // All 403 errors have the same response format
+            return Err(VaultError::ApiError(format!(
+                "Vault API error (403 Forbidden): {error_text}"
+            )));
         }
-        
+
         return Err(VaultError::ApiError(format!(
             "Vault API error ({status}): {error_text}"
         )));
@@ -285,27 +280,35 @@ pub async fn get_dynamic_credentials_with_caching(
     config: &mut crate::config::Config,
 ) -> Result<(VaultDynamicCredentialsData, VaultLeaseInfo), VaultError> {
     // Check cache first if caching is enabled
-    if let Some(cached_creds) = config.get_cached_vault_credentials(mount_path, db_config_name, role_name) {
-        debug!("Using cached vault credentials for {}/{}/{}", mount_path, db_config_name, role_name);
-        
+    if let Some(cached_creds) =
+        config.get_cached_vault_credentials(mount_path, db_config_name, role_name)
+    {
+        debug!(
+            "Using cached vault credentials for {}/{}/{}",
+            mount_path, db_config_name, role_name
+        );
+
         // Return cached credentials with lease info reconstructed from cache
         let credentials = VaultDynamicCredentialsData {
             username: cached_creds.username.clone(),
             password: cached_creds.password.clone(),
         };
-        
+
         let lease_info = VaultLeaseInfo {
             lease_id: cached_creds.lease_id.clone(),
             lease_duration: cached_creds.lease_duration,
             renewable: cached_creds.renewable,
         };
-        
+
         return Ok((credentials, lease_info));
     }
 
     // Cache miss or caching disabled - fetch fresh credentials from Vault
-    debug!("Cache miss for vault credentials {}/{}/{}, fetching from Vault", mount_path, db_config_name, role_name);
-    
+    debug!(
+        "Cache miss for vault credentials {}/{}/{}, fetching from Vault",
+        mount_path, db_config_name, role_name
+    );
+
     let (client, vault_addr) = create_vault_client().await?;
     let path = format!("{vault_addr}/v1/{mount_path}/creds/{role_name}");
 
@@ -328,13 +331,18 @@ pub async fn get_dynamic_credentials_with_caching(
 
     // Parse full response to get lease information
     let full_response: VaultReadResponse<VaultDynamicCredentialsData> = response.json().await?;
-    
+
     // Extract lease information from response headers or use defaults
     // Note: In a real implementation, you'd extract this from the response
     // For now, we'll use reasonable defaults and let the user configure TTL
     let lease_duration = 3600; // 1 hour default
-    let lease_id = format!("{}/creds/{}/{}", mount_path, role_name, chrono::Utc::now().timestamp());
-    
+    let lease_id = format!(
+        "{}/creds/{}/{}",
+        mount_path,
+        role_name,
+        chrono::Utc::now().timestamp()
+    );
+
     let credentials = full_response.data;
     let lease_info = VaultLeaseInfo {
         lease_id: lease_id.clone(),
@@ -346,7 +354,7 @@ pub async fn get_dynamic_credentials_with_caching(
     if config.vault_credential_cache_enabled {
         let now = chrono::Utc::now();
         let expire_time = now + chrono::Duration::seconds(lease_duration as i64);
-        
+
         let cached_creds = crate::config::CachedVaultCredentials {
             username: credentials.username.clone(),
             password: credentials.password.clone(),
@@ -359,12 +367,17 @@ pub async fn get_dynamic_credentials_with_caching(
             database_name: db_config_name.to_string(),
             role_name: role_name.to_string(),
         };
-        
-        if let Err(e) = config.cache_vault_credentials(mount_path, db_config_name, role_name, cached_creds) {
-            debug!("Failed to cache vault credentials: {}", e);
+
+        if let Err(e) =
+            config.cache_vault_credentials(mount_path, db_config_name, role_name, cached_creds)
+        {
+            debug!("Failed to cache vault credentials: {e}");
             // Don't fail the whole operation if caching fails
         } else {
-            debug!("Cached vault credentials for {}/{}/{}", mount_path, db_config_name, role_name);
+            debug!(
+                "Cached vault credentials for {}/{}/{}",
+                mount_path, db_config_name, role_name
+            );
         }
     }
 
@@ -402,14 +415,17 @@ pub async fn get_available_roles_for_user(
 ) -> Result<Vec<String>, VaultError> {
     // Get all allowed roles from the database config
     let db_config = get_vault_database_config(mount_path, db_config_name).await?;
-    
+
     // Return all roles defined in the database config
     // The filtering has already been done at the database selection level
     match db_config.allowed_roles {
         Some(roles) => {
-            debug!("Roles available for database {}: {:?}", db_config_name, roles);
+            debug!(
+                "Roles available for database {}: {:?}",
+                db_config_name, roles
+            );
             Ok(roles)
-        },
+        }
         None => {
             debug!("No roles defined for database {}", db_config_name);
             Ok(Vec::new())
@@ -425,33 +441,41 @@ pub async fn filter_databases_with_available_roles(
 ) -> Result<Vec<String>, VaultError> {
     // Get user's ACL permissions once for all databases
     let user_acl = get_user_acl_permissions().await?;
-    
+
     // Debug log the full ACL structure
-    debug!("User ACL exact paths: {:?}", user_acl.exact_paths.keys().collect::<Vec<_>>());
-    debug!("User ACL glob paths: {:?}", user_acl.glob_paths.keys().collect::<Vec<_>>());
-    
+    debug!(
+        "User ACL exact paths: {:?}",
+        user_acl.exact_paths.keys().collect::<Vec<_>>()
+    );
+    debug!(
+        "User ACL glob paths: {:?}",
+        user_acl.glob_paths.keys().collect::<Vec<_>>()
+    );
+
     let mut accessible_dbs = Vec::new();
-    
+
     for db_name in db_configs {
         // Check for database access based on the two critical paths:
         // 1. database/creds/<database> - needs read/create
         // 2. database/<database> - needs read/create
-        
+
         let creds_path = format!("{mount_path}/creds/{db_name}");
         let direct_path = format!("{mount_path}/{db_name}");
-        
+
         let creds_access = has_path_permission(&user_acl, &creds_path, &["read", "create"]);
         let direct_access = has_path_permission(&user_acl, &direct_path, &["read", "create"]);
-        
+
         if creds_access || direct_access {
-            debug!("User has access to database: {} (creds_path: {}, direct_access: {})", 
-                      db_name, creds_access, direct_access);
+            debug!(
+                "User has access to database: {} (creds_path: {}, direct_access: {})",
+                db_name, creds_access, direct_access
+            );
             accessible_dbs.push(db_name);
         } else {
             debug!("User does NOT have access to database: {}", db_name);
         }
     }
-    
+
     debug!("Accessible databases after filtering: {:?}", accessible_dbs);
     Ok(accessible_dbs)
 }
@@ -473,10 +497,10 @@ async fn get_user_acl_permissions() -> Result<VaultResultantAclData, VaultError>
 
     let response_text = response.text().await?;
     debug!("ACL Response: {}", response_text);
-    
-    let acl_response: VaultResultantAclResponse = serde_json::from_str(&response_text)
-        .map_err(VaultError::JsonError)?;
-        
+
+    let acl_response: VaultResultantAclResponse =
+        serde_json::from_str(&response_text).map_err(VaultError::JsonError)?;
+
     Ok(acl_response.data)
 }
 
@@ -511,12 +535,12 @@ pub fn has_path_permission(
 // Helper function to check if a glob pattern matches a path
 pub fn glob_matches(pattern: &str, path: &str) -> bool {
     // Simple glob matching for various patterns
-    
+
     // Case 1: Exact match
     if pattern == path {
         return true;
     }
-    
+
     // Case 2: Trailing slash (directory match)
     // e.g., "path/" matches "path" and "path/subpath"
     if let Some(prefix) = pattern.strip_suffix('/') {
@@ -524,7 +548,7 @@ pub fn glob_matches(pattern: &str, path: &str) -> bool {
             return true;
         }
     }
-    
+
     // Case 3: Trailing asterisk (wildcard match)
     // e.g., "path/*" or "path*" matches anything with that prefix
     if pattern.ends_with('*') {
@@ -535,12 +559,12 @@ pub fn glob_matches(pattern: &str, path: &str) -> bool {
         } else {
             unreachable!()
         };
-        
+
         if path.starts_with(prefix) {
             return true;
         }
     }
-    
+
     // Case 4: Plus sign (+ wildcard)
     // e.g., "path/+" matches "path/anything"
     if pattern.contains('+') {
@@ -549,16 +573,16 @@ pub fn glob_matches(pattern: &str, path: &str) -> bool {
             return true;
         }
     }
-    
+
     false
 }
 
 /// Helper function to check if the user has all required capabilities
 pub fn has_capabilities(user_capabilities: &[String], required_capabilities: &[&str]) -> bool {
     // Must have ALL required capabilities
-    required_capabilities.iter().all(|required| {
-        user_capabilities.iter().any(|cap| cap == required)
-    })
+    required_capabilities
+        .iter()
+        .all(|required| user_capabilities.iter().any(|cap| cap == required))
 }
 
 #[cfg(test)]
@@ -571,38 +595,68 @@ mod tests {
         let acl_data = VaultResultantAclData {
             exact_paths: {
                 let mut map = std::collections::HashMap::new();
-                map.insert("path/to/exact".to_string(), VaultPathCapabilities {
-                    capabilities: vec!["read".to_string(), "list".to_string()]
-                });
+                map.insert(
+                    "path/to/exact".to_string(),
+                    VaultPathCapabilities {
+                        capabilities: vec!["read".to_string(), "list".to_string()],
+                    },
+                );
                 map
             },
             glob_paths: {
                 let mut map = std::collections::HashMap::new();
-                map.insert("path/to/glob/*".to_string(), VaultPathCapabilities {
-                    capabilities: vec!["read".to_string(), "list".to_string()]
-                });
+                map.insert(
+                    "path/to/glob/*".to_string(),
+                    VaultPathCapabilities {
+                        capabilities: vec!["read".to_string(), "list".to_string()],
+                    },
+                );
                 map
             },
         };
 
         // Test exact path match with required capabilities
         assert!(has_path_permission(&acl_data, "path/to/exact", &["read"]));
-        
+
         // Test exact path match without required capabilities
-        assert!(!has_path_permission(&acl_data, "path/to/exact", &["delete"]));
-        
+        assert!(!has_path_permission(
+            &acl_data,
+            "path/to/exact",
+            &["delete"]
+        ));
+
         // Test glob path match with required capabilities
-        assert!(has_path_permission(&acl_data, "path/to/glob/subpath", &["read"]));
-        
+        assert!(has_path_permission(
+            &acl_data,
+            "path/to/glob/subpath",
+            &["read"]
+        ));
+
         // Test glob path match without required capabilities
-        assert!(!has_path_permission(&acl_data, "path/to/glob/subpath", &["delete"]));
-        
+        assert!(!has_path_permission(
+            &acl_data,
+            "path/to/glob/subpath",
+            &["delete"]
+        ));
+
         // Test path that doesn't match any permissions
-        assert!(!has_path_permission(&acl_data, "non/existent/path", &["read"]));
-        
+        assert!(!has_path_permission(
+            &acl_data,
+            "non/existent/path",
+            &["read"]
+        ));
+
         // Test that ALL required capabilities must be present (not just any)
-        assert!(has_path_permission(&acl_data, "path/to/exact", &["read", "list"]));
-        assert!(!has_path_permission(&acl_data, "path/to/exact", &["read", "delete"]));
+        assert!(has_path_permission(
+            &acl_data,
+            "path/to/exact",
+            &["read", "list"]
+        ));
+        assert!(!has_path_permission(
+            &acl_data,
+            "path/to/exact",
+            &["read", "delete"]
+        ));
     }
 
     #[test]
@@ -618,12 +672,12 @@ mod tests {
     #[test]
     fn test_has_capabilities() {
         let user_caps = vec!["read".to_string(), "list".to_string()];
-        
+
         // User has all required capabilities
         assert!(has_capabilities(&user_caps, &["read"]));
         assert!(has_capabilities(&user_caps, &["list"]));
         assert!(has_capabilities(&user_caps, &["read", "list"]));
-        
+
         // User lacks some required capabilities
         assert!(!has_capabilities(&user_caps, &["read", "create"]));
         assert!(!has_capabilities(&user_caps, &["write"]));
@@ -633,19 +687,35 @@ mod tests {
     fn test_parse_vault_url() {
         // Test complete URL
         let result = parse_vault_url("vault://role@mount/database");
-        assert_eq!(result, Some((Some("role".to_string()), "mount".to_string(), Some("database".to_string()))));
+        assert_eq!(
+            result,
+            Some((
+                Some("role".to_string()),
+                "mount".to_string(),
+                Some("database".to_string())
+            ))
+        );
 
         // Test URL with default mount path
         let result = parse_vault_url("vault:///database");
-        assert_eq!(result, Some((None, "database".to_string(), Some("database".to_string()))));
+        assert_eq!(
+            result,
+            Some((None, "database".to_string(), Some("database".to_string())))
+        );
 
         // Test URL without role
         let result = parse_vault_url("vault://mount/database");
-        assert_eq!(result, Some((None, "mount".to_string(), Some("database".to_string()))));
+        assert_eq!(
+            result,
+            Some((None, "mount".to_string(), Some("database".to_string())))
+        );
 
         // Test URL with role but no database
         let result = parse_vault_url("vault://role@mount");
-        assert_eq!(result, Some((Some("role".to_string()), "mount".to_string(), None)));
+        assert_eq!(
+            result,
+            Some((Some("role".to_string()), "mount".to_string(), None))
+        );
 
         // Test URL with empty components
         let result = parse_vault_url("vault://@/");

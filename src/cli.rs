@@ -9,7 +9,7 @@ use clap::{Parser, ValueEnum};
 #[command(arg_required_else_help = false)]
 pub struct Args {
     /// Database connection URL
-    /// 
+    ///
     /// Examples:
     ///   PostgreSQL: postgresql://user:pass@localhost:5432/mydb
     ///   MySQL:      mysql://user:pass@localhost:3306/mydb
@@ -25,7 +25,6 @@ pub struct Args {
     #[arg(long)]
     pub ssh_tunnel: Option<String>,
 
-
     /// Generate shell completions
     #[arg(long, value_enum)]
     pub completions: Option<Shell>,
@@ -33,7 +32,6 @@ pub struct Args {
     /// Execute SQL command and exit
     #[arg(short, long, action = clap::ArgAction::Append)]
     pub command: Vec<String>,
-
 }
 
 impl std::fmt::Debug for Args {

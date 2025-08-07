@@ -279,8 +279,7 @@ mod tests {
                 .as_millis();
             let pid = std::process::id();
 
-            let test_path =
-                temp_dir.join(format!("dbcrust_test_{test_name}_{pid}_{timestamp}"));
+            let test_path = temp_dir.join(format!("dbcrust_test_{test_name}_{pid}_{timestamp}"));
 
             // Create parent directory if needed
             if let Some(parent) = test_path.parent() {
@@ -465,11 +464,7 @@ mod tests {
         }
 
         let mut file = std::fs::File::create(&test_pgpass.path).unwrap();
-        writeln!(
-            file,
-            "{host}:{port1}:{dbname}:{username}:{password1}"
-        )
-        .unwrap();
+        writeln!(file, "{host}:{port1}:{dbname}:{username}:{password1}").unwrap();
         file.flush().unwrap();
         file.sync_all().unwrap();
 

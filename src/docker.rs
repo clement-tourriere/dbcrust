@@ -1,9 +1,9 @@
+use crate::database::{DatabaseType, DatabaseTypeExt};
 use bollard::Docker;
+use bollard::models::{ContainerInspectResponse, ContainerSummary};
 use bollard::query_parameters::{InspectContainerOptions, ListContainersOptions};
-use bollard::models::{ContainerSummary, ContainerInspectResponse};
 use std::collections::HashMap;
 use thiserror::Error;
-use crate::database::{DatabaseType, DatabaseTypeExt};
 
 #[derive(Error, Debug)]
 pub enum DockerError {
@@ -70,7 +70,7 @@ impl DockerClient {
     pub async fn list_containers(&self) -> Result<Vec<ContainerSummary>, DockerError> {
         let mut filters = HashMap::new();
         filters.insert("status".to_string(), vec!["running".to_string()]);
-        
+
         let options = ListContainersOptions {
             all: false,
             filters: Some(filters),
@@ -87,7 +87,7 @@ impl DockerClient {
             all: true,
             ..Default::default()
         };
-        
+
         let containers = self.docker.list_containers(Some(options)).await?;
         let mut database_containers = Vec::new();
 
@@ -96,11 +96,15 @@ impl DockerClient {
                 let database_type = Self::detect_database_type_from_image(image);
                 if let Some(db_type) = database_type {
                     // Extract basic port information from container summary
-                    let (host_port, container_port) = self.extract_port_mapping_from_summary(&container, &db_type);
-                    
+                    let (host_port, container_port) =
+                        self.extract_port_mapping_from_summary(&container, &db_type);
+
                     let container_info = DockerContainerInfo {
                         id: container.id.unwrap_or_default(),
-                        name: container.names.unwrap_or_default().first()
+                        name: container
+                            .names
+                            .unwrap_or_default()
+                            .first()
                             .map(|n| n.trim_start_matches('/').to_string())
                             .unwrap_or_default(),
                         image: image.to_string(),
@@ -125,11 +129,11 @@ impl DockerClient {
         database_containers.sort_by(|a, b| {
             let a_running = a.status.contains("running") || a.status.contains("Up");
             let b_running = b.status.contains("running") || b.status.contains("Up");
-            
+
             match (a_running, b_running) {
-                (true, false) => std::cmp::Ordering::Less,    // a is running, b is not - a comes first
+                (true, false) => std::cmp::Ordering::Less, // a is running, b is not - a comes first
                 (false, true) => std::cmp::Ordering::Greater, // b is running, a is not - b comes first
-                _ => a.name.cmp(&b.name) // Both same status - sort by name alphabetically
+                _ => a.name.cmp(&b.name), // Both same status - sort by name alphabetically
             }
         });
 
@@ -137,16 +141,28 @@ impl DockerClient {
     }
 
     /// Get detailed information about a specific container
-    pub async fn inspect_container(&self, container_id: &str) -> Result<DockerContainerInfo, DockerError> {
+    pub async fn inspect_container(
+        &self,
+        container_id: &str,
+    ) -> Result<DockerContainerInfo, DockerError> {
         let options = InspectContainerOptions {
             size: false,
             ..Default::default()
         };
-        let container = self.docker.inspect_container(container_id, Some(options)).await?;
-        
-        let config = container.config.as_ref().ok_or_else(|| DockerError::ContainerNotFound(container_id.to_string()))?;
-        let state = container.state.as_ref().ok_or_else(|| DockerError::ContainerNotFound(container_id.to_string()))?;
-        
+        let container = self
+            .docker
+            .inspect_container(container_id, Some(options))
+            .await?;
+
+        let config = container
+            .config
+            .as_ref()
+            .ok_or_else(|| DockerError::ContainerNotFound(container_id.to_string()))?;
+        let state = container
+            .state
+            .as_ref()
+            .ok_or_else(|| DockerError::ContainerNotFound(container_id.to_string()))?;
+
         // Check if container is running
         if !state.running.unwrap_or(false) {
             return Err(DockerError::ContainerNotRunning(container_id.to_string()));
@@ -182,9 +198,17 @@ impl DockerClient {
 
         Ok(DockerContainerInfo {
             id: container.id.unwrap_or_default(),
-            name: container.name.unwrap_or_default().trim_start_matches('/').to_string(),
+            name: container
+                .name
+                .unwrap_or_default()
+                .trim_start_matches('/')
+                .to_string(),
             image,
-            status: state.status.as_ref().map(|s| s.to_string()).unwrap_or_default(),
+            status: state
+                .status
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_default(),
             database_type: Some(database_type),
             host_port,
             container_port,
@@ -203,7 +227,7 @@ impl DockerClient {
                     return Some(ip_address.clone());
                 }
             }
-            
+
             // If no IP in default network, try to get from any network
             if let Some(networks) = &network_settings.networks {
                 for network in networks.values() {
@@ -225,7 +249,7 @@ impl DockerClient {
         database_type: &DatabaseType,
     ) -> (Option<u16>, Option<u16>) {
         let default_port = Self::get_default_port(database_type);
-        
+
         if let Some(ports) = &container.ports {
             for port in ports {
                 // Check if this port matches our database port
@@ -237,7 +261,7 @@ impl DockerClient {
                 }
             }
         }
-        
+
         (None, Some(default_port))
     }
 
@@ -248,7 +272,7 @@ impl DockerClient {
         database_type: &DatabaseType,
     ) -> Result<(Option<u16>, Option<u16>), DockerError> {
         let default_port = Self::get_default_port(database_type);
-        
+
         if let Some(network_settings) = &container.network_settings {
             if let Some(ports) = &network_settings.ports {
                 // Look for the database port
@@ -273,9 +297,12 @@ impl DockerClient {
     /// Detect database type from Docker image name
     fn detect_database_type_from_image(image: &str) -> Option<DatabaseType> {
         let image_lower = image.to_lowercase();
-        
-        if image_lower.contains("postgres") || image_lower.contains("pgvector") || 
-           (image_lower.contains("pg") && (image_lower.contains(":") || image_lower.contains("/"))) {
+
+        if image_lower.contains("postgres")
+            || image_lower.contains("pgvector")
+            || (image_lower.contains("pg")
+                && (image_lower.contains(":") || image_lower.contains("/")))
+        {
             Some(DatabaseType::PostgreSQL)
         } else if image_lower.contains("mysql") || image_lower.contains("mariadb") {
             Some(DatabaseType::MySQL)
@@ -292,8 +319,12 @@ impl DockerClient {
     }
 
     /// Build database connection info from container info
-    pub fn build_connection_info(&self, container_info: &DockerContainerInfo) -> Result<DockerDatabaseConnection, DockerError> {
-        let database_type = container_info.database_type
+    pub fn build_connection_info(
+        &self,
+        container_info: &DockerContainerInfo,
+    ) -> Result<DockerDatabaseConnection, DockerError> {
+        let database_type = container_info
+            .database_type
             .clone()
             .ok_or_else(|| DockerError::DatabaseTypeDetectionFailed(container_info.name.clone()))?;
 
@@ -302,13 +333,17 @@ impl DockerClient {
             ("localhost".to_string(), host_port)
         } else {
             // Check for OrbStack custom domain or compose project domain first
-            if let Some((orbstack_host, orbstack_port)) = self.get_orbstack_custom_or_compose_domain(container_info, &database_type)? {
+            if let Some((orbstack_host, orbstack_port)) =
+                self.get_orbstack_custom_or_compose_domain(container_info, &database_type)?
+            {
                 (orbstack_host, orbstack_port)
             } else if let Some(container_ip) = &container_info.ip_address {
                 // Fall back to container IP address (Linux or any system with IP)
                 let default_port = Self::get_default_port(&database_type);
                 (container_ip.clone(), default_port)
-            } else if let Some((orbstack_host, orbstack_port)) = self.get_orbstack_automatic_domain(container_info, &database_type)? {
+            } else if let Some((orbstack_host, orbstack_port)) =
+                self.get_orbstack_automatic_domain(container_info, &database_type)?
+            {
                 // Fall back to OrbStack automatic domain (macOS)
                 (orbstack_host, orbstack_port)
             } else {
@@ -321,25 +356,28 @@ impl DockerClient {
             (None, None, None)
         } else {
             // Extract username from environment variables
-            let username = database_type.docker_username_env_vars()
+            let username = database_type
+                .docker_username_env_vars()
                 .iter()
                 .find_map(|var| container_info.environment.get(*var))
                 .cloned()
                 .unwrap_or_else(|| database_type.default_username().to_string());
-            
+
             // Extract password from environment variables
-            let password = database_type.docker_password_env_vars()
+            let password = database_type
+                .docker_password_env_vars()
                 .iter()
                 .find_map(|var| container_info.environment.get(*var))
                 .cloned();
-            
+
             // Extract database name from environment variables
-            let database_name = database_type.docker_database_env_vars()
+            let database_name = database_type
+                .docker_database_env_vars()
                 .iter()
                 .find_map(|var| container_info.environment.get(*var))
                 .cloned()
                 .unwrap_or_else(|| username.clone());
-            
+
             (Some(username), password, Some(database_name))
         };
 
@@ -355,49 +393,63 @@ impl DockerClient {
     }
 
     /// Get OrbStack custom domain or compose project domain (high priority)
-    pub fn get_orbstack_custom_or_compose_domain(&self, container_info: &DockerContainerInfo, database_type: &DatabaseType) -> Result<Option<(String, u16)>, DockerError> {
+    pub fn get_orbstack_custom_or_compose_domain(
+        &self,
+        container_info: &DockerContainerInfo,
+        database_type: &DatabaseType,
+    ) -> Result<Option<(String, u16)>, DockerError> {
         // First check if we're running on OrbStack by looking for OrbStack-specific indicators
         if !self.is_orbstack_available() {
             return Ok(None);
         }
 
         let default_port = Self::get_default_port(database_type);
-        
+
         // Check for custom domain label first
         if let Some(custom_domain) = self.get_custom_orbstack_domain(container_info) {
             return Ok(Some((custom_domain, default_port)));
         }
-        
+
         // Check for compose project domain
         if let Some(compose_domain) = self.get_compose_orbstack_domain(container_info) {
             return Ok(Some((compose_domain, default_port)));
         }
-        
+
         // No custom or compose domain found
         Ok(None)
     }
 
     /// Get OrbStack automatic domain for standalone containers (low priority)
-    pub fn get_orbstack_automatic_domain(&self, container_info: &DockerContainerInfo, database_type: &DatabaseType) -> Result<Option<(String, u16)>, DockerError> {
+    pub fn get_orbstack_automatic_domain(
+        &self,
+        container_info: &DockerContainerInfo,
+        database_type: &DatabaseType,
+    ) -> Result<Option<(String, u16)>, DockerError> {
         // First check if we're running on OrbStack by looking for OrbStack-specific indicators
         if !self.is_orbstack_available() {
             return Ok(None);
         }
 
         let default_port = Self::get_default_port(database_type);
-        
+
         // For standalone containers, use container name domain
         let container_domain = format!("{}.orb.local", container_info.name);
         Ok(Some((container_domain, default_port)))
     }
 
     /// Get OrbStack domain for container if available (kept for backward compatibility)
-    pub fn get_orbstack_domain(&self, container_info: &DockerContainerInfo, database_type: &DatabaseType) -> Result<Option<(String, u16)>, DockerError> {
+    pub fn get_orbstack_domain(
+        &self,
+        container_info: &DockerContainerInfo,
+        database_type: &DatabaseType,
+    ) -> Result<Option<(String, u16)>, DockerError> {
         // Try custom/compose first
-        if let Some(domain) = self.get_orbstack_custom_or_compose_domain(container_info, database_type)? {
+        if let Some(domain) =
+            self.get_orbstack_custom_or_compose_domain(container_info, database_type)?
+        {
             return Ok(Some(domain));
         }
-        
+
         // Fall back to automatic domain
         self.get_orbstack_automatic_domain(container_info, database_type)
     }
@@ -407,12 +459,12 @@ impl DockerClient {
         // OrbStack typically runs on macOS and has specific characteristics
         // We can check for OrbStack's presence by attempting to resolve a known OrbStack domain
         // For now, we'll do a simple check - in production, you might want to be more sophisticated
-        
+
         // Check if we can find any containers with OrbStack-style labels or networks
         // This is a heuristic approach
-        std::env::consts::OS == "macos" || 
-        std::env::var("ORBSTACK_HOST").is_ok() ||
-        std::path::Path::new("/Applications/OrbStack.app").exists()
+        std::env::consts::OS == "macos"
+            || std::env::var("ORBSTACK_HOST").is_ok()
+            || std::path::Path::new("/Applications/OrbStack.app").exists()
     }
 
     /// Get custom domain from container labels (dev.orbstack.domains label)
@@ -433,14 +485,14 @@ impl DockerClient {
                 return Some(format!("{project_name}.orb.local"));
             }
         }
-        
+
         // Fallback: Check if this container is part of a compose project by name pattern
         // Compose containers typically have names like "project-service-1"
         if container_info.name.contains('-') {
             let parts: Vec<&str> = container_info.name.split('-').collect();
             if parts.len() >= 2 {
                 // Take everything except the last part (which is usually the replica number)
-                let project_service = parts[..parts.len()-1].join("-");
+                let project_service = parts[..parts.len() - 1].join("-");
                 return Some(format!("{project_service}.orb.local"));
             }
         }
@@ -448,25 +500,28 @@ impl DockerClient {
     }
 
     /// Parse Docker URL format: docker://user:password@container_name/database
-    pub fn parse_docker_url(url: &str) -> Option<(Option<String>, Option<String>, String, Option<String>)> {
+    pub fn parse_docker_url(
+        url: &str,
+    ) -> Option<(Option<String>, Option<String>, String, Option<String>)> {
         if !url.starts_with("docker://") {
             return None;
         }
 
         let url_without_prefix = &url["docker://".len()..];
-        
+
         // Handle empty URL: docker://
         if url_without_prefix.is_empty() {
             return Some((None, None, String::new(), None));
         }
 
         // Parse user:password@container_name/database pattern
-        let (credentials_part, container_and_db) = if let Some(at_pos) = url_without_prefix.find('@') {
-            let (creds, rest) = url_without_prefix.split_at(at_pos);
-            (Some(creds), &rest[1..]) // Skip the '@'
-        } else {
-            (None, url_without_prefix)
-        };
+        let (credentials_part, container_and_db) =
+            if let Some(at_pos) = url_without_prefix.find('@') {
+                let (creds, rest) = url_without_prefix.split_at(at_pos);
+                (Some(creds), &rest[1..]) // Skip the '@'
+            } else {
+                (None, url_without_prefix)
+            };
 
         // Parse credentials
         let (username, password) = if let Some(creds) = credentials_part {
@@ -541,25 +596,45 @@ mod tests {
         // Test container name with database
         assert_eq!(
             DockerClient::parse_docker_url("docker://postgres-db/mydb"),
-            Some((None, None, "postgres-db".to_string(), Some("mydb".to_string())))
+            Some((
+                None,
+                None,
+                "postgres-db".to_string(),
+                Some("mydb".to_string())
+            ))
         );
 
         // Test with username
         assert_eq!(
             DockerClient::parse_docker_url("docker://user@postgres-db"),
-            Some((Some("user".to_string()), None, "postgres-db".to_string(), None))
+            Some((
+                Some("user".to_string()),
+                None,
+                "postgres-db".to_string(),
+                None
+            ))
         );
 
         // Test with username and password
         assert_eq!(
             DockerClient::parse_docker_url("docker://user:pass@postgres-db"),
-            Some((Some("user".to_string()), Some("pass".to_string()), "postgres-db".to_string(), None))
+            Some((
+                Some("user".to_string()),
+                Some("pass".to_string()),
+                "postgres-db".to_string(),
+                None
+            ))
         );
 
         // Test full URL
         assert_eq!(
             DockerClient::parse_docker_url("docker://user:pass@postgres-db/mydb"),
-            Some((Some("user".to_string()), Some("pass".to_string()), "postgres-db".to_string(), Some("mydb".to_string())))
+            Some((
+                Some("user".to_string()),
+                Some("pass".to_string()),
+                "postgres-db".to_string(),
+                Some("mydb".to_string())
+            ))
         );
 
         // Test invalid URL
@@ -571,7 +646,10 @@ mod tests {
 
     #[test]
     fn test_get_default_port() {
-        assert_eq!(DockerClient::get_default_port(&DatabaseType::PostgreSQL), 5432);
+        assert_eq!(
+            DockerClient::get_default_port(&DatabaseType::PostgreSQL),
+            5432
+        );
         assert_eq!(DockerClient::get_default_port(&DatabaseType::MySQL), 3306);
         assert_eq!(DockerClient::get_default_port(&DatabaseType::SQLite), 0);
     }
@@ -579,11 +657,14 @@ mod tests {
     #[test]
     fn test_orbstack_custom_domain() {
         let docker_client = DockerClient::new().unwrap();
-        
+
         // Test custom domain detection
         let mut labels = HashMap::new();
-        labels.insert("dev.orbstack.domains".to_string(), "my-custom-db.local".to_string());
-        
+        labels.insert(
+            "dev.orbstack.domains".to_string(),
+            "my-custom-db.local".to_string(),
+        );
+
         let container_info = DockerContainerInfo {
             id: "test".to_string(),
             name: "test-container".to_string(),
@@ -596,7 +677,7 @@ mod tests {
             environment: HashMap::new(),
             labels,
         };
-        
+
         let custom_domain = docker_client.get_custom_orbstack_domain(&container_info);
         assert_eq!(custom_domain, Some("my-custom-db.local".to_string()));
     }
@@ -604,12 +685,18 @@ mod tests {
     #[test]
     fn test_orbstack_compose_domain() {
         let docker_client = DockerClient::new().unwrap();
-        
+
         // Test compose project domain detection via labels
         let mut labels = HashMap::new();
-        labels.insert("com.docker.compose.project".to_string(), "myapp".to_string());
-        labels.insert("com.docker.compose.service".to_string(), "database".to_string());
-        
+        labels.insert(
+            "com.docker.compose.project".to_string(),
+            "myapp".to_string(),
+        );
+        labels.insert(
+            "com.docker.compose.service".to_string(),
+            "database".to_string(),
+        );
+
         let container_info = DockerContainerInfo {
             id: "test".to_string(),
             name: "myapp-database-1".to_string(),
@@ -622,10 +709,10 @@ mod tests {
             environment: HashMap::new(),
             labels,
         };
-        
+
         let compose_domain = docker_client.get_compose_orbstack_domain(&container_info);
         assert_eq!(compose_domain, Some("database.myapp.orb.local".to_string()));
-        
+
         // Test fallback to name-based detection
         let container_info_no_labels = DockerContainerInfo {
             id: "test".to_string(),
@@ -639,15 +726,18 @@ mod tests {
             environment: HashMap::new(),
             labels: HashMap::new(),
         };
-        
+
         let fallback_domain = docker_client.get_compose_orbstack_domain(&container_info_no_labels);
-        assert_eq!(fallback_domain, Some("myproject-postgres.orb.local".to_string()));
+        assert_eq!(
+            fallback_domain,
+            Some("myproject-postgres.orb.local".to_string())
+        );
     }
 
     #[test]
     fn test_linux_container_ip_fallback() {
         let docker_client = DockerClient::new().unwrap();
-        
+
         // Test Linux container IP fallback when no ports are exposed
         let container_info = DockerContainerInfo {
             id: "test".to_string(),
@@ -661,8 +751,10 @@ mod tests {
             environment: HashMap::new(),
             labels: HashMap::new(),
         };
-        
-        let connection_info = docker_client.build_connection_info(&container_info).unwrap();
+
+        let connection_info = docker_client
+            .build_connection_info(&container_info)
+            .unwrap();
         assert_eq!(connection_info.host, "172.17.0.2");
         assert_eq!(connection_info.port, 5432);
     }

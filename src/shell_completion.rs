@@ -1,5 +1,5 @@
 use clap::Command;
-use clap_complete::{generate, Shell};
+use clap_complete::{Shell, generate};
 use std::io::Write;
 
 use crate::url_scheme::UrlScheme;
@@ -83,7 +83,7 @@ _{bin_name}_complete_sessions() {{
 # Custom URL completion
 _{bin_name}_complete_url() {{
     local cur="$1"
-    
+
     # If the current word doesn't contain "://", complete schemes
     if [[ "$cur" != *"://"* ]]; then
         _{bin_name}_complete_url_schemes | grep "^$cur"
@@ -91,7 +91,7 @@ _{bin_name}_complete_url() {{
         # Extract the scheme and the part after "://"
         local scheme="${{cur%%://*}}"
         local after_scheme="${{cur#*://}}"
-        
+
         case "$scheme" in
             docker)
                 # Complete docker container names
@@ -214,7 +214,7 @@ _{bin_name}_sessions() {{
 _{bin_name}_complete_url() {{
     local curcontext="$curcontext" state line
     local current_word="${{words[CURRENT]}}"
-    
+
     if [[ "$current_word" != *"://"* ]]; then
         # Complete URL schemes - use compadd to add full scheme with ://
         local -a scheme_completions
@@ -269,7 +269,7 @@ _{bin_name}_complete_url() {{
 "#, bin_name = bin_name));
 
     // Insert custom functions after #compdef but before main function
-    let insert_pos = if let Some(pos) = completion_script.find(&format!("_{}() {{", bin_name)) {
+    let insert_pos = if let Some(pos) = completion_script.find(&format!("_{bin_name}() {{")) {
         pos
     } else if let Some(pos) = completion_script
         .find("_dbc() {")
@@ -288,10 +288,7 @@ _{bin_name}_complete_url() {{
     {
         completion_script.replace_range(
             pos..pos + "'::connection_url -- Database connection URL:_default'".len(),
-            &format!(
-                "'::connection_url -- Database connection URL:_{}_complete_url'",
-                bin_name
-            ),
+            &format!("'::connection_url -- Database connection URL:_{bin_name}_complete_url'"),
         );
     }
 
@@ -334,8 +331,8 @@ function __dbcrust_docker_containers
     end
 end
 
-complete -c {} -n 'string match -q "docker://*" (commandline -ct)' -f -a '(printf "docker://%s\n" (__dbcrust_docker_containers))'
-"#, bin_name));
+complete -c {bin_name} -n 'string match -q "docker://*" (commandline -ct)' -f -a '(printf "docker://%s\n" (__dbcrust_docker_containers))'
+"#));
 
     // Add session completion
     custom_completions.push_str(&format!(r#"
@@ -347,8 +344,8 @@ function __dbcrust_sessions
     end
 end
 
-complete -c {} -n 'string match -q "session://*" (commandline -ct)' -f -a '(printf "session://%s\n" (__dbcrust_sessions))'
-"#, bin_name));
+complete -c {bin_name} -n 'string match -q "session://*" (commandline -ct)' -f -a '(printf "session://%s\n" (__dbcrust_sessions))'
+"#));
 
     completion_script.push_str(&custom_completions);
 

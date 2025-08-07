@@ -1,12 +1,12 @@
 //! Database abstraction layer for multi-database support
 //! Supports PostgreSQL, SQLite, and MySQL/MariaDB
 use async_trait::async_trait;
-use tracing::debug;
+use percent_encoding;
 use std::collections::HashMap;
 use std::fmt;
 use thiserror::Error;
+use tracing::debug;
 use url::Url;
-use percent_encoding;
 
 /// Supported database types
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -26,43 +26,43 @@ impl fmt::Display for DatabaseType {
 pub trait DatabaseTypeExt {
     /// Get the default port for this database type
     fn default_port(&self) -> Option<u16>;
-    
+
     /// Get the display name for this database type
     fn display_name(&self) -> &'static str;
-    
+
     /// Check if this database type supports SSH tunneling
     fn supports_ssh_tunnel(&self) -> bool;
-    
+
     /// Get URL schemes supported by this database type
     fn url_schemes(&self) -> &'static [&'static str];
-    
+
     /// Check if this database type is file-based (no network connection)
     fn is_file_based(&self) -> bool;
-    
+
     /// Check if this database type supports JSON EXPLAIN output
     fn supports_json_explain(&self) -> bool;
-    
+
     /// Check if this database type requires authentication (password)
     fn requires_authentication(&self) -> bool;
-    
+
     /// Get the URL scheme for building URLs
     fn url_scheme(&self) -> &'static str;
-    
+
     /// Get function names for SQL completion
     fn sql_functions(&self) -> &'static [&'static str];
-    
+
     /// Check if from_unixtime is available
     fn supports_from_unixtime(&self) -> bool;
-    
+
     /// Get environment variable names for username lookup in Docker containers
     fn docker_username_env_vars(&self) -> &'static [&'static str];
-    
+
     /// Get environment variable names for password lookup in Docker containers
     fn docker_password_env_vars(&self) -> &'static [&'static str];
-    
+
     /// Get environment variable names for database name lookup in Docker containers
     fn docker_database_env_vars(&self) -> &'static [&'static str];
-    
+
     /// Get default username for this database type
     fn default_username(&self) -> &'static str;
 }
@@ -75,7 +75,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => None, // File-based
         }
     }
-    
+
     fn display_name(&self) -> &'static str {
         match self {
             DatabaseType::PostgreSQL => "PostgreSQL",
@@ -83,14 +83,14 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => "SQLite",
         }
     }
-    
+
     fn supports_ssh_tunnel(&self) -> bool {
         match self {
             DatabaseType::PostgreSQL | DatabaseType::MySQL => true,
             DatabaseType::SQLite => false, // File-based, no network connection
         }
     }
-    
+
     fn url_schemes(&self) -> &'static [&'static str] {
         match self {
             DatabaseType::PostgreSQL => &["postgresql", "postgres"],
@@ -98,28 +98,28 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => &["sqlite"],
         }
     }
-    
+
     fn is_file_based(&self) -> bool {
         match self {
             DatabaseType::SQLite => true,
             DatabaseType::PostgreSQL | DatabaseType::MySQL => false,
         }
     }
-    
+
     fn supports_json_explain(&self) -> bool {
         match self {
             DatabaseType::PostgreSQL => true,
             DatabaseType::MySQL | DatabaseType::SQLite => false,
         }
     }
-    
+
     fn requires_authentication(&self) -> bool {
         match self {
             DatabaseType::PostgreSQL | DatabaseType::MySQL => true,
             DatabaseType::SQLite => false,
         }
     }
-    
+
     fn url_scheme(&self) -> &'static str {
         match self {
             DatabaseType::PostgreSQL => "postgres",
@@ -127,36 +127,73 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => "sqlite",
         }
     }
-    
+
     fn sql_functions(&self) -> &'static [&'static str] {
         match self {
             DatabaseType::PostgreSQL => &[
-                "COALESCE", "NULLIF", "GREATEST", "LEAST", "NOW", "CURRENT_DATE",
-                "CURRENT_TIME", "CURRENT_TIMESTAMP", "AGE", "EXTRACT", "DATE_PART",
-                "TO_CHAR", "TO_DATE", "TO_TIMESTAMP", "ARRAY_AGG", "STRING_AGG",
-                "JSON_BUILD_OBJECT", "JSON_AGG", "JSONB_BUILD_OBJECT",
+                "COALESCE",
+                "NULLIF",
+                "GREATEST",
+                "LEAST",
+                "NOW",
+                "CURRENT_DATE",
+                "CURRENT_TIME",
+                "CURRENT_TIMESTAMP",
+                "AGE",
+                "EXTRACT",
+                "DATE_PART",
+                "TO_CHAR",
+                "TO_DATE",
+                "TO_TIMESTAMP",
+                "ARRAY_AGG",
+                "STRING_AGG",
+                "JSON_BUILD_OBJECT",
+                "JSON_AGG",
+                "JSONB_BUILD_OBJECT",
             ],
             DatabaseType::MySQL => &[
-                "COALESCE", "IFNULL", "NULLIF", "GREATEST", "LEAST", "NOW",
-                "CURRENT_DATE", "CURRENT_TIME", "CURRENT_TIMESTAMP", "DATE_FORMAT",
-                "STR_TO_DATE", "FROM_UNIXTIME", "UNIX_TIMESTAMP", "GROUP_CONCAT",
-                "JSON_OBJECT", "JSON_ARRAY",
+                "COALESCE",
+                "IFNULL",
+                "NULLIF",
+                "GREATEST",
+                "LEAST",
+                "NOW",
+                "CURRENT_DATE",
+                "CURRENT_TIME",
+                "CURRENT_TIMESTAMP",
+                "DATE_FORMAT",
+                "STR_TO_DATE",
+                "FROM_UNIXTIME",
+                "UNIX_TIMESTAMP",
+                "GROUP_CONCAT",
+                "JSON_OBJECT",
+                "JSON_ARRAY",
             ],
             DatabaseType::SQLite => &[
-                "COALESCE", "IFNULL", "NULLIF", "MAX", "MIN", "DATE", "TIME",
-                "DATETIME", "STRFTIME", "JULIANDAY", "GROUP_CONCAT", "JSON_OBJECT",
+                "COALESCE",
+                "IFNULL",
+                "NULLIF",
+                "MAX",
+                "MIN",
+                "DATE",
+                "TIME",
+                "DATETIME",
+                "STRFTIME",
+                "JULIANDAY",
+                "GROUP_CONCAT",
+                "JSON_OBJECT",
                 "JSON_ARRAY",
             ],
         }
     }
-    
+
     fn supports_from_unixtime(&self) -> bool {
         match self {
             DatabaseType::MySQL => true,
             DatabaseType::PostgreSQL | DatabaseType::SQLite => false,
         }
     }
-    
+
     fn docker_username_env_vars(&self) -> &'static [&'static str] {
         match self {
             DatabaseType::PostgreSQL => &["POSTGRES_USER", "PGUSER"],
@@ -164,7 +201,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => &[],
         }
     }
-    
+
     fn docker_password_env_vars(&self) -> &'static [&'static str] {
         match self {
             DatabaseType::PostgreSQL => &["POSTGRES_PASSWORD", "PGPASSWORD"],
@@ -172,7 +209,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => &[],
         }
     }
-    
+
     fn docker_database_env_vars(&self) -> &'static [&'static str] {
         match self {
             DatabaseType::PostgreSQL => &["POSTGRES_DB", "PGDATABASE"],
@@ -180,7 +217,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => &[],
         }
     }
-    
+
     fn default_username(&self) -> &'static str {
         match self {
             DatabaseType::PostgreSQL => "postgres",
@@ -212,7 +249,7 @@ pub struct ConnectionInfo {
     pub username: Option<String>,
     pub password: Option<String>,
     pub database: Option<String>,
-    pub file_path: Option<String>, // For SQLite
+    pub file_path: Option<String>,        // For SQLite
     pub options: HashMap<String, String>, // Query parameters
     pub docker_container: Option<String>, // For Docker containers
 }
@@ -222,34 +259,36 @@ pub struct ConnectionInfo {
 pub enum DatabaseError {
     #[error("Unsupported database URL scheme: {0}")]
     UnsupportedScheme(String),
-    
+
     #[error("Invalid database URL: {0}")]
     InvalidUrl(String),
-    
+
     #[error("Docker error: {0}")]
     Docker(#[from] crate::docker::DockerError),
-    
+
     #[error("Connection error: {0}")]
     ConnectionError(String),
-    
+
     #[error("Query error: {0}")]
     QueryError(String),
-    
+
     #[error("Metadata error: {0}")]
     MetadataError(String),
-    
+
     #[error("Feature not supported for {database_type}: {feature}")]
     FeatureNotSupported {
         database_type: DatabaseType,
         feature: String,
     },
-    
+
     #[error("SQLx error: {0}")]
     SqlxError(#[from] sqlx::Error),
 }
 
 /// Factory for creating database clients
-pub async fn create_database_client(connection_info: ConnectionInfo) -> Result<Box<dyn DatabaseClient>, DatabaseError> {
+pub async fn create_database_client(
+    connection_info: ConnectionInfo,
+) -> Result<Box<dyn DatabaseClient>, DatabaseError> {
     match connection_info.database_type {
         DatabaseType::PostgreSQL => {
             let client = crate::database_postgresql::PostgreSQLClient::new(connection_info).await?;
@@ -269,8 +308,11 @@ pub async fn create_database_client(connection_info: ConnectionInfo) -> Result<B
 impl ConnectionInfo {
     /// Parse a database URL into connection information
     pub fn parse_url(url_str: &str) -> Result<Self, DatabaseError> {
-        debug!("[ConnectionInfo::parse_url] Parsing URL: {}", crate::password_sanitizer::sanitize_connection_url(url_str));
-        
+        debug!(
+            "[ConnectionInfo::parse_url] Parsing URL: {}",
+            crate::password_sanitizer::sanitize_connection_url(url_str)
+        );
+
         let url = Url::parse(url_str)
             .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to parse URL: {e}")))?;
 
@@ -291,14 +333,18 @@ impl ConnectionInfo {
         // Handle Docker URLs first
         if url.scheme() == "docker" {
             // Parse Docker URL using our custom parser
-            if let Some((username, password, container_name, database_name)) = crate::docker::DockerClient::parse_docker_url(url_str) {
+            if let Some((username, password, container_name, database_name)) =
+                crate::docker::DockerClient::parse_docker_url(url_str)
+            {
                 connection_info.docker_container = Some(container_name);
                 connection_info.username = username;
                 connection_info.password = password;
                 connection_info.database = database_name;
                 // Database type will be determined later after container inspection
             } else {
-                return Err(DatabaseError::InvalidUrl("Invalid Docker URL format".to_string()));
+                return Err(DatabaseError::InvalidUrl(
+                    "Invalid Docker URL format".to_string(),
+                ));
             }
             return Ok(connection_info);
         }
@@ -307,13 +353,13 @@ impl ConnectionInfo {
         if database_type.is_file_based() {
             // For SQLite: sqlite:///path/to/file.db or sqlite://./relative/path.db
             let path = url.path();
-            
+
             // Handle different SQLite URL formats:
             // sqlite:///absolute/path -> /absolute/path (absolute)
             // sqlite://./relative/path -> ./relative/path (relative)
             // sqlite:///./relative/path -> ./relative/path (relative)
             // sqlite:///relative/path -> relative/path (relative if starts with single slash)
-            
+
             let file_path = if path.starts_with("/./") {
                 // sqlite:///./relative/path -> ./relative/path
                 path[1..].to_string()
@@ -326,7 +372,11 @@ impl ConnectionInfo {
             } else if path.starts_with("/") && path.len() > 1 {
                 // sqlite:///relative/path -> relative/path (treat as relative)
                 // Only make it absolute if it looks like a real absolute path
-                if path.starts_with("/home/") || path.starts_with("/Users/") || path.starts_with("/tmp/") || path.starts_with("/var/") {
+                if path.starts_with("/home/")
+                    || path.starts_with("/Users/")
+                    || path.starts_with("/tmp/")
+                    || path.starts_with("/var/")
+                {
                     path.to_string()
                 } else {
                     path[1..].to_string()
@@ -335,19 +385,19 @@ impl ConnectionInfo {
                 // sqlite:///path -> path or empty path
                 path.to_string()
             };
-            
+
             connection_info.file_path = Some(file_path);
         } else {
             // For network databases
             connection_info.host = url.host_str().map(|h| h.to_string());
             connection_info.port = url.port();
-            connection_info.username = if url.username().is_empty() { 
-                None 
-            } else { 
-                Some(url.username().to_string()) 
+            connection_info.username = if url.username().is_empty() {
+                None
+            } else {
+                Some(url.username().to_string())
             };
             connection_info.password = url.password().map(|p| p.to_string());
-            
+
             // Database name is the path without leading slash - URL decode it
             if let Some(mut segments) = url.path_segments() {
                 if let Some(db_name) = segments.next() {
@@ -355,7 +405,12 @@ impl ConnectionInfo {
                         // URL-decode the database name to handle special characters like %3A (colon)
                         let decoded_db_name = percent_encoding::percent_decode_str(db_name)
                             .decode_utf8()
-                            .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to decode database name '{}': {}", db_name, e)))?
+                            .map_err(|e| {
+                                DatabaseError::InvalidUrl(format!(
+                                    "Failed to decode database name '{}': {}",
+                                    db_name, e
+                                ))
+                            })?
                             .to_string();
                         connection_info.database = Some(decoded_db_name);
                     }
@@ -365,10 +420,15 @@ impl ConnectionInfo {
 
         // Parse query parameters
         for (key, value) in url.query_pairs() {
-            connection_info.options.insert(key.to_string(), value.to_string());
+            connection_info
+                .options
+                .insert(key.to_string(), value.to_string());
         }
 
-        debug!("[ConnectionInfo::parse_url] Parsed connection info for {}", database_type);
+        debug!(
+            "[ConnectionInfo::parse_url] Parsed connection info for {}",
+            database_type
+        );
         Ok(connection_info)
     }
 
@@ -403,7 +463,7 @@ impl ConnectionInfo {
                 && self.database == other.database
         }
     }
-    
+
     /// Build a complete connection URL from connection information
     /// This is useful for storing in connection history
     pub fn to_url(&self) -> String {
@@ -415,7 +475,7 @@ impl ConnectionInfo {
             }
         } else {
             let mut url = format!("{}://", self.database_type.url_scheme());
-            
+
             // Build standard network database URL with resolved connection details
             if let Some(ref username) = self.username {
                 url.push_str(username);
@@ -432,7 +492,7 @@ impl ConnectionInfo {
                 url.push('/');
                 url.push_str(database);
             }
-            
+
             // Add docker container info as a comment-like suffix if present
             if let Some(ref container) = self.docker_container {
                 url.push_str(&format!(" # Docker: {container}"));
@@ -452,13 +512,21 @@ pub trait MetadataProvider: Send + Sync {
     async fn get_tables(&self, schema: Option<&str>) -> Result<Vec<String>, DatabaseError>;
 
     /// Get list of columns for a table
-    async fn get_columns(&self, table: &str, schema: Option<&str>) -> Result<Vec<String>, DatabaseError>;
+    async fn get_columns(
+        &self,
+        table: &str,
+        schema: Option<&str>,
+    ) -> Result<Vec<String>, DatabaseError>;
 
     /// Get list of functions in a schema
     async fn get_functions(&self, schema: Option<&str>) -> Result<Vec<String>, DatabaseError>;
 
     /// Get detailed table information (indexes, constraints, etc.)
-    async fn get_table_details(&self, table: &str, schema: Option<&str>) -> Result<crate::db::TableDetails, DatabaseError>;
+    async fn get_table_details(
+        &self,
+        table: &str,
+        schema: Option<&str>,
+    ) -> Result<crate::db::TableDetails, DatabaseError>;
 
     /// Check if a query can be explained
     fn supports_explain(&self) -> bool;
@@ -523,7 +591,7 @@ mod tests {
             options: HashMap::new(),
             docker_container: None,
         };
-        
+
         let url = conn_info.to_url();
         assert_eq!(url, "postgres://user@localhost:5432/testdb");
     }
@@ -542,9 +610,12 @@ mod tests {
             options: HashMap::new(),
             docker_container: Some("myapp-postgres".to_string()),
         };
-        
+
         let url = conn_info.to_url();
-        assert_eq!(url, "postgres://postgres@container.orb.local:5432/myapp # Docker: myapp-postgres");
+        assert_eq!(
+            url,
+            "postgres://postgres@container.orb.local:5432/myapp # Docker: myapp-postgres"
+        );
     }
 
     #[rstest]
@@ -561,7 +632,7 @@ mod tests {
             options: HashMap::new(),
             docker_container: None,
         };
-        
+
         let url = conn_info.to_url();
         assert_eq!(url, "mysql://root@localhost:3306/testdb");
     }
@@ -580,16 +651,44 @@ mod tests {
             options: HashMap::new(),
             docker_container: None,
         };
-        
+
         let url = conn_info.to_url();
         assert_eq!(url, "sqlite:///path/to/database.db");
     }
 
     #[rstest]
-    #[case("postgres://user:pass@localhost:5432/mydb", DatabaseType::PostgreSQL, Some("localhost"), Some(5432), Some("user"), Some("mydb"))]
-    #[case("postgres://user@localhost/mydb", DatabaseType::PostgreSQL, Some("localhost"), None, Some("user"), Some("mydb"))]
-    #[case("sqlite:///path/to/database.db", DatabaseType::SQLite, None, None, None, None)]
-    #[case("mysql://user:pass@localhost:3306/mydb", DatabaseType::MySQL, Some("localhost"), Some(3306), Some("user"), Some("mydb"))]
+    #[case(
+        "postgres://user:pass@localhost:5432/mydb",
+        DatabaseType::PostgreSQL,
+        Some("localhost"),
+        Some(5432),
+        Some("user"),
+        Some("mydb")
+    )]
+    #[case(
+        "postgres://user@localhost/mydb",
+        DatabaseType::PostgreSQL,
+        Some("localhost"),
+        None,
+        Some("user"),
+        Some("mydb")
+    )]
+    #[case(
+        "sqlite:///path/to/database.db",
+        DatabaseType::SQLite,
+        None,
+        None,
+        None,
+        None
+    )]
+    #[case(
+        "mysql://user:pass@localhost:3306/mydb",
+        DatabaseType::MySQL,
+        Some("localhost"),
+        Some(3306),
+        Some("user"),
+        Some("mydb")
+    )]
     fn test_parse_database_url(
         #[case] url: &str,
         #[case] expected_type: DatabaseType,
@@ -599,7 +698,7 @@ mod tests {
         #[case] expected_db: Option<&str>,
     ) {
         let conn_info = ConnectionInfo::parse_url(url).unwrap();
-        
+
         assert_eq!(conn_info.database_type, expected_type);
         assert_eq!(conn_info.host.as_deref(), expected_host);
         assert_eq!(conn_info.port, expected_port);
@@ -642,10 +741,9 @@ mod tests {
         // Test URL with encoded database name (as generated by Django)
         let url = "postgres://user:pass@host:5432/tt2%3Amain";
         let conn_info = ConnectionInfo::parse_url(url).unwrap();
-        
+
         // Verify that %3A was decoded to :
         assert_eq!(conn_info.database.as_deref(), Some("tt2:main"));
         assert_eq!(conn_info.username.as_deref(), Some("user"));
     }
-
 }
