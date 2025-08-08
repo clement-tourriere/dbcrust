@@ -1,6 +1,6 @@
 # Python API Overview
 
-DBCrust provides a comprehensive Python API for database operations, enabling direct integration into Python applications, scripts, and automation workflows. The API offers both high-level client classes and direct execution methods for maximum flexibility.
+DBCrust provides a comprehensive Python API for database operations, enabling direct integration into Python applications, scripts, and automation workflows. The API offers both high-level client classes and direct execution methods for maximum flexibility, with robust error handling through specific exception types.
 
 ## 🚀 Quick Start
 
@@ -31,7 +31,51 @@ uv tool install dbcrust
 
 ## 🏗️ API Patterns
 
-### 1. Direct Command Execution
+### 1. Enhanced Connection API (Recommended)
+
+Modern mysql.connector-style API with connection management and cursor support:
+
+```python
+import dbcrust
+
+# Context manager with automatic cleanup
+with dbcrust.connect("postgres://user@localhost/myapp") as connection:
+    # Get server information
+    server_info = connection.get_server_info()
+    print(f"Connected to: {server_info.database_type} {server_info.version}")
+
+    # Use cursor for query execution
+    with connection.cursor() as cursor:
+        # Execute single query
+        cursor.execute("SELECT * FROM users WHERE active = true")
+        users = cursor.fetchall()
+
+        # Execute multiple statements
+        script = """
+            CREATE TEMP TABLE temp_stats AS
+            SELECT status, COUNT(*) as count FROM users GROUP BY status;
+
+            SELECT * FROM temp_stats ORDER BY count DESC;
+
+            DROP TABLE temp_stats;
+        """
+        cursor.executescript(script)
+
+        # Navigate through result sets
+        temp_results = cursor.fetchall()  # First result set (CREATE has no results)
+        cursor.nextset()
+
+        stats = cursor.fetchall()  # Second result set (SELECT results)
+        cursor.nextset()
+
+        # Process results
+        for row in stats:
+            print(f"Status: {row[0]}, Count: {row[1]}")
+
+# Connection automatically closed
+```
+
+### 2. Direct Command Execution
 
 Execute SQL queries and backslash commands directly:
 
@@ -49,7 +93,7 @@ tables = dbcrust.run_command("postgres://postgres@localhost/myapp", "\\dt")
 databases = dbcrust.run_command("postgres://postgres@localhost/myapp", "\\l")
 ```
 
-### 2. Programmatic Execution with CLI Options
+### 3. Programmatic Execution with CLI Options
 
 ```python
 import dbcrust
@@ -67,7 +111,7 @@ dbcrust.run_with_url(
 )
 ```
 
-### 3. Interactive CLI Integration
+### 4. Interactive CLI Integration
 
 ```python
 import dbcrust
@@ -181,24 +225,60 @@ result = dbcrust.run_command(
 
 ### Error Handling
 
+DBCrust provides specific exception types for robust error handling:
+
 ```python
+from dbcrust import (
+    DbcrustConnectionError,
+    DbcrustCommandError,
+    DbcrustConfigError,
+    DbcrustArgumentError
+)
+
 def safe_query(connection_url, query):
-    """Execute query with error handling"""
+    """Execute query with proper exception handling"""
     try:
         result = dbcrust.run_command(connection_url, query)
         return json.loads(result)
-    except Exception as e:
-        if "connection refused" in str(e):
-            return {"error": "Database unreachable"}
-        elif "authentication failed" in str(e):
-            return {"error": "Invalid credentials"}
-        else:
-            return {"error": f"Query failed: {e}"}
+    except DbcrustConnectionError as e:
+        return {"error": "Database unreachable", "details": str(e)}
+    except DbcrustCommandError as e:
+        return {"error": "Query failed", "details": str(e)}
+    except DbcrustConfigError as e:
+        return {"error": "Configuration issue", "details": str(e)}
+    except DbcrustArgumentError as e:
+        return {"error": "Invalid arguments", "details": str(e)}
 ```
+
+See the **[Error Handling Guide](/dbcrust/python-api/error-handling/)** for comprehensive examples.
 
 ## 🔍 Django Integration
 
-DBCrust includes powerful Django ORM analysis capabilities:
+DBCrust provides comprehensive Django integration with automatic database discovery and powerful ORM analysis:
+
+### Automatic Database Connection
+
+```python
+from dbcrust.django import connect
+
+# Use your Django DATABASES configuration automatically
+with connect() as connection:
+    server_info = connection.get_server_info()
+    print(f"Connected to: {server_info.database_type} {server_info.version}")
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT * FROM auth_user WHERE is_active = %s", (True,))
+        active_users = cursor.fetchall()
+        print(f"Found {len(active_users)} active users")
+
+# Use specific database alias
+with connect("analytics") as connection:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) FROM events")
+        event_count = cursor.fetchone()[0]
+```
+
+### ORM Performance Analysis
 
 ```python
 from dbcrust.django import analyzer
@@ -214,12 +294,14 @@ print(f"Found {len(results.n_plus_one_issues)} N+1 query issues")
 ```
 
 **Key Features:**
-- N+1 query detection
-- Missing `select_related()` and `prefetch_related()` detection
-- Performance recommendations
-- CI/CD integration support
+- **Automatic Django DATABASES integration** - No manual connection URLs needed
+- **Multi-database support** - Work with all your Django databases
+- **Enhanced cursor API** - mysql.connector-style operations
+- **N+1 query detection** - Find ORM performance issues
+- **Performance recommendations** - Get actionable insights
+- **CI/CD integration support** - Automate performance testing
 
-[**📖 Complete Django Guide →**](/dbcrust/django-analyzer/)
+[**📖 Complete Django Integration Guide →**](/dbcrust/python-api/django-integration/)
 
 ## 📚 See Also
 

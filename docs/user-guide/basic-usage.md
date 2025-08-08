@@ -74,6 +74,41 @@ The prompt shows:
 - **User** you're connected as
 - **Transaction state** (if in a transaction)
 
+### Server Information Display
+
+When connecting to databases, DBCrust displays server version information (similar to pgcli):
+
+```bash
+$ dbcrust postgres://postgres@localhost/myapp
+Server: PostgreSQL 17.5 (Debian 17.5-1.pgdg120+1)
+Version: 0.16.1
+✓ Successfully connected to database
+Connected! Type \h for help or \q to quit.
+
+postgres://localhost:5432/myapp as postgres
+myapp=#
+```
+
+**What's shown:**
+- **Server**: Database type and version string
+- **Version**: DBCrust client version
+- **Connection status**: Success/failure indication
+
+**Control server info display:**
+```sql
+-- Toggle server info on/off
+\serverinfo
+
+-- Status shows current setting
+Server info display is now disabled.
+```
+
+**Configuration:**
+```toml
+# In ~/.config/dbcrust/config.toml
+show_server_info = true  # Default: true
+```
+
 ## 📝 Basic Query Execution
 
 ### Simple Queries

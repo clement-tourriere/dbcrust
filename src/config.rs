@@ -365,6 +365,9 @@ pub struct Config {
     #[serde(default = "default_show_banner")]
     pub show_banner: bool,
 
+    #[serde(default = "default_show_server_info")]
+    pub show_server_info: bool,
+
     #[serde(default = "default_multiline_prompt_indicator")]
     pub multiline_prompt_indicator: String,
 
@@ -417,6 +420,7 @@ impl Default for Config {
             logging: LoggingConfig::default(),
             history: HistoryConfig::default(),
             show_banner: default_show_banner(),
+            show_server_info: default_show_server_info(),
             multiline_prompt_indicator: default_multiline_prompt_indicator(),
             vault_credential_cache_enabled: default_vault_cache_enabled(),
             vault_cache_renewal_threshold: default_vault_renewal_threshold(),
@@ -553,6 +557,10 @@ fn default_max_files() -> usize {
 
 fn default_show_banner() -> bool {
     false
+}
+
+fn default_show_server_info() -> bool {
+    true
 }
 
 fn default_multiline_prompt_indicator() -> String {
@@ -1241,6 +1249,11 @@ impl Config {
             content.push_str(&format!("show_banner = {}\n\n", self.show_banner));
 
             content.push_str(&format!(
+                "# Show server info on connection (default: true)\n"
+            ));
+            content.push_str(&format!("show_server_info = {}\n\n", self.show_server_info));
+
+            content.push_str(&format!(
                 "# Indicator for multiline prompts (default: empty)\n"
             ));
             content.push_str(&format!(
@@ -1489,6 +1502,7 @@ impl Config {
             "pager_command",
             "pager_threshold_lines",
             "show_banner",
+            "show_server_info",
             "multiline_prompt_indicator",
             "vault_credential_cache_enabled",
             "vault_cache_renewal_threshold",

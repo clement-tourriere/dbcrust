@@ -2,6 +2,7 @@
 //! Supports PostgreSQL, SQLite, and MySQL/MariaDB
 use async_trait::async_trait;
 use percent_encoding;
+use regex;
 use std::collections::HashMap;
 use std::fmt;
 use thiserror::Error;
@@ -252,6 +253,80 @@ pub struct ConnectionInfo {
     pub file_path: Option<String>,        // For SQLite
     pub options: HashMap<String, String>, // Query parameters
     pub docker_container: Option<String>, // For Docker containers
+}
+
+/// Server information returned by database connections
+#[derive(Debug, Clone)]
+pub struct ServerInfo {
+    pub server_type: String,         // e.g., "PostgreSQL", "MySQL", "SQLite"
+    pub server_version: String,      // e.g., "17.5 (Debian 17.5-1.pgdg120+1)"
+    pub version_major: Option<u16>,  // e.g., 17 for PostgreSQL 17.x
+    pub version_minor: Option<u16>,  // e.g., 5 for PostgreSQL 17.5
+    pub version_patch: Option<u16>,  // e.g., 0 for PostgreSQL 17.5.0
+    pub client_version: String,      // DBCrust version
+    pub supports_transactions: bool, // Whether the database supports transactions
+    pub supports_roles: bool,        // Whether the database supports role-based auth
+    pub additional_info: HashMap<String, String>, // Any additional database-specific info
+}
+
+impl ServerInfo {
+    /// Create a new ServerInfo with minimal required fields
+    pub fn new(server_type: String, server_version: String) -> Self {
+        Self {
+            server_type,
+            server_version,
+            version_major: None,
+            version_minor: None,
+            version_patch: None,
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            supports_transactions: true,
+            supports_roles: false,
+            additional_info: HashMap::new(),
+        }
+    }
+
+    /// Parse version numbers from version string
+    pub fn parse_version_numbers(&mut self) {
+        let version_regex = regex::Regex::new(r"(\d+)\.?(\d+)?\.?(\d+)?").unwrap();
+        if let Some(captures) = version_regex.captures(&self.server_version) {
+            self.version_major = captures.get(1).and_then(|m| m.as_str().parse().ok());
+            self.version_minor = captures.get(2).and_then(|m| m.as_str().parse().ok());
+            self.version_patch = captures.get(3).and_then(|m| m.as_str().parse().ok());
+        }
+    }
+
+    /// Create ServerInfo for PostgreSQL
+    pub fn postgresql(server_version: String) -> Self {
+        let mut info = Self::new("PostgreSQL".to_string(), server_version);
+        info.supports_transactions = true;
+        info.supports_roles = true;
+        info.parse_version_numbers();
+        info
+    }
+
+    /// Create ServerInfo for MySQL
+    pub fn mysql(server_version: String) -> Self {
+        let mut info = Self::new("MySQL".to_string(), server_version);
+        info.supports_transactions = true;
+        info.supports_roles = info.version_major.map_or(false, |major| major >= 8);
+        info.parse_version_numbers();
+        info
+    }
+
+    /// Create ServerInfo for SQLite
+    pub fn sqlite(server_version: String) -> Self {
+        let mut info = Self::new("SQLite".to_string(), server_version);
+        info.supports_transactions = true;
+        info.supports_roles = false;
+        info.parse_version_numbers();
+        info
+    }
+}
+
+impl fmt::Display for ServerInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Server: {} {}", self.server_type, self.server_version)
+    }
 }
 
 /// Errors that can occur during database operations
@@ -570,6 +645,9 @@ pub trait DatabaseClient: Send + Sync {
 
     /// Close the connection
     async fn close(&mut self) -> Result<(), DatabaseError>;
+
+    /// Get server information including version details
+    async fn get_server_info(&self) -> Result<ServerInfo, DatabaseError>;
 }
 
 #[cfg(test)]

@@ -2,6 +2,148 @@
 
 This guide provides real-world examples of integrating DBCrust into Python applications, from simple scripts to complex data pipelines and monitoring systems.
 
+## 🚀 Basic Usage Examples
+
+### Django Integration Examples
+
+For Django applications, use the Django helper for automatic database configuration:
+
+```python
+from dbcrust.django import connect
+
+# Use Django's default database automatically
+with connect() as connection:
+    server_info = connection.get_server_info()
+    print(f"Connected to: {server_info.database_type} {server_info.version}")
+
+    with connection.cursor() as cursor:
+        # Work with Django models using raw SQL
+        cursor.execute("SELECT * FROM auth_user WHERE is_active = %s", (True,))
+        active_users = cursor.fetchall()
+        print(f"Found {len(active_users)} active users")
+
+# Use specific Django database alias
+with connect("analytics") as connection:
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT COUNT(*) FROM events WHERE date >= %s", (last_month,))
+        recent_events = cursor.fetchone()[0]
+        print(f"Recent events: {recent_events}")
+```
+
+**Benefits of Django Integration:**
+- **No manual URLs**: Automatically uses your `DATABASES` configuration
+- **Multi-database support**: Connect to any database alias
+- **Consistent configuration**: Uses same credentials as your Django app
+- **Enhanced cursor API**: mysql.connector-style operations with Django databases
+
+---
+
+### Multi-Statement Database Operations
+
+The enhanced cursor API enables mysql.connector-style database interactions with multi-statement execution and result set navigation:
+
+```python
+import dbcrust
+
+# Multi-database introspection script
+with dbcrust.connect("postgres://user@localhost/myapp") as connection:
+    # Get server information first
+    server_info = connection.get_server_info()
+    print(f"Connected to: {server_info.database_type} {server_info.version}")
+
+    with connection.cursor() as cursor:
+        # Execute multiple statements as a script
+        analysis_script = """
+            -- Create temporary analysis table
+            CREATE TEMP TABLE user_analysis AS
+            SELECT
+                status,
+                COUNT(*) as user_count,
+                AVG(EXTRACT(EPOCH FROM (now() - created_at))/86400) as avg_days_old
+            FROM users
+            GROUP BY status;
+
+            -- Get summary statistics
+            SELECT 'Total Users' as metric, COUNT(*) as value FROM users
+            UNION ALL
+            SELECT 'Active Users' as metric, COUNT(*) as value FROM users WHERE status = 'active'
+            UNION ALL
+            SELECT 'Inactive Users' as metric, COUNT(*) as value FROM users WHERE status = 'inactive';
+
+            -- Get detailed analysis
+            SELECT * FROM user_analysis ORDER BY user_count DESC;
+
+            -- Cleanup
+            DROP TABLE user_analysis;
+        """
+
+        print("Executing multi-statement analysis...")
+        rows_affected = cursor.executescript(analysis_script)
+        print(f"Script execution complete. Rows affected: {rows_affected}")
+
+        # Navigate through result sets
+        # First result: CREATE TEMP TABLE (no results)
+        temp_result = cursor.fetchall()
+        cursor.nextset()
+
+        # Second result: Summary statistics
+        print("\n📊 Summary Statistics:")
+        summary_stats = cursor.fetchall()
+        for row in summary_stats:
+            print(f"  {row[0]}: {row[1]}")
+        cursor.nextset()
+
+        # Third result: Detailed analysis
+        print("\n📈 User Analysis by Status:")
+        detailed_analysis = cursor.fetchall()
+        for row in detailed_analysis:
+            status, count, avg_days = row[0], row[1], row[2]
+            print(f"  {status}: {count} users (avg {avg_days:.1f} days old)")
+        cursor.nextset()
+
+        # Fourth result: DROP TABLE (no results)
+        cleanup_result = cursor.fetchall()
+
+        print("\n✅ Analysis complete!")
+
+# Alternative: MySQL-style role-based access control example
+def mysql_role_management_example():
+    """Demonstrates role management for MySQL 8.0+ using multi-statement execution"""
+    with dbcrust.connect("mysql://admin@localhost:3306/myapp") as connection:
+        server_info = connection.get_server_info()
+
+        if server_info.supports_roles and server_info.version_major >= 8:
+            with connection.cursor() as cursor:
+                role_script = """
+                    -- Check current roles and privileges
+                    SET ROLE ALL;
+                    SHOW GRANTS;
+                    SELECT USER(), CURRENT_ROLE();
+                    SHOW DATABASES;
+                """
+
+                cursor.executescript(role_script)
+
+                # Process each result set
+                cursor.nextset()  # SET ROLE result
+                grants = cursor.fetchall()
+                print("Current Grants:", grants)
+
+                cursor.nextset()  # Current role info
+                role_info = cursor.fetchall()
+                print("Role Info:", role_info)
+
+                cursor.nextset()  # Available databases
+                databases = cursor.fetchall()
+                print("Accessible Databases:", [db[0] for db in databases])
+        else:
+            print(f"Role management not supported on {server_info.database_type} {server_info.version}")
+
+# Run the examples
+if __name__ == "__main__":
+    mysql_role_management_example()
+```
+
 ## 🔬 Data Analysis & Science
 
 ### Pandas Integration
@@ -44,9 +186,13 @@ class DatabaseAnalyzer:
 
         return df
 
-# Usage
-analyzer = DatabaseAnalyzer("postgres://analyst@warehouse/sales")
+# Django usage (recommended for Django projects)
+analyzer = DatabaseAnalyzer("analytics")  # Use Django database alias
 revenue_df = analyzer.monthly_revenue_analysis()
+
+# Alternative: Manual connection URL
+# analyzer = DatabaseAnalyzer("postgres://analyst@warehouse/sales")
+# revenue_df = analyzer.monthly_revenue_analysis()
 
 print("Monthly Revenue Analysis:")
 print(revenue_df.to_string())
@@ -68,20 +214,60 @@ import dbcrust
 import json
 import pandas as pd
 
-CONNECTION = "postgres://analyst@warehouse/analytics"
+# Django projects: Use database alias
+CONNECTION_ALIAS = "analytics"
+
+# Non-Django projects: Use connection URL
+CONNECTION_URL = "postgres://analyst@warehouse/analytics"
+
+def get_connection():
+    """Get appropriate connection based on project type"""
+    try:
+        # Try Django connection first
+        from dbcrust.django import connect
+        return connect(CONNECTION_ALIAS)
+    except ImportError:
+        # Fallback to manual connection
+        import dbcrust
+        return dbcrust.connect(CONNECTION_URL)
 
 def q(query):
     """Quick query function for notebooks"""
-    result = dbcrust.run_with_url(CONNECTION, ["-o", "json", "-c", query])
-    return pd.DataFrame(json.loads(result))
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(query)
+            results = cursor.fetchall()
+            columns = cursor.description
+            # Convert to DataFrame
+            data = [{col: row[i] for i, col in enumerate(columns)} for row in results]
+            return pd.DataFrame(data)
 
 def show_tables():
     """Show all tables"""
-    return dbcrust.run_command(CONNECTION, "\\dt")
+    try:
+        from dbcrust.django import connect
+        with connect(CONNECTION_ALIAS) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
+                return [row[0] for row in cursor.fetchall()]
+    except ImportError:
+        return dbcrust.run_command(CONNECTION_URL, "\\dt")
 
 def describe(table_name):
     """Describe table structure"""
-    return dbcrust.run_command(CONNECTION, f"\\d {table_name}")
+    try:
+        from dbcrust.django import connect
+        with connect(CONNECTION_ALIAS) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"""
+                    SELECT column_name, data_type, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_name = %s AND table_schema = 'public'
+                """, (table_name,))
+                columns = cursor.fetchall()
+                return [(col[0], col[1], col[2]) for col in columns]
+    except ImportError:
+        return dbcrust.run_command(CONNECTION_URL, f"\\d {table_name}")
 
 # Now use throughout notebook
 show_tables()  # See available tables
@@ -106,9 +292,33 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class ETLPipeline:
-    def __init__(self, source_url, target_url):
+    def __init__(self, source_url=None, target_url=None, source_db="default", target_db="analytics"):
+        # Support both Django aliases and manual URLs
         self.source_url = source_url
         self.target_url = target_url
+        self.source_db = source_db  # Django database alias
+        self.target_db = target_db  # Django database alias
+
+        # Determine connection method
+        self.use_django = source_url is None and target_url is None
+
+    def get_source_connection(self):
+        """Get source database connection"""
+        if self.use_django:
+            from dbcrust.django import connect
+            return connect(self.source_db)
+        else:
+            import dbcrust
+            return dbcrust.connect(self.source_url)
+
+    def get_target_connection(self):
+        """Get target database connection"""
+        if self.use_django:
+            from dbcrust.django import connect
+            return connect(self.target_db)
+        else:
+            import dbcrust
+            return dbcrust.connect(self.target_url)
 
     def extract_incremental_users(self, hours_back=24):
         """Extract users modified in last N hours"""
@@ -129,14 +339,23 @@ class ETLPipeline:
         """
 
         logger.info(f"Extracting users updated since {cutoff}")
-        result = dbcrust.run_with_url(
-            self.source_url,
-            ["-o", "json", "-c", query]
-        )
 
-        users = json.loads(result)
-        logger.info(f"Extracted {len(users)} users")
-        return users
+        with self.get_source_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+                users = cursor.fetchall()
+
+                # Convert to dictionary format
+                columns = cursor.description
+                user_dicts = []
+                for row in users:
+                    user_dict = {}
+                    for i, col in enumerate(columns):
+                        user_dict[col] = row[i]
+                    user_dicts.append(user_dict)
+
+        logger.info(f"Extracted {len(user_dicts)} users")
+        return user_dicts
 
     def transform_user_data(self, users):
         """Transform user data for warehouse"""
@@ -179,7 +398,9 @@ class ETLPipeline:
                 etl_processed_at = EXCLUDED.etl_processed_at
             """
 
-            dbcrust.run_command(self.target_url, query)
+            with self.get_target_connection() as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute(query)
 
     def run_pipeline(self):
         """Execute complete ETL pipeline"""
@@ -202,14 +423,19 @@ class ETLPipeline:
             logger.error(f"ETL pipeline failed: {e}")
             raise
 
-# Usage
-etl = ETLPipeline(
+# Django usage (recommended for Django projects)
+etl_django = ETLPipeline(
+    source_db="default",      # Django database alias
+    target_db="analytics"     # Django database alias
+)
+etl_django.run_pipeline()
+
+# Manual URL usage (for non-Django projects)
+etl_manual = ETLPipeline(
     source_url="mysql://reader@prod-db/app",
     target_url="postgres://writer@warehouse/analytics"
 )
-
-# Run pipeline
-etl.run_pipeline()
+etl_manual.run_pipeline()
 ```
 
 ### Data Validation Pipeline
@@ -235,12 +461,20 @@ class DataQualityValidator:
 
     def validate_not_null(self, table, column):
         """Validate no null values in important columns"""
-        result = dbcrust.run_with_url(
-            self.connection_url,
-            ["-o", "json", "-c", f"SELECT COUNT(*) as null_count FROM {table} WHERE {column} IS NULL"]
-        )
-
-        null_count = json.loads(result)[0]['null_count']
+        try:
+            # Try Django connection first
+            from dbcrust.django import connect
+            with connect(self.connection_url) as connection:  # connection_url is Django alias
+                with connection.cursor() as cursor:
+                    cursor.execute(f"SELECT COUNT(*) as null_count FROM {table} WHERE {column} IS NULL")
+                    null_count = cursor.fetchone()[0]
+        except ImportError:
+            # Fallback to manual connection
+            result = dbcrust.run_with_url(
+                self.connection_url,
+                ["-o", "json", "-c", f"SELECT COUNT(*) as null_count FROM {table} WHERE {column} IS NULL"]
+            )
+            null_count = json.loads(result)[0]['null_count']
         passed = null_count == 0
 
         self.results.append(ValidationResult(
@@ -325,8 +559,13 @@ class DataQualityValidator:
 
         return report
 
-# Usage
-validator = DataQualityValidator("postgres://reader@warehouse/analytics")
+# Django usage (recommended for Django projects)
+validator_django = DataQualityValidator("analytics")  # Django database alias
+report = validator_django.run_all_validations()
+
+# Manual URL usage (for non-Django projects)
+validator_manual = DataQualityValidator("postgres://reader@warehouse/analytics")
+report = validator_manual.run_all_validations()
 report = validator.run_all_validations()
 
 print(f"Data Quality Report:")
@@ -455,13 +694,28 @@ class DatabaseMonitor:
             time.sleep(interval_minutes * 60)
 
 # Usage
-databases = {
+# For Django projects, use database aliases
+django_databases = {
+    "default": "default",      # Django database aliases
+    "analytics": "analytics",
+    "reports": "reports"
+}
+
+# For non-Django projects, use connection URLs
+manual_databases = {
     "production": "postgres://monitor@prod-db/app",
     "analytics": "postgres://monitor@analytics-db/warehouse",
     "cache": "redis://monitor@cache-db/sessions"
 }
 
-monitor = DatabaseMonitor(databases, alert_email="ops@company.com")
+# Use Django databases if available
+try:
+    from dbcrust.django import connect
+    monitor = DatabaseMonitor(django_databases, alert_email="ops@company.com")
+    print("Using Django database configuration")
+except ImportError:
+    monitor = DatabaseMonitor(manual_databases, alert_email="ops@company.com")
+    print("Using manual database URLs")
 
 # One-time check
 monitor.check_all_databases()
@@ -579,12 +833,29 @@ class DatabaseBackupManager:
                     os.remove(filepath)
 
 # Usage
-databases = {
+# Django projects: use database aliases
+django_backup_databases = {
+    "production": "default",
+    "analytics": "analytics"
+}
+
+# Non-Django projects: use connection URLs
+manual_backup_databases = {
     "production": "postgres://backup@prod-db/app",
     "analytics": "postgres://backup@analytics-db/warehouse"
 }
 
-backup_manager = DatabaseBackupManager(databases)
+# Use appropriate database configuration
+try:
+    from django.conf import settings
+    if hasattr(settings, 'DATABASES'):
+        backup_manager = DatabaseBackupManager(django_backup_databases)
+        print("Using Django database configuration for backups")
+    else:
+        backup_manager = DatabaseBackupManager(manual_backup_databases)
+except (ImportError, Exception):
+    backup_manager = DatabaseBackupManager(manual_backup_databases)
+    print("Using manual database URLs for backups")
 
 # Run backups
 results = backup_manager.backup_all_databases()
@@ -700,8 +971,14 @@ class TestDataFactory:
 
         print("✅ Test data reset complete")
 
-# Usage
-factory = TestDataFactory("postgres://test@localhost/test_db")
+# Django usage (recommended for Django projects)
+try:
+    factory_django = TestDataFactory("default")  # Use Django test database
+    factory_django.reset_test_data()
+except (ImportError, Exception):
+    # Manual usage (for non-Django projects)
+    factory_manual = TestDataFactory("postgres://test@localhost/test_db")
+    factory_manual.reset_test_data()
 
 # Create test environment
 factory.reset_test_data()
@@ -819,8 +1096,14 @@ class PerformanceTester:
 
         return results
 
-# Usage
-tester = PerformanceTester("postgres://test@localhost/test_db")
+# Django usage (recommended for Django projects with test database)
+try:
+    tester_django = PerformanceTester("default")  # Django database alias
+    benchmark_results = tester_django.benchmark_queries(query_suite)
+except (ImportError, Exception):
+    # Manual usage (for non-Django projects)
+    tester_manual = PerformanceTester("postgres://test@localhost/test_db")
+    benchmark_results = tester_manual.benchmark_queries(query_suite)
 
 # Benchmark individual queries
 query_suite = {

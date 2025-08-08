@@ -88,6 +88,7 @@ pub enum Command {
     },
     TogglePager,
     ToggleBanner,
+    ToggleServerInfo,
     ToggleAutocomplete,
     ToggleColumnSelection,
     SetColumnSelectionThreshold {
@@ -230,6 +231,7 @@ pub enum CommandShortcut {
     Setmulti,
     Pager,
     Banner,
+    ServerInfo,
     A,
     Cs,
     Csthreshold,
@@ -293,6 +295,7 @@ impl CommandShortcut {
             CommandShortcut::Setmulti => "\\setmulti",
             CommandShortcut::Pager => "\\pager",
             CommandShortcut::Banner => "\\banner",
+            CommandShortcut::ServerInfo => "\\serverinfo",
             CommandShortcut::A => "\\a",
             CommandShortcut::Cs => "\\cs",
             CommandShortcut::Csthreshold => "\\csthreshold",
@@ -356,6 +359,7 @@ impl CommandShortcut {
             CommandShortcut::Setmulti => "Set multiline prompt indicator",
             CommandShortcut::Pager => "Toggle pager for long output",
             CommandShortcut::Banner => "Toggle banner display",
+            CommandShortcut::ServerInfo => "Toggle server info display",
             CommandShortcut::A => "Toggle autocomplete",
             CommandShortcut::Cs => "Toggle column selection",
             CommandShortcut::Csthreshold => "Set column selection threshold",
@@ -387,6 +391,7 @@ impl CommandShortcut {
             | CommandShortcut::Setmulti
             | CommandShortcut::Pager
             | CommandShortcut::Banner
+            | CommandShortcut::ServerInfo
             | CommandShortcut::A
             | CommandShortcut::Cs
             | CommandShortcut::Csthreshold
@@ -693,6 +698,7 @@ impl CommandParser {
             }),
             "pager" => Ok(Command::TogglePager),
             "banner" => Ok(Command::ToggleBanner),
+            "serverinfo" => Ok(Command::ToggleServerInfo),
             "a" => Ok(Command::ToggleAutocomplete),
             "cs" => Ok(Command::ToggleColumnSelection),
             "csthreshold" => {
@@ -1552,6 +1558,21 @@ impl CommandExecutor for Command {
                 Ok(CommandResult::Output(format!("Banner is now {status}.")))
             }
 
+            Command::ToggleServerInfo => {
+                config.show_server_info = !config.show_server_info;
+                config
+                    .save()
+                    .map_err(|e| CommandError::DatabaseError(e.into()))?;
+                let status = if config.show_server_info {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                Ok(CommandResult::Output(format!(
+                    "Server info display is now {status}."
+                )))
+            }
+
             Command::ToggleAutocomplete => {
                 config.autocomplete_enabled = !config.autocomplete_enabled;
                 config
@@ -1849,6 +1870,7 @@ impl CommandExecutor for Command {
             Command::SetMultilineIndicator { .. } => "Set custom multiline prompt indicator",
             Command::TogglePager => "Toggle pager for long output",
             Command::ToggleBanner => "Toggle startup banner display",
+            Command::ToggleServerInfo => "Toggle server info display on connection",
             Command::ToggleAutocomplete => "Toggle autocomplete functionality",
             Command::ToggleColumnSelection => "Toggle forced column selection mode (on/off)",
             Command::SetColumnSelectionThreshold { .. } => "Set column selection threshold",
@@ -1903,6 +1925,7 @@ impl CommandExecutor for Command {
             Command::SetMultilineIndicator { .. } => "\\setmulti <indicator>",
             Command::TogglePager => "\\pager",
             Command::ToggleBanner => "\\banner",
+            Command::ToggleServerInfo => "\\serverinfo",
             Command::ToggleAutocomplete => "\\a",
             Command::ToggleColumnSelection => "\\cs",
             Command::SetColumnSelectionThreshold { .. } => "\\csthreshold <number>",
@@ -1956,6 +1979,7 @@ impl CommandExecutor for Command {
             Command::SetMultilineIndicator { .. }
             | Command::TogglePager
             | Command::ToggleBanner
+            | Command::ToggleServerInfo
             | Command::ToggleAutocomplete
             | Command::ToggleColumnSelection
             | Command::SetColumnSelectionThreshold { .. }

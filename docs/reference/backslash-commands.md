@@ -25,6 +25,7 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
     | `\csthreshold <n>` | Set column selection threshold | `\csthreshold 15` |
     | `\clrcs` | Clear saved column selections | `\clrcs` |
     | `\resetview` | Reset all view settings | `\resetview` |
+    | `\serverinfo` | Toggle server info display | `\serverinfo` |
 
 === "File Operations"
 
@@ -177,7 +178,7 @@ Switches between table and expanded (vertical) display formats.
 ```
 -[ RECORD 1 ]----------
 id    | 1
-name  | John Doe  
+name  | John Doe
 email | john@example.com
 ```
 
@@ -274,7 +275,7 @@ When column selection is triggered (either automatically or via `\cs` mode), an 
 - **Visual Selection**: Checkbox-style interface with arrow key navigation
 - **Multi-Select**: Use spacebar to select/deselect multiple columns
 - **Keyboard Controls**:
-  - ↑/↓ Arrow keys: Navigate between columns  
+  - ↑/↓ Arrow keys: Navigate between columns
   - Space: Toggle column selection
   - Enter: Confirm selection and show results
   - **Ctrl+C: Abort query and return to prompt** (doesn't exit DBCrust)
@@ -287,9 +288,9 @@ SELECT * FROM users_detailed;
 
 **Interactive Interface:**
 ```
-? Select columns to display: 
+? Select columns to display:
 ❯ ◯ id
-  ◯ username  
+  ◯ username
   ◯ email
   ◯ first_name
   ◯ last_name
@@ -325,7 +326,7 @@ Column selections are automatically remembered during your session:
 **Example:**
 ```sql
 -- First time: interactive selection appears
-SELECT * FROM users_detailed;  
+SELECT * FROM users_detailed;
 -- [Select id, username, email]
 
 -- Second time: uses saved selection automatically
@@ -444,7 +445,7 @@ DBCrust provides a powerful scoped named query system that allows you to organiz
 #### Query Scopes
 
 **Global Scope** - Available across all database connections and sessions
-**Database-Type Scope** - Available only for specific database types (PostgreSQL, MySQL, SQLite)  
+**Database-Type Scope** - Available only for specific database types (PostgreSQL, MySQL, SQLite)
 **Session-Local Scope** - Available only for the current database session (host+port+database+user)
 
 #### `\n` - List Named Queries
@@ -472,7 +473,7 @@ Saves a query with a name and optional scope specification. Supports parameter s
 
 **Scope Options:**
 - `--global` - Available for all database connections
-- `--postgres` - Available only for PostgreSQL connections  
+- `--postgres` - Available only for PostgreSQL connections
 - `--mysql` - Available only for MySQL connections
 - `--sqlite` - Available only for SQLite connections
 - No flag (default) - Session-local scope (current database session only)
@@ -488,7 +489,7 @@ Saves a query with a name and optional scope specification. Supports parameter s
 -- PostgreSQL-specific query
 \ns pg_activity SELECT * FROM pg_stat_activity --postgres
 
--- MySQL-specific query  
+-- MySQL-specific query
 \ns mysql_status SHOW GLOBAL STATUS LIKE 'Connections' --mysql
 
 -- SQLite-specific query
@@ -529,7 +530,7 @@ Saves a query with a name and optional scope specification. Supports parameter s
 -- Execute named queries with parameters
 active_users
 user_by_id 123
-user_orders 123 completed  
+user_orders 123 completed
 search_users John Doe
 pg_table_sizes
 ```
@@ -584,7 +585,7 @@ Named query 'active_users' deleted successfully (scope: session-local).
 -- PostgreSQL analytics
 \ns user_engagement SELECT user_id, COUNT(*) as actions FROM user_events WHERE created_at > $1 GROUP BY user_id --postgres
 
--- MySQL equivalent  
+-- MySQL equivalent
 \ns user_engagement SELECT user_id, COUNT(*) as actions FROM user_events WHERE created_at > '$1' GROUP BY user_id --mysql
 
 -- Global fallback
@@ -605,7 +606,7 @@ The named query system provides intelligent autocomplete:
 **Scope Flag Completion:**
 ```sql
 \ns myquery SELECT 1 --glo[TAB]    -- Shows: --global
-\ns test SELECT 1 --post[TAB]      -- Shows: --postgres  
+\ns test SELECT 1 --post[TAB]      -- Shows: --postgres
 ```
 
 **SQL Completion:**
@@ -640,7 +641,7 @@ Without arguments, lists all saved sessions. With a session name, connects to th
 ```
 Saved Sessions:
   production - PostgreSQL postgres@prod.db.com:5432/myapp
-  staging - PostgreSQL postgres@staging.db.com:5432/myapp_staging  
+  staging - PostgreSQL postgres@staging.db.com:5432/myapp_staging
   local_mysql - MySQL root@localhost:3306/testdb
   analytics - SQLite /data/analytics.db
 
@@ -674,7 +675,7 @@ Session 'production' saved successfully
 !!! info "Password Security"
     Sessions never store passwords. DBCrust integrates with:
     - PostgreSQL: `.pgpass` file
-    - MySQL: `.my.cnf` file  
+    - MySQL: `.my.cnf` file
     - SQLite: No authentication needed
 
 #### `\sd <name>` - Delete Session
@@ -830,7 +831,7 @@ Expired vault credentials (1 entry):
 ```toml
 # ~/.config/dbcrust/config.toml
 vault_credential_cache_enabled = true          # Enable/disable caching
-vault_cache_renewal_threshold = 0.25           # Renew when 25% TTL remaining  
+vault_cache_renewal_threshold = 0.25           # Renew when 25% TTL remaining
 vault_cache_min_ttl_seconds = 300              # Minimum 5 minutes required
 ```
 
@@ -880,7 +881,7 @@ SELECT COUNT(*) FROM large_table;
 
 -- In editor, write:
 -- \c development
--- \i create_tables.sql  
+-- \i create_tables.sql
 -- \i seed_data.sql
 -- \dt
 
@@ -906,31 +907,31 @@ SELECT * FROM users LIMIT 5;
 ## 🚀 Pro Tips
 
 !!! tip "Command History"
-    
+
     All backslash commands are saved in your command history and can be recalled with ↑/↓ arrows or Ctrl+R search.
 
 !!! tip "Tab Completion"
-    
+
     Most commands support tab completion:
-    
+
     ```sql
     \d us[TAB]  -- Completes to table names starting with 'us'
     \ns my[TAB] -- Completes to existing named query names
     ```
 
 !!! tip "Command Aliases"
-    
+
     Some commands have shorter aliases:
-    
+
     ```sql
     \q = \quit
     \? = \h = \help
     ```
 
 !!! tip "File Paths"
-    
+
     File commands support both absolute and relative paths:
-    
+
     ```sql
     \i /home/user/scripts/setup.sql     -- Absolute
     \i ../migrations/001_create.sql     -- Relative
@@ -938,16 +939,16 @@ SELECT * FROM users LIMIT 5;
     ```
 
 !!! tip "Column Selection Shortcuts"
-    
+
     Efficient column selection workflows:
-    
+
     ```sql
     -- Temporarily adjust threshold for current session
     \csthreshold 5          -- Lower threshold for detailed analysis
-    
+
     -- Enable manual mode for exploration
     \cs                     -- Now all queries show column selection
-    
+
     -- Clear and reset when done
     \clrcs                  -- Clear saved selections
     \cs                     -- Disable manual mode
@@ -955,9 +956,9 @@ SELECT * FROM users LIMIT 5;
     ```
 
 !!! tip "Error Recovery"
-    
+
     If a file operation fails, the error message will suggest corrections:
-    
+
     ```sql
     \i nonexistent.sql
     -- Error: File 'nonexistent.sql' not found

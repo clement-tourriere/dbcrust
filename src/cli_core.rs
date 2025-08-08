@@ -35,6 +35,8 @@ pub enum CliError {
     ArgumentError(String),
 }
 
+impl std::error::Error for CliError {}
+
 impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -107,8 +109,6 @@ impl std::fmt::Display for CliError {
         }
     }
 }
-
-impl StdError for CliError {}
 
 impl From<Box<dyn StdError>> for CliError {
     fn from(err: Box<dyn StdError>) -> Self {

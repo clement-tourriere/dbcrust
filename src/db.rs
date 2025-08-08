@@ -479,6 +479,11 @@ impl Database {
         debug!("[Database::from_connection_info] Validating connection");
         db.validate_connection().await?;
 
+        // Display server info if enabled in config
+        if config.show_server_info {
+            db.display_server_info().await;
+        }
+
         Ok(db)
     }
 
@@ -1104,6 +1109,37 @@ impl Database {
             }
         } else {
             Err("No database client available".into())
+        }
+    }
+
+    /// Display server information to the user (pgcli-style)
+    pub async fn display_server_info(&self) {
+        if let Some(ref database_client) = self.database_client {
+            match database_client.get_server_info().await {
+                Ok(server_info) => {
+                    // Display server info in pgcli style
+                    println!(
+                        "Server: {} {}",
+                        server_info.server_type, server_info.server_version
+                    );
+                    println!("Version: {}", server_info.client_version);
+
+                    // Optionally show additional database-specific info in debug mode
+                    if !server_info.additional_info.is_empty() {
+                        debug!(
+                            "[Database::display_server_info] Additional server info: {:?}",
+                            server_info.additional_info
+                        );
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        "[Database::display_server_info] Failed to get server info: {}",
+                        e
+                    );
+                    // Don't show error to user since this is not critical - just log it
+                }
+            }
         }
     }
 

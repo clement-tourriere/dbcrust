@@ -1083,6 +1083,73 @@ impl DatabaseClient for MySqlClient {
         self.pool.close().await;
         Ok(())
     }
+
+    async fn get_server_info(&self) -> Result<crate::database::ServerInfo, DatabaseError> {
+        debug!("[MySqlClient::get_server_info] Fetching server version information");
+
+        // Query MySQL version
+        let version_query = "SELECT VERSION()";
+        let version_row = sqlx::query(version_query)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                DatabaseError::QueryError(format!("Failed to get MySQL version: {}", e))
+            })?;
+
+        let version_string: String = version_row.get(0);
+        debug!(
+            "[MySqlClient::get_server_info] Raw version string: {}",
+            version_string
+        );
+
+        // Create ServerInfo for MySQL
+        let mut server_info = crate::database::ServerInfo::mysql(version_string);
+
+        // Add any additional MySQL-specific information
+        server_info.additional_info.insert(
+            "current_database".to_string(),
+            self.current_database.clone(),
+        );
+
+        // Try to get additional server information (non-critical, don't fail if these queries fail)
+        if let Ok(uptime_row) = sqlx::query("SHOW GLOBAL STATUS LIKE 'Uptime'")
+            .fetch_one(&self.pool)
+            .await
+        {
+            if let Ok(uptime_seconds) = uptime_row.try_get::<String, _>("Value") {
+                if let Ok(uptime) = uptime_seconds.parse::<u64>() {
+                    let uptime_days = (uptime / 86400) as i32;
+                    server_info
+                        .additional_info
+                        .insert("uptime_days".to_string(), uptime_days.to_string());
+                }
+            }
+        }
+
+        if let Ok(max_conn_row) = sqlx::query("SHOW VARIABLES LIKE 'max_connections'")
+            .fetch_one(&self.pool)
+            .await
+        {
+            if let Ok(max_connections) = max_conn_row.try_get::<String, _>("Value") {
+                server_info
+                    .additional_info
+                    .insert("max_connections".to_string(), max_connections);
+            }
+        }
+
+        // Check if this MySQL version supports roles (MySQL 8.0+)
+        if let Some(major_version) = server_info.version_major {
+            if major_version >= 8 {
+                server_info.supports_roles = true;
+                server_info
+                    .additional_info
+                    .insert("role_support".to_string(), "true".to_string());
+            }
+        }
+
+        debug!("[MySqlClient::get_server_info] Server info retrieved successfully");
+        Ok(server_info)
+    }
 }
 
 /// Format a MySQL value to string representation

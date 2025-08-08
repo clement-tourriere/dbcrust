@@ -41,6 +41,9 @@ truncate_long_values = true
 # Column Selection Settings
 column_selection_threshold = 10        # Auto-trigger when result has more than N columns
 
+# Server Information Display
+show_server_info = true                # Show server version info on connection
+
 # Editor settings are controlled via $EDITOR environment variable
 # export EDITOR="code --wait"
 
@@ -200,6 +203,45 @@ column_selection_default_all = true    # Pre-select all columns (opt-out)
 - **Force Mode**: Use `\cs` to force column selection for all queries (toggle on/off)
 - **Runtime Control**: Use `\cs` to toggle force mode and `\csthreshold N` to change threshold temporarily
 
+### Server Information Display
+
+Controls whether server version information is displayed when connecting to databases.
+
+```toml
+# Show server info on connection (default: true)
+show_server_info = true
+```
+
+**Configuration:**
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `show_server_info` | `true` | Display server version info when connecting |
+
+**Example Output:**
+```
+Server: PostgreSQL 17.5 (Debian 17.5-1.pgdg120+1)
+Version: 0.16.1
+```
+
+**Runtime Control:**
+```sql
+-- Toggle server info display on/off
+\serverinfo
+```
+
+**Behavior:**
+
+- **Enabled**: Shows database server type, version, and DBCrust version on connection
+- **Disabled**: Connects silently without version information
+- **Error Handling**: If version query fails, connection continues normally (debug logging only)
+
+**Database Support:**
+
+- **PostgreSQL**: Shows full version string from `SELECT version()`
+- **MySQL**: Shows version from `SELECT VERSION()` with role support detection
+- **SQLite**: Shows version from `SELECT sqlite_version()` with database file info
+
 ### [editor] - External Editor
 
 Configuration for external editor integration (`\ed` command).
@@ -313,7 +355,7 @@ vault_cache_min_ttl_seconds = 300     # Require at least 5 minutes TTL
 **Credential Caching Behavior:**
 
 - **Automatic**: Credentials are cached on first `vault://` connection
-- **Persistent**: Cache survives between DBCrust sessions  
+- **Persistent**: Cache survives between DBCrust sessions
 - **Secure**: All credentials encrypted with AES-256-GCM using your Vault token
 - **Smart Renewal**: Automatically refreshes credentials approaching expiration
 - **File Location**: `~/.config/dbcrust/vault_credentials.enc`
@@ -484,14 +526,14 @@ Some configuration changes can be applied without restarting:
 ### Security
 
 !!! warning "Sensitive Information"
-    
+
     Never store passwords or tokens directly in the config file:
-    
+
     ```toml
     # ❌ Don't do this
     [database]
     password = "secret123"
-    
+
     # ✅ Use environment variables or Vault
     [vault]
     addr = "https://vault.company.com"
@@ -500,9 +542,9 @@ Some configuration changes can be applied without restarting:
 ### Performance
 
 !!! tip "Connection Pooling"
-    
+
     Enable connection pooling for frequently accessed databases:
-    
+
     ```toml
     [performance]
     enable_connection_pooling = true
@@ -513,14 +555,14 @@ Some configuration changes can be applied without restarting:
 ### Team Configurations
 
 !!! info "Shared Settings"
-    
+
     For team environments, consider:
-    
+
     ```toml
     # Share common SSH tunnel patterns
     [ssh_tunnel_patterns]
     "^.*\\.company\\.internal$" = "shared-bastion.company.com"
-    
+
     # Standardize display settings
     [display]
     border_style = 1
@@ -532,17 +574,17 @@ Some configuration changes can be applied without restarting:
 ### Common Issues
 
 !!! question "Config file not found"
-    
+
     ```bash
     # Create config directory
     mkdir -p ~/.config/dbcrust
-    
+
     # Generate default config
     dbcrust --init-config
     ```
 
 !!! question "Permission denied"
-    
+
     ```bash
     # Fix permissions
     chmod 755 ~/.config/dbcrust
@@ -550,11 +592,11 @@ Some configuration changes can be applied without restarting:
     ```
 
 !!! question "Invalid TOML syntax"
-    
+
     ```bash
     # Validate TOML syntax
     python -c "import toml; toml.load('~/.config/dbcrust/config.toml')"
-    
+
     # Or use online validator
     echo "Check at: https://www.toml-lint.com/"
     ```

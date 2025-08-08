@@ -792,6 +792,79 @@ impl DatabaseClient for SqliteClient {
         self.pool.close().await;
         Ok(())
     }
+
+    async fn get_server_info(&self) -> Result<crate::database::ServerInfo, DatabaseError> {
+        debug!("[SqliteClient::get_server_info] Fetching server version information");
+
+        // Query SQLite version
+        let version_query = "SELECT sqlite_version()";
+        let version_row = sqlx::query(version_query)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                DatabaseError::QueryError(format!("Failed to get SQLite version: {}", e))
+            })?;
+
+        let version_string: String = version_row.get(0);
+        debug!(
+            "[SqliteClient::get_server_info] Raw version string: {}",
+            version_string
+        );
+
+        // Create ServerInfo for SQLite
+        let mut server_info = crate::database::ServerInfo::sqlite(version_string);
+
+        // Add any additional SQLite-specific information
+        server_info.additional_info.insert(
+            "database_file".to_string(),
+            self.connection_info
+                .file_path
+                .clone()
+                .unwrap_or_else(|| "memory".to_string()),
+        );
+
+        // Try to get additional SQLite-specific information (non-critical, don't fail if these queries fail)
+        if let Ok(pragma_row) = sqlx::query("PRAGMA page_size").fetch_one(&self.pool).await {
+            if let Ok(page_size) = pragma_row.try_get::<i32, _>(0) {
+                server_info
+                    .additional_info
+                    .insert("page_size".to_string(), page_size.to_string());
+            }
+        }
+
+        if let Ok(pragma_row) = sqlx::query("PRAGMA page_count").fetch_one(&self.pool).await {
+            if let Ok(page_count) = pragma_row.try_get::<i32, _>(0) {
+                server_info
+                    .additional_info
+                    .insert("page_count".to_string(), page_count.to_string());
+
+                // Calculate database size in bytes
+                if let Some(page_size_str) = server_info.additional_info.get("page_size") {
+                    if let Ok(page_size) = page_size_str.parse::<i32>() {
+                        let db_size_bytes = page_count * page_size;
+                        let db_size_mb = (db_size_bytes as f64) / (1024.0 * 1024.0);
+                        server_info
+                            .additional_info
+                            .insert("database_size_mb".to_string(), format!("{:.2}", db_size_mb));
+                    }
+                }
+            }
+        }
+
+        if let Ok(pragma_row) = sqlx::query("PRAGMA journal_mode")
+            .fetch_one(&self.pool)
+            .await
+        {
+            if let Ok(journal_mode) = pragma_row.try_get::<String, _>(0) {
+                server_info
+                    .additional_info
+                    .insert("journal_mode".to_string(), journal_mode);
+            }
+        }
+
+        debug!("[SqliteClient::get_server_info] Server info retrieved successfully");
+        Ok(server_info)
+    }
 }
 
 /// Format a SQLite value to string representation

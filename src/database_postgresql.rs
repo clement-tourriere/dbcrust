@@ -708,6 +708,64 @@ impl DatabaseClient for PostgreSQLClient {
         self.pool.close().await;
         Ok(())
     }
+
+    async fn get_server_info(&self) -> Result<crate::database::ServerInfo, DatabaseError> {
+        debug!("[PostgreSQLClient::get_server_info] Fetching server version information");
+
+        // Query PostgreSQL version
+        let version_query = "SELECT version()";
+        let version_row = sqlx::query(version_query)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| {
+                DatabaseError::QueryError(format!("Failed to get PostgreSQL version: {}", e))
+            })?;
+
+        let version_string: String = version_row.get(0);
+        debug!(
+            "[PostgreSQLClient::get_server_info] Raw version string: {}",
+            version_string
+        );
+
+        // Create ServerInfo for PostgreSQL
+        let mut server_info = crate::database::ServerInfo::postgresql(version_string);
+
+        // Add any additional PostgreSQL-specific information
+        server_info.additional_info.insert(
+            "current_database".to_string(),
+            self.current_database.clone(),
+        );
+
+        // Try to get additional server information (non-critical, don't fail if these queries fail)
+        if let Ok(uptime_row) = sqlx::query(
+            "SELECT EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time())) AS uptime_seconds",
+        )
+        .fetch_one(&self.pool)
+        .await
+        {
+            if let Ok(uptime_seconds) = uptime_row.try_get::<f64, _>(0) {
+                let uptime_days = (uptime_seconds / 86400.0).floor() as i32;
+                server_info
+                    .additional_info
+                    .insert("uptime_days".to_string(), uptime_days.to_string());
+            }
+        }
+
+        if let Ok(settings_row) =
+            sqlx::query("SELECT setting FROM pg_settings WHERE name = 'max_connections'")
+                .fetch_one(&self.pool)
+                .await
+        {
+            if let Ok(max_connections) = settings_row.try_get::<String, _>(0) {
+                server_info
+                    .additional_info
+                    .insert("max_connections".to_string(), max_connections);
+            }
+        }
+
+        debug!("[PostgreSQLClient::get_server_info] Server info retrieved successfully");
+        Ok(server_info)
+    }
 }
 
 /// Format a PostgreSQL value to string representation
