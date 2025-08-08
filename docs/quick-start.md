@@ -400,11 +400,11 @@ python manage.py dbcrust --database analytics  # Specific database
 
 Now that you're up and running:
 
-1. **[Django ORM Analyzer](/dbcrust/django-analyzer/)** - Performance analysis for Django applications
+1. **[User Guide](/dbcrust/user-guide/basic-usage/)** - Complete feature walkthrough
 2. **[URL Schemes & Autocompletion](/dbcrust/reference/url-schemes/)** - Master all connection methods
-3. **[Installation Guide](/dbcrust/installation/)** - Detailed installation options
-4. **[User Guide](/dbcrust/user-guide/basic-usage/)** - Complete feature walkthrough
-5. **[Python API](/dbcrust/python-api/overview/)** - Integration with your Python projects
+3. **[Python API](/dbcrust/python-api/overview/)** - Integration with your Python projects
+4. **[Django ORM Analyzer](/dbcrust/django-analyzer/)** - Performance analysis for Django applications
+5. **[Installation Guide](/dbcrust/installation/)** - Detailed installation options
 
 ## 🆘 Common Issues
 

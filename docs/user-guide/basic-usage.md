@@ -2,8 +2,8 @@
 
 Welcome to the complete DBCrust user guide! This page covers everything you need to know to become productive with DBCrust.
 
-!!! info "New: Django ORM Analyzer"
-    DBCrust now includes a powerful Django ORM query analyzer that can detect N+1 queries and optimization opportunities. Learn more in the [Django Analyzer Guide](/dbcrust/django-analyzer/).
+!!! info "Advanced ORM Analysis"
+    DBCrust includes a powerful Django ORM query analyzer that can detect N+1 queries and optimization opportunities. Learn more in the [Django Analyzer Guide](/dbcrust/django-analyzer/).
 
 ## 🚀 Starting DBCrust
 

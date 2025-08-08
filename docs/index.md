@@ -2,7 +2,7 @@
 
 <p align="center">
 <strong>High-performance database CLI for developers</strong><br>
-<em>Advanced ORM analysis • Multi-database support • SSH tunneling • Vault integration</em>
+<em>Multi-database support • SSH tunneling • Vault integration • Advanced ORM analysis</em>
 </p>
 
 <p align="center">
@@ -16,9 +16,9 @@ L|Rust 2024|https://blog.rust-lang.org/2024/02/29/1.77.0.html|
 
 ## 🚀 Why DBCrust?
 
-**A modern database CLI that speaks your language.** DBCrust combines the speed of Rust with intelligent features like context-aware autocompletion, SSH tunneling, Vault integration, and powerful Django ORM analysis. Whether you're debugging production issues, analyzing data, or optimizing Django applications, DBCrust provides an unmatched developer experience.
+**A modern database CLI that speaks your language.** DBCrust combines the speed of Rust with intelligent features like context-aware autocompletion, SSH tunneling, Vault integration, and powerful Django ORM analysis. Whether you're debugging production issues, analyzing data, or optimizing applications, DBCrust provides an unmatched developer experience.
 
-!!! success "One Tool, All Databases + Advanced Django Analysis"
+!!! success "One Tool, All Databases + Advanced Features"
     **PostgreSQL • MySQL • SQLite** with smart autocompletion • **SSH tunneling** for secure connections • **Vault integration** for dynamic credentials • **Django ORM analyzer** for performance optimization
 
 ## ✨ Core Features

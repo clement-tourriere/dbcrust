@@ -1,52 +1,16 @@
 # Django ORM Query Analyzer
 
-The Django ORM Query Analyzer is a comprehensive performance analysis tool built into DBCrust that automatically detects
-Django ORM anti-patterns, provides detailed EXPLAIN analysis, and delivers actionable recommendations with precise code
-locations.
+The Django ORM Query Analyzer is a comprehensive performance analysis tool built into DBCrust that automatically detects Django ORM anti-patterns, provides detailed EXPLAIN analysis, and delivers actionable recommendations with precise code locations.
 
 ## Overview
 
-The enhanced analyzer provides full coverage of Django ORM performance issues through multiple analysis layers:
+DBCrust's Django analyzer provides comprehensive performance analysis through multiple layers:
 
-### 🔍 **Runtime Query Analysis**
-
-- **N+1 Query Detection**: Identifies repeated queries with context
-- **Missing select_related/prefetch_related**: Detects relationship optimization opportunities
-- **Duplicate Query Detection**: Finds repeated identical queries
-- **Large Result Set Detection**: Spots unbounded queries without pagination
-- **Query Performance Monitoring**: Real-time timing and pattern analysis
-
-### 💻 **AST-Based Code Analysis**
-
-- **Precise Line Numbers**: Exact code locations for issues
-- **Code Context Extraction**: Shows problematic code snippets
-- **Cross-File Analysis**: Scans entire Django projects
-- **Template Analysis**: Detects N+1 patterns in Django templates
-- **Stack Trace Integration**: Links runtime queries to source code
-
-### 🏗️ **Project-Wide Analysis**
-
-- **Model Relationship Mapping**: Analyzes Django model structures
-- **Index Recommendations**: Suggests database indexes with migration code
-- **Optimization Scoring**: Rates project optimization (0-100 scale)
-- **Bulk Operation Detection**: Identifies opportunities for bulk_create/bulk_update
-- **Django Best Practices**: Comprehensive pattern detection
-
-### 📊 **Database EXPLAIN Integration**
-
-- **PostgreSQL EXPLAIN ANALYZE**: Deep query plan analysis through DBCrust
-- **Performance Bottleneck Detection**: Identifies slow operations, sequential scans
-- **Index Usage Analysis**: Recommends missing indexes from query plans
-- **Cost Analysis**: Database-level optimization suggestions
-- **Django-Specific SQL Recommendations**: Maps SQL improvements to Django ORM patterns
-
-### 🎯 **Enhanced Recommendations**
-
-- **Before/After Code Examples**: Shows exact fixes with code snippets
-- **Difficulty & Impact Ratings**: Prioritizes optimization efforts
-- **Reference Documentation**: Links to Django optimization guides
-- **Specific Field Suggestions**: Recommends exact fields for select_related()
-- **Migration Code Generation**: Provides ready-to-use Django migrations
+- **🔍 Runtime Query Analysis**: N+1 detection, missing optimizations, duplicate queries
+- **💻 AST-Based Code Analysis**: Precise line numbers and code context extraction
+- **🏗️ Project-Wide Analysis**: Model relationship mapping and optimization scoring
+- **📊 Database EXPLAIN Integration**: Deep query plan analysis through DBCrust
+- **🎯 Enhanced Recommendations**: Before/after code examples with difficulty ratings
 
 ## Quick Start
 

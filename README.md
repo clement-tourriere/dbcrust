@@ -1,6 +1,6 @@
 # DBCrust
 
-**The high-performance database CLI engineered for Django developers — Advanced ORM analysis, performance optimization, SSH tunneling, and seamless multi-database support (PostgreSQL, MySQL, SQLite).**
+**A modern database CLI that speaks your language. DBCrust combines the speed of Rust with intelligent features like context-aware autocompletion, SSH tunneling, Vault integration, and powerful Django ORM analysis. Whether you're debugging production issues, analyzing data, or optimizing Django applications, DBCrust provides an unmatched developer experience.**
 
 *🤖 Proudly crafted with [Claude Code](https://claude.ai/code) — where AI meets thoughtful development.*
 
@@ -11,15 +11,15 @@
 
 ## Why DBCrust?
 
-DBCrust is the first database CLI built specifically for Django developers. Beyond standard database management, it provides real-time ORM analysis, N+1 query detection, and performance optimization recommendations. Built in Rust for speed, with advanced features like SSH tunneling, Vault integration, and Docker support.
+DBCrust is a high-performance database CLI built for modern developers. Beyond standard database management, it provides context-aware autocompletion, SSH tunneling, HashiCorp Vault integration, and Docker support. Built in Rust for speed, with specialized features for Django developers including real-time ORM analysis and N+1 query detection.
 
 ## 🚀 Key Features
 
-- **🐍 Django ORM Analyzer** - Real-time N+1 query detection, performance monitoring, and optimization recommendations
-- **🔍 Smart Performance Analysis** - Built-in EXPLAIN visualization and query optimization tools
-- **🐳 Multi-Database & Docker Support** - PostgreSQL, MySQL, SQLite with container auto-discovery
-- **🔐 Enterprise Ready** - SSH tunneling, HashiCorp Vault integration, and encrypted connections
+- **🐳 Multi-Database Support** - PostgreSQL, MySQL, SQLite with container auto-discovery
 - **⚡ Intelligent CLI** - Context-aware autocompletion, syntax highlighting, and external editor support
+- **🔐 Enterprise Ready** - SSH tunneling, HashiCorp Vault integration, and encrypted connections
+- **🔍 Smart Performance Analysis** - Built-in EXPLAIN visualization and query optimization tools
+- **🐍 Django ORM Analyzer** - Real-time N+1 query detection, performance monitoring, and optimization recommendations
 - **📊 Python Library** - Complete programmatic access with unified CLI and Python APIs
 
 ## Quick Start
@@ -45,29 +45,6 @@ dbcrust docker://postgres-container  # Container auto-discovery
 dbcrust session://production_db      # Saved sessions
 dbc pos[TAB] → postgres://           # Smart completions
 ```
-
-## 🐍 Django & Python Integration
-
-### Django ORM Performance Analysis
-
-```python
-# Real-time ORM analysis with middleware (fastest setup)
-# settings.py
-MIDDLEWARE = ['dbcrust.django.PerformanceAnalysisMiddleware', ...]
-
-# Or manual analysis
-from dbcrust.django import analyzer
-with analyzer.analyze() as analysis:
-    books = Book.objects.all()
-    for book in books:
-        print(book.author.name)  # Detects N+1 automatically
-
-results = analysis.get_results()  # Get optimization recommendations
-```
-
-**Perfect for Django teams:** N+1 detection, performance monitoring, CI/CD integration, and real-time optimization suggestions.
-
-[**📖 Complete Django Integration Guide →**](https://clement-tourriere.github.io/dbcrust/django-analyzer/)
 
 ## Essential Commands
 
@@ -100,6 +77,29 @@ dbcrust postgres://user:pass@db.internal.com/myapp --ssh-tunnel jumphost.com
 dbcrust vault://app-role@database/postgres-prod
 ```
 
+## 🐍 Django & Python Integration
+
+### Django ORM Performance Analysis
+
+```python
+# Real-time ORM analysis with middleware (fastest setup)
+# settings.py
+MIDDLEWARE = ['dbcrust.django.PerformanceAnalysisMiddleware', ...]
+
+# Or manual analysis
+from dbcrust.django import analyzer
+with analyzer.analyze() as analysis:
+    books = Book.objects.all()
+    for book in books:
+        print(book.author.name)  # Detects N+1 automatically
+
+results = analysis.get_results()  # Get optimization recommendations
+```
+
+**Perfect for Django teams:** N+1 detection, performance monitoring, CI/CD integration, and real-time optimization suggestions.
+
+[**📖 Complete Django Integration Guide →**](https://clement-tourriere.github.io/dbcrust/django-analyzer/)
+
 ## Python API
 
 ```python
@@ -129,4 +129,4 @@ tables = client.list_tables()
 
 ---
 
-**Built with ❤️ using [Rust](https://www.rust-lang.org/) • Designed for Django developers • Security-first architecture**
+**Built with ❤️ using [Rust](https://www.rust-lang.org/) • Modern database CLI • Security-first architecture**
