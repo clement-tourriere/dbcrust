@@ -308,6 +308,12 @@ impl DockerClient {
             Some(DatabaseType::MySQL)
         } else if image_lower.contains("sqlite") {
             Some(DatabaseType::SQLite)
+        } else if image_lower.contains("clickhouse") 
+            || image_lower.contains("clickhouse-server")
+            || image_lower.contains("yandex/clickhouse")
+            || image_lower.contains("clickhouse/clickhouse")
+        {
+            Some(DatabaseType::ClickHouse)
         } else {
             None
         }
@@ -378,7 +384,25 @@ impl DockerClient {
                 .cloned()
                 .unwrap_or_else(|| username.clone());
 
-            (Some(username), password, Some(database_name))
+            // Special handling for ClickHouse with CLICKHOUSE_SKIP_USER_SETUP=1
+            let final_password = if database_type == DatabaseType::ClickHouse {
+                // Check if user setup is skipped
+                if let Some(skip_setup) = container_info.environment.get("CLICKHOUSE_SKIP_USER_SETUP") {
+                    if skip_setup == "1" {
+                        // When user setup is skipped, default user is available without password
+                        tracing::debug!("[DockerClient::build_connection_info] ClickHouse SKIP_USER_SETUP=1 detected, using default user without password");
+                        None
+                    } else {
+                        password
+                    }
+                } else {
+                    password
+                }
+            } else {
+                password
+            };
+
+            (Some(username), final_password, Some(database_name))
         };
 
         Ok(DockerDatabaseConnection {
@@ -572,6 +596,18 @@ mod tests {
         assert_eq!(
             DockerClient::detect_database_type_from_image("mariadb:10.5"),
             Some(DatabaseType::MySQL)
+        );
+        assert_eq!(
+            DockerClient::detect_database_type_from_image("clickhouse:latest"),
+            Some(DatabaseType::ClickHouse)
+        );
+        assert_eq!(
+            DockerClient::detect_database_type_from_image("clickhouse/clickhouse-server:23.8"),
+            Some(DatabaseType::ClickHouse)
+        );
+        assert_eq!(
+            DockerClient::detect_database_type_from_image("yandex/clickhouse-server:latest"),
+            Some(DatabaseType::ClickHouse)
         );
         assert_eq!(
             DockerClient::detect_database_type_from_image("nginx:latest"),

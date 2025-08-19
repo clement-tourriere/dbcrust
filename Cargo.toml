@@ -86,6 +86,7 @@ bollard = { version = "0.19", default-features = true }
 strum = { version = "0.27", features = ["derive"], default-features = false }
 aes-gcm = { version = "0.10", default-features = false, features = ["std", "aes", "getrandom"] }
 sha2 = { version = "0.10", default-features = false, features = ["std"] }
+clickhouse = "0.13.3"
 
 [features]
 default = []

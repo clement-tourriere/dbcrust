@@ -156,6 +156,10 @@ impl SqlParserFactory {
             }
             DatabaseType::MySQL => Box::new(crate::sql_parser_mysql::MySQLParser::new()),
             DatabaseType::SQLite => Box::new(crate::sql_parser_sqlite::SQLiteParser::new()),
+            DatabaseType::ClickHouse => {
+                // Use PostgreSQL parser for now as ClickHouse SQL is similar
+                Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
+            }
         }
     }
 
@@ -317,6 +321,7 @@ pub mod parsing_utils {
             DatabaseType::PostgreSQL => ch.is_alphanumeric() || ch == '_' || ch == '$',
             DatabaseType::MySQL => ch.is_alphanumeric() || ch == '_' || ch == '$',
             DatabaseType::SQLite => ch.is_alphanumeric() || ch == '_',
+            DatabaseType::ClickHouse => ch.is_alphanumeric() || ch == '_',
         }
     }
 
@@ -352,6 +357,12 @@ pub mod parsing_utils {
                     "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP"
                 )
             }
+            DatabaseType::ClickHouse => {
+                matches!(
+                    upper_identifier.as_str(),
+                    "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP" | "LIMIT"
+                )
+            }
         }
     }
 
@@ -361,6 +372,7 @@ pub mod parsing_utils {
             DatabaseType::PostgreSQL => '"',
             DatabaseType::MySQL => '`',
             DatabaseType::SQLite => '"',
+            DatabaseType::ClickHouse => '`', // ClickHouse uses backticks like MySQL
         }
     }
 }

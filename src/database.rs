@@ -15,6 +15,7 @@ pub enum DatabaseType {
     PostgreSQL,
     SQLite,
     MySQL,
+    ClickHouse,
 }
 
 impl fmt::Display for DatabaseType {
@@ -74,6 +75,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL => Some(5432),
             DatabaseType::MySQL => Some(3306),
             DatabaseType::SQLite => None, // File-based
+            DatabaseType::ClickHouse => Some(8123), // HTTP interface
         }
     }
 
@@ -82,12 +84,13 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL => "PostgreSQL",
             DatabaseType::MySQL => "MySQL",
             DatabaseType::SQLite => "SQLite",
+            DatabaseType::ClickHouse => "ClickHouse",
         }
     }
 
     fn supports_ssh_tunnel(&self) -> bool {
         match self {
-            DatabaseType::PostgreSQL | DatabaseType::MySQL => true,
+            DatabaseType::PostgreSQL | DatabaseType::MySQL | DatabaseType::ClickHouse => true,
             DatabaseType::SQLite => false, // File-based, no network connection
         }
     }
@@ -97,26 +100,27 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL => &["postgresql", "postgres"],
             DatabaseType::MySQL => &["mysql"],
             DatabaseType::SQLite => &["sqlite"],
+            DatabaseType::ClickHouse => &["clickhouse"],
         }
     }
 
     fn is_file_based(&self) -> bool {
         match self {
             DatabaseType::SQLite => true,
-            DatabaseType::PostgreSQL | DatabaseType::MySQL => false,
+            DatabaseType::PostgreSQL | DatabaseType::MySQL | DatabaseType::ClickHouse => false,
         }
     }
 
     fn supports_json_explain(&self) -> bool {
         match self {
-            DatabaseType::PostgreSQL => true,
+            DatabaseType::PostgreSQL | DatabaseType::ClickHouse => true,
             DatabaseType::MySQL | DatabaseType::SQLite => false,
         }
     }
 
     fn requires_authentication(&self) -> bool {
         match self {
-            DatabaseType::PostgreSQL | DatabaseType::MySQL => true,
+            DatabaseType::PostgreSQL | DatabaseType::MySQL | DatabaseType::ClickHouse => true,
             DatabaseType::SQLite => false,
         }
     }
@@ -126,6 +130,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL => "postgres",
             DatabaseType::MySQL => "mysql",
             DatabaseType::SQLite => "sqlite",
+            DatabaseType::ClickHouse => "clickhouse",
         }
     }
 
@@ -185,12 +190,51 @@ impl DatabaseTypeExt for DatabaseType {
                 "JSON_OBJECT",
                 "JSON_ARRAY",
             ],
+            DatabaseType::ClickHouse => &[
+                "COALESCE",
+                "NULLIF",
+                "GREATEST",
+                "LEAST",
+                "NOW",
+                "TODAY",
+                "YESTERDAY",
+                "CURRENT_TIMESTAMP",
+                "TO_DATE",
+                "TO_DATETIME",
+                "FORMAT_DATETIME",
+                "PARSE_DATETIME",
+                "FROM_UNIXTIME",
+                "TO_UNIX_TIMESTAMP",
+                "GROUP_ARRAY",
+                "GROUP_CONCAT",
+                "COUNT_DISTINCT",
+                "UNIQ",
+                "UNIQ_EXACT",
+                "SUM",
+                "AVG",
+                "MIN",
+                "MAX",
+                "ANY",
+                "ANY_LAST",
+                "ARRAY_JOIN",
+                "HAS",
+                "LENGTH",
+                "EMPTY",
+                "NOT_EMPTY",
+                "LOWER",
+                "UPPER",
+                "SUBSTRING",
+                "POSITION",
+                "EXTRACT",
+                "JSON_EXTRACT",
+                "JSON_EXTRACT_STRING",
+            ],
         }
     }
 
     fn supports_from_unixtime(&self) -> bool {
         match self {
-            DatabaseType::MySQL => true,
+            DatabaseType::MySQL | DatabaseType::ClickHouse => true,
             DatabaseType::PostgreSQL | DatabaseType::SQLite => false,
         }
     }
@@ -200,6 +244,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL => &["POSTGRES_USER", "PGUSER"],
             DatabaseType::MySQL => &["MYSQL_USER"],
             DatabaseType::SQLite => &[],
+            DatabaseType::ClickHouse => &["CLICKHOUSE_USER"],
         }
     }
 
@@ -208,6 +253,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL => &["POSTGRES_PASSWORD", "PGPASSWORD"],
             DatabaseType::MySQL => &["MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD"],
             DatabaseType::SQLite => &[],
+            DatabaseType::ClickHouse => &["CLICKHOUSE_PASSWORD"],
         }
     }
 
@@ -216,6 +262,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL => &["POSTGRES_DB", "PGDATABASE"],
             DatabaseType::MySQL => &["MYSQL_DATABASE"],
             DatabaseType::SQLite => &[],
+            DatabaseType::ClickHouse => &["CLICKHOUSE_DB"],
         }
     }
 
@@ -224,6 +271,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL => "postgres",
             DatabaseType::MySQL => "root",
             DatabaseType::SQLite => "",
+            DatabaseType::ClickHouse => "default",
         }
     }
 }
@@ -235,6 +283,7 @@ impl DatabaseType {
             "postgresql" | "postgres" => Ok(DatabaseType::PostgreSQL),
             "sqlite" => Ok(DatabaseType::SQLite),
             "mysql" => Ok(DatabaseType::MySQL),
+            "clickhouse" => Ok(DatabaseType::ClickHouse),
             "docker" => Ok(DatabaseType::PostgreSQL), // Default to PostgreSQL for docker:// URLs
             scheme => Err(DatabaseError::UnsupportedScheme(scheme.to_string())),
         }
@@ -375,6 +424,10 @@ pub async fn create_database_client(
         }
         DatabaseType::MySQL => {
             let client = crate::database_mysql::MySqlClient::new(connection_info).await?;
+            Ok(Box::new(client))
+        }
+        DatabaseType::ClickHouse => {
+            let client = crate::database_clickhouse::ClickHouseClient::new(connection_info).await?;
             Ok(Box::new(client))
         }
     }

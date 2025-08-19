@@ -14,6 +14,7 @@ pub struct Args {
     ///   PostgreSQL: postgresql://user:pass@localhost:5432/mydb
     ///   MySQL:      mysql://user:pass@localhost:3306/mydb
     ///   SQLite:     sqlite:///path/to/database.db
+    ///   ClickHouse: clickhouse://user:pass@localhost:8123/mydb
     ///   Docker:     docker://container_name/mydb
     ///   Session:    session://saved_session_name
     ///   Recent:     recent:// (interactive selection)

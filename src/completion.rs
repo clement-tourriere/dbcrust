@@ -1540,6 +1540,7 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::PostgreSQL => "[postgres]",
                                     crate::database::DatabaseType::MySQL => "[mysql]",
                                     crate::database::DatabaseType::SQLite => "[sqlite]",
+                                    crate::database::DatabaseType::ClickHouse => "[clickhouse]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
@@ -1602,6 +1603,7 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::PostgreSQL => "[postgres]",
                                     crate::database::DatabaseType::MySQL => "[mysql]",
                                     crate::database::DatabaseType::SQLite => "[sqlite]",
+                                    crate::database::DatabaseType::ClickHouse => "[clickhouse]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
