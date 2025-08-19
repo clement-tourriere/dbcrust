@@ -5,7 +5,7 @@ tag_format = "v$version"
 version_scheme = "semver"
 #update_changelog_on_bump = true
 bump_message = "release: v$current_version → v$new_version"
-gpg_sign = true
+gpg_sign = false
 
 
 # Files to update with new version
