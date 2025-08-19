@@ -25,9 +25,10 @@ dbcrust docker://
 # Available database containers:
 # 1. postgres-dev (postgres:15) - Port 5432 → 5433
 # 2. mysql-test (mysql:8.0) - Port 3306 → 3307
-# 3. mongodb-cache (mongo:7) - Port 27017 → 27018
+# 3. clickhouse-analytics (clickhouse:latest) - Port 8123 → 8124
+# 4. mongodb-cache (mongo:7) - Port 27017 → 27018
 #
-# Select container (1-3): 1
+# Select container (1-4): 1
 ```
 
 ### Direct Container Connection
@@ -36,11 +37,13 @@ dbcrust docker://
 # Connect to specific container by name
 dbcrust docker://postgres-dev
 dbcrust docker://mysql-test
+dbcrust docker://clickhouse-analytics
 dbcrust docker://my-app-db
 
 # With credentials
 dbcrust docker://user:password@postgres-dev
 dbcrust docker://root:secret@mysql-test/specific_database
+dbcrust docker://clickhouse:password@clickhouse-analytics/analytics
 
 # Full URL format
 dbcrust docker://username:password@container-name/database-name
@@ -54,6 +57,7 @@ DBCrust provides intelligent autocompletion for container names:
 # Type partial name and press TAB
 dbc docker://post[TAB] → postgres-dev, postgres-prod
 dbc docker://my[TAB]   → mysql-test, my-app-db
+dbc docker://click[TAB] → clickhouse-analytics, clickhouse-dev
 ```
 
 ## 🛠️ Connection Methods
@@ -224,6 +228,22 @@ dbcrust docker://mariadb-dev           # mariadb:*
 dbcrust docker://percona-db            # percona:*
 ```
 
+### ClickHouse Containers
+
+```bash
+# Detected from image names
+dbcrust docker://clickhouse-container    # clickhouse/*
+dbcrust docker://analytics-ch           # *clickhouse*
+dbcrust docker://yandex-clickhouse      # yandex/clickhouse*
+
+# ClickHouse with credentials
+dbcrust docker://user:password@clickhouse-analytics
+dbcrust docker://clickhouse-analytics/analytics_db
+
+# Special handling for CLICKHOUSE_SKIP_USER_SETUP=1
+dbcrust docker://clickhouse-dev  # No password needed when setup is skipped
+```
+
 ### SQLite in Containers
 
 ```bash
@@ -250,6 +270,7 @@ database_patterns = [
     ".*postgres.*",
     ".*mysql.*",
     ".*mariadb.*",
+    ".*clickhouse.*",
     ".*mongo.*",
     ".*redis.*"
 ]
@@ -581,6 +602,72 @@ dbcrust docker://etl_writer:writer123@target-postgres/data_warehouse \
 # Analytics queries
 dbcrust docker://analyst:analyst123@analytics-postgres/analytics \
   --query "SELECT DATE(created_at), COUNT(*) FROM daily_summaries GROUP BY DATE(created_at);"
+```
+
+### ClickHouse Analytics Pipeline
+
+**ClickHouse for real-time analytics:**
+```yaml
+# docker-compose.analytics.yml
+version: '3.8'
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    environment:
+      CLICKHOUSE_DB: analytics
+      CLICKHOUSE_USER: analyst
+      CLICKHOUSE_PASSWORD: analytics123
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+
+  kafka:
+    image: confluentinc/cp-kafka:latest
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+    depends_on:
+      - zookeeper
+
+volumes:
+  clickhouse_data:
+```
+
+**Analytics workflow:**
+```bash
+# Start ClickHouse analytics stack
+docker-compose -f docker-compose.analytics.yml up -d
+
+# Create analytics tables
+dbcrust docker://analyst:analytics123@clickhouse/analytics \
+  --query "CREATE TABLE events (
+    event_time DateTime,
+    user_id UInt32,
+    event_type String,
+    properties JSON
+  ) ENGINE = MergeTree()
+  ORDER BY (event_time, user_id);"
+
+# Query real-time analytics
+dbcrust docker://clickhouse/analytics \
+  --query "SELECT 
+    toStartOfHour(event_time) as hour,
+    event_type,
+    COUNT() as event_count
+  FROM events 
+  WHERE event_time >= now() - INTERVAL 24 HOUR
+  GROUP BY hour, event_type
+  ORDER BY hour DESC;"
+
+# Performance analysis with ClickHouse
+dbcrust docker://clickhouse \
+  --query "SELECT 
+    quantile(0.95)(response_time) as p95_response,
+    quantile(0.99)(response_time) as p99_response
+  FROM api_logs 
+  WHERE timestamp >= today();"
 ```
 
 ## 🚨 Troubleshooting

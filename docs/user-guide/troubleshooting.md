@@ -53,15 +53,20 @@ dbcrust --debug postgres://localhost:5432/mydb
 
 # Test specific connection components
 ping localhost                    # Test network connectivity
-telnet localhost 5432            # Test port accessibility
-psql -h localhost -p 5432 -U user -d mydb  # Test with native client
+telnet localhost 5432            # Test port accessibility (PostgreSQL)
+telnet localhost 3306            # Test port accessibility (MySQL)
+telnet localhost 8123            # Test port accessibility (ClickHouse)
+psql -h localhost -p 5432 -U user -d mydb  # Test with native client (PostgreSQL)
+mysql -h localhost -u user -p database     # Test with native client (MySQL)
+curl http://localhost:8123/       # Test ClickHouse HTTP interface
 ```
 
 **Common solutions:**
 1. **Database not running:** Start your database service
-2. **Wrong port:** Check database port (5432 for PostgreSQL, 3306 for MySQL)
+2. **Wrong port:** Check database port (5432 for PostgreSQL, 3306 for MySQL, 8123 for ClickHouse)
 3. **Firewall issues:** Open database port in firewall
 4. **Host binding:** Ensure database accepts connections from your IP
+5. **ClickHouse HTTP interface:** Ensure ClickHouse HTTP interface is enabled (default port 8123)
 
 **Problem: "Authentication failed" or "Access denied"**
 
@@ -69,6 +74,7 @@ psql -h localhost -p 5432 -U user -d mydb  # Test with native client
 # Test credentials manually
 psql -h localhost -U username -d database  # PostgreSQL
 mysql -h localhost -u username -p database  # MySQL
+curl -u user:password http://localhost:8123/  # ClickHouse
 
 # Check credential files
 cat ~/.pgpass                    # PostgreSQL passwords
@@ -80,6 +86,10 @@ cat ~/.my.cnf                   # MySQL configuration
 2. **Check .pgpass/.my.cnf:** Verify credential file format
 3. **Database permissions:** Grant user access to specific database
 4. **SSL requirements:** Add `?sslmode=require` if needed
+5. **ClickHouse authentication:** 
+   - Check if `CLICKHOUSE_SKIP_USER_SETUP=1` is set (no password needed)
+   - Verify ClickHouse user configuration in `users.xml`
+   - Test with default user if no custom users configured
 
 ### SSH Tunnel Connection Issues
 
@@ -165,6 +175,72 @@ vault read database/config/my-database
 # Test credential generation
 vault read database/creds/my-role
 ```
+
+### ClickHouse Connection Issues
+
+**Problem: ClickHouse connection fails with authentication errors**
+
+```bash
+# Test ClickHouse HTTP interface directly
+curl http://localhost:8123/
+curl -u username:password http://localhost:8123/
+
+# Check ClickHouse server logs
+docker logs clickhouse-container
+# or
+tail -f /var/log/clickhouse-server/clickhouse-server.log
+
+# Test with ClickHouse native client
+clickhouse-client --host localhost --port 9000 --user username --password password
+```
+
+**ClickHouse-specific solutions:**
+1. **Default user access:** Use `default` user with empty password if `CLICKHOUSE_SKIP_USER_SETUP=1`
+2. **HTTP vs Native ports:** DBCrust uses HTTP interface (port 8123), not native client port (9000)
+3. **Database parameter:** ClickHouse uses database parameter, not URL path: `clickhouse://localhost:8123/default`
+4. **Authentication:** Check `users.xml` or environment variables for user configuration
+
+**Problem: ClickHouse queries return "Query executed successfully" instead of data**
+
+```bash
+# Enable debug logging to see HTTP requests/responses
+export DBCRUST_DEBUG=1
+dbcrust --debug clickhouse://localhost:8123/default
+
+# Test query format directly with curl
+curl -X POST 'http://localhost:8123/' \
+  -H 'Content-Type: text/plain' \
+  -d 'SELECT * FROM system.databases FORMAT TabSeparatedWithNames'
+```
+
+**Solutions:**
+1. **Query format:** DBCrust automatically adds `FORMAT TabSeparatedWithNames` to SELECT queries
+2. **DDL queries:** CREATE/DROP statements return success message instead of data
+3. **System tables:** Use ClickHouse system tables for metadata: `SELECT * FROM system.tables`
+
+**Problem: Docker ClickHouse container authentication issues**
+
+```bash
+# Check container environment variables
+docker inspect clickhouse-container | grep -i env
+
+# Common ClickHouse Docker environment variables
+docker run -d --name clickhouse-test \
+  -e CLICKHOUSE_DB=test_db \
+  -e CLICKHOUSE_USER=test_user \
+  -e CLICKHOUSE_PASSWORD=test_pass \
+  -e CLICKHOUSE_SKIP_USER_SETUP=1 \
+  clickhouse/clickhouse-server
+
+# Test connection after container setup
+dbcrust docker://clickhouse-test
+```
+
+**Docker-specific solutions:**
+1. **SKIP_USER_SETUP=1:** When set, default user works without password
+2. **Environment variables:** Use CLICKHOUSE_* prefix for all config variables
+3. **Port mapping:** Ensure HTTP port 8123 is exposed: `-p 8123:8123`
+4. **Container logs:** Check startup logs for configuration errors
 
 ## ⚡ Performance Issues
 

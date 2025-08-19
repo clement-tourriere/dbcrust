@@ -65,6 +65,7 @@ DBCrust supports 8 different URL schemes with intelligent shell autocompletion. 
 
 ```bash
 dbc pos[TAB] → postgres://
+dbc click[TAB] → clickhouse://
 dbc doc[TAB] → docker://
 dbc ses[TAB] → session://
 ```
@@ -106,6 +107,19 @@ dbc ses[TAB] → session://
     dbcrust sqlite://:memory:
     ```
 
+=== "ClickHouse"
+
+    ```bash
+    # Standard connection (HTTP interface on port 8123)
+    dbcrust clickhouse://localhost:8123/default
+
+    # With credentials
+    dbcrust clickhouse://username:password@localhost:8123/database_name
+
+    # Remote ClickHouse server
+    dbcrust clickhouse://user:pass@clickhouse.company.com:8123/analytics
+    ```
+
 === "Docker"
 
     ```bash
@@ -115,6 +129,7 @@ dbc ses[TAB] → session://
     # Smart container autocompletion (shows running containers)
     dbcrust docker://post[TAB] → docker://postgres-dev
     dbcrust docker://my[TAB]   → docker://mysql-test
+    dbcrust docker://click[TAB] → docker://clickhouse-analytics
 
     # With credentials
     dbcrust docker://user:pass@container-name/database

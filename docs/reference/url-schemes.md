@@ -59,6 +59,30 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     dbcrust sqlite://database.db
     ```
 
+=== "ClickHouse"
+
+    **Scheme:** `clickhouse://`
+
+    ```bash
+    # Standard connection (HTTP interface on port 8123)
+    dbcrust clickhouse://localhost:8123/default
+    
+    # With credentials
+    dbcrust clickhouse://username:password@localhost:8123/database_name
+    
+    # Remote ClickHouse server
+    dbcrust clickhouse://user:pass@clickhouse.company.com:8123/analytics
+    
+    # Without authentication (when CLICKHOUSE_SKIP_USER_SETUP=1)
+    dbcrust clickhouse://localhost:8123/default
+    ```
+
+    **Features:**
+    - Uses ClickHouse HTTP interface (port 8123) for optimal performance
+    - Support for ClickHouse-specific data types (UInt32, DateTime, etc.)
+    - Compatible with ClickHouse system tables and functions
+    - Automatic FORMAT handling for dynamic query results
+
 ### Advanced Connection Schemes
 
 === "Docker Containers"
@@ -84,9 +108,10 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
 
     **Features:**
     - Automatic discovery of running database containers
-    - Support for PostgreSQL, MySQL, and SQLite containers
+    - Support for PostgreSQL, MySQL, SQLite, and ClickHouse containers
     - OrbStack integration on macOS
     - Intelligent port mapping and network resolution
+    - Special handling for ClickHouse containers with `CLICKHOUSE_SKIP_USER_SETUP=1`
 
 === "Saved Sessions"
 
@@ -227,6 +252,9 @@ Type a partial scheme and press **TAB** to see available options:
 
 ```bash
 dbc pos[TAB] → postgres://
+dbc my[TAB]  → mysql://
+dbc sq[TAB]  → sqlite://
+dbc cl[TAB]  → clickhouse://
 dbc doc[TAB] → docker://  
 dbc ses[TAB] → session://
 dbc rec[TAB] → recent://
@@ -242,15 +270,16 @@ DBCrust provides smart contextual completions based on the URL scheme:
     ```bash
     # Shows running database containers
     dbc docker://[TAB]
-    # → postgres-dev mysql-test redis-cache
+    # → postgres-dev mysql-test clickhouse-analytics
     
     dbc docker://post[TAB] → docker://postgres-dev
     dbc docker://my[TAB]   → docker://mysql-test
+    dbc docker://cl[TAB]   → docker://clickhouse-analytics
     ```
 
     **How it works:**
     - Queries Docker API for running containers
-    - Filters for database containers (PostgreSQL, MySQL, SQLite images)
+    - Filters for database containers (PostgreSQL, MySQL, SQLite, ClickHouse images)
     - Only shows containers that are currently running
     - Matches container names that start with your input
 
