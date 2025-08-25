@@ -1,5 +1,7 @@
 //! ClickHouse implementation of the database abstraction layer
-use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider, ServerInfo};
+use crate::database::{
+    ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider, ServerInfo,
+};
 use crate::db::TableDetails;
 use async_trait::async_trait;
 use clickhouse::{Client, Row};
@@ -24,7 +26,7 @@ impl MetadataProvider for ClickHouseMetadataProvider {
 
         // ClickHouse databases are similar to schemas
         let query = "SELECT name FROM system.databases WHERE name NOT IN ('system', 'INFORMATION_SCHEMA', 'information_schema') ORDER BY name";
-        
+
         #[derive(Deserialize, Row)]
         struct DatabaseName {
             name: String,
@@ -58,7 +60,8 @@ impl MetadataProvider for ClickHouseMetadataProvider {
                 schema_name
             )
         } else {
-            "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name".to_string()
+            "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name"
+                .to_string()
         };
 
         #[derive(Deserialize, Row)]
@@ -114,7 +117,9 @@ impl MetadataProvider for ClickHouseMetadataProvider {
             .query(&query)
             .fetch_all::<ColumnName>()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to get columns for table {}: {e}", table)))?;
+            .map_err(|e| {
+                DatabaseError::QueryError(format!("Failed to get columns for table {}: {e}", table))
+            })?;
 
         let column_names: Vec<String> = columns.into_iter().map(|col| col.name).collect();
 
@@ -166,7 +171,7 @@ impl MetadataProvider for ClickHouseMetadataProvider {
         let database_name = schema.unwrap_or("default");
         let schema_name = schema.unwrap_or("default");
 
-        // Get column information  
+        // Get column information
         let columns_query = if schema.is_some() {
             format!(
                 "SELECT name, type, default_expression, is_in_primary_key FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
@@ -202,7 +207,7 @@ impl MetadataProvider for ClickHouseMetadataProvider {
                 name: col.name,
                 data_type: col.data_type,
                 collation: String::new(), // ClickHouse doesn't use collations like other DBs
-                nullable: true, // ClickHouse columns are nullable by default
+                nullable: true,           // ClickHouse columns are nullable by default
                 default_value: if col.default_expression.is_empty() {
                     None
                 } else {
@@ -258,10 +263,7 @@ impl ClickHouseClient {
         // Build connection URL
         let host = connection_info.host.as_deref().unwrap_or("localhost");
         let port = connection_info.port.unwrap_or(8123);
-        let username = connection_info
-            .username
-            .as_deref()
-            .unwrap_or("");
+        let username = connection_info.username.as_deref().unwrap_or("");
         let database = connection_info
             .database
             .clone()
@@ -297,7 +299,9 @@ impl ClickHouseClient {
             .query("SELECT 1 as test")
             .fetch_one::<u8>()
             .await
-            .map_err(|e| DatabaseError::ConnectionError(format!("Failed to connect to ClickHouse: {e}")))?;
+            .map_err(|e| {
+                DatabaseError::ConnectionError(format!("Failed to connect to ClickHouse: {e}"))
+            })?;
 
         let metadata_provider = ClickHouseMetadataProvider::new(client.clone());
 
@@ -315,58 +319,78 @@ impl ClickHouseClient {
         let host = self.connection_info.host.as_deref().unwrap_or("localhost");
         let port = self.connection_info.port.unwrap_or(8123);
         let url = format!("http://{}:{}", host, port);
-        
-        debug!("[ClickHouseClient::execute_http_user_query] Executing HTTP query: {}", sql);
-        debug!("[ClickHouseClient::execute_http_user_query] Target URL: {}", url);
-        debug!("[ClickHouseClient::execute_http_user_query] Username: {:?}, Has password: {}", 
-               self.connection_info.username, self.connection_info.password.is_some());
-        
+
+        debug!(
+            "[ClickHouseClient::execute_http_user_query] Executing HTTP query: {}",
+            sql
+        );
+        debug!(
+            "[ClickHouseClient::execute_http_user_query] Target URL: {}",
+            url
+        );
+        debug!(
+            "[ClickHouseClient::execute_http_user_query] Username: {:?}, Has password: {}",
+            self.connection_info.username,
+            self.connection_info.password.is_some()
+        );
+
         // Create HTTP client
         let client = reqwest::Client::new();
-        
+
         // Try with TabSeparatedWithNames first (for SELECT queries)
         let formatted_sql = format!("{} FORMAT TabSeparatedWithNames", sql.trim_end_matches(';'));
-        
+
         // Build request
         let mut request = client.post(&url);
-        
+
         // Add authentication if needed
         if let Some(username) = &self.connection_info.username {
             if let Some(password) = &self.connection_info.password {
-                debug!("[ClickHouseClient::execute_http_user_query] Adding basic auth with username '{}' and password", username);
+                debug!(
+                    "[ClickHouseClient::execute_http_user_query] Adding basic auth with username '{}' and password",
+                    username
+                );
                 request = request.basic_auth(username, Some(password));
             } else {
-                debug!("[ClickHouseClient::execute_http_user_query] Adding basic auth with username '{}' and no password", username);
+                debug!(
+                    "[ClickHouseClient::execute_http_user_query] Adding basic auth with username '{}' and no password",
+                    username
+                );
                 request = request.basic_auth(username, None::<&str>);
             }
         }
-        
+
         // Add database parameter
         if let Some(database) = &self.connection_info.database {
             request = request.query(&[("database", database)]);
         }
-        
+
         // Execute request
         let response = request
             .body(formatted_sql.clone())
             .send()
             .await
             .map_err(|e| DatabaseError::QueryError(format!("HTTP request failed: {e}")))?;
-            
+
         if response.status().is_success() {
             // Parse TabSeparatedWithNames response
-            let text_response = response.text().await
+            let text_response = response
+                .text()
+                .await
                 .map_err(|e| DatabaseError::QueryError(format!("Failed to read response: {e}")))?;
-            
-            debug!("[ClickHouseClient::execute_http_user_query] Raw response: {}", text_response);
-            
+
+            debug!(
+                "[ClickHouseClient::execute_http_user_query] Raw response: {}",
+                text_response
+            );
+
             let mut results = Vec::new();
             let lines: Vec<&str> = text_response.lines().collect();
-            
+
             if lines.is_empty() {
                 return Ok(vec![vec!["(no results)".to_string()]]);
             }
-            
+
             // First line is headers
             if let Some(header_line) = lines.first() {
                 let headers: Vec<String> = header_line
@@ -375,30 +399,30 @@ impl ClickHouseClient {
                     .collect();
                 results.push(headers);
             }
-            
+
             // Remaining lines are data
             for line in lines.iter().skip(1) {
                 if !line.trim().is_empty() {
-                    let row_data: Vec<String> = line
-                        .split('\t')
-                        .map(|s| s.trim().to_string())
-                        .collect();
+                    let row_data: Vec<String> =
+                        line.split('\t').map(|s| s.trim().to_string()).collect();
                     results.push(row_data);
                 }
             }
-            
+
             // If only headers and no data rows
             if results.len() == 1 {
                 results.push(vec!["(no rows)".to_string()]);
             }
-            
+
             Ok(results)
         } else {
             // Try without FORMAT (for non-SELECT queries like DDL/DML)
-            debug!("[ClickHouseClient::execute_http_user_query] Trying without FORMAT for DDL/DML query");
-            
+            debug!(
+                "[ClickHouseClient::execute_http_user_query] Trying without FORMAT for DDL/DML query"
+            );
+
             let mut request = client.post(&url);
-            
+
             // Add authentication if needed
             if let Some(username) = &self.connection_info.username {
                 if let Some(password) = &self.connection_info.password {
@@ -407,37 +431,45 @@ impl ClickHouseClient {
                     request = request.basic_auth(username, None::<&str>);
                 }
             }
-            
+
             // Add database parameter
             if let Some(database) = &self.connection_info.database {
                 request = request.query(&[("database", database)]);
             }
-            
+
             // Execute without FORMAT
             let response = request
                 .body(sql.to_string())
                 .send()
                 .await
                 .map_err(|e| DatabaseError::QueryError(format!("HTTP request failed: {e}")))?;
-                
+
             if response.status().is_success() {
                 // DDL/DML query succeeded
                 Ok(vec![
                     vec!["Status".to_string()],
-                    vec!["Query executed successfully".to_string()]
+                    vec!["Query executed successfully".to_string()],
                 ])
             } else {
-                let error_text = response.text().await
+                let error_text = response
+                    .text()
+                    .await
                     .unwrap_or_else(|_| "Unknown error".to_string());
-                Err(DatabaseError::QueryError(format!("ClickHouse HTTP error: {}", error_text)))
+                Err(DatabaseError::QueryError(format!(
+                    "ClickHouse HTTP error: {}",
+                    error_text
+                )))
             }
         }
     }
 
     /// Execute a raw query and return results as Vec<Vec<String>>
     async fn execute_raw_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug!("[ClickHouseClient::execute_raw_query] Executing query: {}", sql);
-        
+        debug!(
+            "[ClickHouseClient::execute_raw_query] Executing query: {}",
+            sql
+        );
+
         // Use HTTP interface for all user queries to handle dynamic results
         self.execute_http_user_query(sql).await
     }
@@ -451,7 +483,7 @@ impl DatabaseClient for ClickHouseClient {
 
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
         debug!("[ClickHouseClient::test_query] Testing query: {}", sql);
-        
+
         // For ClickHouse, we can test by trying to explain the query
         let explain_query = format!("EXPLAIN {}", sql);
         self.client
@@ -464,14 +496,20 @@ impl DatabaseClient for ClickHouseClient {
     }
 
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug!("[ClickHouseClient::explain_query] Explaining query: {}", sql);
+        debug!(
+            "[ClickHouseClient::explain_query] Explaining query: {}",
+            sql
+        );
 
         let explain_sql = format!("EXPLAIN PLAN {}", sql);
         self.execute_raw_query(&explain_sql).await
     }
 
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        debug!("[ClickHouseClient::explain_query_raw] Raw explain for query: {}", sql);
+        debug!(
+            "[ClickHouseClient::explain_query_raw] Raw explain for query: {}",
+            sql
+        );
 
         // ClickHouse EXPLAIN with more details
         let explain_sql = format!("EXPLAIN SYNTAX {}", sql);
@@ -486,7 +524,10 @@ impl DatabaseClient for ClickHouseClient {
     }
 
     async fn connect_to_database(&mut self, database: &str) -> Result<(), DatabaseError> {
-        debug!("[ClickHouseClient::connect_to_database] Switching to database: {}", database);
+        debug!(
+            "[ClickHouseClient::connect_to_database] Switching to database: {}",
+            database
+        );
 
         // ClickHouse doesn't have a USE statement like MySQL
         // Instead, we need to create a new client with the new database
@@ -494,7 +535,7 @@ impl DatabaseClient for ClickHouseClient {
         new_connection_info.database = Some(database.to_string());
 
         let new_client = Self::new(new_connection_info).await?;
-        
+
         // Replace our client with the new one
         self.client = new_client.client;
         self.connection_info = new_client.connection_info;

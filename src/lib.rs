@@ -10,6 +10,7 @@ pub mod completion_provider; // Database-agnostic completion trait
 pub mod config;
 pub mod database; // New database abstraction layer
 pub mod database_clickhouse; // ClickHouse implementation
+pub mod database_mongodb; // MongoDB implementation
 pub mod database_mysql; // MySQL implementation
 pub mod database_postgresql; // PostgreSQL implementation
 pub mod database_sqlite; // SQLite implementation

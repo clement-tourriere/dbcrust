@@ -87,6 +87,9 @@ strum = { version = "0.27", features = ["derive"], default-features = false }
 aes-gcm = { version = "0.10", default-features = false, features = ["std", "aes", "getrandom"] }
 sha2 = { version = "0.10", default-features = false, features = ["std"] }
 clickhouse = "0.13.3"
+mongodb = { version = "3.0", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
+bson = { version = "2.0", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [features]
 default = []

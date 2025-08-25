@@ -15,10 +15,10 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     ```bash
     # Standard connection
     dbcrust postgres://username:password@localhost:5432/database_name
-    
+
     # With SSL (recommended)
     dbcrust postgres://username:password@localhost:5432/database_name?sslmode=require
-    
+
     # Alternative scheme (auto-converted to postgres://)
     dbcrust postgres://username:password@localhost:5432/database_name
     ```
@@ -33,10 +33,10 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     ```bash
     # Standard connection
     dbcrust mysql://username:password@localhost:3306/database_name
-    
+
     # With SSL
     dbcrust mysql://username:password@localhost:3306/database_name?ssl-mode=REQUIRED
-    
+
     # Custom port
     dbcrust mysql://root:secret@mysql-server:3307/production
     ```
@@ -48,13 +48,13 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     ```bash
     # Absolute path
     dbcrust sqlite:///path/to/database.db
-    
+
     # Relative path
     dbcrust sqlite://./myapp.db
-    
+
     # Memory database
     dbcrust sqlite://:memory:
-    
+
     # Current directory
     dbcrust sqlite://database.db
     ```
@@ -66,13 +66,13 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     ```bash
     # Standard connection (HTTP interface on port 8123)
     dbcrust clickhouse://localhost:8123/default
-    
+
     # With credentials
     dbcrust clickhouse://username:password@localhost:8123/database_name
-    
+
     # Remote ClickHouse server
     dbcrust clickhouse://user:pass@clickhouse.company.com:8123/analytics
-    
+
     # Without authentication (when CLICKHOUSE_SKIP_USER_SETUP=1)
     dbcrust clickhouse://localhost:8123/default
     ```
@@ -82,6 +82,36 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     - Support for ClickHouse-specific data types (UInt32, DateTime, etc.)
     - Compatible with ClickHouse system tables and functions
     - Automatic FORMAT handling for dynamic query results
+
+=== "MongoDB"
+
+    **Schemes:** `mongodb://` or `mongodb+srv://`
+
+    ```bash
+    # Standard MongoDB connection
+    dbcrust mongodb://user:password@localhost:27017/database_name
+
+    # MongoDB Atlas (SRV record)
+    dbcrust mongodb+srv://user:password@cluster.mongodb.net/database_name
+
+    # Without authentication (local development)
+    dbcrust mongodb://localhost:27017/myapp
+
+    # With connection options
+    dbcrust mongodb://user:pass@host:27017/db?authSource=admin&ssl=true
+
+    # Replica set connection
+    dbcrust mongodb://user:pass@host1:27017,host2:27017/db?replicaSet=myReplSet
+    ```
+
+    **Features:**
+    - **SQL-like Query Interface**: Use familiar SELECT syntax that translates to MongoDB queries
+    - **Advanced Filtering**: LIKE patterns, IN operators, BETWEEN ranges, IS NULL checks, OR conditions
+    - **Database Management**: CREATE/DROP databases and collections via SQL syntax
+    - **Native MongoDB Commands**: Direct access to find, aggregate, and admin operations
+    - **Schema Inference**: Dynamic column detection from document structure
+    - **Text Search**: Full-text search capabilities with `\search` command
+    - **Index Management**: Create, drop, and list MongoDB indexes
 
 ### Advanced Connection Schemes
 
@@ -93,14 +123,14 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     # Interactive container selection
     dbcrust docker://
     # → Shows list of running database containers
-    
+
     # Direct container connection
     dbcrust docker://postgres-container
     dbcrust docker://my-mysql-db
-    
+
     # With credentials and database
     dbcrust docker://user:pass@container-name/database
-    
+
     # Examples
     dbcrust docker://postgres-dev
     dbcrust docker://app_user:secret@mysql-prod/app_db
@@ -108,10 +138,11 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
 
     **Features:**
     - Automatic discovery of running database containers
-    - Support for PostgreSQL, MySQL, SQLite, and ClickHouse containers
+    - Support for PostgreSQL, MySQL, SQLite, ClickHouse, and MongoDB containers
     - OrbStack integration on macOS
     - Intelligent port mapping and network resolution
     - Special handling for ClickHouse containers with `CLICKHOUSE_SKIP_USER_SETUP=1`
+    - MongoDB container detection for mongo, mongodb, and bitnami/mongodb images
 
 === "Saved Sessions"
 
@@ -121,7 +152,7 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     # Interactive session selection
     dbcrust session://
     # → Shows list of saved sessions
-    
+
     # Direct session connection
     dbcrust session://production_db
     dbcrust session://staging_postgres
@@ -132,13 +163,13 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     ```bash
     # Save current connection as a session
     \ss production_db
-    
+
     # List all saved sessions
     \s
-    
+
     # Delete a session
     \sd old_session
-    
+
     # Connect to specific session
     \s production_db
     ```
@@ -152,7 +183,7 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     dbcrust recent://
     # → Shows numbered list of recent connections
     #   1. postgres://user@localhost:5432/mydb
-    #   2. docker://postgres-dev/testdb  
+    #   2. docker://postgres-dev/testdb
     #   3. mysql://root@mysql-server:3306/app
     ```
 
@@ -160,7 +191,7 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     ```bash
     # List recent connections
     \r
-    
+
     # Clear recent connection history
     \rc
     ```
@@ -172,11 +203,11 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     ```bash
     # Full vault URL
     dbcrust vault://role-name@mount-path/database-path
-    
+
     # Interactive vault connection
     dbcrust vault://
     # → Prompts for role, mount, and database
-    
+
     # Alternative scheme (deprecated)
     dbcrust vault://app-role@database/postgres-prod
     ```
@@ -199,10 +230,10 @@ DBCrust provides intelligent shell autocompletion that understands URL schemes a
     ```bash
     # Generate completion script
     dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
-    
+
     # Or install system-wide
     sudo dbcrust --completions bash > /etc/bash_completion.d/dbcrust
-    
+
     # Reload your shell
     source ~/.bashrc
     ```
@@ -212,14 +243,14 @@ DBCrust provides intelligent shell autocompletion that understands URL schemes a
     ```bash
     # Create completions directory if it doesn't exist
     mkdir -p ~/.local/share/zsh/site-functions
-    
+
     # Generate completion script
     dbcrust --completions zsh > ~/.local/share/zsh/site-functions/_dbcrust
-    
+
     # Add to your .zshrc if not already present
     echo 'fpath=(~/.local/share/zsh/site-functions $fpath)' >> ~/.zshrc
     echo 'autoload -Uz compinit && compinit' >> ~/.zshrc
-    
+
     # Reload your shell
     source ~/.zshrc
     ```
@@ -229,7 +260,7 @@ DBCrust provides intelligent shell autocompletion that understands URL schemes a
     ```bash
     # Generate completion script
     dbcrust --completions fish > ~/.config/fish/completions/dbcrust.fish
-    
+
     # Reload fish completions
     fish -c "complete --erase --command dbcrust; source ~/.config/fish/completions/dbcrust.fish"
     ```
@@ -239,7 +270,7 @@ DBCrust provides intelligent shell autocompletion that understands URL schemes a
     ```powershell
     # Generate completion script
     dbcrust --completions powershell > $PROFILE.CurrentUserAllHosts.Replace("profile.ps1", "Completions/dbcrust.ps1")
-    
+
     # Add to your PowerShell profile
     Add-Content $PROFILE.CurrentUserAllHosts '. $PSScriptRoot/Completions/dbcrust.ps1'
     ```
@@ -255,7 +286,8 @@ dbc pos[TAB] → postgres://
 dbc my[TAB]  → mysql://
 dbc sq[TAB]  → sqlite://
 dbc cl[TAB]  → clickhouse://
-dbc doc[TAB] → docker://  
+dbc mo[TAB]  → mongodb://
+dbc doc[TAB] → docker://
 dbc ses[TAB] → session://
 dbc rec[TAB] → recent://
 dbc va[TAB]  → vault://
@@ -270,26 +302,27 @@ DBCrust provides smart contextual completions based on the URL scheme:
     ```bash
     # Shows running database containers
     dbc docker://[TAB]
-    # → postgres-dev mysql-test clickhouse-analytics
-    
+    # → postgres-dev mysql-test clickhouse-analytics mongodb-cache
+
     dbc docker://post[TAB] → docker://postgres-dev
     dbc docker://my[TAB]   → docker://mysql-test
     dbc docker://cl[TAB]   → docker://clickhouse-analytics
+    dbc docker://mo[TAB]   → docker://mongodb-cache
     ```
 
     **How it works:**
     - Queries Docker API for running containers
-    - Filters for database containers (PostgreSQL, MySQL, SQLite, ClickHouse images)
+    - Filters for database containers (PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB images)
     - Only shows containers that are currently running
     - Matches container names that start with your input
 
 === "Saved Sessions"
 
     ```bash
-    # Shows your saved sessions  
+    # Shows your saved sessions
     dbc session://[TAB]
     # → production_db staging_postgres local_dev
-    
+
     dbc session://prod[TAB] → session://production_db
     dbc session://loc[TAB]  → session://local_dev
     ```
@@ -305,7 +338,7 @@ DBCrust provides smart contextual completions based on the URL scheme:
     # Delegates to shell file completion
     dbc sqlite://[TAB]
     # → Uses your shell's built-in file completion
-    
+
     dbc sqlite://./[TAB] → sqlite://./myapp.db sqlite://./test.db
     ```
 
@@ -314,14 +347,14 @@ DBCrust provides smart contextual completions based on the URL scheme:
 ```bash
 # Scheme completion
 dbc [TAB]
-# → postgres:// mysql:// sqlite:// docker:// session:// recent:// vault://
+# → postgres:// mysql:// sqlite:// clickhouse:// mongodb:// docker:// session:// recent:// vault://
 
-# Docker container completion  
+# Docker container completion
 dbc docker://[TAB]
-# → postgres-dev mysql-prod redis-cache
+# → postgres-dev mysql-prod clickhouse-analytics mongodb-cache
 
 # Session completion
-dbc session://[TAB] 
+dbc session://[TAB]
 # → production staging development local
 
 # Recent connection (interactive)
@@ -329,7 +362,7 @@ dbc recent://[ENTER]
 # → 1. postgres://user@localhost:5432/mydb
 #   2. docker://postgres-dev/testdb
 #   3. mysql://root@server:3306/app
-#   Select connection [1-3]: 
+#   Select connection [1-3]:
 ```
 
 ## 🔧 Advanced Configuration
@@ -376,7 +409,7 @@ success = true
 
 [[recent_connections]]
 connection_url = "docker://postgres-dev/myapp"
-display_name = "docker://postgres-dev/myapp"  
+display_name = "docker://postgres-dev/myapp"
 timestamp = "2024-01-15T14:20:15Z"
 database_type = "PostgreSQL"
 success = true
@@ -390,10 +423,10 @@ success = true
    ```bash
    # Connect to production
    dbcrust postgres://readonly@prod.db.company.com:5432/analytics
-   
+
    # Save as session
    \ss prod_analytics
-   
+
    # Later, reconnect easily
    dbcrust session://prod_analytics
    ```
@@ -425,11 +458,12 @@ Choose the right scheme for your use case:
 
 | Use Case | Recommended Scheme | Example |
 |----------|-------------------|---------|
-| Local development | `postgres://`, `mysql://`, `sqlite://` | `postgres://localhost:5432/dev` |
+| Local development | `postgres://`, `mysql://`, `sqlite://`, `mongodb://` | `postgres://localhost:5432/dev` |
 | Production access | `session://` or `vault://` | `session://prod_readonly` |
 | Container development | `docker://` | `docker://postgres-dev` |
 | Quick reconnection | `recent://` | `recent://` |
 | Team sharing | `session://` with shared config | `session://shared_staging` |
+| Document databases | `mongodb://` or `mongodb+srv://` | `mongodb://localhost:27017/app` |
 
 ## 🔍 Troubleshooting
 
@@ -454,7 +488,7 @@ type _dbcrust  # Should show function definition
 **Docker completions not showing containers?**
 ```bash
 # Check Docker connectivity
-docker ps --format '{{.Names}}' | grep -E 'postgres|mysql|mariadb|sqlite'
+docker ps --format '{{.Names}}' | grep -E 'postgres|mysql|mariadb|sqlite|mongo|clickhouse'
 
 # Check Docker permissions
 docker info  # Should not require sudo
@@ -510,7 +544,7 @@ SELECT * FROM users WHERE [TAB]
 -- Suggestions: id, name, email, created_at, status
 ```
 
-#### WHERE Clause Precision  
+#### WHERE Clause Precision
 
 ```sql
 -- After WHERE, suggests ONLY column names (no functions or tables)
@@ -518,7 +552,7 @@ SELECT * FROM users WHERE [TAB]
 -- Suggestions: id, name, email, created_at, status, active
 -- NOT suggested: users, orders, *, COUNT(
 
--- Understands multiple tables in FROM clause  
+-- Understands multiple tables in FROM clause
 SELECT * FROM users u JOIN orders o ON u.id = o.user_id WHERE [TAB]
 -- Suggestions: columns from BOTH users and orders tables
 ```
@@ -557,10 +591,10 @@ SELECT status, COUNT(*) FROM users GROUP BY status HAVING [TAB]
 
 ```sql
 -- Handles complex multi-table scenarios
-SELECT u.name, o.total 
-FROM users u 
-  LEFT JOIN orders o ON u.id = o.user_id 
-  JOIN products p ON o.product_id = p.id 
+SELECT u.name, o.total
+FROM users u
+  LEFT JOIN orders o ON u.id = o.user_id
+  JOIN products p ON o.product_id = p.id
 WHERE [TAB]
 -- Suggests: u.id, u.name, u.email, o.id, o.total, o.status, p.name, p.price
 ```
@@ -592,7 +626,7 @@ SELECT u.[TAB] FROM users u
 ```sql
 -- Keyword expansion
 SEL[TAB] → SELECT
-FR[TAB] → FROM  
+FR[TAB] → FROM
 WH[TAB] → WHERE
 
 -- Full statement completion
@@ -612,7 +646,7 @@ DBCrust also provides completion for backslash commands:
 -- Suggestions: active_users, monthly_report, user_orders
 
 -- After \nd, suggests named queries to delete
-\nd [TAB] 
+\nd [TAB]
 -- Suggestions: old_report, unused_query
 ```
 
@@ -637,13 +671,13 @@ DBCrust also provides completion for backslash commands:
 
 ### Technical Features
 
-- **Multi-Database Support**: Works with PostgreSQL, MySQL, and SQLite
+- **Multi-Database Support**: Works with PostgreSQL, MySQL, SQLite, ClickHouse, and MongoDB
 - **Case-Insensitive Matching**: Completions work regardless of case
 - **Backwards Compatible**: All existing completion behavior is preserved
 - **Error Recovery**: Completion works even with partial or incomplete SQL statements
 
 !!! tip "Completion Best Practices"
-    
+
     - **Use TAB frequently** - completion works at any point in your SQL statement
     - **Trust the context** - suggestions are filtered to be relevant to your current clause
     - **Mix with schema exploration** - use `\dt` to see tables, then use completion for columns

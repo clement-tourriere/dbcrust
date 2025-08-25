@@ -3,6 +3,7 @@ use crate::database::{
     ConnectionInfo, DatabaseClient, DatabaseType, DatabaseTypeExt, create_database_client,
 };
 use crate::pgpass;
+
 use inquire::MultiSelect;
 use std::collections::HashMap;
 use std::error::Error as StdError;
@@ -721,6 +722,324 @@ impl Database {
         Err("No database client available".into())
     }
 
+    /// List MongoDB collections
+    pub async fn list_collections(
+        &mut self,
+    ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        debug!("[Database::list_collections] Listing MongoDB collections");
+
+        if let Some(ref database_client) = self.database_client {
+            let connection_info = database_client.get_connection_info();
+
+            match connection_info.database_type {
+                crate::database::DatabaseType::MongoDB => {
+                    // Use MongoDB-specific query to list collections
+                    let query = r#"
+                        SELECT
+                            name as "Collection Name",
+                            type as "Type",
+                            options as "Options"
+                        FROM (
+                            SELECT
+                                name,
+                                'collection' as type,
+                                '{}' as options
+                            FROM system.namespaces
+                            WHERE name NOT LIKE 'system.%'
+                        ) collections
+                        ORDER BY name
+                    "#;
+
+                    self.execute_query(query)
+                        .await
+                        .map_err(|e| format!("Error listing MongoDB collections: {e}").into())
+                }
+                _ => Ok(vec![
+                    vec!["Error".to_string()],
+                    vec!["This command is only available for MongoDB databases".to_string()],
+                ]),
+            }
+        } else {
+            Err("No database client available".into())
+        }
+    }
+
+    /// Describe MongoDB collection
+    pub async fn describe_collection(
+        &mut self,
+        collection_name: &str,
+    ) -> std::result::Result<crate::db::TableDetails, Box<dyn StdError>> {
+        debug!(
+            "[Database::describe_collection] Describing MongoDB collection: {}",
+            collection_name
+        );
+
+        if let Some(ref database_client) = self.database_client {
+            let connection_info = database_client.get_connection_info();
+
+            match connection_info.database_type {
+                crate::database::DatabaseType::MongoDB => {
+                    // Get collection metadata from MongoDB
+                    database_client
+                        .get_metadata_provider()
+                        .get_table_details(collection_name, None)
+                        .await
+                        .map_err(|e| format!("Error describing MongoDB collection: {e}").into())
+                }
+                _ => Err("This command is only available for MongoDB databases".into()),
+            }
+        } else {
+            Err("No database client available".into())
+        }
+    }
+
+    /// List MongoDB indexes
+    pub async fn list_mongo_indexes(
+        &mut self,
+    ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        debug!("[Database::list_mongo_indexes] Listing MongoDB indexes");
+
+        if let Some(ref database_client) = self.database_client {
+            let connection_info = database_client.get_connection_info();
+
+            match connection_info.database_type {
+                crate::database::DatabaseType::MongoDB => {
+                    // Query MongoDB system.indexes collection
+                    let query = r#"
+                        SELECT
+                            name as "Index Name",
+                            ns as "Namespace",
+                            key as "Keys"
+                        FROM system.indexes
+                        WHERE name NOT LIKE '_id_'
+                        ORDER BY ns, name
+                    "#;
+
+                    self.execute_query(query)
+                        .await
+                        .map_err(|e| format!("Error listing MongoDB indexes: {e}").into())
+                }
+                _ => Ok(vec![
+                    vec!["Error".to_string()],
+                    vec!["This command is only available for MongoDB databases".to_string()],
+                ]),
+            }
+        } else {
+            Err("No database client available".into())
+        }
+    }
+
+    /// Create MongoDB index
+    pub async fn create_mongo_index(
+        &mut self,
+        collection: &str,
+        field: &str,
+        index_type: Option<&str>,
+    ) -> std::result::Result<(), Box<dyn StdError>> {
+        debug!(
+            "[Database::create_mongo_index] Creating MongoDB index on {}.{}",
+            collection, field
+        );
+
+        if let Some(ref database_client) = self.database_client {
+            let connection_info = database_client.get_connection_info();
+
+            match connection_info.database_type {
+                crate::database::DatabaseType::MongoDB => {
+                    // Create index using MongoDB command
+                    let index_spec = match index_type {
+                        Some("text") => format!("{{ \"{}\": \"text\" }}", field),
+                        Some("hash") => format!("{{ \"{}\": \"hashed\" }}", field),
+                        Some("desc") => format!("{{ \"{}\": -1 }}", field),
+                        _ => format!("{{ \"{}\": 1 }}", field), // default ascending
+                    };
+
+                    let query = format!(
+                        "db.runCommand({{ createIndexes: \"{}\", indexes: [{{ key: {}, name: \"{}_{}_idx\" }}] }})",
+                        collection, index_spec, collection, field
+                    );
+
+                    self.execute_query(&query)
+                        .await
+                        .map_err(|e| format!("Error creating MongoDB index: {e}"))?;
+
+                    Ok(())
+                }
+                _ => Err("This command is only available for MongoDB databases".into()),
+            }
+        } else {
+            Err("No database client available".into())
+        }
+    }
+
+    /// Drop MongoDB index
+    pub async fn drop_mongo_index(
+        &mut self,
+        collection: &str,
+        index_name: &str,
+    ) -> std::result::Result<(), Box<dyn StdError>> {
+        debug!(
+            "[Database::drop_mongo_index] Dropping MongoDB index {} from {}",
+            index_name, collection
+        );
+
+        if let Some(ref database_client) = self.database_client {
+            let connection_info = database_client.get_connection_info();
+
+            match connection_info.database_type {
+                crate::database::DatabaseType::MongoDB => {
+                    // Drop index using MongoDB command
+                    let query = format!(
+                        "db.runCommand({{ dropIndexes: \"{}\", index: \"{}\" }})",
+                        collection, index_name
+                    );
+
+                    self.execute_query(&query)
+                        .await
+                        .map_err(|e| format!("Error dropping MongoDB index: {e}"))?;
+
+                    Ok(())
+                }
+                _ => Err("This command is only available for MongoDB databases".into()),
+            }
+        } else {
+            Err("No database client available".into())
+        }
+    }
+
+    /// Get MongoDB database statistics
+    pub async fn mongo_stats(
+        &mut self,
+    ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        debug!("[Database::mongo_stats] Getting MongoDB database statistics");
+
+        if let Some(ref database_client) = self.database_client {
+            let connection_info = database_client.get_connection_info();
+
+            match connection_info.database_type {
+                crate::database::DatabaseType::MongoDB => {
+                    // Get database statistics using MongoDB command
+                    let query = "db.runCommand({ dbStats: 1 })";
+
+                    self.execute_query(query)
+                        .await
+                        .map_err(|e| format!("Error getting MongoDB stats: {e}").into())
+                }
+                _ => Ok(vec![
+                    vec!["Error".to_string()],
+                    vec!["This command is only available for MongoDB databases".to_string()],
+                ]),
+            }
+        } else {
+            Err("No database client available".into())
+        }
+    }
+
+    /// Execute MongoDB find query
+    pub async fn mongo_find(
+        &mut self,
+        collection: &str,
+        filter: Option<&str>,
+        projection: Option<&str>,
+        limit: Option<i64>,
+    ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        debug!(
+            "[Database::mongo_find] Executing MongoDB find on collection: {}",
+            collection
+        );
+
+        if let Some(ref database_client) = self.database_client {
+            let connection_info = database_client.get_connection_info();
+
+            match connection_info.database_type {
+                crate::database::DatabaseType::MongoDB => {
+                    // Build MongoDB find query
+                    let filter_str = filter.unwrap_or("{}");
+                    let projection_str = projection.map(|p| format!(", {}", p)).unwrap_or_default();
+                    let limit_str = limit.map(|l| format!(", limit: {}", l)).unwrap_or_default();
+
+                    let query = format!(
+                        "db.{}.find({}{}){}",
+                        collection, filter_str, projection_str, limit_str
+                    );
+
+                    self.execute_query(&query)
+                        .await
+                        .map_err(|e| format!("Error executing MongoDB find: {e}").into())
+                }
+                _ => Ok(vec![
+                    vec!["Error".to_string()],
+                    vec!["This command is only available for MongoDB databases".to_string()],
+                ]),
+            }
+        } else {
+            Err("No database client available".into())
+        }
+    }
+
+    /// Execute MongoDB aggregation pipeline
+    pub async fn mongo_aggregate(
+        &mut self,
+        collection: &str,
+        pipeline: &str,
+    ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        debug!(
+            "[Database::mongo_aggregate] Executing MongoDB aggregation on collection: {}",
+            collection
+        );
+
+        if let Some(ref database_client) = self.database_client {
+            let connection_info = database_client.get_connection_info();
+
+            match connection_info.database_type {
+                crate::database::DatabaseType::MongoDB => {
+                    // Execute aggregation pipeline
+                    let query = format!("db.{}.aggregate({})", collection, pipeline);
+
+                    self.execute_query(&query)
+                        .await
+                        .map_err(|e| format!("Error executing MongoDB aggregation: {e}").into())
+                }
+                _ => Ok(vec![
+                    vec!["Error".to_string()],
+                    vec!["This command is only available for MongoDB databases".to_string()],
+                ]),
+            }
+        } else {
+            Err("No database client available".into())
+        }
+    }
+
+    /// Execute MongoDB text search
+    pub async fn mongo_text_search(
+        &mut self,
+        collection: &str,
+        search_term: &str,
+    ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        debug!(
+            "[Database::mongo_text_search] Executing text search on collection: {}",
+            collection
+        );
+        if let Some(ref database_client) = self.database_client {
+            let connection_info = database_client.get_connection_info();
+            match connection_info.database_type {
+                crate::database::DatabaseType::MongoDB => {
+                    // Execute MongoDB text search using $text operator
+                    let filter = format!(r#"{{"$text": {{"$search": "{}"}}}}"#, search_term);
+                    self.mongo_find(collection, Some(&filter), None, Some(10))
+                        .await
+                        .map_err(|e| format!("Error executing text search: {e}").into())
+                }
+                _ => Ok(vec![
+                    vec!["Error".to_string()],
+                    vec!["This command is only available for MongoDB databases".to_string()],
+                ]),
+            }
+        } else {
+            Err("No database client available".into())
+        }
+    }
+
     pub fn get_current_db(&self) -> String {
         if let Some(ref client) = self.database_client {
             client.get_current_database()
@@ -834,19 +1153,27 @@ impl Database {
                 "Owner".to_string(),
             ]);
 
-            // Add table rows
-            let default_schema = database_client
-                .get_metadata_provider()
-                .default_schema()
-                .unwrap_or_else(|| "main".to_string());
-
+            // Add table/collection rows
             for table in tables {
-                results.push(vec![
-                    default_schema.clone(),
-                    table,
-                    "table".to_string(),
-                    self.get_username(),
-                ]);
+                let conn_info = database_client.get_connection_info();
+                let schema_name =
+                    if conn_info.database_type == crate::database::DatabaseType::MongoDB {
+                        "".to_string() // MongoDB doesn't have schemas
+                    } else {
+                        database_client
+                            .get_metadata_provider()
+                            .default_schema()
+                            .unwrap_or_else(|| "main".to_string())
+                    };
+
+                let object_type =
+                    if conn_info.database_type == crate::database::DatabaseType::MongoDB {
+                        "collection".to_string()
+                    } else {
+                        "table".to_string()
+                    };
+
+                results.push(vec![schema_name, table, object_type, self.get_username()]);
             }
 
             Ok(results)

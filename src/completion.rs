@@ -1541,6 +1541,7 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::MySQL => "[mysql]",
                                     crate::database::DatabaseType::SQLite => "[sqlite]",
                                     crate::database::DatabaseType::ClickHouse => "[clickhouse]",
+                                    crate::database::DatabaseType::MongoDB => "[mongodb]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
@@ -1604,6 +1605,7 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::MySQL => "[mysql]",
                                     crate::database::DatabaseType::SQLite => "[sqlite]",
                                     crate::database::DatabaseType::ClickHouse => "[clickhouse]",
+                                    crate::database::DatabaseType::MongoDB => "[mongodb]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",

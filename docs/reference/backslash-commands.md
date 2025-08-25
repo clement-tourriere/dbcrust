@@ -62,6 +62,20 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
     | `\vcr [role]` | Force refresh vault credentials | `\vcr` or `\vcr my-role` |
     | `\vce` | Show expired vault credentials | `\vce` |
 
+=== "MongoDB Operations"
+
+    | Command | Description | Example |
+    |---------|-------------|---------|
+    | `\collections` | List collections in current database | `\collections` |
+    | `\dc <collection>` | Describe collection structure | `\dc users` |
+    | `\dmi` | List MongoDB indexes | `\dmi` |
+    | `\cmi <collection> <field> [type]` | Create MongoDB index | `\cmi users email` |
+    | `\ddmi <collection> <index>` | Drop MongoDB index | `\ddmi users email_1` |
+    | `\mstats` | Show MongoDB database statistics | `\mstats` |
+    | `\find <collection> [filter] [projection] [limit]` | Execute MongoDB find query | `\find users {"active": true}` |
+    | `\aggregate <collection> <pipeline>` | Execute MongoDB aggregation | `\aggregate users [{"$match": {"active": true}}]` |
+    | `\search <collection> <term>` | MongoDB text search | `\search articles "mongodb tutorial"` |
+
 === "Help & Control"
 
     | Command | Description | Example |
@@ -854,6 +868,187 @@ dbcrust vault://readonly@database/myapp-prod
 
 -- Clear cache when done
 \vcc
+```
+
+### MongoDB Operations
+
+DBCrust provides comprehensive MongoDB support with both native MongoDB commands and familiar SQL-like syntax for database and collection management.
+
+#### SQL Database Management Commands
+
+MongoDB database and collection operations can be performed using familiar SQL syntax:
+
+**Database Operations:**
+
+```sql
+-- Create a new database
+CREATE DATABASE analytics;
+
+-- Drop an existing database
+DROP DATABASE old_analytics;
+```
+
+**Collection Operations:**
+
+```sql
+-- Create a new collection
+CREATE COLLECTION user_profiles;
+
+-- Drop an existing collection
+DROP COLLECTION temp_data;
+```
+
+!!! tip "MongoDB Database Creation"
+    MongoDB creates databases implicitly when you first create a collection. The `CREATE DATABASE` command creates a temporary collection to initialize the database and then removes it.
+
+#### `\collections` - List Collections
+
+Lists all collections in the current MongoDB database.
+
+```sql
+\collections
+```
+
+**Output:**
+```
+╭─────────────────┬──────────────╮
+│ Collection      │ Type         │
+├─────────────────┼──────────────┤
+│ users           │ collection   │
+│ orders          │ collection   │
+│ products        │ collection   │
+│ sessions        │ collection   │
+╰─────────────────┴──────────────╯
+```
+
+#### `\dc <collection>` - Describe Collection
+
+Shows the structure and sample documents from a MongoDB collection.
+
+```sql
+\dc users
+```
+
+**Output:**
+```
+Collection: users
+Sample Documents: 3
+
+Field Structure:
+╭─────────────────┬──────────────┬──────────────╮
+│ Field           │ Type         │ Sample Value │
+├─────────────────┼──────────────┼──────────────┤
+│ _id             │ ObjectId     │ 507f1f77... │
+│ email           │ String       │ user@email.com │
+│ name            │ String       │ John Doe     │
+│ active          │ Boolean      │ true         │
+│ created_at      │ DateTime     │ 2024-01-15   │
+╰─────────────────┴──────────────┴──────────────╯
+```
+
+#### MongoDB-Specific Commands
+
+**`\dmi` - List MongoDB Indexes:**
+
+```sql
+\dmi
+```
+
+Shows all indexes across collections in the current database.
+
+**`\cmi <collection> <field> [type]` - Create Index:**
+
+```sql
+-- Create standard index
+\cmi users email
+
+-- Create text index for search
+\cmi articles content text
+```
+
+**`\search <collection> <term>` - Text Search:**
+
+```sql
+-- Search for documents containing specific terms
+\search articles "mongodb tutorial"
+
+-- Search with multiple terms
+\search products "wireless bluetooth"
+```
+
+#### Advanced MongoDB Queries
+
+DBCrust supports advanced SQL-to-MongoDB translation with sophisticated filtering:
+
+**LIKE Pattern Matching:**
+
+```sql
+-- SQL LIKE translates to MongoDB $regex
+SELECT * FROM users WHERE name LIKE 'John%';
+-- → MongoDB: {"name": {"$regex": "John.*", "$options": "i"}}
+```
+
+**IN Operator:**
+
+```sql
+-- SQL IN translates to MongoDB $in
+SELECT * FROM orders WHERE status IN ('pending', 'processing');
+-- → MongoDB: {"status": {"$in": ["pending", "processing"]}}
+```
+
+**OR Conditions:**
+
+```sql
+-- SQL OR translates to MongoDB $or
+SELECT * FROM users WHERE age > 18 OR verified = true;
+-- → MongoDB: {"$or": [{"age": {"$gt": 18}}, {"verified": true}]}
+```
+
+**BETWEEN Ranges:**
+
+```sql
+-- SQL BETWEEN translates to MongoDB $gte + $lte
+SELECT * FROM products WHERE price BETWEEN 10 AND 100;
+-- → MongoDB: {"price": {"$gte": 10, "$lte": 100}}
+```
+
+**NULL Handling:**
+
+```sql
+-- SQL IS NULL/IS NOT NULL translates to MongoDB $exists
+SELECT * FROM users WHERE email IS NOT NULL;
+-- → MongoDB: {"email": {"$exists": true, "$ne": null}}
+```
+
+#### MongoDB Workflow Example
+
+```sql
+-- Connect to MongoDB
+dbcrust mongodb://localhost:27017/myapp
+
+-- List collections
+\collections
+
+-- Examine a collection structure
+\dc users
+
+-- Query with advanced filtering
+SELECT * FROM users
+WHERE name LIKE 'John%'
+  AND age BETWEEN 18 AND 65
+  AND status IN ('active', 'verified');
+
+-- Create collection with SQL syntax
+CREATE COLLECTION user_sessions;
+
+-- Drop collection when no longer needed
+DROP COLLECTION temp_analytics;
+
+-- Create index for better performance
+\cmi users email
+
+-- Perform text search
+\search users "john developer"
 ```
 
 ## 💡 Advanced Usage Patterns
