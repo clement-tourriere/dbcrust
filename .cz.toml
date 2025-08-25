@@ -3,9 +3,9 @@ name = "cz_conventional_commits"
 version = "0.18.0"
 tag_format = "v$version"
 version_scheme = "semver"
-#update_changelog_on_bump = true
+update_changelog_on_bump = true
 bump_message = "release: v$current_version → v$new_version"
-gpg_sign = false
+gpg_sign = true
 
 
 # Files to update with new version
