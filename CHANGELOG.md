@@ -1,4 +1,159 @@
-## Unreleased
+## v0.19.0 (2025-08-25)
+
+### Feat
+
+- add mongodb connector
+
+## v0.18.0 (2025-08-19)
+
+### Feat
+
+- add clickhouse connection
+
+## v0.17.0 (2025-08-08)
+
+### Feat
+
+- python cursor queries
+
+## v0.16.1 (2025-08-07)
+
+## v0.16.0 (2025-08-07)
+
+### Feat
+
+- better django analyzer and add a django middleware
+
+## v0.15.1 (2025-08-05)
+
+### Fix
+
+- python packagin and remove the unused CLI arguments
+
+## v0.15.0 (2025-08-05)
+
+### Feat
+
+- rework named queries to use their own config file and be scoped
+
+## v0.14.1 (2025-08-05)
+
+### Fix
+
+- small auto completion fixes
+
+## v0.14.0 (2025-08-05)
+
+### Feat
+
+- allow column auto completion thanks to full line context aware completion
+
+## v0.13.2 (2025-08-05)
+
+### Fix
+
+- completion for \ef
+- replug the \ecopy
+
+## v0.13.1 (2025-08-05)
+
+### Fix
+
+- remove unused import warning in config
+
+## v0.13.0 (2025-08-05)
+
+### Feat
+
+- better completion system with db engine awareness
+
+### Fix
+
+- fix almost all failing tests related to last architecture changes
+
+## v0.12.3 (2025-08-01)
+
+## v0.12.2 (2025-08-01)
+
+### Fix
+
+- automatic tunnel
+
+## v0.12.1 (2025-08-01)
+
+### Fix
+
+- column selection
+
+## v0.12.0 (2025-07-31)
+
+### Feat
+
+- add Shift+Tab navigation for autocomplete suggestions (#3)
+
+### Fix
+
+- autocomplete table names
+
+## v0.11.5 (2025-07-29)
+
+## v0.11.4 (2025-07-28)
+
+### Fix
+
+- explain on vault connection
+
+## v0.11.3 (2025-07-28)
+
+### Fix
+
+- autocompletion for non-postgres databases
+
+## v0.11.2 (2025-07-28)
+
+## v0.11.1 (2025-07-28)
+
+### Fix
+
+- better and faster autocompletion system
+
+## v0.11.0 (2025-07-28)
+
+### Feat
+
+- huge refactoring of pool connections + cache + stats
+
+## v0.10.5 (2025-07-28)
+
+### Fix
+
+- dbcrust django manage with special chars in db name
+
+## v0.10.4 (2025-07-25)
+
+### Fix
+
+- problematic postgres URL
+
+## v0.10.3 (2025-07-25)
+
+### Fix
+
+- switch dbs with \c
+
+## v0.10.2 (2025-07-24)
+
+### Fix
+
+- remove vault creds file in case of decryption error
+
+## v0.10.1 (2025-07-23)
+
+## v0.10.0 (2025-07-23)
+
+### Feat
+
+- add django queries analyzer
 
 ## v0.19.0 (2025-08-25)
 
