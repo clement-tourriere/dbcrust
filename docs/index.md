@@ -19,7 +19,7 @@ L|Rust 2024|https://blog.rust-lang.org/2024/02/29/1.77.0.html|
 **A modern database CLI that speaks your language.** DBCrust combines the speed of Rust with intelligent features like context-aware autocompletion, SSH tunneling, Vault integration, and powerful Django ORM analysis. Whether you're debugging production issues, analyzing data, or optimizing applications, DBCrust provides an unmatched developer experience.
 
 !!! success "One Tool, All Databases + Advanced Features"
-    **PostgreSQL • MySQL • SQLite** with smart autocompletion • **SSH tunneling** for secure connections • **Vault integration** for dynamic credentials • **Django ORM analyzer** for performance optimization
+    **PostgreSQL • MySQL • SQLite • ClickHouse • MongoDB** with smart autocompletion • **SSH tunneling** for secure connections • **Vault integration** for dynamic credentials • **Django ORM analyzer** for performance optimization
 
 ## ✨ Core Features
 
@@ -35,6 +35,7 @@ L|Rust 2024|https://blog.rust-lang.org/2024/02/29/1.77.0.html|
     **Smart URL Scheme Completion**
     ```bash
     dbc pos[TAB] → postgres://
+    dbc mo[TAB] → mongodb://
     dbc docker://my[TAB] → docker://my-postgres-container
     dbc session://prod[TAB] → session://production_db
     ```
@@ -132,6 +133,24 @@ L|Rust 2024|https://blog.rust-lang.org/2024/02/29/1.77.0.html|
 
     [**📖 Complete Django Integration Guide →**](/dbcrust/django-analyzer/)
 
+=== "🗃 Document Databases"
+
+    **MongoDB with SQL-like Interface**
+    ```sql
+    -- Familiar SQL syntax that translates to MongoDB
+    SELECT * FROM users WHERE name LIKE 'John%' AND age > 18;
+
+    -- Advanced filtering with SQL operators
+    SELECT * FROM orders WHERE status IN ('pending', 'shipped')
+      AND total BETWEEN 100 AND 1000;
+
+    -- Database management with SQL commands
+    CREATE DATABASE analytics;
+    CREATE COLLECTION user_events;
+    ```
+
+    [**📖 Complete MongoDB Guide →**](/dbcrust/user-guide/mongodb/)
+
 ## 🏃‍♂️ Quick Start
 
 === "Native Install (Fastest)"
@@ -187,8 +206,16 @@ dbcrust mysql://root:pass@localhost:3306/myapp
 # SQLite
 dbcrust sqlite:///./myapp.db
 
+# ClickHouse
+dbcrust clickhouse://user:pass@localhost:8123/myapp
+
+# MongoDB
+dbcrust mongodb://user:pass@localhost:27017/myapp
+dbcrust mongodb+srv://user:pass@cluster.mongodb.net/myapp
+
 # Docker containers (with auto-discovery)
 dbcrust docker://my-postgres-container
+dbcrust docker://my-mongo-container
 dbcrust docker://   # Interactive selection
 
 # Saved sessions

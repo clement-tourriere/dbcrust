@@ -11,7 +11,7 @@ Get DBCrust installed instantly with our automated installers:
     ```bash
     # Install DBCrust with a single command
     curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
-    
+
     # Then use it immediately
     dbcrust postgres://user:pass@localhost/mydb
     dbc postgres://user:pass@localhost/mydb  # Short alias
@@ -22,7 +22,7 @@ Get DBCrust installed instantly with our automated installers:
     ```powershell
     # Install DBCrust with PowerShell
     irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
-    
+
     # Then use it immediately
     dbcrust postgres://user:pass@localhost/mydb
     dbc postgres://user:pass@localhost/mydb  # Short alias
@@ -33,10 +33,10 @@ Get DBCrust installed instantly with our automated installers:
     ```bash
     # Install specific version (Unix)
     DBCRUST_VERSION=v0.12.2 curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
-    
+
     # Install to custom directory (Unix)
     DBCRUST_INSTALL_DIR=/usr/local/bin curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
-    
+
     # Verbose installation (Unix)
     curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh -s -- --verbose
     ```
@@ -44,10 +44,10 @@ Get DBCrust installed instantly with our automated installers:
     ```powershell
     # Install specific version (Windows)
     $env:DBCRUST_VERSION = "v0.12.2"; irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
-    
+
     # Install to custom directory (Windows)
     .\install.ps1 -InstallDir "C:\Tools\dbcrust" -NoModifyPath
-    
+
     # Verbose installation (Windows)
     .\install.ps1 -Verbose
     ```
@@ -70,10 +70,10 @@ Get DBCrust installed instantly with our automated installers:
     ```bash
     # Install as a global tool (recommended)
     uv tool install dbcrust
-    
+
     # Verify installation
     dbcrust --version
-    
+
     # Update to latest version
     uv tool upgrade dbcrust
     ```
@@ -83,12 +83,13 @@ Get DBCrust installed instantly with our automated installers:
     ```bash
     # Try DBCrust immediately without installation
     uvx dbcrust postgres://user:pass@localhost/mydb
-    
+
     # Works with any database URL and URL scheme
     uvx dbcrust docker://
     uvx dbcrust session://production_db
     uvx dbcrust mysql://user:pass@localhost/mydb
     uvx dbcrust sqlite:///path/to/database.db
+    uvx dbcrust mongodb://user:pass@localhost:27017/mydb
     ```
 
 === "Project Dependency"
@@ -96,7 +97,7 @@ Get DBCrust installed instantly with our automated installers:
     ```bash
     # Add to a Python project
     uv add dbcrust
-    
+
     # In pyproject.toml
     [project]
     dependencies = ["dbcrust>=0.4.0"]
@@ -228,11 +229,11 @@ Enable intelligent shell autocompletion with URL scheme support and contextual s
     ```bash
     # Create completions directory if it doesn't exist
     mkdir -p ~/.local/share/bash-completion/completions
-    
+
     # Install completion scripts for both binaries
     dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
     dbc --completions bash > ~/.local/share/bash-completion/completions/dbc
-    
+
     # Reload your shell
     source ~/.bashrc
     ```
@@ -242,18 +243,18 @@ Enable intelligent shell autocompletion with URL scheme support and contextual s
     ```bash
     # Create completions directory if it doesn't exist
     mkdir -p ~/.zfunc
-    
+
     # Install completion scripts
     dbcrust --completions zsh > ~/.zfunc/_dbcrust
     dbc --completions zsh > ~/.zfunc/_dbc
-    
+
     # Add these lines to your .zshrc (before oh-my-zsh if you use it):
     fpath+=~/.zfunc
     autoload -U compinit && compinit
-    
+
     # If you use oh-my-zsh, make sure these lines come BEFORE:
     # source $ZSH/oh-my-zsh.sh
-    
+
     # Reload your shell
     source ~/.zshrc
     ```
@@ -264,7 +265,7 @@ Enable intelligent shell autocompletion with URL scheme support and contextual s
     # Install completion scripts for both binaries
     dbcrust --completions fish > ~/.config/fish/completions/dbcrust.fish
     dbc --completions fish > ~/.config/fish/completions/dbc.fish
-    
+
     # Reload fish shell for completions to take effect
     exec fish
     ```
@@ -275,11 +276,11 @@ Enable intelligent shell autocompletion with URL scheme support and contextual s
     # Create completions directory
     $CompletionDir = Split-Path $PROFILE.CurrentUserAllHosts -Parent | Join-Path -ChildPath "Completions"
     New-Item -ItemType Directory -Force -Path $CompletionDir
-    
+
     # Generate completion scripts for both binaries
     dbcrust --completions powershell > "$CompletionDir/dbcrust.ps1"
     dbc --completions powershell > "$CompletionDir/dbc.ps1"
-    
+
     # Add to your PowerShell profile
     Add-Content $PROFILE.CurrentUserAllHosts ". `$PSScriptRoot/Completions/dbcrust.ps1"
     Add-Content $PROFILE.CurrentUserAllHosts ". `$PSScriptRoot/Completions/dbc.ps1"
@@ -287,16 +288,16 @@ Enable intelligent shell autocompletion with URL scheme support and contextual s
 
 !!! success "Smart Autocompletion Features"
     Once installed, you'll get intelligent completions for both `dbcrust` and `dbc` commands:
-    
+
     - **URL schemes**: `dbc pos[TAB]` → `dbc postgres://`
     - **Docker containers**: `dbc docker://[TAB]` → lists running database containers
     - **Saved sessions**: `dbc session://[TAB]` → lists your saved sessions
     - **File completion**: `dbc sqlite://[TAB]` → delegates to shell file completion
     - **Command flags**: `dbc --[TAB]` → shows all available options
-    
+
     !!! tip "Zsh Users"
         For oh-my-zsh users, make sure to add the `fpath` and `compinit` lines **before** sourcing oh-my-zsh in your `.zshrc`
-    
+
     See [URL Schemes & Autocompletion](/dbcrust/reference/url-schemes/) for complete documentation.
 
 ### Configuration Directory
@@ -437,14 +438,14 @@ rm -rf ~/.config/dbcrust
 !!! error "Command not found: dbcrust"
 
     **Solution**: Make sure the installation directory is in your PATH:
-    
+
     ```bash
     # For uv tool installs
     export PATH="$HOME/.local/bin:$PATH"
-    
+
     # For pip --user installs
     export PATH="$HOME/.local/bin:$PATH"
-    
+
     # For cargo installs
     export PATH="$HOME/.cargo/bin:$PATH"
     ```
@@ -452,11 +453,11 @@ rm -rf ~/.config/dbcrust
 !!! error "SSL certificate verify failed"
 
     **Solution**: Update certificates or use system packages:
-    
+
     ```bash
     # macOS
     /Applications/Python\ 3.x/Install\ Certificates.command
-    
+
     # Linux
     sudo apt-get update && sudo apt-get install ca-certificates
     ```
@@ -464,16 +465,54 @@ rm -rf ~/.config/dbcrust
 !!! error "Permission denied"
 
     **Solution**: Use virtual environments or user installations:
-    
+
     ```bash
     # Use --user flag
     pip install --user dbcrust
-    
+
     # Or use virtual environment
     python -m venv venv
     source venv/bin/activate
     pip install dbcrust
     ```
+
+## 🗃 Supported Databases
+
+DBCrust works as a database client and connects to existing database servers. No additional database installation is required on your local machine.
+
+### Supported Database Systems
+
+| Database | Version Support | Connection Method | Notes |
+|----------|----------------|-------------------|-------|
+| **PostgreSQL** | 9.6+ | `postgres://` | Full feature support |
+| **MySQL** | 5.7+ | `mysql://` | Full feature support |
+| **SQLite** | 3.6+ | `sqlite://` | File-based, no server needed |
+| **ClickHouse** | 20.3+ | `clickhouse://` | HTTP interface (port 8123) |
+| **MongoDB** | 4.0+ | `mongodb://`, `mongodb+srv://` | Document database with SQL-like interface |
+
+### Database Client Features
+
+- **No Database Installation Required**: DBCrust is a client tool that connects to existing database servers
+- **Remote Connections**: Connect to databases running anywhere (localhost, remote servers, cloud)
+- **Docker Integration**: Automatic discovery and connection to database containers
+- **Multiple Authentication**: Username/password, SSL/TLS, connection strings, Vault integration
+- **Session Management**: Save and reuse database connections
+
+### Quick Database Test
+
+Test DBCrust without setting up any external database:
+
+```bash
+# Test with SQLite (creates temporary in-memory database)
+dbcrust sqlite://:memory: --query "SELECT 'Hello DBCrust!' as message"
+
+# Expected output:
+# ╭─────────────────╮
+# │ message         │
+# ├─────────────────┤
+# │ Hello DBCrust!  │
+# ╰─────────────────╯
+```
 
 ### Platform-Specific Notes
 
