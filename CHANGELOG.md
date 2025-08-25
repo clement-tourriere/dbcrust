@@ -1,10 +1,30 @@
 ## Unreleased
 
+## v0.19.0 (2025-08-25)
+
+### Feat
+
+- MongoDB connector with full SQL-to-MongoDB query translation
+- MongoDB Docker container discovery and automatic connection
+- Advanced MongoDB filtering support (LIKE, IN, OR, BETWEEN, NULL checks)
+- MongoDB database and collection management commands
+- MongoDB text search capabilities
+- Comprehensive MongoDB documentation suite
+
+### Docs
+
+- Add AGENTS.md for development workflow guidance
+- Complete MongoDB user guide with examples and best practices
+
 ## v0.18.0 (2025-08-19)
 
 ### Feat
 
 - add clickhouse connection
+
+### Docs
+
+- add clickhouse in the documentation
 
 ## v0.17.0 (2025-08-08)
 
@@ -12,7 +32,19 @@
 
 - python cursor queries
 
+### Docs
+
+- update the documentation again to be more clear
+
 ## v0.16.1 (2025-08-07)
+
+### Docs
+
+- huge documentation cleaning and improvement
+
+### Fix
+
+- add clippy and format to codebase
 
 ## v0.16.0 (2025-08-07)
 
