@@ -160,6 +160,10 @@ impl SqlParserFactory {
                 // Use PostgreSQL parser for now as ClickHouse SQL is similar
                 Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
             }
+            DatabaseType::MongoDB => {
+                // MongoDB doesn't use SQL, use generic parser
+                Box::new(GenericSqlParser::new())
+            }
         }
     }
 
@@ -322,6 +326,7 @@ pub mod parsing_utils {
             DatabaseType::MySQL => ch.is_alphanumeric() || ch == '_' || ch == '$',
             DatabaseType::SQLite => ch.is_alphanumeric() || ch == '_',
             DatabaseType::ClickHouse => ch.is_alphanumeric() || ch == '_',
+            DatabaseType::MongoDB => ch.is_alphanumeric() || ch == '_', // MongoDB collection/field names
         }
     }
 
@@ -363,6 +368,10 @@ pub mod parsing_utils {
                     "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP" | "LIMIT"
                 )
             }
+            DatabaseType::MongoDB => {
+                // MongoDB doesn't have SQL keywords, but some field names might need quoting
+                false
+            }
         }
     }
 
@@ -373,6 +382,7 @@ pub mod parsing_utils {
             DatabaseType::MySQL => '`',
             DatabaseType::SQLite => '"',
             DatabaseType::ClickHouse => '`', // ClickHouse uses backticks like MySQL
+            DatabaseType::MongoDB => '"',    // MongoDB uses double quotes for field names
         }
     }
 }

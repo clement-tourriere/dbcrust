@@ -113,6 +113,37 @@ pub enum Command {
     ShowMyconf,
     ListDockerContainers,
 
+    // MongoDB-specific commands
+    ListCollections,
+    DescribeCollection {
+        collection_name: String,
+    },
+    ListMongoIndexes,
+    CreateMongoIndex {
+        collection: String,
+        field: String,
+        index_type: Option<String>,
+    },
+    DropMongoIndex {
+        collection: String,
+        index_name: String,
+    },
+    MongoStats,
+    MongoFind {
+        collection: String,
+        filter: Option<String>,
+        projection: Option<String>,
+        limit: Option<i64>,
+    },
+    MongoAggregate {
+        collection: String,
+        pipeline: String,
+    },
+    MongoTextSearch {
+        collection: String,
+        search_term: String,
+    },
+
     // EXPLAIN variants
     ExplainRaw {
         query: String,
@@ -725,6 +756,99 @@ impl CommandParser {
                 Ok(Command::VaultCacheRefresh { role })
             }
             "vce" => Ok(Command::VaultCacheExpired),
+
+            // MongoDB-specific commands
+            "collections" => Ok(Command::ListCollections),
+            "dc" => {
+                if args.is_empty() {
+                    Err(CommandError::MissingArgument("collection name".to_string()))
+                } else {
+                    Ok(Command::DescribeCollection {
+                        collection_name: args.to_string(),
+                    })
+                }
+            }
+            "dmi" => Ok(Command::ListMongoIndexes),
+            "cmi" => {
+                // Parse collection field [type]
+                let parts: Vec<&str> = args.split_whitespace().collect();
+                if parts.len() < 2 {
+                    return Err(CommandError::MissingArgument(
+                        "collection and field name".to_string(),
+                    ));
+                }
+                let collection = parts[0].to_string();
+                let field = parts[1].to_string();
+                let index_type = parts.get(2).map(|s| s.to_string());
+                Ok(Command::CreateMongoIndex {
+                    collection,
+                    field,
+                    index_type,
+                })
+            }
+            "ddmi" => {
+                // Parse collection index_name
+                let parts: Vec<&str> = args.split_whitespace().collect();
+                if parts.len() < 2 {
+                    return Err(CommandError::MissingArgument(
+                        "collection and index name".to_string(),
+                    ));
+                }
+                let collection = parts[0].to_string();
+                let index_name = parts[1].to_string();
+                Ok(Command::DropMongoIndex {
+                    collection,
+                    index_name,
+                })
+            }
+            "mstats" => Ok(Command::MongoStats),
+            "find" => {
+                // Parse collection [filter] [projection] [limit]
+                let parts: Vec<&str> = args.split_whitespace().collect();
+                if parts.is_empty() {
+                    return Err(CommandError::MissingArgument("collection name".to_string()));
+                }
+                let collection = parts[0].to_string();
+                let filter = parts.get(1).map(|s| s.to_string());
+                let projection = parts.get(2).map(|s| s.to_string());
+                let limit = parts.get(3).and_then(|s| s.parse::<i64>().ok());
+                Ok(Command::MongoFind {
+                    collection,
+                    filter,
+                    projection,
+                    limit,
+                })
+            }
+            "aggregate" => {
+                // Parse collection pipeline
+                let parts: Vec<&str> = args.splitn(2, ' ').collect();
+                if parts.len() < 2 {
+                    return Err(CommandError::MissingArgument(
+                        "collection and aggregation pipeline".to_string(),
+                    ));
+                }
+                let collection = parts[0].to_string();
+                let pipeline = parts[1].to_string();
+                Ok(Command::MongoAggregate {
+                    collection,
+                    pipeline,
+                })
+            }
+            "search" => {
+                // Parse collection search_term
+                let parts: Vec<&str> = args.splitn(2, ' ').collect();
+                if parts.len() < 2 {
+                    return Err(CommandError::MissingArgument(
+                        "collection and search term".to_string(),
+                    ));
+                }
+                let collection = parts[0].to_string();
+                let search_term = parts[1].to_string();
+                Ok(Command::MongoTextSearch {
+                    collection,
+                    search_term,
+                })
+            }
 
             _ => Err(CommandError::UnknownCommand(cmd.to_string())),
         }
@@ -1747,6 +1871,201 @@ impl CommandExecutor for Command {
                 Ok(CommandResult::Output(output))
             }
 
+            // MongoDB-specific commands
+            Command::ListCollections => {
+                let mut db = database.lock().unwrap();
+                match db.list_collections().await {
+                    Ok(results) => {
+                        if results.is_empty() {
+                            Ok(CommandResult::Output("No collections found.".to_string()))
+                        } else {
+                            let output = if db.is_expanded_display() {
+                                let tables = crate::format::format_query_results_expanded(&results);
+                                tables
+                                    .into_iter()
+                                    .map(|t| t.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            } else {
+                                crate::format::format_query_results_psql(&results)
+                            };
+                            Ok(CommandResult::Output(output))
+                        }
+                    }
+                    Err(e) => Ok(CommandResult::Error(format!(
+                        "Failed to list collections: {e}"
+                    ))),
+                }
+            }
+
+            Command::DescribeCollection { collection_name } => {
+                let mut db = database.lock().unwrap();
+                match db.describe_collection(collection_name).await {
+                    Ok(details) => {
+                        let output = crate::format::format_table_details(&details);
+                        Ok(CommandResult::Output(output))
+                    }
+                    Err(e) => Ok(CommandResult::Error(format!(
+                        "Failed to describe collection '{collection_name}': {e}"
+                    ))),
+                }
+            }
+
+            Command::ListMongoIndexes => {
+                let mut db = database.lock().unwrap();
+                match db.list_mongo_indexes().await {
+                    Ok(results) => {
+                        if results.is_empty() {
+                            Ok(CommandResult::Output("No indexes found.".to_string()))
+                        } else {
+                            let output = if db.is_expanded_display() {
+                                let tables = crate::format::format_query_results_expanded(&results);
+                                tables
+                                    .into_iter()
+                                    .map(|t| t.to_string())
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            } else {
+                                crate::format::format_query_results_psql(&results)
+                            };
+                            Ok(CommandResult::Output(output))
+                        }
+                    }
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to list indexes: {e}"))),
+                }
+            }
+
+            Command::CreateMongoIndex {
+                collection,
+                field,
+                index_type,
+            } => {
+                let mut db = database.lock().unwrap();
+                match db
+                    .create_mongo_index(collection, field, index_type.as_deref())
+                    .await
+                {
+                    Ok(_) => Ok(CommandResult::Output(format!(
+                        "Index created successfully on collection '{}' field '{}'",
+                        collection, field
+                    ))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to create index: {e}"))),
+                }
+            }
+
+            Command::DropMongoIndex {
+                collection,
+                index_name,
+            } => {
+                let mut db = database.lock().unwrap();
+                match db.drop_mongo_index(collection, index_name).await {
+                    Ok(_) => Ok(CommandResult::Output(format!(
+                        "Index '{}' dropped successfully from collection '{}'",
+                        index_name, collection
+                    ))),
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to drop index: {e}"))),
+                }
+            }
+
+            Command::MongoStats => {
+                let mut db = database.lock().unwrap();
+                match db.mongo_stats().await {
+                    Ok(results) => {
+                        let output = if db.is_expanded_display() {
+                            let tables = crate::format::format_query_results_expanded(&results);
+                            tables
+                                .into_iter()
+                                .map(|t| t.to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        } else {
+                            crate::format::format_query_results_psql(&results)
+                        };
+                        Ok(CommandResult::Output(output))
+                    }
+                    Err(e) => Ok(CommandResult::Error(format!(
+                        "Failed to get MongoDB stats: {e}"
+                    ))),
+                }
+            }
+
+            Command::MongoFind {
+                collection,
+                filter,
+                projection,
+                limit,
+            } => {
+                let mut db = database.lock().unwrap();
+                match db
+                    .mongo_find(collection, filter.as_deref(), projection.as_deref(), *limit)
+                    .await
+                {
+                    Ok(results) => {
+                        let output = if db.is_expanded_display() {
+                            let tables = crate::format::format_query_results_expanded(&results);
+                            tables
+                                .into_iter()
+                                .map(|t| t.to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        } else {
+                            crate::format::format_query_results_psql(&results)
+                        };
+                        Ok(CommandResult::Output(output))
+                    }
+                    Err(e) => Ok(CommandResult::Error(format!("Failed to execute find: {e}"))),
+                }
+            }
+
+            Command::MongoAggregate {
+                collection,
+                pipeline,
+            } => {
+                let mut db = database.lock().unwrap();
+                match db.mongo_aggregate(collection, pipeline).await {
+                    Ok(results) => {
+                        let output = if db.is_expanded_display() {
+                            let tables = crate::format::format_query_results_expanded(&results);
+                            tables
+                                .into_iter()
+                                .map(|t| t.to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        } else {
+                            crate::format::format_query_results_psql(&results)
+                        };
+                        Ok(CommandResult::Output(output))
+                    }
+                    Err(e) => Ok(CommandResult::Error(format!(
+                        "Failed to execute aggregation: {e}"
+                    ))),
+                }
+            }
+            Command::MongoTextSearch {
+                collection,
+                search_term,
+            } => {
+                let mut db = database.lock().unwrap();
+                match db.mongo_text_search(collection, search_term).await {
+                    Ok(results) => {
+                        let output = if db.is_expanded_display() {
+                            let tables = crate::format::format_query_results_expanded(&results);
+                            tables
+                                .into_iter()
+                                .map(|t| t.to_string())
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        } else {
+                            crate::format::format_query_results_psql(&results)
+                        };
+                        Ok(CommandResult::Output(output))
+                    }
+                    Err(e) => Ok(CommandResult::Error(format!(
+                        "Failed to execute text search: {e}"
+                    ))),
+                }
+            }
+
             // History management commands
             Command::ClearSessionHistory { session_hash } => {
                 let history_manager =
@@ -1882,6 +2201,16 @@ impl CommandExecutor for Command {
             Command::VaultCacheClear => "Clear all cached vault credentials",
             Command::VaultCacheRefresh { .. } => "Refresh vault credential cache",
             Command::VaultCacheExpired => "Show expired vault credentials",
+            // MongoDB-specific commands
+            Command::ListCollections => "List collections in current database",
+            Command::DescribeCollection { .. } => "Describe collection structure",
+            Command::ListMongoIndexes => "List MongoDB indexes",
+            Command::CreateMongoIndex { .. } => "Create MongoDB index",
+            Command::DropMongoIndex { .. } => "Drop MongoDB index",
+            Command::MongoStats => "Show MongoDB database statistics",
+            Command::MongoFind { .. } => "Execute MongoDB find query",
+            Command::MongoAggregate { .. } => "Execute MongoDB aggregation pipeline",
+            Command::MongoTextSearch { .. } => "Execute MongoDB text search",
         }
     }
 
@@ -1937,6 +2266,16 @@ impl CommandExecutor for Command {
             Command::VaultCacheClear => "\\vcc",
             Command::VaultCacheRefresh { .. } => "\\vcr [role]",
             Command::VaultCacheExpired => "\\vce",
+            // MongoDB-specific commands
+            Command::ListCollections => "\\collections",
+            Command::DescribeCollection { .. } => "\\dc <collection_name>",
+            Command::ListMongoIndexes => "\\dmi",
+            Command::CreateMongoIndex { .. } => "\\cmi <collection> <field> [type]",
+            Command::DropMongoIndex { .. } => "\\ddmi <collection> <index_name>",
+            Command::MongoStats => "\\mstats",
+            Command::MongoFind { .. } => "\\find <collection> [filter] [projection] [limit]",
+            Command::MongoAggregate { .. } => "\\aggregate <collection> <pipeline>",
+            Command::MongoTextSearch { .. } => "\\search <collection> <search_term>",
         }
     }
 
@@ -1989,6 +2328,16 @@ impl CommandExecutor for Command {
             | Command::VaultCacheClear
             | Command::VaultCacheRefresh { .. }
             | Command::VaultCacheExpired => CommandCategory::VaultManagement,
+            // MongoDB-specific commands
+            Command::ListCollections => CommandCategory::DatabaseNavigation,
+            Command::DescribeCollection { .. } => CommandCategory::DatabaseNavigation,
+            Command::ListMongoIndexes => CommandCategory::DatabaseSpecific,
+            Command::CreateMongoIndex { .. } => CommandCategory::DatabaseSpecific,
+            Command::DropMongoIndex { .. } => CommandCategory::DatabaseSpecific,
+            Command::MongoStats => CommandCategory::DatabaseSpecific,
+            Command::MongoFind { .. } => CommandCategory::DatabaseSpecific,
+            Command::MongoAggregate { .. } => CommandCategory::DatabaseSpecific,
+            Command::MongoTextSearch { .. } => CommandCategory::DatabaseSpecific,
         }
     }
 }

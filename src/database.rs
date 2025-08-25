@@ -16,6 +16,7 @@ pub enum DatabaseType {
     SQLite,
     MySQL,
     ClickHouse,
+    MongoDB,
 }
 
 impl fmt::Display for DatabaseType {
@@ -74,8 +75,9 @@ impl DatabaseTypeExt for DatabaseType {
         match self {
             DatabaseType::PostgreSQL => Some(5432),
             DatabaseType::MySQL => Some(3306),
-            DatabaseType::SQLite => None, // File-based
+            DatabaseType::SQLite => None,           // File-based
             DatabaseType::ClickHouse => Some(8123), // HTTP interface
+            DatabaseType::MongoDB => Some(27017),   // MongoDB default port
         }
     }
 
@@ -85,12 +87,16 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::MySQL => "MySQL",
             DatabaseType::SQLite => "SQLite",
             DatabaseType::ClickHouse => "ClickHouse",
+            DatabaseType::MongoDB => "MongoDB",
         }
     }
 
     fn supports_ssh_tunnel(&self) -> bool {
         match self {
-            DatabaseType::PostgreSQL | DatabaseType::MySQL | DatabaseType::ClickHouse => true,
+            DatabaseType::PostgreSQL
+            | DatabaseType::MySQL
+            | DatabaseType::ClickHouse
+            | DatabaseType::MongoDB => true,
             DatabaseType::SQLite => false, // File-based, no network connection
         }
     }
@@ -101,26 +107,33 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::MySQL => &["mysql"],
             DatabaseType::SQLite => &["sqlite"],
             DatabaseType::ClickHouse => &["clickhouse"],
+            DatabaseType::MongoDB => &["mongodb", "mongodb+srv"],
         }
     }
 
     fn is_file_based(&self) -> bool {
         match self {
             DatabaseType::SQLite => true,
-            DatabaseType::PostgreSQL | DatabaseType::MySQL | DatabaseType::ClickHouse => false,
+            DatabaseType::PostgreSQL
+            | DatabaseType::MySQL
+            | DatabaseType::ClickHouse
+            | DatabaseType::MongoDB => false,
         }
     }
 
     fn supports_json_explain(&self) -> bool {
         match self {
-            DatabaseType::PostgreSQL | DatabaseType::ClickHouse => true,
+            DatabaseType::PostgreSQL | DatabaseType::ClickHouse | DatabaseType::MongoDB => true,
             DatabaseType::MySQL | DatabaseType::SQLite => false,
         }
     }
 
     fn requires_authentication(&self) -> bool {
         match self {
-            DatabaseType::PostgreSQL | DatabaseType::MySQL | DatabaseType::ClickHouse => true,
+            DatabaseType::PostgreSQL
+            | DatabaseType::MySQL
+            | DatabaseType::ClickHouse
+            | DatabaseType::MongoDB => true,
             DatabaseType::SQLite => false,
         }
     }
@@ -131,6 +144,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::MySQL => "mysql",
             DatabaseType::SQLite => "sqlite",
             DatabaseType::ClickHouse => "clickhouse",
+            DatabaseType::MongoDB => "mongodb",
         }
     }
 
@@ -229,12 +243,51 @@ impl DatabaseTypeExt for DatabaseType {
                 "JSON_EXTRACT",
                 "JSON_EXTRACT_STRING",
             ],
+            DatabaseType::MongoDB => &[
+                // MongoDB aggregation operators
+                "$sum",
+                "$avg",
+                "$min",
+                "$max",
+                "$count",
+                "$match",
+                "$group",
+                "$sort",
+                "$limit",
+                "$skip",
+                "$project",
+                "$lookup",
+                "$unwind",
+                "$addFields",
+                // Date operators
+                "$dateToString",
+                "$dateFromString",
+                "$year",
+                "$month",
+                "$dayOfMonth",
+                // String operators
+                "$concat",
+                "$substr",
+                "$toLower",
+                "$toUpper",
+                "$split",
+                // Array operators
+                "$size",
+                "$push",
+                "$addToSet",
+                "$first",
+                "$last",
+                // Conditional operators
+                "$cond",
+                "$ifNull",
+                "$switch",
+            ],
         }
     }
 
     fn supports_from_unixtime(&self) -> bool {
         match self {
-            DatabaseType::MySQL | DatabaseType::ClickHouse => true,
+            DatabaseType::MySQL | DatabaseType::ClickHouse | DatabaseType::MongoDB => true,
             DatabaseType::PostgreSQL | DatabaseType::SQLite => false,
         }
     }
@@ -245,6 +298,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::MySQL => &["MYSQL_USER"],
             DatabaseType::SQLite => &[],
             DatabaseType::ClickHouse => &["CLICKHOUSE_USER"],
+            DatabaseType::MongoDB => &["MONGO_INITDB_ROOT_USERNAME"],
         }
     }
 
@@ -254,6 +308,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::MySQL => &["MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD"],
             DatabaseType::SQLite => &[],
             DatabaseType::ClickHouse => &["CLICKHOUSE_PASSWORD"],
+            DatabaseType::MongoDB => &["MONGO_INITDB_ROOT_PASSWORD"],
         }
     }
 
@@ -263,6 +318,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::MySQL => &["MYSQL_DATABASE"],
             DatabaseType::SQLite => &[],
             DatabaseType::ClickHouse => &["CLICKHOUSE_DB"],
+            DatabaseType::MongoDB => &["MONGO_INITDB_DATABASE"],
         }
     }
 
@@ -272,6 +328,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::MySQL => "root",
             DatabaseType::SQLite => "",
             DatabaseType::ClickHouse => "default",
+            DatabaseType::MongoDB => "admin",
         }
     }
 }
@@ -284,6 +341,7 @@ impl DatabaseType {
             "sqlite" => Ok(DatabaseType::SQLite),
             "mysql" => Ok(DatabaseType::MySQL),
             "clickhouse" => Ok(DatabaseType::ClickHouse),
+            "mongodb" | "mongodb+srv" => Ok(DatabaseType::MongoDB),
             "docker" => Ok(DatabaseType::PostgreSQL), // Default to PostgreSQL for docker:// URLs
             scheme => Err(DatabaseError::UnsupportedScheme(scheme.to_string())),
         }
@@ -428,6 +486,10 @@ pub async fn create_database_client(
         }
         DatabaseType::ClickHouse => {
             let client = crate::database_clickhouse::ClickHouseClient::new(connection_info).await?;
+            Ok(Box::new(client))
+        }
+        DatabaseType::MongoDB => {
+            let client = crate::database_mongodb::MongoDBClient::new(connection_info).await?;
             Ok(Box::new(client))
         }
     }
