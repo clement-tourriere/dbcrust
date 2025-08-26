@@ -385,6 +385,10 @@ pub struct Config {
     #[serde(default = "default_metadata_timeout")]
     pub metadata_timeout_seconds: u64, // 10 = 10 seconds
 
+    // Vector display configuration
+    #[serde(default)]
+    pub vector_display: crate::vector_display::VectorDisplayConfig,
+
     // Recent connections - not serialized with main config, stored separately
     #[serde(skip)]
     recent_connections_storage: RecentConnectionsStorage,
@@ -427,6 +431,7 @@ impl Default for Config {
             vault_cache_min_ttl_seconds: default_vault_min_ttl(),
             query_timeout_seconds: default_query_timeout(),
             metadata_timeout_seconds: default_metadata_timeout(),
+            vector_display: crate::vector_display::VectorDisplayConfig::default(),
             recent_connections_storage: {
                 // For tests, use empty storage to avoid loading user data
                 let is_test = std::env::var("RUST_TEST_MODE").is_ok()
@@ -1359,6 +1364,63 @@ impl Config {
             content.push_str(&format!(
                 "metadata_timeout_seconds = {}\n\n",
                 self.metadata_timeout_seconds
+            ));
+
+            // Vector Display Settings
+            content.push_str("# ================================================================================\n");
+            content.push_str("# VECTOR DISPLAY SETTINGS\n");
+            content.push_str(
+                "# Configure how PostgreSQL vectors (pgvector, embeddings) are displayed\n",
+            );
+            content.push_str("# ================================================================================\n\n");
+
+            content.push_str(&format!(
+                "# Display mode: full, truncated, summary, viz (default: truncated)\n"
+            ));
+            content.push_str(&format!("[vector_display]\n"));
+            content.push_str(&format!(
+                "display_mode = \"{}\"\n\n",
+                self.vector_display.display_mode
+            ));
+
+            content.push_str(&format!(
+                "# Number of elements to show at start/end when truncated (default: 5)\n"
+            ));
+            content.push_str(&format!(
+                "truncation_length = {}\n\n",
+                self.vector_display.truncation_length
+            ));
+
+            content.push_str(&format!(
+                "# Width of ASCII viz visualization (default: 40)\n"
+            ));
+            content.push_str(&format!(
+                "viz_width = {}\n\n",
+                self.vector_display.viz_width
+            ));
+
+            content.push_str(&format!(
+                "# Show summary statistics with other modes (default: false)\n"
+            ));
+            content.push_str(&format!(
+                "show_statistics = {}\n\n",
+                self.vector_display.show_statistics
+            ));
+
+            content.push_str(&format!(
+                "# Auto-switch to truncated mode above this dimension count (default: 20)\n"
+            ));
+            content.push_str(&format!(
+                "dimension_threshold = {}\n\n",
+                self.vector_display.dimension_threshold
+            ));
+
+            content.push_str(&format!(
+                "# Show dimension count in all display modes (default: true)\n"
+            ));
+            content.push_str(&format!(
+                "show_dimensions = {}\n\n",
+                self.vector_display.show_dimensions
             ));
 
             // Vault Settings

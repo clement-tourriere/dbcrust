@@ -2,7 +2,7 @@
 //! Complete rewrite with proper SQL parsing and context awareness
 
 use crate::command_completion::CommandCompletionManager;
-use crate::commands::CommandParser;
+use crate::commands::CommandShortcut;
 use crate::completion_provider::TableInfo;
 use crate::config::Config;
 use crate::database::DatabaseType;
@@ -13,8 +13,10 @@ use crate::sql_parser_trait::{
 };
 use nu_ansi_term::{Color, Style};
 use reedline::{Completer, Span, Suggestion};
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use strum::IntoEnumIterator;
 use tracing::{debug, error};
 
 /// No-op completer when autocomplete is disabled
@@ -41,6 +43,19 @@ pub struct SqlCompleter {
     last_db_name: Option<String>,
     /// Shared state to access full line buffer content
     full_line_buffer: Arc<Mutex<Option<String>>>,
+}
+
+/// Command completion types for smart classification
+#[derive(Debug, PartialEq)]
+enum CommandCompletionType {
+    /// Simple argument completion (e.g., \vd, \s, \ss)
+    ArgumentCompletion(String),
+    /// SQL completion after command (e.g., \ef, \er, \ex)
+    SqlCompletion(String, usize),
+    /// Complex multi-part completion (e.g., \ns)
+    ComplexCompletion(String),
+    /// Performance-optimized direct completion (e.g., \d, \c, \n)
+    DirectCompletion(String),
 }
 
 /// FROM clause completion states
@@ -98,6 +113,56 @@ impl SqlCompleter {
         self.schema_cache = None;
         self.table_cache.clear();
         self.column_cache.clear();
+    }
+
+    /// Classify command completion type for smart handling
+    fn classify_command(&self, line: &str) -> Option<CommandCompletionType> {
+        tracing::debug!("classify_command: analyzing line '{}'", line);
+
+        // Check for SQL-aware commands FIRST (highest priority)
+        if line.starts_with("\\ef ") || line.starts_with("\\er ") || line.starts_with("\\ex ") {
+            let cmd = &line[..3]; // \ef, \er, \ex
+            let sql_start = 4; // After command and space
+            tracing::debug!("classify_command: SQL completion for {}", cmd);
+            return Some(CommandCompletionType::SqlCompletion(
+                cmd.to_string(),
+                sql_start,
+            ));
+        }
+
+        // Check for complex commands
+        if line.starts_with("\\ns ") {
+            tracing::debug!("classify_command: Complex completion for \\ns");
+            return Some(CommandCompletionType::ComplexCompletion("\\ns".to_string()));
+        }
+
+        // Check for performance-optimized direct completions
+        if line.starts_with("\\d ")
+            || line.starts_with("\\c ")
+            || line.starts_with("\\n ")
+            || line.starts_with("\\nd ")
+        {
+            let cmd = line.split_whitespace().next()?.to_string();
+            tracing::debug!("classify_command: Direct completion for {}", cmd);
+            return Some(CommandCompletionType::DirectCompletion(cmd));
+        }
+
+        // Check for simple argument completion commands using regex
+        let regex = Regex::new(r"^\\([a-zA-Z]+)\s").unwrap();
+        if let Some(captures) = regex.captures(line) {
+            let command = format!("\\{}", captures.get(1)?.as_str());
+
+            // Validate against CommandShortcut enum
+            for shortcut in CommandShortcut::iter() {
+                if shortcut.command() == command {
+                    tracing::debug!("classify_command: Argument completion for {}", command);
+                    return Some(CommandCompletionType::ArgumentCompletion(command));
+                }
+            }
+        }
+
+        tracing::debug!("classify_command: No classification found");
+        None
     }
 
     /// Check if cache needs invalidation
@@ -471,64 +536,85 @@ impl SqlCompleter {
     }
 
     /// Complete backslash commands using the new trait-based system
-    fn complete_backslash_commands(&self, line: &str, pos: usize) -> Vec<Suggestion> {
-        // Parse the command line to determine if we're completing command name or arguments
-        if let Some((command, args, args_pos)) = self.command_manager.parse_command_line(line, pos)
-        {
-            if pos <= command.len() {
-                // Completing command name (cursor is still within the command itself)
-                let word_start = line[..pos].rfind(' ').map_or(0, |idx| idx + 1);
-                let current_word = &line[word_start..pos];
-                return self
-                    .command_manager
-                    .get_command_completions(current_word, word_start, pos);
-            } else {
-                // Completing command arguments using tokio runtime
-                let argument_completions = match tokio::runtime::Handle::try_current() {
+    fn complete_backslash_commands(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        tracing::debug!("complete_backslash_commands: line='{}', pos={}", line, pos);
+
+        // Use smart command classification
+        match self.classify_command(line) {
+            Some(CommandCompletionType::SqlCompletion(_cmd, sql_start)) => {
+                tracing::debug!("complete_backslash_commands: delegating to SQL completion");
+                // Preserve existing SQL completion logic
+                let sql_part = &line[sql_start..];
+                let sql_pos = pos.saturating_sub(sql_start);
+                self.complete_sql_query(sql_part, sql_pos, sql_start)
+            }
+
+            Some(CommandCompletionType::ComplexCompletion(cmd)) => {
+                tracing::debug!(
+                    "complete_backslash_commands: delegating to complex completion for {}",
+                    cmd
+                );
+                // Preserve existing complex completion logic
+                if cmd == "\\ns" {
+                    self.complete_ns_command(line, pos)
+                } else {
+                    Vec::new()
+                }
+            }
+
+            Some(CommandCompletionType::DirectCompletion(_)) => {
+                tracing::debug!(
+                    "complete_backslash_commands: using direct completion (handled elsewhere)"
+                );
+                // Let the existing hardcoded optimizations handle these
+                // They're already handled in complete_internal before this function is called
+                Vec::new()
+            }
+
+            Some(CommandCompletionType::ArgumentCompletion(cmd)) => {
+                tracing::debug!(
+                    "complete_backslash_commands: using argument completion for {}",
+                    cmd
+                );
+                // New simplified argument completion for commands like \vd
+                let args_start = cmd.len() + 1; // After command and space
+                let args = &line[args_start..];
+                let args_pos = pos.saturating_sub(args_start);
+
+                match tokio::runtime::Handle::try_current() {
                     Ok(_) => tokio::task::block_in_place(|| {
                         let handle = tokio::runtime::Handle::current();
                         handle.block_on(async {
-                            self.command_manager
-                                .get_argument_completions(&command, &args, args_pos)
-                                .await
+                            let mut suggestions = self
+                                .command_manager
+                                .get_argument_completions(&cmd, args, args_pos)
+                                .await;
+
+                            // Adjust spans to account for command prefix
+                            for suggestion in &mut suggestions {
+                                suggestion.span.start += args_start;
+                                suggestion.span.end += args_start;
+                            }
+
+                            suggestions
                         })
                     }),
                     Err(_) => {
                         debug!("No tokio runtime for command argument completion");
                         Vec::new()
                     }
-                };
-
-                // Return argument completions (even if empty - don't fall back to command completions)
-                return argument_completions;
-            }
-        }
-
-        // Fallback to old behavior if parsing fails
-        let mut completions = Vec::new();
-        let word_start = line[..pos].rfind(' ').map_or(0, |idx| idx + 1);
-        let current_word = &line[word_start..pos];
-
-        // Get basic command completions
-        for (_category, commands) in CommandParser::get_commands_by_category() {
-            for (cmd_name, cmd_description) in commands {
-                if cmd_name.starts_with(current_word) {
-                    completions.push(Suggestion {
-                        value: cmd_name.to_string(),
-                        description: Some(cmd_description.to_string()),
-                        span: Span {
-                            start: word_start,
-                            end: pos,
-                        },
-                        append_whitespace: true,
-                        extra: None,
-                        style: None,
-                    });
                 }
             }
-        }
 
-        completions
+            None => {
+                tracing::debug!("complete_backslash_commands: completing command names");
+                // Complete command names
+                let word_start = line.rfind(' ').map_or(0, |i| i + 1);
+                let current_word = &line[word_start..pos];
+                self.command_manager
+                    .get_command_completions(current_word, word_start, pos)
+            }
+        }
     }
 
     /// Get enhanced SQL keywords based on context using database-specific parser

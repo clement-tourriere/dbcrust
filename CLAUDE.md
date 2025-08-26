@@ -24,6 +24,10 @@ cargo run --release -- [CONNECTION_OPTIONS]
 # Run with connection URL
 cargo run --release -- postgres://user@host/database
 
+# Test completion and interactive features (faster than building)
+cargo run -- postgres://localhost/test
+# or any database URL to test tab completion in REPL mode
+
 # Run specific tests
 cargo test
 
@@ -114,7 +118,7 @@ functionality through PyO3 integration. This eliminates code duplication and ens
 pub async fn async_main() -> Result<(), Box<dyn StdError>>           // Rust CLI entry
 pub async fn async_main_with_args(args: Args) -> Result<(), Box<dyn StdError>>  // Shared logic
 
-// Core functions exposed for Python (src/main.rs) 
+// Core functions exposed for Python (src/main.rs)
 pub async fn handle_database_connection(args: &Args) -> Result<(Database, Option<DockerConnectionInfo>), Box<dyn StdError>>
 pub async fn run_interactive_mode(database: Database, args: &Args, config: &mut Config) -> Result<(), Box<dyn StdError>>
 
@@ -792,7 +796,7 @@ pub struct Config {
 // RecentConnection structure (automatic tracking)
 pub struct RecentConnection {
     pub connection_url: String,     // Full URL without password
-    pub display_name: String,       // Human-readable description  
+    pub display_name: String,       // Human-readable description
     pub timestamp: DateTime<Utc>,   // When connection occurred
     pub database_type: DatabaseType, // PostgreSQL, MySQL, SQLite
     pub success: bool,              // Connection success/failure
@@ -860,9 +864,8 @@ max_files = 5
 To debug autocomplete problems, set `level = "debug"` in your logging configuration:
 
 ```bash
-# Build and run with debug logging enabled
-cargo build --release
-./target/release/dbcrust postgres://connection
+# Test completion and interactive features with debug logging
+cargo run -- postgres://connection
 
 # In the REPL, type your query and hit TAB
 postgres@postgres=> SELECT   FROM users_user[TAB]
@@ -880,11 +883,37 @@ postgres@postgres=> SELECT   FROM users_user[TAB]
 2024-01-15 14:30:00.133 DEBUG [dbcrust] Adding column suggestion: name
 ```
 
+### Debugging Command Completion (Backslash Commands)
+
+For backslash command completion issues (like `\vd`, `\c`, `\s`), use debug logging:
+
+```bash
+# Run with debug logging to see completion flow
+cargo run -- docker://container
+
+# In the REPL, type command and hit TAB
+postgres@postgres=> \vd [TAB]
+```
+
+**Command Completion Debug Output:**
+```
+DEBUG [dbcrust] get_argument_completions for command='\vd', args='', pos=0
+DEBUG [dbcrust] checking ConfigCompleter for command \vd
+DEBUG [dbcrust] ConfigCompleter handles command \vd
+DEBUG [dbcrust] ConfigCompleter: handling \vd command
+DEBUG [dbcrust] build_suggestions_from_items: args='', pos=0, word_start=0, current_word=''
+DEBUG [dbcrust] testing 'full' starts with '' = true
+DEBUG [dbcrust] adding suggestion 'full'
+DEBUG [dbcrust] ConfigCompleter returned 4 suggestions
+```
+
 **Key Debug Points:**
 - **SQL Context Parsing**: Verify context identification and table extraction
 - **Column Fetching**: Check database query performance and results
 - **Cache Behavior**: Monitor cache hits/misses and invalidations
 - **Completion Logic**: Track suggestion generation and filtering
+- **Command Parsing**: Verify command/argument parsing in completion manager
+- **Completer Selection**: Check which completer handles each command
 
 ### Logging Output Options
 

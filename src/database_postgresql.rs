@@ -775,6 +775,16 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
     let column = row.column(column_index);
     let type_name = column.type_info().name();
 
+    // Normalize type name to uppercase for consistent matching
+    // PostgreSQL standard types come as uppercase (TEXT, VARCHAR)
+    // Extension types come as lowercase (halfvec, geometry)
+    let type_name_upper = type_name.to_uppercase();
+
+    debug!(
+        "[PostgreSQL] Processing type '{}' (normalized: '{}')",
+        type_name, type_name_upper
+    );
+
     // Handle NULL values first - try the most generic nullable type
     if let Ok(value) = row.try_get::<Option<String>, _>(column_index) {
         if value.is_none() {
@@ -782,8 +792,8 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
         }
     }
 
-    // Match on PostgreSQL type names and convert appropriately
-    match type_name {
+    // Match on normalized PostgreSQL type names and convert appropriately
+    match type_name_upper.as_str() {
         // String types
         "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" | "CITEXT" => row
             .try_get::<String, _>(column_index)
@@ -941,13 +951,181 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
 
-        // Custom/composite types and unknown types - try as string
-        _ => row.try_get::<String, _>(column_index).map_err(|e| {
-            DatabaseError::QueryError(format!(
-                "Unable to format PostgreSQL type '{}': {}",
-                type_name, e
-            ))
-        }),
+        // Extension types - provide specific guidance for known extensions
+        "VECTOR" | "HALFVEC" | "SPARSEVEC" => {
+            debug!(
+                "[PostgreSQL] Processing pgvector type '{}' (normalized: '{}')",
+                type_name, type_name_upper
+            );
+
+            // Use VectorFormatter for smart vector display with global config
+            let vector_config = crate::vector_display::get_global_vector_config();
+            let formatter = crate::vector_display::VectorFormatter::new(&vector_config);
+
+            // Use proper pgvector types (always available)
+            match type_name_upper.as_str() {
+                "VECTOR" => row
+                    .try_get::<pgvector::Vector, _>(column_index)
+                    .map(|v| {
+                        let values: Vec<f32> = v.as_slice().to_vec();
+                        formatter.format(&values)
+                    })
+                    .map_err(|e| {
+                        DatabaseError::QueryError(format!(
+                            "Failed to format {} type '{}': {}",
+                            type_name_upper, type_name, e
+                        ))
+                    }),
+                "HALFVEC" => row
+                    .try_get::<pgvector::HalfVector, _>(column_index)
+                    .map(|v| formatter.format_half(v.as_slice()))
+                    .map_err(|e| {
+                        DatabaseError::QueryError(format!(
+                            "Failed to format {} type '{}': {}",
+                            type_name_upper, type_name, e
+                        ))
+                    }),
+                "SPARSEVEC" => row
+                    .try_get::<pgvector::SparseVector, _>(column_index)
+                    .map(|v| formatter.format_sparse(v.indices(), v.values()))
+                    .map_err(|e| {
+                        DatabaseError::QueryError(format!(
+                            "Failed to format {} type '{}': {}",
+                            type_name_upper, type_name, e
+                        ))
+                    }),
+                _ => unreachable!(),
+            }
+        }
+
+        "GEOMETRY" | "GEOGRAPHY" | "BOX2D" | "BOX3D" => {
+            debug!(
+                "[PostgreSQL] Processing PostGIS type '{}' (normalized: '{}')",
+                type_name, type_name_upper
+            );
+            // For now, use string fallback but with PostGIS-aware processing
+            // TODO: Implement proper WKT conversion when geozero types are stable
+            row.try_get::<String, _>(column_index)
+                .map(|s| {
+                    // Clean up the string representation if needed
+                    if s.starts_with("01") || s.starts_with("00") {
+                        // This looks like WKB (Well-Known Binary) format
+                        format!("WKB: {}", s)
+                    } else {
+                        // Assume it's already WKT or a readable format
+                        s
+                    }
+                })
+                .map_err(|e| {
+                    DatabaseError::QueryError(format!(
+                        "Failed to format {} type '{}': {}",
+                        type_name_upper, type_name, e
+                    ))
+                })
+        }
+
+        "HSTORE" => {
+            debug!(
+                "[PostgreSQL] Processing hstore type '{}' (normalized: '{}')",
+                type_name, type_name_upper
+            );
+            row.try_get::<String, _>(column_index)
+                .map(|s| {
+                    // Clean up hstore format for better readability
+                    if s.starts_with('"') && s.ends_with('"') && s.len() > 1 {
+                        // Remove outer quotes if present
+                        s[1..s.len() - 1].to_string()
+                    } else {
+                        s
+                    }
+                    // Could add more hstore-specific formatting here
+                })
+                .map_err(|e| {
+                    DatabaseError::QueryError(format!(
+                        "Failed to format {} type '{}': {}",
+                        type_name_upper, type_name, e
+                    ))
+                })
+        }
+
+        "LTREE" | "LQUERY" | "LTXTQUERY" => {
+            debug!(
+                "[PostgreSQL] Processing ltree type '{}' (normalized: '{}')",
+                type_name, type_name_upper
+            );
+            row.try_get::<String, _>(column_index)
+                .map(|s| {
+                    // ltree paths are typically dot-separated, ensure they're readable
+                    match type_name_upper.as_str() {
+                        "LTREE" => s,                               // Path format is already readable
+                        "LQUERY" => format!("Query: {}", s), // Prefix to indicate it's a query
+                        "LTXTQUERY" => format!("TextQuery: {}", s), // Prefix for text query
+                        _ => s,
+                    }
+                })
+                .map_err(|e| {
+                    DatabaseError::QueryError(format!(
+                        "Failed to format {} type '{}': {}",
+                        type_name_upper, type_name, e
+                    ))
+                })
+        }
+
+        "CUBE" => {
+            debug!(
+                "[PostgreSQL] Processing cube type '{}' (normalized: '{}')",
+                type_name, type_name_upper
+            );
+            row.try_get::<String, _>(column_index)
+                .map(|s| {
+                    // Cube format is typically (lower_bounds, upper_bounds) or just (point)
+                    // Clean up for better readability
+                    if s.starts_with('(') && s.ends_with(')') {
+                        s // Already formatted properly
+                    } else {
+                        format!("Cube: {}", s)
+                    }
+                })
+                .map_err(|e| {
+                    DatabaseError::QueryError(format!(
+                        "Failed to format {} type '{}': {}",
+                        type_name_upper, type_name, e
+                    ))
+                })
+        }
+
+        // Custom/composite types and unknown types - try as string with enhanced error messages
+        _ => {
+            // Check if this might be a known extension type we haven't implemented yet
+            let extension_hint = if type_name_upper.contains("VECTOR") {
+                " (possibly pgvector-related)"
+            } else if type_name_upper.contains("GEOM") || type_name_upper.contains("GEOGRAPHY") {
+                " (possibly PostGIS-related)"
+            } else if type_name.contains("_") {
+                " (possibly custom extension type)"
+            } else {
+                ""
+            };
+
+            debug!(
+                "[PostgreSQL] Attempting string fallback for unknown type '{}' (normalized: '{}'){}",
+                type_name, type_name_upper, extension_hint
+            );
+
+            row.try_get::<String, _>(column_index).map_err(|e| {
+                DatabaseError::QueryError(format!(
+                    "Unable to format PostgreSQL type '{}'{}.{} Original error: {}",
+                    type_name,
+                    extension_hint,
+                    if !extension_hint.is_empty() {
+                        " Consider enabling appropriate extension support or check if the extension is installed."
+                    } else {
+                        " This may be a custom type that requires special handling."
+                    },
+                    e
+                ))
+            })
+        }
     }
 }
 

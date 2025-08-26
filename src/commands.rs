@@ -97,6 +97,13 @@ pub enum Command {
     ClearColumnViews,
     ResetView,
 
+    // Vector display configuration commands
+    SetVectorDisplayMode {
+        mode: String,
+    },
+    ShowVectorDisplayConfig,
+    ToggleVectorStatistics,
+
     // Vault credential caching commands
     VaultCacheStatus,
     VaultCacheClear,
@@ -268,6 +275,10 @@ pub enum CommandShortcut {
     Csthreshold,
     Clrcs,
     Resetview,
+    // Vector display commands
+    Vd,
+    Vdc,
+    Vs,
     // Connection pool monitoring
     Ps,
     // Vault credential cache commands
@@ -332,6 +343,10 @@ impl CommandShortcut {
             CommandShortcut::Csthreshold => "\\csthreshold",
             CommandShortcut::Clrcs => "\\clrcs",
             CommandShortcut::Resetview => "\\resetview",
+            // Vector display commands
+            CommandShortcut::Vd => "\\vd",
+            CommandShortcut::Vdc => "\\vdc",
+            CommandShortcut::Vs => "\\vs",
             // Connection pool monitoring
             CommandShortcut::Ps => "\\ps",
             // Vault credential cache commands
@@ -396,6 +411,10 @@ impl CommandShortcut {
             CommandShortcut::Csthreshold => "Set column selection threshold",
             CommandShortcut::Clrcs => "Clear column views",
             CommandShortcut::Resetview => "Reset view",
+            // Vector display commands
+            CommandShortcut::Vd => "Set vector display mode",
+            CommandShortcut::Vdc => "Show vector display config",
+            CommandShortcut::Vs => "Toggle vector statistics",
             // Connection pool monitoring
             CommandShortcut::Ps => "Show connection pool statistics",
             // Vault credential cache commands
@@ -428,6 +447,10 @@ impl CommandShortcut {
             | CommandShortcut::Csthreshold
             | CommandShortcut::Clrcs
             | CommandShortcut::Resetview => CommandCategory::DisplayOptions,
+            // Vector display commands
+            CommandShortcut::Vd | CommandShortcut::Vdc | CommandShortcut::Vs => {
+                CommandCategory::DisplayOptions
+            }
             // Script handling
             CommandShortcut::W
             | CommandShortcut::I
@@ -740,6 +763,13 @@ impl CommandParser {
             }
             "clrcs" => Ok(Command::ClearColumnViews),
             "resetview" => Ok(Command::ResetView),
+
+            // Vector display commands
+            "vd" => Ok(Command::SetVectorDisplayMode {
+                mode: args.to_string(),
+            }),
+            "vdc" => Ok(Command::ShowVectorDisplayConfig),
+            "vs" => Ok(Command::ToggleVectorStatistics),
 
             // Connection pool monitoring
             "ps" => Ok(Command::ShowPoolStats),
@@ -1756,6 +1786,82 @@ impl CommandExecutor for Command {
                 ))
             }
 
+            // Vector display commands
+            Command::SetVectorDisplayMode { mode } => {
+                use crate::vector_display::VectorDisplayMode;
+
+                if mode.is_empty() {
+                    return Ok(CommandResult::Output(format!(
+                        "Current vector display mode: {}\nAvailable modes: {}",
+                        config.vector_display.display_mode,
+                        VectorDisplayMode::all_modes().join(", ")
+                    )));
+                }
+
+                match VectorDisplayMode::from_str(mode) {
+                    Some(new_mode) => {
+                        config.vector_display.display_mode = new_mode;
+
+                        // Update global config so formatters can use it immediately
+                        crate::vector_display::set_global_vector_config(
+                            config.vector_display.clone(),
+                        );
+
+                        config
+                            .save()
+                            .map_err(|e| CommandError::DatabaseError(e.into()))?;
+                        Ok(CommandResult::Output(format!(
+                            "Vector display mode set to: {}",
+                            mode
+                        )))
+                    }
+                    None => Ok(CommandResult::Error(format!(
+                        "Invalid vector display mode: '{}'\nAvailable modes: {}",
+                        mode,
+                        VectorDisplayMode::all_modes().join(", ")
+                    ))),
+                }
+            }
+
+            Command::ShowVectorDisplayConfig => {
+                let config_display = format!(
+                    "Vector Display Configuration:\n\
+                    • Display mode: {}\n\
+                    • Truncation length: {}\n\
+                    • Viz width: {}\n\
+                    • Show statistics: {}\n\
+                    • Dimension threshold: {}\n\
+                    • Show dimensions: {}",
+                    config.vector_display.display_mode,
+                    config.vector_display.truncation_length,
+                    config.vector_display.viz_width,
+                    config.vector_display.show_statistics,
+                    config.vector_display.dimension_threshold,
+                    config.vector_display.show_dimensions
+                );
+                Ok(CommandResult::Output(config_display))
+            }
+
+            Command::ToggleVectorStatistics => {
+                config.vector_display.show_statistics = !config.vector_display.show_statistics;
+
+                // Update global config so formatters can use it immediately
+                crate::vector_display::set_global_vector_config(config.vector_display.clone());
+
+                config
+                    .save()
+                    .map_err(|e| CommandError::DatabaseError(e.into()))?;
+                let status = if config.vector_display.show_statistics {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                Ok(CommandResult::Output(format!(
+                    "Vector statistics display is now {}.",
+                    status
+                )))
+            }
+
             // Vault credential cache commands
             Command::VaultCacheStatus => {
                 if !config.vault_credential_cache_enabled {
@@ -2195,6 +2301,12 @@ impl CommandExecutor for Command {
             Command::SetColumnSelectionThreshold { .. } => "Set column selection threshold",
             Command::ClearColumnViews => "Clear saved column views",
             Command::ResetView => "Reset all view settings to defaults",
+            // Vector display commands
+            Command::SetVectorDisplayMode { .. } => {
+                "Set vector display mode (full, truncated, summary, viz)"
+            }
+            Command::ShowVectorDisplayConfig => "Show current vector display configuration",
+            Command::ToggleVectorStatistics => "Toggle vector statistics display",
             Command::ShowPoolStats => "Show connection pool statistics",
             // Vault credential cache commands
             Command::VaultCacheStatus => "Show vault credential cache status",
@@ -2260,6 +2372,10 @@ impl CommandExecutor for Command {
             Command::SetColumnSelectionThreshold { .. } => "\\csthreshold <number>",
             Command::ClearColumnViews => "\\clrcs",
             Command::ResetView => "\\resetview",
+            // Vector display commands
+            Command::SetVectorDisplayMode { .. } => "\\vd <mode>",
+            Command::ShowVectorDisplayConfig => "\\vdc",
+            Command::ToggleVectorStatistics => "\\vs",
             Command::ShowPoolStats => "\\ps",
             // Vault credential cache commands
             Command::VaultCacheStatus => "\\vc",
@@ -2324,6 +2440,10 @@ impl CommandExecutor for Command {
             | Command::SetColumnSelectionThreshold { .. }
             | Command::ClearColumnViews
             | Command::ResetView => CommandCategory::DisplayOptions,
+            // Vector display commands
+            Command::SetVectorDisplayMode { .. }
+            | Command::ShowVectorDisplayConfig
+            | Command::ToggleVectorStatistics => CommandCategory::DisplayOptions,
             Command::VaultCacheStatus
             | Command::VaultCacheClear
             | Command::VaultCacheRefresh { .. }

@@ -28,6 +28,49 @@ pub trait CommandCompleter: Send + Sync {
 
     /// Get the completer's name for debugging
     fn name(&self) -> &'static str;
+
+    /// Helper method to build suggestions from a list of items
+    /// This eliminates code duplication across all completers
+    fn build_suggestions_from_items(
+        &self,
+        items: Vec<(String, String)>, // (value, description)
+        args: &str,
+        pos: usize,
+        case_sensitive: bool,
+    ) -> Vec<Suggestion> {
+        let mut suggestions = Vec::new();
+
+        // Parse the current word being completed - same logic used by all completers
+        let word_start = args[..pos.min(args.len())].rfind(' ').map_or(0, |i| i + 1);
+        let current_word = &args[word_start..pos.min(args.len())];
+
+        // Filter items that start with the current word
+        for (value, description) in items {
+            let matches = if case_sensitive {
+                value.starts_with(current_word)
+            } else {
+                value
+                    .to_lowercase()
+                    .starts_with(&current_word.to_lowercase())
+            };
+
+            if matches {
+                suggestions.push(Suggestion {
+                    value,
+                    description: Some(description),
+                    span: Span {
+                        start: word_start,
+                        end: pos,
+                    },
+                    append_whitespace: true,
+                    extra: None,
+                    style: None,
+                });
+            }
+        }
+
+        suggestions
+    }
 }
 
 /// Completer for basic commands that don't take arguments
@@ -61,6 +104,8 @@ impl CommandCompleter for BasicCommandCompleter {
                 | "\\cs"
                 | "\\clrcs"
                 | "\\resetview"
+                | "\\vdc"
+                | "\\vs"
                 | "\\du"
                 | "\\di"
                 | "\\dp"
@@ -174,56 +219,27 @@ impl CommandCompleter for DatabaseAwareCompleter {
         args: &str,
         pos: usize,
     ) -> CompletionResult<Vec<Suggestion>> {
-        let mut suggestions = Vec::new();
-
-        // Find the word being completed
-        let word_start = args[..pos.min(args.len())].rfind(' ').map_or(0, |i| i + 1);
-        let current_word = &args[word_start..pos.min(args.len())];
-
-        match command {
+        let suggestions = match command {
             "\\d" => {
                 // Complete table names
                 let tables = self.get_table_names().await?;
-                for table in tables {
-                    if table
-                        .to_lowercase()
-                        .starts_with(&current_word.to_lowercase())
-                    {
-                        suggestions.push(Suggestion {
-                            value: table,
-                            description: Some("Table".to_string()),
-                            span: Span {
-                                start: word_start,
-                                end: pos,
-                            },
-                            append_whitespace: true,
-                            extra: None,
-                            style: None,
-                        });
-                    }
-                }
+                let items: Vec<(String, String)> = tables
+                    .into_iter()
+                    .map(|table| (table, "Table".to_string()))
+                    .collect();
+                self.build_suggestions_from_items(items, args, pos, false) // case insensitive
             }
             "\\c" => {
                 // Complete database names
                 let databases = self.get_database_names().await?;
-                for db in databases {
-                    if db.to_lowercase().starts_with(&current_word.to_lowercase()) {
-                        suggestions.push(Suggestion {
-                            value: db,
-                            description: Some("Database".to_string()),
-                            span: Span {
-                                start: word_start,
-                                end: pos,
-                            },
-                            append_whitespace: true,
-                            extra: None,
-                            style: None,
-                        });
-                    }
-                }
+                let items: Vec<(String, String)> = databases
+                    .into_iter()
+                    .map(|db| (db, "Database".to_string()))
+                    .collect();
+                self.build_suggestions_from_items(items, args, pos, false) // case insensitive
             }
-            _ => {}
-        }
+            _ => Vec::new(),
+        };
 
         Ok(suggestions)
     }
@@ -265,43 +281,24 @@ impl CommandCompleter for SessionCompleter {
         args: &str,
         pos: usize,
     ) -> CompletionResult<Vec<Suggestion>> {
-        let mut suggestions = Vec::new();
-
-        let word_start = args[..pos.min(args.len())].rfind(' ').map_or(0, |i| i + 1);
-        let current_word = &args[word_start..pos.min(args.len())];
-
-        let sessions = self.get_session_names();
-
-        match command {
+        let suggestions = match command {
             "\\s" | "\\ss" | "\\sd" => {
-                for session in sessions {
-                    if session
-                        .to_lowercase()
-                        .starts_with(&current_word.to_lowercase())
-                    {
-                        let description = match command {
-                            "\\s" => "Connect to session",
-                            "\\ss" => "Overwrite session",
-                            "\\sd" => "Delete session",
-                            _ => "Session",
-                        };
+                let sessions = self.get_session_names();
+                let description = match command {
+                    "\\s" => "Connect to session",
+                    "\\ss" => "Overwrite session",
+                    "\\sd" => "Delete session",
+                    _ => "Session",
+                };
 
-                        suggestions.push(Suggestion {
-                            value: session,
-                            description: Some(description.to_string()),
-                            span: Span {
-                                start: word_start,
-                                end: pos,
-                            },
-                            append_whitespace: true,
-                            extra: None,
-                            style: None,
-                        });
-                    }
-                }
+                let items: Vec<(String, String)> = sessions
+                    .into_iter()
+                    .map(|session| (session, description.to_string()))
+                    .collect();
+                self.build_suggestions_from_items(items, args, pos, false) // case insensitive
             }
-            _ => {}
-        }
+            _ => Vec::new(),
+        };
 
         Ok(suggestions)
     }
@@ -362,30 +359,17 @@ impl CommandCompleter for NamedQueryCompleter {
             "\\n" | "\\nd" => {
                 // For \n and \nd, complete with existing named query names only
                 let queries = self.get_named_query_names();
-                for query_name in queries {
-                    if query_name
-                        .to_lowercase()
-                        .starts_with(&current_word.to_lowercase())
-                    {
-                        let description = match command {
-                            "\\n" => "Execute named query",
-                            "\\nd" => "Delete named query",
-                            _ => "Named query",
-                        };
+                let description = match command {
+                    "\\n" => "Execute named query",
+                    "\\nd" => "Delete named query",
+                    _ => "Named query",
+                };
 
-                        suggestions.push(Suggestion {
-                            value: query_name,
-                            description: Some(description.to_string()),
-                            span: Span {
-                                start: word_start,
-                                end: pos,
-                            },
-                            append_whitespace: true,
-                            extra: None,
-                            style: None,
-                        });
-                    }
-                }
+                let items: Vec<(String, String)> = queries
+                    .into_iter()
+                    .map(|query_name| (query_name, description.to_string()))
+                    .collect();
+                suggestions.extend(self.build_suggestions_from_items(items, args, pos, false));
             }
             "\\ns" => {
                 // For \ns, we need to parse the arguments to determine what to complete
@@ -465,70 +449,56 @@ impl CommandCompleter for ConfigCompleter {
         args: &str,
         pos: usize,
     ) -> CompletionResult<Vec<Suggestion>> {
-        let mut suggestions = Vec::new();
-
-        let word_start = args[..pos.min(args.len())].rfind(' ').map_or(0, |i| i + 1);
-        let current_word = &args[word_start..pos.min(args.len())];
-
-        match command {
+        let suggestions = match command {
             "\\setmulti" => {
-                let indicators = vec![
-                    ("->", "Arrow indicator"),
-                    ("...", "Ellipsis indicator"),
-                    ("»", "Double right angle"),
-                    ("|", "Pipe indicator"),
-                    (">>", "Double arrow"),
+                let items = vec![
+                    ("->".to_string(), "Arrow indicator".to_string()),
+                    ("...".to_string(), "Ellipsis indicator".to_string()),
+                    ("»".to_string(), "Double right angle".to_string()),
+                    ("|".to_string(), "Pipe indicator".to_string()),
+                    (">>".to_string(), "Double arrow".to_string()),
                 ];
-
-                for (indicator, desc) in indicators {
-                    if indicator.starts_with(current_word) {
-                        suggestions.push(Suggestion {
-                            value: indicator.to_string(),
-                            description: Some(desc.to_string()),
-                            span: Span {
-                                start: word_start,
-                                end: pos,
-                            },
-                            append_whitespace: true,
-                            extra: None,
-                            style: None,
-                        });
-                    }
-                }
+                self.build_suggestions_from_items(items, args, pos, true)
             }
             "\\csthreshold" => {
-                let thresholds = vec![
-                    ("5", "Very low threshold"),
-                    ("10", "Default threshold"),
-                    ("15", "Medium threshold"),
-                    ("20", "High threshold"),
-                    ("25", "Very high threshold"),
+                let items = vec![
+                    ("5".to_string(), "Very low threshold".to_string()),
+                    ("10".to_string(), "Default threshold".to_string()),
+                    ("15".to_string(), "Medium threshold".to_string()),
+                    ("20".to_string(), "High threshold".to_string()),
+                    ("25".to_string(), "Very high threshold".to_string()),
                 ];
-
-                for (threshold, desc) in thresholds {
-                    if threshold.starts_with(current_word) {
-                        suggestions.push(Suggestion {
-                            value: threshold.to_string(),
-                            description: Some(desc.to_string()),
-                            span: Span {
-                                start: word_start,
-                                end: pos,
-                            },
-                            append_whitespace: true,
-                            extra: None,
-                            style: None,
-                        });
-                    }
-                }
+                self.build_suggestions_from_items(items, args, pos, true)
             }
-            _ => {}
-        }
+            "\\vd" => {
+                let items = vec![
+                    (
+                        "full".to_string(),
+                        "Show all elements in matrix-style layout".to_string(),
+                    ),
+                    (
+                        "truncated".to_string(),
+                        "Show first/last few elements with ellipsis".to_string(),
+                    ),
+                    (
+                        "summary".to_string(),
+                        "Show statistical summary (min, max, mean, std, norm)".to_string(),
+                    ),
+                    (
+                        "viz".to_string(),
+                        "ASCII visualization using Unicode blocks".to_string(),
+                    ),
+                ];
+                self.build_suggestions_from_items(items, args, pos, true)
+            }
+            _ => Vec::new(),
+        };
 
         Ok(suggestions)
     }
 
     fn handles_command(&self, command: &str) -> bool {
-        matches!(command, "\\setmulti" | "\\csthreshold")
+        matches!(command, "\\setmulti" | "\\csthreshold" | "\\vd")
     }
 
     fn name(&self) -> &'static str {
@@ -611,7 +581,6 @@ impl CommandCompletionManager {
                 }
             }
         }
-
         Vec::new()
     }
 
@@ -623,7 +592,7 @@ impl CommandCompletionManager {
 
         // Find the end of the command name (first space or end of line)
         let command_end = line[1..].find(' ').map_or(line.len() - 1, |i| i + 1);
-        let command = &line[..command_end + 1]; // Include the backslash
+        let command = &line[..command_end + 1]; // Include the backslash but not the space
 
         if command_end + 1 >= line.len() {
             // No arguments yet

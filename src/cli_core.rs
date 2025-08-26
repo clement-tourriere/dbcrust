@@ -118,8 +118,13 @@ impl From<Box<dyn StdError>> for CliError {
 
 impl Default for CliCore {
     fn default() -> Self {
+        let config = DbCrustConfig::load();
+
+        // Initialize global vector config for formatters
+        crate::vector_display::set_global_vector_config(config.vector_display.clone());
+
         Self {
-            config: DbCrustConfig::load(),
+            config,
             database: None,
             connection_info: None,
         }
