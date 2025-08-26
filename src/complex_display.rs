@@ -88,6 +88,8 @@ pub struct ComplexDisplayConfig {
     pub max_width: usize,
     /// Show row/field numbers in full mode
     pub full_show_numbers: bool,
+    /// Whether to pretty-print JSON (false = compact, true = formatted)
+    pub json_pretty_print: bool,
 }
 
 impl Default for ComplexDisplayConfig {
@@ -102,6 +104,7 @@ impl Default for ComplexDisplayConfig {
             full_elements_per_row: 8,
             max_width: 80,
             full_show_numbers: true,
+            json_pretty_print: false,
         }
     }
 }
@@ -849,6 +852,7 @@ mod tests {
             full_elements_per_row: 12,
             max_width: 120,
             full_show_numbers: false,
+            json_pretty_print: true,
         };
 
         set_global_complex_config(config.clone());

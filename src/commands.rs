@@ -165,6 +165,12 @@ pub enum Command {
 
     // Connection pool monitoring
     ShowPoolStats,
+
+    // Complex display commands
+    ComplexDisplayMode {
+        mode: Option<String>,
+    },
+    ComplexDisplayJsonToggle,
 }
 
 #[derive(Error, Debug)]
@@ -286,6 +292,9 @@ pub enum CommandShortcut {
     Vcc,
     Vcr,
     Vce,
+    // Complex display commands (minimal set)
+    Cd,
+    Cdj,
 }
 
 impl CommandShortcut {
@@ -354,6 +363,9 @@ impl CommandShortcut {
             CommandShortcut::Vcc => "\\vcc",
             CommandShortcut::Vcr => "\\vcr",
             CommandShortcut::Vce => "\\vce",
+            // Complex display commands (minimal set)
+            CommandShortcut::Cd => "\\cd",
+            CommandShortcut::Cdj => "\\cdj",
         }
     }
 
@@ -422,6 +434,9 @@ impl CommandShortcut {
             CommandShortcut::Vcc => "Clear all cached vault credentials",
             CommandShortcut::Vcr => "Force refresh vault credentials",
             CommandShortcut::Vce => "Show expired vault credentials",
+            // Complex display commands (minimal set)
+            CommandShortcut::Cd => "Set complex data display mode",
+            CommandShortcut::Cdj => "Toggle JSON pretty printing",
         }
     }
 
@@ -485,6 +500,8 @@ impl CommandShortcut {
             | CommandShortcut::Ef
             | CommandShortcut::Ex
             | CommandShortcut::Ps => CommandCategory::Advanced,
+            // Complex display commands
+            CommandShortcut::Cd | CommandShortcut::Cdj => CommandCategory::DisplayOptions,
         }
     }
 }
@@ -773,6 +790,18 @@ impl CommandParser {
 
             // Connection pool monitoring
             "ps" => Ok(Command::ShowPoolStats),
+
+            // Complex display commands
+            "cd" => {
+                if args.is_empty() {
+                    Ok(Command::ComplexDisplayMode { mode: None })
+                } else {
+                    Ok(Command::ComplexDisplayMode {
+                        mode: Some(args.to_string()),
+                    })
+                }
+            }
+            "cdj" => Ok(Command::ComplexDisplayJsonToggle),
 
             // Vault credential cache commands
             "vc" => Ok(Command::VaultCacheStatus),
@@ -1977,6 +2006,76 @@ impl CommandExecutor for Command {
                 Ok(CommandResult::Output(output))
             }
 
+            Command::ComplexDisplayMode { mode } => {
+                match mode {
+                    None => {
+                        // Show current mode
+                        let current_mode = config.complex_display.display_mode.clone();
+                        Ok(CommandResult::Output(format!(
+                            "Current complex display mode: {}",
+                            current_mode
+                        )))
+                    }
+                    Some(mode_str) => {
+                        // Set new mode
+                        use crate::complex_display::ComplexDisplayMode;
+                        match ComplexDisplayMode::from_str(mode_str) {
+                            Some(new_mode) => {
+                                config.complex_display.display_mode = new_mode.clone();
+                                // Update global config
+                                crate::complex_display::set_global_complex_config(
+                                    config.complex_display.clone(),
+                                );
+
+                                // Save config
+                                if let Err(e) = config.save_with_documentation() {
+                                    return Ok(CommandResult::Error(format!(
+                                        "Failed to save config: {}",
+                                        e
+                                    )));
+                                }
+
+                                Ok(CommandResult::Output(format!(
+                                    "Complex display mode set to: {}",
+                                    new_mode
+                                )))
+                            }
+                            None => Ok(CommandResult::Error(
+                                "Invalid mode. Available modes: full, truncated, summary, viz"
+                                    .to_string(),
+                            )),
+                        }
+                    }
+                }
+            }
+
+            Command::ComplexDisplayJsonToggle => {
+                // Toggle JSON pretty printing
+                config.complex_display.json_pretty_print =
+                    !config.complex_display.json_pretty_print;
+
+                // Update global config
+                crate::complex_display::set_global_complex_config(config.complex_display.clone());
+
+                // Save config
+                if let Err(e) = config.save_with_documentation() {
+                    return Ok(CommandResult::Error(format!(
+                        "Failed to save config: {}",
+                        e
+                    )));
+                }
+
+                let status = if config.complex_display.json_pretty_print {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
+                Ok(CommandResult::Output(format!(
+                    "JSON pretty printing {}",
+                    status
+                )))
+            }
+
             // MongoDB-specific commands
             Command::ListCollections => {
                 let mut db = database.lock().unwrap();
@@ -2308,6 +2407,9 @@ impl CommandExecutor for Command {
             Command::ShowVectorDisplayConfig => "Show current vector display configuration",
             Command::ToggleVectorStatistics => "Toggle vector statistics display",
             Command::ShowPoolStats => "Show connection pool statistics",
+            // Complex display commands
+            Command::ComplexDisplayMode { .. } => "Set complex data display mode",
+            Command::ComplexDisplayJsonToggle => "Toggle JSON pretty printing",
             // Vault credential cache commands
             Command::VaultCacheStatus => "Show vault credential cache status",
             Command::VaultCacheClear => "Clear all cached vault credentials",
@@ -2377,6 +2479,9 @@ impl CommandExecutor for Command {
             Command::ShowVectorDisplayConfig => "\\vdc",
             Command::ToggleVectorStatistics => "\\vs",
             Command::ShowPoolStats => "\\ps",
+            // Complex display commands
+            Command::ComplexDisplayMode { .. } => "\\cd [mode]",
+            Command::ComplexDisplayJsonToggle => "\\cdj",
             // Vault credential cache commands
             Command::VaultCacheStatus => "\\vc",
             Command::VaultCacheClear => "\\vcc",
@@ -2431,6 +2536,10 @@ impl CommandExecutor for Command {
             | Command::ExplainFormatted { .. }
             | Command::ExplainExport { .. }
             | Command::ShowPoolStats => CommandCategory::Advanced,
+            // Complex display commands
+            Command::ComplexDisplayMode { .. } | Command::ComplexDisplayJsonToggle => {
+                CommandCategory::DisplayOptions
+            }
             Command::SetMultilineIndicator { .. }
             | Command::TogglePager
             | Command::ToggleBanner
@@ -2563,6 +2672,15 @@ mod tests {
         assert!(names.contains(&"\\h"));
         assert!(names.contains(&"\\l"));
         assert!(names.contains(&"\\dt"));
+        // Test our new complex display commands
+        assert!(
+            names.contains(&"\\cd"),
+            "\\cd command should be in autocomplete"
+        );
+        assert!(
+            names.contains(&"\\cdj"),
+            "\\cdj command should be in autocomplete"
+        );
         assert!(names.len() > 20); // Should have all our commands
     }
 

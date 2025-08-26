@@ -500,24 +500,42 @@ SELECT (1, 'hello', [1,2,3]) AS complex_tuple;
 
 ### Complex Display Commands
 
-Interactive commands for controlling complex data display:
+DBCrust follows a **configuration-first philosophy** - most settings are configured via `~/.config/dbcrust/config.toml` with minimal interactive commands for essential runtime control:
+
+```toml
+# ~/.config/dbcrust/config.toml - Primary configuration
+[complex_display]
+display_mode = "truncated"          # full, truncated, summary, viz
+truncation_length = 8               # Characters shown in truncated mode
+show_metadata = true                # Display type information
+json_pretty_print = false           # Compact JSON by default
+size_threshold = 30                 # Auto-switch threshold
+show_dimensions = true              # Show array dimensions
+viz_width = 60                      # Width for visualization mode
+max_width = 100                     # Maximum display width
+full_elements_per_row = 10          # Elements per row in full mode
+full_show_numbers = false           # Show element numbers
+```
+
+**Essential Interactive Commands:**
 
 ```sql
--- Toggle between display modes
-\cdm                    -- Show current complex display mode
-\cdm full               -- Set to full mode
-\cdm truncated          -- Set to truncated mode
-\cdm summary            -- Set to summary mode
-\cdm viz                -- Set to visualization mode
+-- Display mode control
+\cd                     -- Show current display mode
+\cd full               -- Set to full mode
+\cd truncated          -- Set to truncated mode
+\cd summary            -- Set to summary mode
+\cd viz                -- Set to visualization mode
 
--- Adjust display settings
-\cdt 15                 -- Set truncation length to 15 characters
-\cds 50                 -- Set size threshold to 50 elements
-
--- Toggle metadata display
-\cdmeta                 -- Toggle metadata on/off
-\cddim                  -- Toggle dimension display on/off
+-- JSON formatting toggle
+\cdj                   -- Toggle JSON pretty printing on/off
 ```
+
+**Configuration-driven approach benefits:**
+- Persistent settings across sessions
+- Team-shareable configuration files
+- Clean command interface (only 2 commands vs many)
+- Full control over all display aspects via config
 
 ### Performance Considerations
 
@@ -761,11 +779,12 @@ chmod 755 ~/.config/dbcrust/
 **Data not formatting correctly:**
 ```sql
 -- Check complex display settings
-\cdm  -- Show current display mode
+\cd  -- Show current display mode
 
 -- Try different modes
-\cdm full      -- Show complete data
-\cdm summary   -- Show structure overview
+\cd full      -- Show complete data
+\cd summary   -- Show structure overview
+\cdj          -- Toggle JSON pretty printing
 ```
 
 **Performance issues with large JSON:**
@@ -776,6 +795,7 @@ display_mode = "truncated"
 truncation_length = 6
 size_threshold = 20        # Lower threshold
 show_metadata = false      # Disable for speed
+json_pretty_print = false  # Use compact JSON
 ```
 
 **Array format confusion:**

@@ -196,7 +196,13 @@ impl ComplexDataDisplay for JsonDisplayAdapter {
             ));
         }
 
-        result.push_str(&self.format_pretty_json(&self.value, 0, config.max_width));
+        if config.json_pretty_print {
+            result.push_str(&self.format_pretty_json(&self.value, 0, config.max_width));
+        } else {
+            // Use compact JSON formatting
+            result
+                .push_str(&serde_json::to_string(&self.value).unwrap_or_else(|_| "{}".to_string()));
+        }
         result
     }
 

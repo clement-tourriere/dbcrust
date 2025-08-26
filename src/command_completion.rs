@@ -491,6 +491,27 @@ impl CommandCompleter for ConfigCompleter {
                 ];
                 self.build_suggestions_from_items(items, args, pos, true)
             }
+            "\\cd" => {
+                let items = vec![
+                    (
+                        "full".to_string(),
+                        "Show complete data structure with all elements".to_string(),
+                    ),
+                    (
+                        "truncated".to_string(),
+                        "Show first few characters with ellipsis".to_string(),
+                    ),
+                    (
+                        "summary".to_string(),
+                        "Show structure overview with element counts".to_string(),
+                    ),
+                    (
+                        "viz".to_string(),
+                        "ASCII art representation of data structure".to_string(),
+                    ),
+                ];
+                self.build_suggestions_from_items(items, args, pos, true)
+            }
             _ => Vec::new(),
         };
 
@@ -498,7 +519,7 @@ impl CommandCompleter for ConfigCompleter {
     }
 
     fn handles_command(&self, command: &str) -> bool {
-        matches!(command, "\\setmulti" | "\\csthreshold" | "\\vd")
+        matches!(command, "\\setmulti" | "\\csthreshold" | "\\vd" | "\\cd")
     }
 
     fn name(&self) -> &'static str {

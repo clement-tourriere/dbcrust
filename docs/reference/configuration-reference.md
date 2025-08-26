@@ -285,6 +285,7 @@ show_numbers = false                # Show element numbers in full mode
 size_threshold = 30                 # Elements threshold for mode switching
 full_elements_per_row = 10          # Elements per row in full mode
 max_width = 100                     # Maximum display width
+json_pretty_print = false           # Compact JSON by default
 ```
 
 **Settings:**
@@ -300,6 +301,7 @@ max_width = 100                     # Maximum display width
 | `size_threshold` | Integer | `30` | Element count threshold for auto-mode switching |
 | `full_elements_per_row` | Integer | `10` | Elements displayed per row in full mode |
 | `max_width` | Integer | `100` | Maximum character width for displays |
+| `json_pretty_print` | Boolean | `false` | Whether to pretty-print JSON (false=compact, true=formatted) |
 
 **Supported Data Types:**
 - **JSON/JSONB**: PostgreSQL JSON data with syntax highlighting
@@ -490,6 +492,7 @@ dbcrust --column-threshold 20 postgres://localhost/db
 # Complex display arguments
 dbcrust --complex-display-mode full postgres://localhost/db
 dbcrust --complex-truncation 15 --no-complex-metadata postgres://localhost/db
+dbcrust --json-pretty-print postgres://localhost/db
 ```
 
 ### UI Arguments
