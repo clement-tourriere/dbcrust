@@ -1,7 +1,13 @@
 //! MongoDB implementation of the database abstraction layer
+use crate::complex_display::{
+    ArrayDisplayAdapter, ComplexDataDisplay, ComplexDataType, ComplexDisplayConfig,
+    ComplexTypeDetector, GenericComplexTypeDetector,
+};
 use crate::database::{
     ConnectionInfo, DatabaseClient, DatabaseError, DatabaseTypeExt, MetadataProvider,
 };
+use crate::geojson_display::GeoJsonDisplayAdapter;
+use crate::json_display::JsonDisplayAdapter;
 use async_trait::async_trait;
 use bson::{Document, doc};
 use futures_util::stream::{StreamExt, TryStreamExt};
@@ -362,7 +368,7 @@ impl MongoDBClient {
             {
                 let mut row = Vec::new();
                 for column in &projected_columns {
-                    let value = self.extract_field_value(&doc, column);
+                    let value = self.extract_field_value_with_complex_display(&doc, column);
                     row.push(value);
                 }
                 results.push(row);
@@ -643,7 +649,7 @@ impl MongoDBClient {
 
             let mut row = Vec::new();
             for column in &columns {
-                let value = self.extract_field_value(&doc, column);
+                let value = self.extract_field_value_with_complex_display(&doc, column);
                 row.push(value);
             }
             results.push(row);
@@ -658,9 +664,9 @@ impl MongoDBClient {
         Ok(results)
     }
 
-    /// Extract a field value from a BSON document and convert to string
-    fn extract_field_value(&self, doc: &Document, field: &str) -> String {
-        match doc.get(field) {
+    /// Extract a field value with complex display formatting
+    fn extract_field_value_with_complex_display(&self, doc: &Document, field: &str) -> String {
+        let raw_value = match doc.get(field) {
             Some(bson::Bson::String(s)) => s.clone(),
             Some(bson::Bson::Int32(i)) => i.to_string(),
             Some(bson::Bson::Int64(i)) => i.to_string(),
@@ -669,19 +675,84 @@ impl MongoDBClient {
             Some(bson::Bson::ObjectId(oid)) => oid.to_hex(),
             Some(bson::Bson::DateTime(dt)) => dt.to_string(),
             Some(bson::Bson::Array(arr)) => {
-                // Format array as JSON for display
-                serde_json::to_string(arr).unwrap_or_else(|_| format!("[{} items]", arr.len()))
+                // Try to use ArrayDisplayAdapter for better formatting
+                match serde_json::to_string(arr) {
+                    Ok(json_str) => {
+                        if GenericComplexTypeDetector::should_use_complex_display(field, &json_str)
+                        {
+                            if let Some(detected_type) =
+                                GenericComplexTypeDetector::detect_type(&json_str)
+                            {
+                                return self.format_complex_value(&json_str, detected_type);
+                            }
+                        }
+                        json_str
+                    }
+                    Err(_) => format!("[{} items]", arr.len()),
+                }
             }
             Some(bson::Bson::Document(nested_doc)) => {
-                // Format nested document as compact JSON
-                serde_json::to_string(nested_doc).unwrap_or_else(|_| "{}".to_string())
+                // Try to use JSON or GeoJSON display for better formatting
+                match serde_json::to_string(nested_doc) {
+                    Ok(json_str) => {
+                        if GenericComplexTypeDetector::should_use_complex_display(field, &json_str)
+                        {
+                            if let Some(detected_type) =
+                                GenericComplexTypeDetector::detect_type(&json_str)
+                            {
+                                return self.format_complex_value(&json_str, detected_type);
+                            }
+                        }
+                        json_str
+                    }
+                    Err(_) => "{}".to_string(),
+                }
             }
-            Some(bson::Bson::Null) => "NULL".to_string(),
+            Some(bson::Bson::Null) => return "NULL".to_string(),
             Some(other) => {
                 // For other BSON types, try to serialize as JSON
                 serde_json::to_string(other).unwrap_or_else(|_| format!("{:?}", other))
             }
-            None => "".to_string(), // Field not present in this document
+            None => return "".to_string(), // Field not present in this document
+        };
+
+        // Check if the raw value should use complex display
+        if GenericComplexTypeDetector::should_use_complex_display(field, &raw_value) {
+            if let Some(detected_type) = GenericComplexTypeDetector::detect_type(&raw_value) {
+                return self.format_complex_value(&raw_value, detected_type);
+            }
+        }
+
+        raw_value
+    }
+
+    /// Format a value using the appropriate complex display adapter
+    fn format_complex_value(&self, value: &str, data_type: ComplexDataType) -> String {
+        let config = ComplexDisplayConfig::default();
+
+        match data_type {
+            ComplexDataType::Json => {
+                if let Ok(adapter) = JsonDisplayAdapter::new(value.to_string()) {
+                    adapter.format(&config)
+                } else {
+                    value.to_string()
+                }
+            }
+            ComplexDataType::GeoJson => {
+                if let Ok(adapter) = GeoJsonDisplayAdapter::new(value.to_string()) {
+                    adapter.format(&config)
+                } else {
+                    value.to_string()
+                }
+            }
+            ComplexDataType::Array | ComplexDataType::Vector => {
+                if let Ok(adapter) = ArrayDisplayAdapter::from_json_string(value) {
+                    adapter.format(&config)
+                } else {
+                    value.to_string()
+                }
+            }
+            _ => value.to_string(), // Fallback for unsupported types
         }
     }
 

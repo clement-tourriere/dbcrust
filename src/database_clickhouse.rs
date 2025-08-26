@@ -1,8 +1,14 @@
 //! ClickHouse implementation of the database abstraction layer
+use crate::complex_display::{
+    ArrayDisplayAdapter, ComplexDataDisplay, ComplexDataType, ComplexDisplayConfig,
+    ComplexTypeDetector, GenericComplexTypeDetector,
+};
 use crate::database::{
     ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider, ServerInfo,
 };
 use crate::db::TableDetails;
+use crate::geojson_display::GeoJsonDisplayAdapter;
+use crate::json_display::JsonDisplayAdapter;
 use async_trait::async_trait;
 use clickhouse::{Client, Row};
 use serde::Deserialize;
@@ -403,9 +409,17 @@ impl ClickHouseClient {
             // Remaining lines are data
             for line in lines.iter().skip(1) {
                 if !line.trim().is_empty() {
-                    let row_data: Vec<String> =
+                    let raw_row_data: Vec<String> =
                         line.split('\t').map(|s| s.trim().to_string()).collect();
-                    results.push(row_data);
+
+                    // Apply complex display formatting if headers are available
+                    let formatted_row_data = if let Some(headers) = results.first() {
+                        self.format_row_with_complex_display(&raw_row_data, headers)
+                    } else {
+                        raw_row_data
+                    };
+
+                    results.push(formatted_row_data);
                 }
             }
 
@@ -472,6 +486,130 @@ impl ClickHouseClient {
 
         // Use HTTP interface for all user queries to handle dynamic results
         self.execute_http_user_query(sql).await
+    }
+
+    /// Format a row of data with complex display adapters
+    fn format_row_with_complex_display(
+        &self,
+        row_data: &[String],
+        headers: &[String],
+    ) -> Vec<String> {
+        row_data
+            .iter()
+            .zip(headers.iter())
+            .map(|(value, column_name)| self.format_value_with_complex_display(value, column_name))
+            .collect()
+    }
+
+    /// Format a single value using complex display adapters if applicable
+    fn format_value_with_complex_display(&self, value: &str, column_name: &str) -> String {
+        // Check if this value should use complex display
+        if GenericComplexTypeDetector::should_use_complex_display(column_name, value) {
+            if let Some(detected_type) = GenericComplexTypeDetector::detect_type(value) {
+                return self.format_complex_value(value, detected_type);
+            }
+        }
+
+        // Special ClickHouse type detection
+        if self.is_clickhouse_array(value) || self.is_clickhouse_tuple(value) {
+            return self.format_clickhouse_complex_type(value, column_name);
+        }
+
+        value.to_string()
+    }
+
+    /// Check if value looks like a ClickHouse array: [1,2,3]
+    fn is_clickhouse_array(&self, value: &str) -> bool {
+        value.starts_with('[') && value.ends_with(']') && !value.contains('"')
+    }
+
+    /// Check if value looks like a ClickHouse tuple: (1,'hello',true)
+    fn is_clickhouse_tuple(&self, value: &str) -> bool {
+        value.starts_with('(') && value.ends_with(')') && value.contains(',')
+    }
+
+    /// Format ClickHouse-specific complex types (arrays, tuples, maps)
+    fn format_clickhouse_complex_type(&self, value: &str, _column_name: &str) -> String {
+        if self.is_clickhouse_array(value) {
+            // Convert ClickHouse array to our ArrayDisplayAdapter
+            if let Ok(elements) = self.parse_clickhouse_array(value) {
+                let adapter = ArrayDisplayAdapter::new(elements);
+                let config = ComplexDisplayConfig::default();
+                return adapter.format(&config);
+            }
+        } else if self.is_clickhouse_tuple(value) {
+            // For tuples, create a structured display
+            if let Ok(elements) = self.parse_clickhouse_tuple(value) {
+                let adapter =
+                    ArrayDisplayAdapter::new(elements).with_type_hint("Tuple".to_string());
+                let config = ComplexDisplayConfig::default();
+                return adapter.format(&config);
+            }
+        }
+
+        value.to_string()
+    }
+
+    /// Parse ClickHouse array format: [1,2,3] or ['a','b','c']
+    fn parse_clickhouse_array(&self, value: &str) -> Result<Vec<String>, String> {
+        let inner = value.trim_start_matches('[').trim_end_matches(']');
+        if inner.trim().is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Simple parsing - split by comma and clean up
+        let elements: Vec<String> = inner
+            .split(',')
+            .map(|s| s.trim().trim_matches('\'').trim_matches('"').to_string())
+            .collect();
+
+        Ok(elements)
+    }
+
+    /// Parse ClickHouse tuple format: (1,'hello',true)
+    fn parse_clickhouse_tuple(&self, value: &str) -> Result<Vec<String>, String> {
+        let inner = value.trim_start_matches('(').trim_end_matches(')');
+        if inner.trim().is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Simple parsing - split by comma and clean up
+        let elements: Vec<String> = inner
+            .split(',')
+            .map(|s| s.trim().trim_matches('\'').trim_matches('"').to_string())
+            .collect();
+
+        Ok(elements)
+    }
+
+    /// Format a value using the appropriate complex display adapter
+    fn format_complex_value(&self, value: &str, data_type: ComplexDataType) -> String {
+        let config = ComplexDisplayConfig::default();
+
+        match data_type {
+            ComplexDataType::Json => {
+                if let Ok(adapter) = JsonDisplayAdapter::new(value.to_string()) {
+                    adapter.format(&config)
+                } else {
+                    value.to_string()
+                }
+            }
+            ComplexDataType::GeoJson => {
+                if let Ok(adapter) = GeoJsonDisplayAdapter::new(value.to_string()) {
+                    adapter.format(&config)
+                } else {
+                    value.to_string()
+                }
+            }
+            ComplexDataType::Array | ComplexDataType::Vector => {
+                if let Ok(adapter) = ArrayDisplayAdapter::from_json_string(value) {
+                    adapter.format(&config)
+                } else {
+                    value.to_string()
+                }
+            }
+            _ => value.to_string(), // Fallback for unsupported types
+        }
     }
 }
 

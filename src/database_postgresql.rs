@@ -1,6 +1,12 @@
 //! PostgreSQL implementation of the database abstraction layer
+use crate::complex_display::{
+    ArrayDisplayAdapter, ComplexDataDisplay, ComplexDataType, ComplexTypeDetector,
+    GenericComplexTypeDetector,
+};
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
 use crate::db::TableDetails;
+use crate::geojson_display::GeoJsonDisplayAdapter;
+use crate::json_display::JsonDisplayAdapter;
 use crate::performance_analyzer::PerformanceAnalyzer;
 use async_trait::async_trait;
 use serde_json;
@@ -428,6 +434,78 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
 
     fn default_schema(&self) -> Option<String> {
         Some("public".to_string())
+    }
+}
+
+/// Format PostgreSQL complex values using appropriate display adapters
+fn format_complex_postgresql_value(
+    value: &str,
+    detected_type: ComplexDataType,
+) -> Result<String, DatabaseError> {
+    let config = crate::complex_display::get_global_complex_config();
+
+    match detected_type {
+        ComplexDataType::Json => {
+            if let Ok(adapter) = JsonDisplayAdapter::new(value.to_string()) {
+                Ok(adapter.format(&config))
+            } else {
+                Ok(value.to_string())
+            }
+        }
+        ComplexDataType::GeoJson => {
+            if let Ok(adapter) = GeoJsonDisplayAdapter::new(value.to_string()) {
+                Ok(adapter.format(&config))
+            } else {
+                Ok(value.to_string())
+            }
+        }
+        ComplexDataType::Array => {
+            // Parse PostgreSQL array format like {1,2,3} to Vec<String>
+            let array_elements = parse_postgresql_array(value)?;
+            let adapter = ArrayDisplayAdapter::new(array_elements);
+            Ok(adapter.format(&config))
+        }
+        ComplexDataType::Vector => {
+            // PostgreSQL vectors (pgvector) like [1,2,3] - parse as array
+            let array_elements = parse_postgresql_vector(value)?;
+            let adapter = ArrayDisplayAdapter::new(array_elements);
+            Ok(adapter.format(&config))
+        }
+        _ => {
+            // For Map and Tuple types, use default string representation
+            Ok(value.to_string())
+        }
+    }
+}
+
+/// Parse PostgreSQL array format like {1,2,3} into Vec<String>
+fn parse_postgresql_array(value: &str) -> Result<Vec<String>, DatabaseError> {
+    if value.starts_with('{') && value.ends_with('}') {
+        let inner = &value[1..value.len() - 1];
+        if inner.is_empty() {
+            return Ok(vec![]);
+        }
+        let elements: Vec<String> = inner
+            .split(',')
+            .map(|s| s.trim().trim_matches('"').to_string())
+            .collect();
+        Ok(elements)
+    } else {
+        Ok(vec![value.to_string()])
+    }
+}
+
+/// Parse PostgreSQL vector format like [1,2,3] into Vec<String>
+fn parse_postgresql_vector(value: &str) -> Result<Vec<String>, DatabaseError> {
+    if value.starts_with('[') && value.ends_with(']') {
+        let inner = &value[1..value.len() - 1];
+        if inner.is_empty() {
+            return Ok(vec![]);
+        }
+        let elements: Vec<String> = inner.split(',').map(|s| s.trim().to_string()).collect();
+        Ok(elements)
+    } else {
+        Ok(vec![value.to_string()])
     }
 }
 
@@ -875,11 +953,21 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
 
-        // JSON types
-        "JSON" | "JSONB" => row
-            .try_get::<serde_json::Value, _>(column_index)
-            .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+        // JSON types with complex display support
+        "JSON" | "JSONB" => {
+            let raw_value = row
+                .try_get::<serde_json::Value, _>(column_index)
+                .map(|v| v.to_string())
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+
+            // Use JsonDisplayAdapter for enhanced formatting
+            if let Ok(adapter) = JsonDisplayAdapter::new(raw_value.clone()) {
+                let config = crate::complex_display::get_global_complex_config();
+                Ok(adapter.format(&config))
+            } else {
+                Ok(raw_value)
+            }
+        }
 
         // UUID type
         "UUID" => row
@@ -1003,25 +1091,33 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                 "[PostgreSQL] Processing PostGIS type '{}' (normalized: '{}')",
                 type_name, type_name_upper
             );
-            // For now, use string fallback but with PostGIS-aware processing
-            // TODO: Implement proper WKT conversion when geozero types are stable
-            row.try_get::<String, _>(column_index)
-                .map(|s| {
-                    // Clean up the string representation if needed
-                    if s.starts_with("01") || s.starts_with("00") {
-                        // This looks like WKB (Well-Known Binary) format
-                        format!("WKB: {}", s)
-                    } else {
-                        // Assume it's already WKT or a readable format
-                        s
-                    }
-                })
-                .map_err(|e| {
-                    DatabaseError::QueryError(format!(
-                        "Failed to format {} type '{}': {}",
-                        type_name_upper, type_name, e
-                    ))
-                })
+
+            let raw_value = row
+                .try_get::<String, _>(column_index)
+                .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+
+            // Enhanced PostGIS processing with complex display support
+            if raw_value.starts_with("01") || raw_value.starts_with("00") {
+                // This looks like WKB (Well-Known Binary) format
+                Ok(format!("WKB: {}", raw_value))
+            } else if GenericComplexTypeDetector::detect_type(&raw_value)
+                == Some(ComplexDataType::GeoJson)
+            {
+                // Try to use GeoJsonDisplayAdapter for GeoJSON-like content
+                if let Ok(adapter) = GeoJsonDisplayAdapter::new(raw_value.clone()) {
+                    let config = crate::complex_display::get_global_complex_config();
+                    Ok(adapter.format(&config))
+                } else {
+                    Ok(raw_value)
+                }
+            } else {
+                // Use generic complex type detection for other formats
+                if let Some(detected_type) = GenericComplexTypeDetector::detect_type(&raw_value) {
+                    format_complex_postgresql_value(&raw_value, detected_type)
+                } else {
+                    Ok(raw_value)
+                }
+            }
         }
 
         "HSTORE" => {

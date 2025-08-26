@@ -1,6 +1,12 @@
 //! MySQL implementation of the database abstraction layer
+use crate::complex_display::{
+    ArrayDisplayAdapter, ComplexDataDisplay, ComplexDataType, ComplexDisplayConfig,
+    ComplexTypeDetector, GenericComplexTypeDetector,
+};
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
 use crate::db::TableDetails;
+use crate::geojson_display::GeoJsonDisplayAdapter;
+use crate::json_display::JsonDisplayAdapter;
 use crate::performance_analyzer::PerformanceAnalyzer;
 use async_trait::async_trait;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
@@ -875,11 +881,12 @@ impl DatabaseClient for MySqlClient {
 
         results.push(column_names);
 
-        // Convert rows to strings
+        // Convert rows to strings with complex display formatting
         for row in rows {
             let mut string_row = Vec::new();
             for i in 0..row.len() {
-                let value = format_mysql_value(&row, i)?;
+                let column_name = row.column(i).name();
+                let value = format_mysql_value_with_complex_display(&row, i, column_name)?;
                 string_row.push(value);
             }
             results.push(string_row);
@@ -1149,6 +1156,98 @@ impl DatabaseClient for MySqlClient {
 
         debug!("[MySqlClient::get_server_info] Server info retrieved successfully");
         Ok(server_info)
+    }
+}
+
+/// Format a MySQL value to string representation with complex display support
+fn format_mysql_value_with_complex_display(
+    row: &MySqlRow,
+    column_index: usize,
+    column_name: &str,
+) -> Result<String, DatabaseError> {
+    let raw_value = format_mysql_value(row, column_index)?;
+
+    // Check if this value should use complex display
+    if GenericComplexTypeDetector::should_use_complex_display(column_name, &raw_value) {
+        if let Some(detected_type) = GenericComplexTypeDetector::detect_type(&raw_value) {
+            return Ok(format_complex_value(&raw_value, detected_type));
+        }
+    }
+
+    // Check for MySQL-specific data types
+    if is_mysql_json_column(column_name) || is_potential_json(&raw_value) {
+        if let Ok(adapter) = JsonDisplayAdapter::new(raw_value.clone()) {
+            let config = ComplexDisplayConfig::default();
+            return Ok(adapter.format(&config));
+        }
+    }
+
+    // Check for spatial/geometry data that might be GeoJSON
+    if is_mysql_spatial_column(column_name) {
+        // Try to convert spatial data to GeoJSON using MySQL's ST_AsGeoJSON
+        // For now, we'll just detect if the raw value looks like GeoJSON
+        if raw_value.contains("coordinates") && raw_value.contains("type") {
+            if let Ok(adapter) = GeoJsonDisplayAdapter::new(raw_value.clone()) {
+                let config = ComplexDisplayConfig::default();
+                return Ok(adapter.format(&config));
+            }
+        }
+    }
+
+    Ok(raw_value)
+}
+
+/// Check if a column name indicates it's a JSON column
+fn is_mysql_json_column(column_name: &str) -> bool {
+    let name_lower = column_name.to_lowercase();
+    name_lower.contains("json") || name_lower.ends_with("_data") || name_lower.ends_with("_config")
+}
+
+/// Check if a column name indicates it's a spatial/geometry column
+fn is_mysql_spatial_column(column_name: &str) -> bool {
+    let name_lower = column_name.to_lowercase();
+    name_lower.contains("geo")
+        || name_lower.contains("point")
+        || name_lower.contains("polygon")
+        || name_lower.contains("location")
+        || name_lower.contains("coords")
+        || name_lower.contains("geometry")
+}
+
+/// Check if a value looks like JSON
+fn is_potential_json(value: &str) -> bool {
+    let trimmed = value.trim();
+    (trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+}
+
+/// Format a value using the appropriate complex display adapter
+fn format_complex_value(value: &str, data_type: ComplexDataType) -> String {
+    let config = ComplexDisplayConfig::default();
+
+    match data_type {
+        ComplexDataType::Json => {
+            if let Ok(adapter) = JsonDisplayAdapter::new(value.to_string()) {
+                adapter.format(&config)
+            } else {
+                value.to_string()
+            }
+        }
+        ComplexDataType::GeoJson => {
+            if let Ok(adapter) = GeoJsonDisplayAdapter::new(value.to_string()) {
+                adapter.format(&config)
+            } else {
+                value.to_string()
+            }
+        }
+        ComplexDataType::Array | ComplexDataType::Vector => {
+            if let Ok(adapter) = ArrayDisplayAdapter::from_json_string(value) {
+                adapter.format(&config)
+            } else {
+                value.to_string()
+            }
+        }
+        _ => value.to_string(), // Fallback for unsupported types
     }
 }
 

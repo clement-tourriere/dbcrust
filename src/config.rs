@@ -389,6 +389,10 @@ pub struct Config {
     #[serde(default)]
     pub vector_display: crate::vector_display::VectorDisplayConfig,
 
+    // Complex data display configuration
+    #[serde(default)]
+    pub complex_display: crate::complex_display::ComplexDisplayConfig,
+
     // Recent connections - not serialized with main config, stored separately
     #[serde(skip)]
     recent_connections_storage: RecentConnectionsStorage,
@@ -432,6 +436,7 @@ impl Default for Config {
             query_timeout_seconds: default_query_timeout(),
             metadata_timeout_seconds: default_metadata_timeout(),
             vector_display: crate::vector_display::VectorDisplayConfig::default(),
+            complex_display: crate::complex_display::ComplexDisplayConfig::default(),
             recent_connections_storage: {
                 // For tests, use empty storage to avoid loading user data
                 let is_test = std::env::var("RUST_TEST_MODE").is_ok()
