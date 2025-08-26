@@ -1,3 +1,13 @@
+## v0.20.0 (2025-08-26)
+
+### Feat
+
+- handle complex fieds for multiple databases
+
+### Fix
+
+- missing postgres extensions support like pgvector or postgis
+
 ## v0.19.0 (2025-08-25)
 
 ### Feat
