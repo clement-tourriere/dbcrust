@@ -263,6 +263,53 @@ auth_method = "token"               # "token", "userpass", "ldap", etc.
 | `default_role` | String | `"readonly"` | Default role name |
 | `auth_method` | String | `"token"` | Vault authentication method |
 
+### `[complex_display]` - Complex Data Type Display
+
+Controls how complex data types (JSON, arrays, vectors, etc.) are displayed and formatted.
+
+```toml
+[complex_display]
+# Display mode for complex data
+display_mode = "truncated"          # "full", "truncated", "summary", "viz"
+
+# Truncation settings
+truncation_length = 8               # Characters to show in truncated mode
+viz_width = 60                      # Width for visualization mode
+
+# Metadata display
+show_metadata = true                # Show type info and dimensions
+show_dimensions = true              # Show array/object dimensions
+show_numbers = false                # Show element numbers in full mode
+
+# Size thresholds
+size_threshold = 30                 # Elements threshold for mode switching
+full_elements_per_row = 10          # Elements per row in full mode
+max_width = 100                     # Maximum display width
+```
+
+**Settings:**
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `display_mode` | String | `"truncated"` | Default display mode (full/truncated/summary/viz) |
+| `truncation_length` | Integer | `8` | Characters shown in truncated mode |
+| `viz_width` | Integer | `60` | Character width for visualization display |
+| `show_metadata` | Boolean | `true` | Display data type and structure information |
+| `show_dimensions` | Boolean | `true` | Show array dimensions and object key counts |
+| `show_numbers` | Boolean | `false` | Show element numbers in full display |
+| `size_threshold` | Integer | `30` | Element count threshold for auto-mode switching |
+| `full_elements_per_row` | Integer | `10` | Elements displayed per row in full mode |
+| `max_width` | Integer | `100` | Maximum character width for displays |
+
+**Supported Data Types:**
+- **JSON/JSONB**: PostgreSQL JSON data with syntax highlighting
+- **GeoJSON**: Geographic data with coordinate summaries
+- **Arrays**: PostgreSQL arrays (`{1,2,3}` format) and JSON arrays
+- **Vectors**: PostgreSQL vector extension data (pgvector)
+- **BSON Documents**: MongoDB document structures
+- **Tuples**: ClickHouse tuple data types
+- **Maps**: Key-value pair structures
+
 ### `[docker]` - Docker Integration Settings
 
 Configuration for Docker container discovery and connections.
@@ -386,6 +433,14 @@ export DBCRUST_DATE_FORMAT="%m/%d/%Y %I:%M %p"
 export DBCRUST_COLUMN_SELECTION_THRESHOLD=15
 ```
 
+### Complex Display Settings
+```bash
+export DBCRUST_COMPLEX_DISPLAY_MODE=truncated
+export DBCRUST_COMPLEX_TRUNCATION_LENGTH=12
+export DBCRUST_COMPLEX_SHOW_METADATA=true
+export DBCRUST_COMPLEX_SIZE_THRESHOLD=50
+```
+
 ### UI Settings
 ```bash
 export DBCRUST_SHOW_BANNER=false
@@ -431,6 +486,10 @@ dbcrust --query-timeout 600 postgres://host/db
 dbcrust --border-style 2 --max-width 100 postgres://localhost/db
 dbcrust --output json --no-truncate postgres://localhost/db
 dbcrust --column-threshold 20 postgres://localhost/db
+
+# Complex display arguments
+dbcrust --complex-display-mode full postgres://localhost/db
+dbcrust --complex-truncation 15 --no-complex-metadata postgres://localhost/db
 ```
 
 ### UI Arguments
@@ -490,6 +549,11 @@ auto_explain_threshold = 500
 column_selection_threshold = 8
 max_column_width = 100
 
+[complex_display]
+display_mode = "full"
+show_metadata = true
+show_dimensions = true
+
 [ui]
 show_banner = true
 enable_autocomplete = true
@@ -512,6 +576,11 @@ verify_ssl = true
 column_selection_threshold = 15
 max_column_width = 50
 
+[complex_display]
+display_mode = "truncated"
+truncation_length = 6
+show_metadata = false
+
 [ui]
 show_banner = false
 confirm_destructive_operations = true
@@ -528,6 +597,11 @@ file_path = "/var/log/dbcrust.log"
 [database]
 default_limit = 500
 show_execution_time = true
+
+[complex_display]
+display_mode = "truncated"
+show_metadata = true
+size_threshold = 25
 
 [ui]
 confirm_destructive_operations = true

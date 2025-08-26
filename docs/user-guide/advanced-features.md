@@ -369,6 +369,223 @@ SELECT * FROM users LIMIT 5;
 \ecopy  -- Copies the table output
 ```
 
+## 🎯 Complex Data Display
+
+Intelligent formatting for JSON, arrays, vectors, and other complex data types.
+
+### Automatic Data Type Detection
+
+DBCrust automatically detects and formats complex data types:
+
+```sql
+-- PostgreSQL JSON/JSONB with syntax highlighting
+SELECT user_profile FROM users WHERE id = 1;
+-- {"name": "John", "settings": {"theme": "dark"}, "tags": ["admin", "power_user"]}
+
+-- PostgreSQL arrays with proper formatting
+SELECT tags FROM posts WHERE published = true;
+-- {technology, programming, rust, database}
+
+-- Geographic data (GeoJSON) with coordinate summaries
+SELECT location FROM stores;
+-- GeoJSON Point: [-122.419, 37.775] (San Francisco, CA)
+
+-- Vector data (pgvector extension)
+SELECT embedding FROM documents WHERE title = 'Machine Learning Basics';
+-- Vector[384]: [0.123, -0.456, 0.789, ...] (similarity search ready)
+```
+
+### Display Modes
+
+Configure how complex data is displayed:
+
+```toml
+# ~/.config/dbcrust/config.toml
+[complex_display]
+display_mode = "truncated"          # Options: "full", "truncated", "summary", "viz"
+truncation_length = 8               # Characters shown in truncated mode
+show_metadata = true                # Display type information
+```
+
+**Display Mode Examples:**
+
+**Full Mode** - Shows complete data structure:
+```json
+{
+  "user_id": 12345,
+  "preferences": {
+    "theme": "dark",
+    "notifications": true,
+    "language": "en-US"
+  },
+  "recent_activity": [
+    {"action": "login", "timestamp": "2024-01-15T10:30:00Z"},
+    {"action": "update_profile", "timestamp": "2024-01-15T10:35:00Z"}
+  ]
+}
+```
+
+**Truncated Mode** - Shows first N characters with ellipsis:
+```json
+{"user_id": 12345, "preferences": {"theme": "dark"...}} [124 chars]
+```
+
+**Summary Mode** - Shows structure overview:
+```
+JSON Object (3 keys): user_id, preferences, recent_activity
+├─ preferences: Object (3 keys)
+└─ recent_activity: Array (2 elements)
+```
+
+**Visualization Mode** - ASCII art representation:
+```
+┌─ JSON Object ─┐
+│ user_id: 12345│
+│ preferences ──┤
+│ activity[2] ──┤
+└───────────────┘
+```
+
+### Intelligent Mode Switching
+
+DBCrust automatically selects the best display mode based on data size:
+
+```toml
+[complex_display]
+size_threshold = 30                 # Auto-switch modes for data >30 elements
+display_mode = "truncated"          # Default mode for small data
+```
+
+**Auto-switching behavior:**
+- **Small data (≤30 elements)**: Uses configured `display_mode`
+- **Large data (>30 elements)**: Automatically switches to more compact modes
+- **Very large data (>100 elements)**: Switches to summary mode
+
+### Database-Specific Formatting
+
+DBCrust handles different database formats intelligently:
+
+**PostgreSQL:**
+```sql
+-- Array format detection
+SELECT ARRAY[1,2,3]::integer[];     -- Displays as: {1, 2, 3}
+SELECT '[1,2,3]'::json;             -- Displays as: [1, 2, 3] (JSON syntax)
+
+-- JSONB with syntax highlighting
+SELECT '{"status": "active"}'::jsonb;
+-- {
+--   "status": "active"  ✓ (formatted with colors)
+-- }
+```
+
+**MongoDB:**
+```javascript
+// BSON document formatting
+db.users.findOne()
+// {
+//   "_id": ObjectId("507f1f77bcf86cd799439011"),
+//   "name": "John Doe",
+//   "settings": {
+//     "notifications": true
+//   }
+// }
+```
+
+**ClickHouse:**
+```sql
+-- Tuple formatting
+SELECT (1, 'hello', [1,2,3]) AS complex_tuple;
+-- Tuple(3): (1, "hello", [1, 2, 3])
+```
+
+### Complex Display Commands
+
+Interactive commands for controlling complex data display:
+
+```sql
+-- Toggle between display modes
+\cdm                    -- Show current complex display mode
+\cdm full               -- Set to full mode
+\cdm truncated          -- Set to truncated mode
+\cdm summary            -- Set to summary mode
+\cdm viz                -- Set to visualization mode
+
+-- Adjust display settings
+\cdt 15                 -- Set truncation length to 15 characters
+\cds 50                 -- Set size threshold to 50 elements
+
+-- Toggle metadata display
+\cdmeta                 -- Toggle metadata on/off
+\cddim                  -- Toggle dimension display on/off
+```
+
+### Performance Considerations
+
+Complex display formatting is optimized for performance:
+
+```toml
+[complex_display]
+# Performance tuning
+max_width = 100                     # Limit display width
+size_threshold = 30                 # Smaller threshold = less processing
+show_metadata = false               # Disable for faster display
+```
+
+**Performance tips:**
+- Use `truncated` mode for large datasets
+- Set lower `size_threshold` for faster processing
+- Disable `show_metadata` for maximum speed
+- Use `summary` mode for exploring large JSON structures
+
+### Examples by Data Type
+
+**JSON Analytics:**
+```sql
+-- E-commerce analytics with complex JSON
+SELECT
+    order_id,
+    customer_data,           -- JSON with nested preferences
+    item_details,           -- Array of product objects
+    shipping_address        -- GeoJSON location data
+FROM orders
+WHERE created_at > current_date - interval '1 day';
+
+-- Results automatically formatted:
+-- customer_data: {"id": 12345, "tier": "gold", "preferences"...} [234 chars]
+-- item_details: Array[3]: [{"sku": "ABC-123", "qty": 2...}]
+-- shipping_address: GeoJSON Point: [-74.006, 40.714] (New York, NY)
+```
+
+**Machine Learning Vectors:**
+```sql
+-- Vector similarity search with readable results
+SELECT
+    title,
+    content_summary,
+    embedding                -- Vector[1536] from OpenAI embeddings
+FROM documents
+ORDER BY embedding <-> '[0.1, -0.2, 0.3, ...]'::vector
+LIMIT 5;
+
+-- Results show:
+-- embedding: Vector[1536]: [0.123, -0.456, 0.789, ...] (cosine similarity ready)
+```
+
+**Geographic Analysis:**
+```sql
+-- Spatial data with intelligent coordinate formatting
+SELECT
+    store_name,
+    location,               -- PostGIS geometry
+    service_area           -- GeoJSON polygon
+FROM retail_locations
+WHERE ST_DWithin(location, ST_Point(-122.4194, 37.7749), 1000);
+
+-- Results show:
+-- location: POINT(-122.4194 37.7749) → San Francisco, CA
+-- service_area: GeoJSON Polygon: 4 vertices, ~2.3 km²
+```
+
 ## 🔍 Advanced Query Features
 
 Enhanced query execution and analysis capabilities.
@@ -538,6 +755,33 @@ chmod 755 ~/.config/dbcrust/
 
 **Password prompts despite saved session:**
 - Sessions don't store passwords - set up `.pgpass` or `.my.cnf`
+
+### Complex Display Issues
+
+**Data not formatting correctly:**
+```sql
+-- Check complex display settings
+\cdm  -- Show current display mode
+
+-- Try different modes
+\cdm full      -- Show complete data
+\cdm summary   -- Show structure overview
+```
+
+**Performance issues with large JSON:**
+```toml
+# Optimize for performance
+[complex_display]
+display_mode = "truncated"
+truncation_length = 6
+size_threshold = 20        # Lower threshold
+show_metadata = false      # Disable for speed
+```
+
+**Array format confusion:**
+- PostgreSQL arrays: `{1,2,3}` format (native)
+- JSON arrays: `[1,2,3]` format (JSON/JSONB columns)
+- DBCrust automatically detects and formats each type correctly
 
 ## 📚 See Also
 

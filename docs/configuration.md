@@ -203,6 +203,52 @@ column_selection_default_all = true    # Pre-select all columns (opt-out)
 - **Force Mode**: Use `\cs` to force column selection for all queries (toggle on/off)
 - **Runtime Control**: Use `\cs` to toggle force mode and `\csthreshold N` to change threshold temporarily
 
+### [complex_display] - Complex Data Type Formatting
+
+Controls how complex data types (JSON, arrays, vectors, GeoJSON) are displayed across all database types.
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `display_mode` | string | `"truncated"` | Default display mode: `"full"`, `"truncated"`, `"summary"`, `"viz"` |
+| `truncation_length` | integer | `5` | Number of elements to show at start/end when truncated |
+| `viz_width` | integer | `40` | Width for visualization modes |
+| `show_metadata` | boolean | `false` | Show metadata/statistics with formatted data |
+| `size_threshold` | integer | `20` | Auto-switch to truncated mode for data above this size |
+| `show_dimensions` | boolean | `true` | Show size/dimension information |
+| `full_elements_per_row` | integer | `8` | Elements per row in full mode matrix layout |
+| `max_width` | integer | `80` | Maximum display width before wrapping |
+| `full_show_numbers` | boolean | `true` | Show element numbers in full mode |
+
+**Complex Data Type Support:**
+
+- **JSON/JSONB** (PostgreSQL, MySQL): Enhanced formatting with syntax highlighting
+- **GeoJSON** (PostGIS, MySQL spatial): Geographic data visualization
+- **Arrays** (PostgreSQL `{1,2,3}`, ClickHouse `[1,2,3]`): Smart array formatting
+- **Vectors** (pgvector `[0.1,0.2,0.3]`): Embedding/vector visualization
+- **BSON Documents** (MongoDB): Nested document formatting
+- **Mixed Arrays** (MongoDB): Heterogeneous array type analysis
+
+**Example:**
+```toml
+[complex_display]
+display_mode = "truncated"
+truncation_length = 8
+viz_width = 60
+show_metadata = true
+size_threshold = 30
+show_dimensions = true
+full_elements_per_row = 10
+max_width = 100
+full_show_numbers = false
+```
+
+**Display Modes:**
+
+- **`full`**: Complete data with matrix-style layout for arrays
+- **`truncated`**: Show first/last N elements with "..." indicator
+- **`summary`**: Statistical overview (type counts, size, nesting info)
+- **`viz`**: ASCII visualization for vectors and large datasets
+
 ### Server Information Display
 
 Controls whether server version information is displayed when connecting to databases.
