@@ -403,6 +403,212 @@ impl CliCore {
     }
 
     /// Handle database connection setup - core connection logic
+    /// Connect to database with password management (lookup from .dbcrust, prompt on failure, save option)
+    async fn connect_with_password_management(
+        &mut self,
+        original_url: &str,
+    ) -> Result<(crate::db::Database, Option<ConnectionInfo>), CliError> {
+        use crate::database::ConnectionInfo;
+        use crate::dbcrust_pass::{DatabaseType, lookup_password, save_password};
+        use std::io::Write;
+
+        debug!(
+            "🔐 Starting connection with password management for URL: {}",
+            original_url
+        );
+
+        // First attempt: Try connection as-is
+        match crate::db::Database::from_url(
+            original_url,
+            Some(self.config.default_limit),
+            Some(self.config.expanded_display_default),
+        )
+        .await
+        {
+            Ok(database) => {
+                debug!("✅ Initial connection successful");
+                return Ok((database, None));
+            }
+            Err(e) => {
+                let error_msg = e.to_string().to_lowercase();
+
+                // Check if this is an authentication error
+                if !Self::is_authentication_error(&error_msg) {
+                    // Not an auth error, return the original error
+                    eprintln!("Failed to connect to database: {e}");
+                    eprintln!(
+                        "Connection URL: {}",
+                        crate::password_sanitizer::sanitize_connection_url(original_url)
+                    );
+                    return Err(CliError::ConnectionError(e.to_string()));
+                }
+
+                debug!("🔐 Authentication error detected, trying password lookup and retry");
+            }
+        }
+
+        // Parse the connection info to extract parameters for password lookup
+        let connection_info = ConnectionInfo::parse_url(original_url).map_err(|e| {
+            CliError::ConnectionError(format!("Failed to parse connection URL: {e}"))
+        })?;
+
+        // Extract connection parameters
+        let db_type_enum = match connection_info.database_type {
+            crate::database::DatabaseType::PostgreSQL => DatabaseType::PostgreSQL,
+            crate::database::DatabaseType::MySQL => DatabaseType::MySQL,
+            crate::database::DatabaseType::MongoDB => DatabaseType::MongoDB,
+            crate::database::DatabaseType::Elasticsearch => DatabaseType::Elasticsearch,
+            crate::database::DatabaseType::ClickHouse => DatabaseType::ClickHouse,
+            crate::database::DatabaseType::SQLite => {
+                // SQLite doesn't use passwords, return original error
+                eprintln!("Failed to connect to SQLite database");
+                return Err(CliError::ConnectionError(
+                    "SQLite connection failed".to_string(),
+                ));
+            }
+        };
+
+        let host = connection_info.host.as_deref().unwrap_or("localhost");
+        let port = connection_info.port.unwrap_or(match db_type_enum {
+            DatabaseType::PostgreSQL => 5432,
+            DatabaseType::MySQL => 3306,
+            DatabaseType::MongoDB => 27017,
+            DatabaseType::Elasticsearch => 9200,
+            DatabaseType::ClickHouse => 8123,
+            DatabaseType::SQLite => 0, // Not used
+        });
+        let database_name = connection_info.database.as_deref().unwrap_or("");
+        let username = connection_info.username.as_deref().unwrap_or("");
+
+        // If no password was in the original URL, try looking it up
+        if connection_info.password.is_none() {
+            debug!("🔍 Looking up password in .dbcrust file");
+            match lookup_password(db_type_enum.clone(), host, port, database_name, username) {
+                Ok(Some(password)) => {
+                    debug!("✅ Found password in .dbcrust file");
+                    // Create new URL with password
+                    let url_with_password = Self::inject_password_into_url(original_url, &password)
+                        .map_err(|e| {
+                            CliError::ConnectionError(format!("Failed to inject password: {e}"))
+                        })?;
+
+                    // Try connection with looked-up password
+                    match crate::db::Database::from_url(
+                        &url_with_password,
+                        Some(self.config.default_limit),
+                        Some(self.config.expanded_display_default),
+                    )
+                    .await
+                    {
+                        Ok(database) => {
+                            debug!("✅ Connection successful with looked-up password");
+                            return Ok((database, None));
+                        }
+                        Err(e) => {
+                            debug!("❌ Connection failed even with looked-up password: {e}");
+                            // Continue to prompt for password
+                        }
+                    }
+                }
+                Ok(None) => {
+                    debug!("🔍 No password found in .dbcrust file");
+                }
+                Err(e) => {
+                    debug!("⚠️  Error looking up password: {e}");
+                }
+            }
+        }
+
+        // Prompt for password interactively using rpassword for clean positioning
+        print!("🔐 Password: ");
+        std::io::stdout().flush().unwrap();
+        let prompted_password = rpassword::read_password()
+            .map_err(|e| CliError::ConnectionError(format!("Password input error: {e}")))?;
+
+        // Try connection with prompted password
+        let url_with_password = Self::inject_password_into_url(original_url, &prompted_password)
+            .map_err(|e| CliError::ConnectionError(format!("Failed to inject password: {e}")))?;
+
+        match crate::db::Database::from_url(
+            &url_with_password,
+            Some(self.config.default_limit),
+            Some(self.config.expanded_display_default),
+        )
+        .await
+        {
+            Ok(database) => {
+                debug!("✅ Connection successful with prompted password");
+
+                // Automatically save the password with encryption (no confirmation prompts)
+                match save_password(
+                    db_type_enum,
+                    host,
+                    port,
+                    database_name,
+                    username,
+                    &prompted_password,
+                    true,
+                ) {
+                    Ok(()) => {
+                        println!("✅ Password saved to .dbcrust file (encrypted)");
+                    }
+                    Err(e) => {
+                        debug!("⚠️  Failed to save password: {e}");
+                        // Don't show error to user - saving is optional, connection succeeded
+                    }
+                }
+
+                Ok((database, None))
+            }
+            Err(e) => {
+                eprintln!("❌ Connection failed with provided password: {e}");
+                eprintln!(
+                    "Connection URL: {}",
+                    crate::password_sanitizer::sanitize_connection_url(original_url)
+                );
+                Err(CliError::ConnectionError(format!(
+                    "Authentication failed: {e}"
+                )))
+            }
+        }
+    }
+
+    /// Check if an error message indicates an authentication failure
+    fn is_authentication_error(error_msg: &str) -> bool {
+        let auth_indicators = [
+            "authentication failed",
+            "auth failed",
+            "invalid credentials",
+            "password authentication failed",
+            "login failed",
+            "access denied",
+            "permission denied",
+            "unauthorized",
+            "invalid username or password",
+            "authentication error",
+            "wrong password",
+            "invalid password",
+            "login incorrect",
+            "connection refused", // Some databases return this for bad auth
+        ];
+
+        auth_indicators
+            .iter()
+            .any(|indicator| error_msg.contains(indicator))
+    }
+
+    /// Inject password into a connection URL
+    fn inject_password_into_url(
+        original_url: &str,
+        password: &str,
+    ) -> Result<String, url::ParseError> {
+        let mut parsed_url = url::Url::parse(original_url)?;
+        parsed_url
+            .set_password(Some(password))
+            .map_err(|_| url::ParseError::EmptyHost)?;
+        Ok(parsed_url.to_string())
+    }
+
     pub async fn handle_database_connection(&mut self, args: &Args) -> Result<(), CliError> {
         let connection_url = args.connection_url.clone().ok_or_else(|| {
             CliError::ArgumentError("No database connection specified".to_string())
@@ -462,7 +668,7 @@ impl CliCore {
             return Ok(());
         }
 
-        // Create database connection
+        // Create database connection with password management
         let (database, connection_info) = if full_url_str.starts_with("docker://") {
             crate::db::Database::from_docker_url_with_tracking(
                 &full_url_str,
@@ -479,21 +685,8 @@ impl CliCore {
                 CliError::ConnectionError(e.to_string())
             })?
         } else {
-            let database = crate::db::Database::from_url(
-                &full_url_str,
-                Some(self.config.default_limit),
-                Some(self.config.expanded_display_default),
-            )
-            .await
-            .map_err(|e| {
-                eprintln!("Failed to connect to database: {e}");
-                eprintln!(
-                    "Connection URL: {}",
-                    crate::password_sanitizer::sanitize_connection_url(&full_url_str)
-                );
-                CliError::ConnectionError(e.to_string())
-            })?;
-            (database, None)
+            // Try connection with password management and retry logic
+            self.connect_with_password_management(&full_url_str).await?
         };
 
         // Track connection in history

@@ -17,6 +17,7 @@ pub mod database_mysql; // MySQL implementation
 pub mod database_postgresql; // PostgreSQL implementation
 pub mod database_sqlite; // SQLite implementation
 pub mod db;
+pub mod dbcrust_pass; // Universal password file (.dbcrust) support
 pub mod docker; // Docker container integration
 pub mod format; // Made format module public
 pub mod geojson_display;
@@ -27,6 +28,7 @@ pub mod logging;
 pub mod myconf; // MySQL configuration file support
 pub mod named_queries;
 pub mod pager;
+pub mod password_encryption; // Password encryption for .dbcrust file
 pub mod password_sanitizer;
 pub mod performance_analyzer; // Performance analysis for EXPLAIN queries
 pub mod pgpass;

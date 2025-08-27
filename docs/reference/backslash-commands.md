@@ -62,6 +62,15 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
     | `\vcr [role]` | Force refresh vault credentials | `\vcr` or `\vcr my-role` |
     | `\vce` | Show expired vault credentials | `\vce` |
 
+=== "Password Management"
+
+    | Command | Description | Example |
+    |---------|-------------|---------|
+    | `\savepass` | Save password to .dbcrust file (interactive) | `\savepass` |
+    | `\listpass` | List stored passwords (without showing passwords) | `\listpass` |
+    | `\deletepass` | Delete stored password (interactive selection) | `\deletepass` |
+    | `\encryptpass` | Encrypt all plaintext passwords in .dbcrust | `\encryptpass` |
+
 === "MongoDB Operations"
 
     | Command | Description | Example |

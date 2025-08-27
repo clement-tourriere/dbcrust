@@ -81,6 +81,7 @@ url = { version = "2.5.0", default-features = false }
 percent-encoding = { version = "2.3", default-features = false }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 inquire = { version = "0.7.5", default-features = false, features = ["crossterm"] }
+rpassword = { version = "7.3", default-features = false }
 arboard = { version = "3.4", default-features = false }
 bollard = { version = "0.19", default-features = false, features = ["http", "pipe"] }
 strum = { version = "0.27", features = ["derive"], default-features = false }
@@ -91,6 +92,7 @@ mongodb = { version = "3.0", default-features = false, features = ["rustls-tls",
 bson = { version = "2.0", default-features = false }
 elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+hostname = { version = "0.4", default-features = false }
 
 # Extension support (always available)
 pgvector = { version = "0.4", default-features = false, features = ["sqlx", "halfvec"] }

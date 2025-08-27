@@ -269,6 +269,7 @@ etc.), use dedicated storage files rather than mixing everything in the main `co
 - **Recent connections**: `~/.config/dbcrust/recent_connections.toml` - connection history
 - **Saved sessions**: `~/.config/dbcrust/saved_sessions.toml` - named connection configurations
 - **Vault credentials**: `~/.config/dbcrust/vault_credentials.enc` - encrypted cached credentials
+- **Universal passwords**: `~/.dbcrust` - encrypted database passwords for all database types
 - **Future data types**: Follow this pattern with dedicated files
 
 **Benefits:**
@@ -534,6 +535,121 @@ Configure automatic SSH tunnels in `config.toml`:
 ```toml
 [ssh_tunnel_patterns]
 "^db\\.internal\\..*\\.com$" = "user@jumphost.example.com:2222"
+```
+
+## Universal Password Management
+
+DBCrust provides comprehensive password management for all supported database types through the `.dbcrust` file system, similar to how `.pgpass` works for PostgreSQL but universal across all databases.
+
+### Password File Format
+
+The `.dbcrust` file uses the format:
+```
+database_type:host:port:database:username:password
+```
+
+**Examples:**
+```bash
+# PostgreSQL
+postgresql:localhost:5432:myapp:dbuser:mypassword
+
+# MySQL with encryption (passwords prefixed with 'enc:' are encrypted)
+mysql:db.example.com:3306:webapp:admin:enc:a1b2c3d4e5f6...
+
+# MongoDB
+mongodb:cluster.mongodb.net:27017:analytics:analyst:secret123
+
+# Wildcard matching (any host, port, user for specific database)
+postgresql:*:*:testdb:*:development_password
+
+# Elasticsearch
+elasticsearch:es.cluster.com:9200:logs:elastic_user:elastic_pass
+```
+
+### Password Management Commands
+
+Interactive password management through backslash commands:
+
+```bash
+# Save a password (interactive prompts for all details)
+\savepass
+
+# List all stored passwords (without showing passwords)
+\listpass
+
+# Delete a stored password (interactive selection)
+\deletepass
+
+# Encrypt all plaintext passwords in .dbcrust file
+\encryptpass
+```
+
+### Automatic Password Features
+
+1. **Automatic Lookup**: When connecting without a password, DBCrust automatically searches `.dbcrust`
+2. **Authentication Retry**: On auth failure, prompts for password and offers to save it
+3. **Encryption Support**: Passwords can be stored encrypted or plaintext (encryption recommended)
+4. **Universal Support**: Works with PostgreSQL, MySQL, MongoDB, Elasticsearch, ClickHouse, SQLite
+
+### Password File Location
+
+- **Default**: `~/.dbcrust`
+- **Custom location**: Set `DBCRUST_PASSFILE` environment variable
+- **Security**:
+  - **Unix/macOS**: File permissions enforced (0600 - readable/writable by owner only)
+  - **Windows**: Relies on NTFS directory security and file system permissions
+
+### Connection Flow with Password Management
+
+1. **URL with password**: Uses provided password directly
+2. **URL without password**: Looks up in `.dbcrust` file
+3. **Authentication failure**: Prompts for password interactively
+4. **Successful auth**: Offers to save password to `.dbcrust`
+5. **Password encryption**: User chooses encrypted or plaintext storage
+
+### Machine-Specific Encryption
+
+Encrypted passwords use machine-specific keys derived from platform-specific identifiers:
+
+#### **Linux:**
+- Machine ID (`/etc/machine-id` or `/var/lib/dbus/machine-id`)
+- User home directory path
+- Hostname + username + user ID
+- Fixed salt for additional security
+
+#### **macOS:**
+- Hardware UUID via `ioreg` or `system_profiler`
+- User home directory path
+- Hostname + username
+- Fixed salt for additional security
+
+#### **Windows:**
+- Machine GUID via PowerShell or WMI
+- User home directory path
+- Hostname + username
+- Fixed salt for additional security
+
+This ensures encrypted passwords only work on the machine where they were encrypted, with robust cross-platform support.
+
+### Examples
+
+```bash
+# Connect without password (will lookup from .dbcrust or prompt)
+dbcrust postgres://user@localhost/myapp
+
+# Auth fails -> prompts for password -> offers to save
+# Next time: automatic lookup and connection
+
+# Manage passwords interactively
+dbcrust postgres://user@localhost/myapp
+postgres@myapp=> \savepass
+# Interactive prompts guide through password saving
+
+postgres@myapp=> \listpass
+# Shows all stored credentials without passwords
+
+postgres@myapp=> \encryptpass
+# Encrypts any plaintext passwords in .dbcrust
 ```
 
 ## Vault Integration

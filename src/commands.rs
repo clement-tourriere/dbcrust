@@ -112,6 +112,25 @@ pub enum Command {
     },
     VaultCacheExpired,
 
+    // Password management commands (.dbcrust file)
+    SavePassword {
+        db_type: Option<String>,
+        host: Option<String>,
+        port: Option<u16>,
+        database: Option<String>,
+        username: Option<String>,
+        encrypt: bool,
+    },
+    ListPasswords,
+    DeletePassword {
+        db_type: Option<String>,
+        host: Option<String>,
+        port: Option<u16>,
+        database: Option<String>,
+        username: Option<String>,
+    },
+    EncryptPasswords,
+
     // Database-specific commands
     ListUsers,
     ListIndexes,
@@ -224,6 +243,7 @@ pub enum CommandCategory {
     HistoryManagement,
     DatabaseSpecific,
     VaultManagement,
+    PasswordManagement,
     Advanced,
 }
 
@@ -292,6 +312,11 @@ pub enum CommandShortcut {
     Vcc,
     Vcr,
     Vce,
+    // Password management commands
+    Savepass,
+    Listpass,
+    Deletepass,
+    Encryptpass,
     // Complex display commands (minimal set)
     Cd,
     Cdj,
@@ -363,6 +388,11 @@ impl CommandShortcut {
             CommandShortcut::Vcc => "\\vcc",
             CommandShortcut::Vcr => "\\vcr",
             CommandShortcut::Vce => "\\vce",
+            // Password management commands
+            CommandShortcut::Savepass => "\\savepass",
+            CommandShortcut::Listpass => "\\listpass",
+            CommandShortcut::Deletepass => "\\deletepass",
+            CommandShortcut::Encryptpass => "\\encryptpass",
             // Complex display commands (minimal set)
             CommandShortcut::Cd => "\\cd",
             CommandShortcut::Cdj => "\\cdj",
@@ -434,6 +464,11 @@ impl CommandShortcut {
             CommandShortcut::Vcc => "Clear all cached vault credentials",
             CommandShortcut::Vcr => "Force refresh vault credentials",
             CommandShortcut::Vce => "Show expired vault credentials",
+            // Password management commands
+            CommandShortcut::Savepass => "Save password to .dbcrust file",
+            CommandShortcut::Listpass => "List stored passwords (without showing passwords)",
+            CommandShortcut::Deletepass => "Delete stored password",
+            CommandShortcut::Encryptpass => "Encrypt all plaintext passwords in .dbcrust",
             // Complex display commands (minimal set)
             CommandShortcut::Cd => "Set complex data display mode",
             CommandShortcut::Cdj => "Toggle JSON pretty printing",
@@ -495,6 +530,11 @@ impl CommandShortcut {
             | CommandShortcut::Vcc
             | CommandShortcut::Vcr
             | CommandShortcut::Vce => CommandCategory::VaultManagement,
+            // Password management
+            CommandShortcut::Savepass
+            | CommandShortcut::Listpass
+            | CommandShortcut::Deletepass
+            | CommandShortcut::Encryptpass => CommandCategory::PasswordManagement,
             // EXPLAIN variants (Advanced)
             CommandShortcut::Er
             | CommandShortcut::Ef
@@ -815,6 +855,31 @@ impl CommandParser {
                 Ok(Command::VaultCacheRefresh { role })
             }
             "vce" => Ok(Command::VaultCacheExpired),
+
+            // Password management commands
+            "savepass" => {
+                // Interactive mode - all parameters will be collected interactively
+                Ok(Command::SavePassword {
+                    db_type: None,
+                    host: None,
+                    port: None,
+                    database: None,
+                    username: None,
+                    encrypt: true, // Default to encrypted
+                })
+            }
+            "listpass" => Ok(Command::ListPasswords),
+            "deletepass" => {
+                // Interactive mode - parameters will be selected interactively
+                Ok(Command::DeletePassword {
+                    db_type: None,
+                    host: None,
+                    port: None,
+                    database: None,
+                    username: None,
+                })
+            }
+            "encryptpass" => Ok(Command::EncryptPasswords),
 
             // MongoDB-specific commands
             "collections" => Ok(Command::ListCollections),
@@ -1991,6 +2056,213 @@ impl CommandExecutor for Command {
                 }
             }
 
+            // Password management commands
+            Command::SavePassword { .. } => {
+                use crate::dbcrust_pass::{DatabaseType, save_password};
+                use inquire::{Select, Text};
+                use std::io::Write;
+
+                // Interactive prompts for all parameters
+                let database_types = vec![
+                    "postgresql",
+                    "mysql",
+                    "mongodb",
+                    "elasticsearch",
+                    "clickhouse",
+                    "sqlite",
+                ];
+                let db_type_str = Select::new("Database type:", database_types)
+                    .prompt()
+                    .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
+
+                let db_type = DatabaseType::from_str(db_type_str).unwrap();
+
+                let host = Text::new("Host:")
+                    .with_default("localhost")
+                    .prompt()
+                    .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
+
+                let port_str = Text::new("Port:")
+                    .with_default(match db_type {
+                        DatabaseType::PostgreSQL => "5432",
+                        DatabaseType::MySQL => "3306",
+                        DatabaseType::MongoDB => "27017",
+                        DatabaseType::Elasticsearch => "9200",
+                        DatabaseType::ClickHouse => "8123",
+                        DatabaseType::SQLite => "0", // Not used for SQLite
+                    })
+                    .prompt()
+                    .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
+
+                let port: u16 = port_str
+                    .parse()
+                    .map_err(|_| CommandError::InvalidSyntax("Invalid port number".to_string()))?;
+
+                let database = Text::new("Database name:")
+                    .prompt()
+                    .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
+
+                let username = Text::new("Username:")
+                    .prompt()
+                    .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
+
+                print!("Password: ");
+                std::io::stdout().flush().unwrap();
+                let password = rpassword::read_password().map_err(|e| {
+                    CommandError::InvalidSyntax(format!("Password input error: {e}"))
+                })?;
+
+                // Always encrypt passwords by default (no confirmation prompt)
+                let encrypt = true;
+
+                match save_password(
+                    db_type.clone(),
+                    &host,
+                    port,
+                    &database,
+                    &username,
+                    &password,
+                    encrypt,
+                ) {
+                    Ok(()) => Ok(CommandResult::Output(format!(
+                        "Password saved for {}:{}@{}:{}/{} (encrypted)",
+                        db_type.as_str(),
+                        username,
+                        host,
+                        port,
+                        database
+                    ))),
+                    Err(e) => Ok(CommandResult::Error(format!(
+                        "Failed to save password: {e}"
+                    ))),
+                }
+            }
+
+            Command::ListPasswords => {
+                use crate::dbcrust_pass::list_entries;
+
+                match list_entries() {
+                    Ok(entries) => {
+                        if entries.is_empty() {
+                            Ok(CommandResult::Output(
+                                "No saved passwords found.".to_string(),
+                            ))
+                        } else {
+                            let mut output = "Saved passwords:\n".to_string();
+                            for (db_type, host, port, database, username) in entries {
+                                output.push_str(&format!(
+                                    "  {}:{}@{}:{}/{}\n",
+                                    db_type.as_str(),
+                                    username,
+                                    host,
+                                    port,
+                                    database
+                                ));
+                            }
+                            Ok(CommandResult::Output(output))
+                        }
+                    }
+                    Err(e) => Ok(CommandResult::Error(format!(
+                        "Failed to list passwords: {e}"
+                    ))),
+                }
+            }
+
+            Command::DeletePassword { .. } => {
+                use crate::dbcrust_pass::{delete_password, list_entries};
+                use inquire::Select;
+
+                // First list available passwords
+                let entries = match list_entries() {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        return Ok(CommandResult::Error(format!(
+                            "Failed to list passwords: {e}"
+                        )));
+                    }
+                };
+
+                if entries.is_empty() {
+                    return Ok(CommandResult::Output(
+                        "No saved passwords to delete.".to_string(),
+                    ));
+                }
+
+                // Create selection list
+                let options: Vec<String> = entries
+                    .iter()
+                    .map(|(db_type, host, port, database, username)| {
+                        format!(
+                            "{}:{}@{}:{}/{}",
+                            db_type.as_str(),
+                            username,
+                            host,
+                            port,
+                            database
+                        )
+                    })
+                    .collect();
+
+                let selection = Select::new("Select password to delete:", options)
+                    .prompt()
+                    .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
+
+                // Find the selected entry
+                let selected_entry =
+                    entries
+                        .iter()
+                        .find(|(db_type, host, port, database, username)| {
+                            format!(
+                                "{}:{}@{}:{}/{}",
+                                db_type.as_str(),
+                                username,
+                                host,
+                                port,
+                                database
+                            ) == selection
+                        });
+
+                if let Some((db_type, host, port_str, database, username)) = selected_entry {
+                    let port: u16 = port_str.parse().map_err(|_| {
+                        CommandError::InvalidSyntax("Invalid port number".to_string())
+                    })?;
+
+                    match delete_password(db_type.clone(), host, port, database, username) {
+                        Ok(true) => Ok(CommandResult::Output(format!(
+                            "Password deleted: {}",
+                            selection
+                        ))),
+                        Ok(false) => Ok(CommandResult::Output(
+                            "No matching password found to delete.".to_string(),
+                        )),
+                        Err(e) => Ok(CommandResult::Error(format!(
+                            "Failed to delete password: {e}"
+                        ))),
+                    }
+                } else {
+                    Ok(CommandResult::Error(
+                        "Selected entry not found.".to_string(),
+                    ))
+                }
+            }
+
+            Command::EncryptPasswords => {
+                use crate::dbcrust_pass::encrypt_all_passwords;
+
+                match encrypt_all_passwords() {
+                    Ok(0) => Ok(CommandResult::Output(
+                        "No plaintext passwords found to encrypt.".to_string(),
+                    )),
+                    Ok(count) => Ok(CommandResult::Output(format!(
+                        "Encrypted {} password(s) in .dbcrust file.",
+                        count
+                    ))),
+                    Err(e) => Ok(CommandResult::Error(format!(
+                        "Failed to encrypt passwords: {e}"
+                    ))),
+                }
+            }
+
             Command::ShowPoolStats => {
                 let db = database.lock().unwrap();
                 let connection_status = if db.is_connected().await {
@@ -2415,6 +2687,11 @@ impl CommandExecutor for Command {
             Command::VaultCacheClear => "Clear all cached vault credentials",
             Command::VaultCacheRefresh { .. } => "Refresh vault credential cache",
             Command::VaultCacheExpired => "Show expired vault credentials",
+            // Password management commands
+            Command::SavePassword { .. } => "Save password to .dbcrust file (interactive)",
+            Command::ListPasswords => "List stored passwords (without showing passwords)",
+            Command::DeletePassword { .. } => "Delete stored password (interactive)",
+            Command::EncryptPasswords => "Encrypt all plaintext passwords in .dbcrust",
             // MongoDB-specific commands
             Command::ListCollections => "List collections in current database",
             Command::DescribeCollection { .. } => "Describe collection structure",
@@ -2487,6 +2764,11 @@ impl CommandExecutor for Command {
             Command::VaultCacheClear => "\\vcc",
             Command::VaultCacheRefresh { .. } => "\\vcr [role]",
             Command::VaultCacheExpired => "\\vce",
+            // Password management commands
+            Command::SavePassword { .. } => "\\savepass",
+            Command::ListPasswords => "\\listpass",
+            Command::DeletePassword { .. } => "\\deletepass",
+            Command::EncryptPasswords => "\\encryptpass",
             // MongoDB-specific commands
             Command::ListCollections => "\\collections",
             Command::DescribeCollection { .. } => "\\dc <collection_name>",
@@ -2557,6 +2839,11 @@ impl CommandExecutor for Command {
             | Command::VaultCacheClear
             | Command::VaultCacheRefresh { .. }
             | Command::VaultCacheExpired => CommandCategory::VaultManagement,
+            // Password management commands
+            Command::SavePassword { .. }
+            | Command::ListPasswords
+            | Command::DeletePassword { .. }
+            | Command::EncryptPasswords => CommandCategory::PasswordManagement,
             // MongoDB-specific commands
             Command::ListCollections => CommandCategory::DatabaseNavigation,
             Command::DescribeCollection { .. } => CommandCategory::DatabaseNavigation,
