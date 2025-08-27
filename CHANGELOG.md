@@ -1,3 +1,10 @@
+## v0.21.0 (2025-08-27)
+
+### Feat
+
+- allow dbcrust to securely ask and store passwords
+- add elasticsearch connection
+
 ## v0.20.1 (2025-08-26)
 
 ### Fix
