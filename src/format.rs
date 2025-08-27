@@ -368,6 +368,15 @@ pub fn format_table_details(details: &TableDetails) -> String {
         && !details.columns.is_empty()
         && details.columns[0].collation.is_empty();
 
+    // Detect Elasticsearch by looking for capability-style collation values
+    let is_elasticsearch = !details.columns.is_empty()
+        && details.columns.iter().any(|c| {
+            c.collation.contains("filter")
+                || c.collation.contains("search")
+                || c.collation.contains("select")
+                || c.collation.contains("agg")
+        });
+
     if is_sqlite {
         // SQLite-style format (3 columns: Column, Type, Modifiers)
         let mut col_widths = vec![0; 3]; // For Column, Type, Modifiers
@@ -537,7 +546,11 @@ pub fn format_table_details(details: &TableDetails) -> String {
         // Start with header widths as minimums
         col_widths[0] = "Column".len();
         col_widths[1] = "Type".len();
-        col_widths[2] = "Collation".len();
+        col_widths[2] = if is_elasticsearch {
+            "Capabilities".len()
+        } else {
+            "Collation".len()
+        };
         col_widths[3] = "Nullable".len();
         col_widths[4] = "Default".len();
 
@@ -560,11 +573,16 @@ pub fn format_table_details(details: &TableDetails) -> String {
         }
 
         // Header row
+        let collation_header = if is_elasticsearch {
+            "Capabilities"
+        } else {
+            "Collation"
+        };
         result.push_str(&format!(
             "{:<width0$} | {:<width1$} | {:<width2$} | {:<width3$} | {:<width4$}\n",
             "Column",
             "Type",
-            "Collation",
+            collation_header,
             "Nullable",
             "Default",
             width0 = col_widths[0],

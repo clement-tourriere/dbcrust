@@ -15,7 +15,7 @@ DBCrust is a high-performance database CLI built for modern developers. Beyond s
 
 ## 🚀 Key Features
 
-- **🐳 Multi-Database Support** - PostgreSQL, MySQL, SQLite with container auto-discovery
+- **🐳 Multi-Database Support** - PostgreSQL, MySQL, SQLite, MongoDB, ClickHouse, Elasticsearch with container auto-discovery
 - **⚡ Intelligent CLI** - Context-aware autocompletion, syntax highlighting, and external editor support
 - **🔐 Enterprise Ready** - SSH tunneling, HashiCorp Vault integration, and encrypted connections
 - **🔍 Smart Performance Analysis** - Built-in EXPLAIN visualization and query optimization tools
@@ -39,20 +39,25 @@ uv tool install dbcrust  # Install as isolated tool (recommended)
 ### Basic Usage
 
 ```bash
-# Database connections with intelligent autocompletion
-dbcrust postgres://user:pass@localhost/mydb
-dbcrust docker://postgres-container  # Container auto-discovery
-dbcrust session://production_db      # Saved sessions
-dbc pos[TAB] → postgres://           # Smart completions
+# Multi-database connections with intelligent autocompletion
+dbcrust postgres://user:pass@localhost/mydb   # PostgreSQL
+dbcrust mysql://user:pass@localhost/mydb      # MySQL
+dbcrust elasticsearch://localhost:9200        # Elasticsearch
+dbcrust mongodb://localhost:27017/mydb        # MongoDB
+dbcrust clickhouse://localhost:8123/default   # ClickHouse
+dbcrust docker://postgres-container           # Container auto-discovery
+dbcrust session://production_db               # Saved sessions
 ```
 
 ## Essential Commands
 
 ```bash
 # Multi-database connections
-dbcrust postgres://postgres:pass@localhost/myapp
-dbcrust docker://my-postgres-container
-dbcrust session://production_db  # Saved sessions
+dbcrust postgres://postgres:pass@localhost/myapp     # PostgreSQL
+dbcrust elasticsearch://localhost:9200               # Elasticsearch (no auth)
+dbcrust mongodb://user:pass@localhost:27017/mydb     # MongoDB
+dbcrust clickhouse://user:pass@localhost:8123/default # ClickHouse
+dbcrust docker://my-postgres-container               # Container auto-discovery
 
 # Interactive commands (once connected)
 \dt                               # List tables

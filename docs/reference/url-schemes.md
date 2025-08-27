@@ -113,6 +113,40 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     - **Text Search**: Full-text search capabilities with `\search` command
     - **Index Management**: Create, drop, and list MongoDB indexes
 
+=== "Elasticsearch"
+
+    **Schemes:** `elasticsearch://`, `elastic://`, `es://`
+
+    ```bash
+    # Standard connection (HTTP interface on port 9200)
+    dbcrust elasticsearch://localhost:9200
+
+    # With authentication
+    dbcrust elasticsearch://elastic:password@localhost:9200
+
+    # Alternative schemes (all equivalent)
+    dbcrust elastic://localhost:9200
+    dbcrust es://localhost:9200
+
+    # With SSL (skip certificate verification for development)
+    dbcrust "elasticsearch://elastic:password@localhost:9200?ssl=true&verify_certs=false"
+
+    # Remote Elasticsearch cluster
+    dbcrust elasticsearch://user:pass@elasticsearch.company.com:9200
+
+    # Docker container
+    dbcrust docker://my-elasticsearch-container
+    ```
+
+    **Features:**
+    - **Intelligent Index Handling**: Automatic quoting for index names with special characters (`logs-2024.01.01`)
+    - **Smart SELECT * Queries**: Auto-excludes array fields that cause SQL API failures
+    - **Comprehensive Field Mapping**: Shows nested fields (`author.login`) and multi-fields (`field.keyword`)
+    - **Field Capabilities Analysis**: Displays what operations each field supports (filter, search, agg, etc.)
+    - **SQL API Integration**: Uses Elasticsearch SQL for familiar query syntax
+    - **Container Auto-Discovery**: Detects Elasticsearch containers and excludes Kibana
+    - **Advanced Query Rewriting**: Handles complex queries with proper escaping
+
 ### Advanced Connection Schemes
 
 === "Docker Containers"

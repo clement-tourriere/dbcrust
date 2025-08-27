@@ -17,6 +17,7 @@ pub enum DatabaseType {
     MySQL,
     ClickHouse,
     MongoDB,
+    Elasticsearch,
 }
 
 impl fmt::Display for DatabaseType {
@@ -75,9 +76,10 @@ impl DatabaseTypeExt for DatabaseType {
         match self {
             DatabaseType::PostgreSQL => Some(5432),
             DatabaseType::MySQL => Some(3306),
-            DatabaseType::SQLite => None,           // File-based
-            DatabaseType::ClickHouse => Some(8123), // HTTP interface
-            DatabaseType::MongoDB => Some(27017),   // MongoDB default port
+            DatabaseType::SQLite => None,              // File-based
+            DatabaseType::ClickHouse => Some(8123),    // HTTP interface
+            DatabaseType::MongoDB => Some(27017),      // MongoDB default port
+            DatabaseType::Elasticsearch => Some(9200), // HTTP REST API
         }
     }
 
@@ -88,6 +90,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => "SQLite",
             DatabaseType::ClickHouse => "ClickHouse",
             DatabaseType::MongoDB => "MongoDB",
+            DatabaseType::Elasticsearch => "Elasticsearch",
         }
     }
 
@@ -96,7 +99,8 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL
             | DatabaseType::MySQL
             | DatabaseType::ClickHouse
-            | DatabaseType::MongoDB => true,
+            | DatabaseType::MongoDB
+            | DatabaseType::Elasticsearch => true,
             DatabaseType::SQLite => false, // File-based, no network connection
         }
     }
@@ -108,6 +112,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => &["sqlite"],
             DatabaseType::ClickHouse => &["clickhouse"],
             DatabaseType::MongoDB => &["mongodb", "mongodb+srv"],
+            DatabaseType::Elasticsearch => &["elasticsearch", "elastic", "es"],
         }
     }
 
@@ -117,13 +122,17 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL
             | DatabaseType::MySQL
             | DatabaseType::ClickHouse
-            | DatabaseType::MongoDB => false,
+            | DatabaseType::MongoDB
+            | DatabaseType::Elasticsearch => false,
         }
     }
 
     fn supports_json_explain(&self) -> bool {
         match self {
-            DatabaseType::PostgreSQL | DatabaseType::ClickHouse | DatabaseType::MongoDB => true,
+            DatabaseType::PostgreSQL
+            | DatabaseType::ClickHouse
+            | DatabaseType::MongoDB
+            | DatabaseType::Elasticsearch => true,
             DatabaseType::MySQL | DatabaseType::SQLite => false,
         }
     }
@@ -133,7 +142,8 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL
             | DatabaseType::MySQL
             | DatabaseType::ClickHouse
-            | DatabaseType::MongoDB => true,
+            | DatabaseType::MongoDB
+            | DatabaseType::Elasticsearch => true,
             DatabaseType::SQLite => false,
         }
     }
@@ -145,6 +155,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => "sqlite",
             DatabaseType::ClickHouse => "clickhouse",
             DatabaseType::MongoDB => "mongodb",
+            DatabaseType::Elasticsearch => "elasticsearch",
         }
     }
 
@@ -282,12 +293,68 @@ impl DatabaseTypeExt for DatabaseType {
                 "$ifNull",
                 "$switch",
             ],
+            DatabaseType::Elasticsearch => &[
+                // Standard SQL functions supported by Elasticsearch
+                "COUNT",
+                "SUM",
+                "AVG",
+                "MIN",
+                "MAX",
+                "COALESCE",
+                "NULLIF",
+                "GREATEST",
+                "LEAST",
+                // Date/time functions
+                "NOW",
+                "CURRENT_DATE",
+                "CURRENT_TIME",
+                "CURRENT_TIMESTAMP",
+                "EXTRACT",
+                "DATE_FORMAT",
+                "DATE_HISTOGRAM",
+                "DATE_TRUNC",
+                // String functions
+                "CONCAT",
+                "LENGTH",
+                "SUBSTRING",
+                "UPPER",
+                "LOWER",
+                "TRIM",
+                "REPLACE",
+                // Search-specific functions
+                "MATCH",
+                "QUERY",
+                "SCORE",
+                // Aggregation functions
+                "TERMS",
+                "STATS",
+                "EXTENDED_STATS",
+                "PERCENTILES",
+                "CARDINALITY",
+                "VALUE_COUNT",
+                // Math functions
+                "ABS",
+                "CEIL",
+                "FLOOR",
+                "ROUND",
+                "SQRT",
+                "POWER",
+                // Conditional functions
+                "CASE",
+                "WHEN",
+                "THEN",
+                "ELSE",
+                "END",
+            ],
         }
     }
 
     fn supports_from_unixtime(&self) -> bool {
         match self {
-            DatabaseType::MySQL | DatabaseType::ClickHouse | DatabaseType::MongoDB => true,
+            DatabaseType::MySQL
+            | DatabaseType::ClickHouse
+            | DatabaseType::MongoDB
+            | DatabaseType::Elasticsearch => true,
             DatabaseType::PostgreSQL | DatabaseType::SQLite => false,
         }
     }
@@ -299,6 +366,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => &[],
             DatabaseType::ClickHouse => &["CLICKHOUSE_USER"],
             DatabaseType::MongoDB => &["MONGO_INITDB_ROOT_USERNAME"],
+            DatabaseType::Elasticsearch => &["ELASTIC_USERNAME", "ES_USERNAME"],
         }
     }
 
@@ -309,6 +377,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => &[],
             DatabaseType::ClickHouse => &["CLICKHOUSE_PASSWORD"],
             DatabaseType::MongoDB => &["MONGO_INITDB_ROOT_PASSWORD"],
+            DatabaseType::Elasticsearch => &["ELASTIC_PASSWORD", "ES_PASSWORD"],
         }
     }
 
@@ -319,6 +388,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => &[],
             DatabaseType::ClickHouse => &["CLICKHOUSE_DB"],
             DatabaseType::MongoDB => &["MONGO_INITDB_DATABASE"],
+            DatabaseType::Elasticsearch => &["ELASTIC_INDEX", "ES_INDEX"],
         }
     }
 
@@ -329,6 +399,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::SQLite => "",
             DatabaseType::ClickHouse => "default",
             DatabaseType::MongoDB => "admin",
+            DatabaseType::Elasticsearch => "elastic",
         }
     }
 }
@@ -342,6 +413,7 @@ impl DatabaseType {
             "mysql" => Ok(DatabaseType::MySQL),
             "clickhouse" => Ok(DatabaseType::ClickHouse),
             "mongodb" | "mongodb+srv" => Ok(DatabaseType::MongoDB),
+            "elasticsearch" | "elastic" | "es" => Ok(DatabaseType::Elasticsearch),
             "docker" => Ok(DatabaseType::PostgreSQL), // Default to PostgreSQL for docker:// URLs
             scheme => Err(DatabaseError::UnsupportedScheme(scheme.to_string())),
         }
@@ -490,6 +562,11 @@ pub async fn create_database_client(
         }
         DatabaseType::MongoDB => {
             let client = crate::database_mongodb::MongoDBClient::new(connection_info).await?;
+            Ok(Box::new(client))
+        }
+        DatabaseType::Elasticsearch => {
+            let client =
+                crate::database_elasticsearch::ElasticsearchClient::new(connection_info).await?;
             Ok(Box::new(client))
         }
     }

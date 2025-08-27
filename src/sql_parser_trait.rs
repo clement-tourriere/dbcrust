@@ -164,6 +164,10 @@ impl SqlParserFactory {
                 // MongoDB doesn't use SQL, use generic parser
                 Box::new(GenericSqlParser::new())
             }
+            DatabaseType::Elasticsearch => {
+                // Elasticsearch uses SQL API, use PostgreSQL parser as base
+                Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
+            }
         }
     }
 
@@ -327,6 +331,7 @@ pub mod parsing_utils {
             DatabaseType::SQLite => ch.is_alphanumeric() || ch == '_',
             DatabaseType::ClickHouse => ch.is_alphanumeric() || ch == '_',
             DatabaseType::MongoDB => ch.is_alphanumeric() || ch == '_', // MongoDB collection/field names
+            DatabaseType::Elasticsearch => ch.is_alphanumeric() || ch == '_' || ch == '.', // Elasticsearch field names can contain dots
         }
     }
 
@@ -372,6 +377,12 @@ pub mod parsing_utils {
                 // MongoDB doesn't have SQL keywords, but some field names might need quoting
                 false
             }
+            DatabaseType::Elasticsearch => {
+                matches!(
+                    upper_identifier.as_str(),
+                    "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP" | "LIMIT" | "MATCH" | "QUERY"
+                )
+            }
         }
     }
 
@@ -383,6 +394,7 @@ pub mod parsing_utils {
             DatabaseType::SQLite => '"',
             DatabaseType::ClickHouse => '`', // ClickHouse uses backticks like MySQL
             DatabaseType::MongoDB => '"',    // MongoDB uses double quotes for field names
+            DatabaseType::Elasticsearch => '"', // Elasticsearch uses double quotes for field names
         }
     }
 }

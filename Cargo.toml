@@ -89,6 +89,7 @@ sha2 = { version = "0.10", default-features = false, features = ["std"] }
 clickhouse = "0.13.3"
 mongodb = { version = "3.0", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
 bson = { version = "2.0", default-features = false }
+elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 # Extension support (always available)

@@ -319,6 +319,14 @@ impl DockerClient {
             || image_lower.contains("mongo:")
         {
             Some(DatabaseType::MongoDB)
+        } else if image_lower.contains("elasticsearch")
+            || image_lower.contains("elastic/elasticsearch")
+            || image_lower.contains("docker.elastic.co/elasticsearch")
+            || (image_lower.contains("elastic")
+                && !image_lower.contains("kibana")  // Exclude Kibana containers
+                && (image_lower.contains(":") || image_lower.contains("/")))
+        {
+            Some(DatabaseType::Elasticsearch)
         } else {
             None
         }
@@ -631,6 +639,41 @@ mod tests {
         assert_eq!(
             DockerClient::detect_database_type_from_image("bitnami/mongodb:latest"),
             Some(DatabaseType::MongoDB)
+        );
+        assert_eq!(
+            DockerClient::detect_database_type_from_image("elasticsearch:8.15.0"),
+            Some(DatabaseType::Elasticsearch)
+        );
+        assert_eq!(
+            DockerClient::detect_database_type_from_image("elastic/elasticsearch:8.15.0"),
+            Some(DatabaseType::Elasticsearch)
+        );
+        assert_eq!(
+            DockerClient::detect_database_type_from_image(
+                "docker.elastic.co/elasticsearch/elasticsearch:8.15.0"
+            ),
+            Some(DatabaseType::Elasticsearch)
+        );
+        assert_eq!(
+            DockerClient::detect_database_type_from_image("bitnami/elasticsearch:latest"),
+            Some(DatabaseType::Elasticsearch)
+        );
+        // Test Kibana containers are NOT detected as Elasticsearch
+        assert_eq!(
+            DockerClient::detect_database_type_from_image("elastic/kibana:8.15.0"),
+            None
+        );
+        assert_eq!(
+            DockerClient::detect_database_type_from_image("docker.elastic.co/kibana/kibana:8.15.0"),
+            None
+        );
+        assert_eq!(
+            DockerClient::detect_database_type_from_image("kibana:8.15.0"),
+            None
+        );
+        assert_eq!(
+            DockerClient::detect_database_type_from_image("bitnami/kibana:latest"),
+            None
         );
         assert_eq!(
             DockerClient::detect_database_type_from_image("nginx:latest"),
