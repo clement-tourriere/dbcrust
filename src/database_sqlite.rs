@@ -190,6 +190,7 @@ impl MetadataProvider for SqliteMetadataProvider {
                     .try_get::<Option<String>, _>("dflt_value")
                     .unwrap_or(None),
                 collation: String::new(), // SQLite doesn't expose collation info easily
+                enum_values: None,        // SQLite doesn't have native enum support
             };
             columns.push(column);
         }

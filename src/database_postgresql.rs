@@ -14,6 +14,74 @@ use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
 use sqlx::{Column, Row};
 use tracing::debug;
 
+/// Check if a type name is a built-in PostgreSQL type
+fn is_builtin_postgresql_type(type_name: &str) -> bool {
+    // Common PostgreSQL built-in types
+    matches!(
+        type_name.to_uppercase().as_str(),
+        // Numeric types
+        "SMALLINT" | "INT2" | "INTEGER" | "INT4" | "BIGINT" | "INT8" |
+        "DECIMAL" | "NUMERIC" | "REAL" | "FLOAT4" | "DOUBLE PRECISION" | "FLOAT8" |
+        "SMALLSERIAL" | "SERIAL" | "BIGSERIAL" | "SERIAL2" | "SERIAL4" | "SERIAL8" |
+        "MONEY" | "OID" |
+
+        // String types
+        "CHARACTER VARYING" | "VARCHAR" | "CHARACTER" | "CHAR" | "BPCHAR" |
+        "TEXT" | "NAME" |
+
+        // Binary types
+        "BYTEA" |
+
+        // Date/time types
+        "TIMESTAMP" | "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" |
+        "TIMESTAMP WITHOUT TIME ZONE" | "DATE" | "TIME" | "TIMETZ" |
+        "TIME WITH TIME ZONE" | "TIME WITHOUT TIME ZONE" | "INTERVAL" |
+
+        // Boolean type
+        "BOOLEAN" | "BOOL" |
+
+        // JSON types
+        "JSON" | "JSONB" |
+
+        // Network types
+        "INET" | "CIDR" | "MACADDR" | "MACADDR8" |
+
+        // UUID type
+        "UUID" |
+
+        // Geometric types
+        "POINT" | "LINE" | "LSEG" | "BOX" | "PATH" | "POLYGON" | "CIRCLE" |
+
+        // Range types
+        "INT4RANGE" | "INT8RANGE" | "NUMRANGE" | "TSRANGE" | "TSTZRANGE" | "DATERANGE" |
+
+        // Bit string types
+        "BIT" | "VARBIT" |
+
+        // XML type
+        "XML" |
+
+        // Full-text search types
+        "TSVECTOR" | "TSQUERY" |
+
+        // Other common types
+        "VOID" | "UNKNOWN" | "RECORD" |
+
+        // Extension types that have special handling - NOT enums!
+        // pgvector extension
+        "VECTOR" | "HALFVEC" | "SPARSEVEC" |
+
+        // PostGIS extension
+        "GEOMETRY" | "GEOGRAPHY" | "BOX2D" | "BOX3D" |
+
+        // PostgreSQL contrib extensions
+        "HSTORE" | "LTREE" | "LQUERY" | "LTXTQUERY" | "CUBE" |
+
+        // Other extensions commonly used
+        "CITEXT" | "EARTHDISTANCE" | "ISN" | "SEG"
+    ) || type_name.ends_with("[]") // Array types are also built-in
+}
+
 /// PostgreSQL metadata provider implementation
 pub struct PostgreSQLMetadataProvider {
     pool: PgPool,
@@ -57,7 +125,7 @@ impl PostgreSQLMetadataProvider {
         .fetch_all(&self.pool)
         .await?;
 
-        let columns: Vec<crate::db::ColumnInfo> = rows
+        let mut columns: Vec<crate::db::ColumnInfo> = rows
             .iter()
             .map(|row| crate::db::ColumnInfo {
                 name: row.get::<String, _>("column_name"),
@@ -65,8 +133,72 @@ impl PostgreSQLMetadataProvider {
                 collation: row.get::<String, _>("collation"),
                 nullable: row.get::<bool, _>("nullable"),
                 default_value: row.get::<Option<String>, _>("default_value"),
+                enum_values: None, // Will be populated below for enum types
             })
             .collect();
+
+        // Collect all enum type names (types without modifiers like length)
+        let enum_types: Vec<String> = columns
+            .iter()
+            .filter_map(|col| {
+                let base_type = col
+                    .data_type
+                    .split('(') // Remove modifiers like character varying(200)
+                    .next()
+                    .unwrap_or(&col.data_type)
+                    .trim();
+
+                // Check if this looks like a custom type (not a built-in PostgreSQL type)
+                // Built-in types typically have spaces or are well-known keywords
+                if !is_builtin_postgresql_type(base_type) {
+                    Some(base_type.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect::<std::collections::HashSet<_>>() // Deduplicate
+            .into_iter()
+            .collect();
+
+        // Fetch enum values for all custom types found
+        if !enum_types.is_empty() {
+            debug!(
+                "[PostgreSQLMetadataProvider::get_detailed_columns] Found potential enum types: {:?}",
+                enum_types
+            );
+
+            match self
+                .get_enum_values_for_types(&enum_types, schema_name)
+                .await
+            {
+                Ok(enum_map) => {
+                    // Update columns with enum values
+                    for column in &mut columns {
+                        let base_type = column
+                            .data_type
+                            .split('(')
+                            .next()
+                            .unwrap_or(&column.data_type)
+                            .trim();
+
+                        if let Some(enum_values) = enum_map.get(base_type) {
+                            column.enum_values = Some(enum_values.clone());
+                            debug!(
+                                "[PostgreSQLMetadataProvider::get_detailed_columns] Set enum values for column '{}' type '{}': {:?}",
+                                column.name, base_type, enum_values
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        "[PostgreSQLMetadataProvider::get_detailed_columns] Failed to fetch enum values: {}",
+                        e
+                    );
+                    // Continue without enum values rather than failing the entire operation
+                }
+            }
+        }
 
         Ok(columns)
     }
@@ -189,6 +321,69 @@ impl PostgreSQLMetadataProvider {
             .collect();
 
         Ok(check_constraints)
+    }
+
+    /// Get enum values for all enum types used in the table
+    async fn get_enum_values_for_types(
+        &self,
+        enum_types: &[String],
+        schema: &str,
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, DatabaseError> {
+        use std::collections::HashMap;
+
+        if enum_types.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        debug!(
+            "[PostgreSQLMetadataProvider::get_enum_values_for_types] Fetching enum values for types: {:?} in schema: {}",
+            enum_types, schema
+        );
+
+        // Build query to get enum values for all the specified types
+        let type_list = enum_types
+            .iter()
+            .map(|t| format!("'{}'", t))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let query = format!(
+            r#"
+            SELECT
+                t.typname as enum_name,
+                e.enumlabel as enum_value
+            FROM pg_type t
+            JOIN pg_enum e ON t.oid = e.enumtypid
+            JOIN pg_namespace n ON t.typnamespace = n.oid
+            WHERE n.nspname = $1
+              AND t.typname IN ({})
+            ORDER BY t.typname, e.enumsortorder
+            "#,
+            type_list
+        );
+
+        let rows = sqlx::query(&query)
+            .bind(schema)
+            .fetch_all(&self.pool)
+            .await?;
+
+        let mut enum_map = HashMap::new();
+        for row in rows {
+            let enum_name: String = row.get("enum_name");
+            let enum_value: String = row.get("enum_value");
+
+            enum_map
+                .entry(enum_name)
+                .or_insert_with(Vec::new)
+                .push(enum_value);
+        }
+
+        debug!(
+            "[PostgreSQLMetadataProvider::get_enum_values_for_types] Found enum values for {} types",
+            enum_map.len()
+        );
+
+        Ok(enum_map)
     }
 
     /// Get tables that reference this table (reverse foreign keys)
@@ -846,6 +1041,75 @@ impl DatabaseClient for PostgreSQLClient {
     }
 }
 
+/// Handle custom PostgreSQL types (enums, composite types, domains) using raw value access
+fn handle_custom_postgresql_type(
+    row: &PgRow,
+    column_index: usize,
+    type_name: &str,
+) -> Result<String, DatabaseError> {
+    use sqlx::ValueRef;
+
+    debug!(
+        "[PostgreSQL] Attempting to handle custom type '{}' using raw value approach",
+        type_name
+    );
+
+    // Try to get raw value reference
+    match row.try_get_raw(column_index) {
+        Ok(value_ref) => {
+            // Check if value is NULL
+            if value_ref.is_null() {
+                debug!("[PostgreSQL] Custom type '{}' value is NULL", type_name);
+                return Ok("".to_string());
+            }
+
+            // Try to get the value as string from raw bytes
+            // PostgreSQL custom types are typically stored as text representations
+            match value_ref.as_str() {
+                Ok(text_value) => {
+                    debug!(
+                        "[PostgreSQL] Successfully converted custom type '{}' to string: '{}'",
+                        type_name, text_value
+                    );
+                    Ok(text_value.to_string())
+                }
+                Err(_) => {
+                    // If as_str() fails, try to decode as bytes and convert to UTF-8
+                    let bytes = value_ref.as_bytes().map_err(|e| {
+                        DatabaseError::QueryError(format!(
+                            "Failed to get raw bytes for custom type '{}': {}",
+                            type_name, e
+                        ))
+                    })?;
+
+                    match std::str::from_utf8(bytes) {
+                        Ok(utf8_str) => {
+                            debug!(
+                                "[PostgreSQL] Successfully decoded custom type '{}' from UTF-8 bytes: '{}'",
+                                type_name, utf8_str
+                            );
+                            Ok(utf8_str.to_string())
+                        }
+                        Err(e) => {
+                            debug!(
+                                "[PostgreSQL] Failed to decode custom type '{}' as UTF-8: {}",
+                                type_name, e
+                            );
+                            // As a last resort, represent as hex bytes
+                            let hex_representation = hex::encode(bytes);
+                            Ok(format!("\\x{}", hex_representation))
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => Err(DatabaseError::QueryError(format!(
+            "Failed to get raw value for custom type '{}': {}",
+            type_name, e
+        ))),
+    }
+}
+
 /// Format a PostgreSQL value to string representation
 fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, DatabaseError> {
     use sqlx::TypeInfo;
@@ -1208,19 +1472,47 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                 type_name, type_name_upper, extension_hint
             );
 
-            row.try_get::<String, _>(column_index).map_err(|e| {
-                DatabaseError::QueryError(format!(
-                    "Unable to format PostgreSQL type '{}'{}.{} Original error: {}",
-                    type_name,
-                    extension_hint,
-                    if !extension_hint.is_empty() {
-                        " Consider enabling appropriate extension support or check if the extension is installed."
-                    } else {
-                        " This may be a custom type that requires special handling."
-                    },
-                    e
-                ))
-            })
+            // First try normal string conversion
+            match row.try_get::<String, _>(column_index) {
+                Ok(value) => Ok(value),
+                Err(e) => {
+                    // If string conversion fails, try to handle as custom type using raw value
+                    debug!(
+                        "[PostgreSQL] String conversion failed for type '{}', attempting raw value fallback: {}",
+                        type_name, e
+                    );
+
+                    match handle_custom_postgresql_type(row, column_index, type_name) {
+                        Ok(value) => {
+                            debug!(
+                                "[PostgreSQL] Successfully handled custom type '{}' using raw value approach",
+                                type_name
+                            );
+                            Ok(value)
+                        }
+                        Err(raw_error) => {
+                            debug!(
+                                "[PostgreSQL] Raw value fallback also failed for type '{}': {}",
+                                type_name, raw_error
+                            );
+
+                            // Return enhanced error message
+                            Err(DatabaseError::QueryError(format!(
+                                "Unable to format PostgreSQL type '{}'{}.{} Original error: {}. Raw value fallback error: {}",
+                                type_name,
+                                extension_hint,
+                                if !extension_hint.is_empty() {
+                                    " Consider enabling appropriate extension support or check if the extension is installed."
+                                } else {
+                                    " This may be a custom type (enum/composite/domain) that requires special handling."
+                                },
+                                e,
+                                raw_error
+                            )))
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1230,6 +1522,35 @@ mod tests {
     use super::*;
     use crate::database::DatabaseType;
     use std::collections::HashMap;
+
+    #[test]
+    fn test_builtin_type_detection() {
+        // Test that built-in PostgreSQL types are correctly identified
+        assert!(is_builtin_postgresql_type("TEXT"));
+        assert!(is_builtin_postgresql_type("INTEGER"));
+        assert!(is_builtin_postgresql_type("TIMESTAMP"));
+        assert!(is_builtin_postgresql_type("JSON"));
+        assert!(is_builtin_postgresql_type("JSONB"));
+
+        // Test that extension types are correctly identified as built-in (so not treated as enums)
+        assert!(is_builtin_postgresql_type("VECTOR"));
+        assert!(is_builtin_postgresql_type("HALFVEC"));
+        assert!(is_builtin_postgresql_type("SPARSEVEC"));
+        assert!(is_builtin_postgresql_type("GEOMETRY"));
+        assert!(is_builtin_postgresql_type("GEOGRAPHY"));
+        assert!(is_builtin_postgresql_type("HSTORE"));
+        assert!(is_builtin_postgresql_type("LTREE"));
+        assert!(is_builtin_postgresql_type("CUBE"));
+
+        // Test that actual custom enum types are NOT identified as built-in
+        assert!(!is_builtin_postgresql_type("userrole"));
+        assert!(!is_builtin_postgresql_type("status_type"));
+        assert!(!is_builtin_postgresql_type("custom_enum"));
+
+        // Test array types
+        assert!(is_builtin_postgresql_type("text[]"));
+        assert!(is_builtin_postgresql_type("integer[]"));
+    }
 
     #[tokio::test]
     async fn test_format_explain_output() {

@@ -2,6 +2,18 @@ use crate::db::{ColumnFilteringInfo, TableDetails};
 use chrono;
 use prettytable::{Cell, Row, Table};
 
+/// Format a data type with enum values if available
+fn format_type_with_enum_values(data_type: &str, enum_values: &Option<Vec<String>>) -> String {
+    match enum_values {
+        Some(values) if !values.is_empty() => {
+            // Format enum values in a readable way
+            let values_str = values.join(", ");
+            format!("{} ({})", data_type, values_str)
+        }
+        _ => data_type.to_string(),
+    }
+}
+
 /// Safe formatting function to prevent "Formatting argument out of range" errors
 fn safe_format_with_width(text: &str, width: usize, left_align: bool) -> String {
     if width == 0 {
@@ -557,7 +569,11 @@ pub fn format_table_details(details: &TableDetails) -> String {
         // Find maximum width for each column
         for col in &details.columns {
             col_widths[0] = col_widths[0].max(col.name.len());
-            col_widths[1] = col_widths[1].max(col.data_type.len());
+
+            // Calculate width for type column including enum values if present
+            let type_display = format_type_with_enum_values(&col.data_type, &col.enum_values);
+            col_widths[1] = col_widths[1].max(type_display.len());
+
             col_widths[2] = col_widths[2].max(col.collation.len());
             col_widths[3] = col_widths[3].max(if col.nullable {
                 "yes".len()
@@ -608,7 +624,7 @@ pub fn format_table_details(details: &TableDetails) -> String {
             result.push_str(&format!(
                 "{:<width0$} | {:<width1$} | {:<width2$} | {:<width3$} | {:<width4$}\n",
                 col.name,
-                col.data_type,
+                format_type_with_enum_values(&col.data_type, &col.enum_values),
                 col.collation,
                 if col.nullable { "" } else { "not null" },
                 col.default_value.as_ref().unwrap_or(&String::new()),

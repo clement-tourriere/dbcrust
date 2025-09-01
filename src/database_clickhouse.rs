@@ -219,6 +219,7 @@ impl MetadataProvider for ClickHouseMetadataProvider {
                 } else {
                     Some(col.default_expression)
                 },
+                enum_values: None, // ClickHouse enum handling could be added later if needed
             })
             .collect();
 

@@ -367,6 +367,7 @@ impl MetadataProvider for MySqlMetadataProvider {
                 },
                 default_value: get_optional_string(&row, "COLUMN_DEFAULT", 3),
                 collation: get_optional_string(&row, "COLLATION_NAME", 4).unwrap_or_default(),
+                enum_values: None, // MySQL enum handling could be added later if needed
             };
             columns.push(column);
         }

@@ -125,6 +125,7 @@ impl MetadataProvider for MongoDBMetadataProvider {
                     collation: "".to_string(),
                     nullable: true, // MongoDB fields can be null
                     default_value: None,
+                    enum_values: None, // MongoDB doesn't have native enum support
                 });
             }
         }

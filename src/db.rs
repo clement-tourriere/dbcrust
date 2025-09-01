@@ -1930,6 +1930,7 @@ pub struct ColumnInfo {
     pub collation: String,
     pub nullable: bool,
     pub default_value: Option<String>,
+    pub enum_values: Option<Vec<String>>, // For enum types, contains the possible values
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]

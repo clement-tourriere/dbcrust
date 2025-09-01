@@ -323,6 +323,7 @@ impl ElasticsearchMetadataProvider {
                         collation: capabilities, // Store capabilities info (will be displayed as "Capabilities")
                         nullable: true,          // Elasticsearch fields can be null
                         default_value: None,
+                        enum_values: None, // Elasticsearch doesn't have native enum support
                     });
                 }
 
@@ -342,6 +343,7 @@ impl ElasticsearchMetadataProvider {
                                     collation: capabilities,
                                     nullable: true,
                                     default_value: None,
+                                    enum_values: None, // Elasticsearch doesn't have native enum support
                                 });
                             }
                         }
