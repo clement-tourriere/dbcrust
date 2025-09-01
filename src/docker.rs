@@ -32,6 +32,7 @@ pub struct DockerContainerInfo {
     pub database_type: Option<DatabaseType>,
     pub host_port: Option<u16>,
     pub container_port: Option<u16>,
+    pub actual_database_port: u16,
     pub ip_address: Option<String>,
     pub environment: HashMap<String, String>,
     pub labels: HashMap<String, String>,
@@ -109,9 +110,10 @@ impl DockerClient {
                             .unwrap_or_default(),
                         image: image.to_string(),
                         status: container.status.unwrap_or_default(),
-                        database_type: Some(db_type),
+                        database_type: Some(db_type.clone()),
                         host_port,
                         container_port,
+                        actual_database_port: Self::get_default_port(&db_type), // Will be detected in inspect_container
                         ip_address: None, // Will be populated by inspect_container if needed
                         environment: HashMap::new(), // Will be populated by inspect_container if needed
                         labels: HashMap::new(), // Will be populated by inspect_container if needed
@@ -193,6 +195,9 @@ impl DockerClient {
         // Extract port mappings
         let (host_port, container_port) = self.extract_port_mapping(&container, &database_type)?;
 
+        // Detect the actual database port from exposed ports (for direct connections)
+        let actual_database_port = self.detect_actual_database_port(&container, &database_type);
+
         // Extract IP address from network settings
         let ip_address = self.extract_ip_address(&container);
 
@@ -212,6 +217,7 @@ impl DockerClient {
             database_type: Some(database_type),
             host_port,
             container_port,
+            actual_database_port,
             ip_address,
             environment,
             labels,
@@ -294,6 +300,69 @@ impl DockerClient {
         Ok((None, Some(default_port)))
     }
 
+    /// Detect actual database port from container's exposed ports
+    /// This method finds the actual port the database is listening on inside the container
+    fn detect_actual_database_port(
+        &self,
+        container: &ContainerInspectResponse,
+        database_type: &DatabaseType,
+    ) -> u16 {
+        let default_port = Self::get_default_port(database_type);
+
+        if let Some(network_settings) = &container.network_settings {
+            if let Some(ports) = &network_settings.ports {
+                // Collect ports with mappings (actually accessible) and all exposed ports
+                let mut mapped_ports: Vec<u16> = Vec::new();
+                let mut exposed_ports: Vec<u16> = Vec::new();
+
+                for (port_key, bindings) in ports {
+                    if port_key.ends_with("/tcp") {
+                        // Parse port number from "5433/tcp" format
+                        if let Some(port_str) = port_key.strip_suffix("/tcp") {
+                            if let Ok(port) = port_str.parse::<u16>() {
+                                exposed_ports.push(port);
+                                // Check if this port has host bindings (is actually mapped)
+                                if bindings.is_some() && !bindings.as_ref().unwrap().is_empty() {
+                                    mapped_ports.push(port);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // First priority: Use mapped ports (ports that can actually be reached)
+                if !mapped_ports.is_empty() {
+                    mapped_ports.sort();
+                    // Prefer default port if it's mapped, otherwise use first mapped port
+                    if mapped_ports.contains(&default_port) {
+                        tracing::debug!("Using default port {} (mapped)", default_port);
+                        return default_port;
+                    } else {
+                        tracing::debug!("Using first mapped port: {}", mapped_ports[0]);
+                        return mapped_ports[0];
+                    }
+                }
+
+                // Fallback: Use exposed ports if no mapped ports (for direct container access)
+                if !exposed_ports.is_empty() {
+                    exposed_ports.sort();
+                    // Prefer default port if exposed, otherwise use first exposed port
+                    if exposed_ports.contains(&default_port) {
+                        tracing::debug!("Using default port {} (exposed only)", default_port);
+                        return default_port;
+                    } else {
+                        tracing::debug!("Using first exposed port: {}", exposed_ports[0]);
+                        return exposed_ports[0];
+                    }
+                }
+            }
+        }
+
+        // Fallback to default port
+        tracing::debug!("Fallback to default port: {}", default_port);
+        default_port
+    }
+
     /// Detect database type from Docker image name
     fn detect_database_type_from_image(image: &str) -> Option<DatabaseType> {
         let image_lower = image.to_lowercase();
@@ -358,8 +427,8 @@ impl DockerClient {
                 (orbstack_host, orbstack_port)
             } else if let Some(container_ip) = &container_info.ip_address {
                 // Fall back to container IP address (Linux or any system with IP)
-                let default_port = Self::get_default_port(&database_type);
-                (container_ip.clone(), default_port)
+                // Use the actual database port detected from exposed ports
+                (container_ip.clone(), container_info.actual_database_port)
             } else if let Some((orbstack_host, orbstack_port)) =
                 self.get_orbstack_automatic_domain(container_info, &database_type)?
             {
@@ -437,23 +506,24 @@ impl DockerClient {
     pub fn get_orbstack_custom_or_compose_domain(
         &self,
         container_info: &DockerContainerInfo,
-        database_type: &DatabaseType,
+        _database_type: &DatabaseType,
     ) -> Result<Option<(String, u16)>, DockerError> {
         // First check if we're running on OrbStack by looking for OrbStack-specific indicators
         if !self.is_orbstack_available() {
             return Ok(None);
         }
 
-        let default_port = Self::get_default_port(database_type);
+        // Use the actual database port detected from exposed ports
+        let actual_port = container_info.actual_database_port;
 
         // Check for custom domain label first
         if let Some(custom_domain) = self.get_custom_orbstack_domain(container_info) {
-            return Ok(Some((custom_domain, default_port)));
+            return Ok(Some((custom_domain, actual_port)));
         }
 
         // Check for compose project domain
         if let Some(compose_domain) = self.get_compose_orbstack_domain(container_info) {
-            return Ok(Some((compose_domain, default_port)));
+            return Ok(Some((compose_domain, actual_port)));
         }
 
         // No custom or compose domain found
@@ -464,18 +534,19 @@ impl DockerClient {
     pub fn get_orbstack_automatic_domain(
         &self,
         container_info: &DockerContainerInfo,
-        database_type: &DatabaseType,
+        _database_type: &DatabaseType,
     ) -> Result<Option<(String, u16)>, DockerError> {
         // First check if we're running on OrbStack by looking for OrbStack-specific indicators
         if !self.is_orbstack_available() {
             return Ok(None);
         }
 
-        let default_port = Self::get_default_port(database_type);
+        // Use the actual database port detected from exposed ports
+        let actual_port = container_info.actual_database_port;
 
         // For standalone containers, use container name domain
         let container_domain = format!("{}.orb.local", container_info.name);
-        Ok(Some((container_domain, default_port)))
+        Ok(Some((container_domain, actual_port)))
     }
 
     /// Get OrbStack domain for container if available (kept for backward compatibility)
@@ -775,6 +846,7 @@ mod tests {
             database_type: Some(DatabaseType::PostgreSQL),
             host_port: None,
             container_port: Some(5432),
+            actual_database_port: 5432,
             ip_address: None,
             environment: HashMap::new(),
             labels,
@@ -807,6 +879,7 @@ mod tests {
             database_type: Some(DatabaseType::PostgreSQL),
             host_port: None,
             container_port: Some(5432),
+            actual_database_port: 5432,
             ip_address: None,
             environment: HashMap::new(),
             labels,
@@ -824,6 +897,7 @@ mod tests {
             database_type: Some(DatabaseType::PostgreSQL),
             host_port: None,
             container_port: Some(5432),
+            actual_database_port: 5432,
             ip_address: None,
             environment: HashMap::new(),
             labels: HashMap::new(),
@@ -849,6 +923,7 @@ mod tests {
             database_type: Some(DatabaseType::PostgreSQL),
             host_port: None,
             container_port: Some(5432),
+            actual_database_port: 5432,
             ip_address: Some("172.17.0.2".to_string()),
             environment: HashMap::new(),
             labels: HashMap::new(),
