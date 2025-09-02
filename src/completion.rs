@@ -324,6 +324,17 @@ impl SqlCompleter {
         }
     }
 
+    /// Check if an Elasticsearch table name needs quoting
+    fn elasticsearch_needs_quoting(&self, name: &str) -> bool {
+        name.contains('-')
+            || name.contains('.')
+            || name.contains(':')
+            || name.contains(' ')
+            || name.contains('@')
+            || name.contains('#')
+            || name.starts_with(char::is_numeric)
+    }
+
     /// Check if a partial word could be a SQL keyword
     fn could_be_sql_keyword(&self, word: &str) -> bool {
         let upper_word = word.to_uppercase();
@@ -826,8 +837,25 @@ impl SqlCompleter {
                         let tables = self.get_tables(None);
                         for table in tables {
                             if table.name.to_lowercase().starts_with(&lower_word) {
+                                // For Elasticsearch, clean the table name and auto-quote if needed
+                                let clean_name = if let Some(hint_pos) = table.name.find(" (use ") {
+                                    &table.name[..hint_pos]
+                                } else {
+                                    &table.name
+                                };
+
+                                // Auto-quote Elasticsearch table names with special characters
+                                let database_type = self.get_database_type();
+                                let value = if database_type == DatabaseType::Elasticsearch
+                                    && self.elasticsearch_needs_quoting(clean_name)
+                                {
+                                    format!("\"{}\"", clean_name)
+                                } else {
+                                    clean_name.to_string()
+                                };
+
                                 suggestions.push(Suggestion {
-                                    value: table.name.clone(),
+                                    value,
                                     description: Some("Table".to_string()),
                                     span: Span {
                                         start: word_start,
@@ -1125,8 +1153,25 @@ impl SqlCompleter {
                     let tables = self.get_tables(None);
                     for table in tables {
                         if table.name.to_lowercase().starts_with(&lower_word) {
+                            // For Elasticsearch, clean the table name and auto-quote if needed
+                            let clean_name = if let Some(hint_pos) = table.name.find(" (use ") {
+                                &table.name[..hint_pos]
+                            } else {
+                                &table.name
+                            };
+
+                            // Auto-quote Elasticsearch table names with special characters
+                            let database_type = self.get_database_type();
+                            let value = if database_type == DatabaseType::Elasticsearch
+                                && self.elasticsearch_needs_quoting(clean_name)
+                            {
+                                format!("\"{}\"", clean_name)
+                            } else {
+                                clean_name.to_string()
+                            };
+
                             suggestions.push(Suggestion {
-                                value: table.name.clone(),
+                                value,
                                 description: Some("Table".to_string()),
                                 span: Span {
                                     start: word_start,
@@ -1521,8 +1566,25 @@ impl SqlCompleter {
                         .to_lowercase()
                         .starts_with(&current_word.to_lowercase())
                     {
+                        // For Elasticsearch, clean the table name and auto-quote if needed
+                        let clean_name = if let Some(hint_pos) = table.name.find(" (use ") {
+                            &table.name[..hint_pos]
+                        } else {
+                            &table.name
+                        };
+
+                        // Auto-quote Elasticsearch table names with special characters
+                        let database_type = self.get_database_type();
+                        let value = if database_type == DatabaseType::Elasticsearch
+                            && self.elasticsearch_needs_quoting(clean_name)
+                        {
+                            format!("\"{}\"", clean_name)
+                        } else {
+                            clean_name.to_string()
+                        };
+
                         suggestions.push(Suggestion {
-                            value: table.name.clone(),
+                            value,
                             description: Some("Table".to_string()),
                             span: Span {
                                 start: word_start,

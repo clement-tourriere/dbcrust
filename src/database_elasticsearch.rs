@@ -96,13 +96,8 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
         if let Some(indices) = body.as_array() {
             for index in indices {
                 if let Some(index_name) = index.get("index").and_then(|v| v.as_str()) {
-                    // Add quoting hint for indices with special characters
-                    let formatted_name = if ElasticsearchClient::needs_quoting(index_name) {
-                        format!("{} (use \"{}\")", index_name, index_name)
-                    } else {
-                        index_name.to_string()
-                    };
-                    tables.push(formatted_name);
+                    // Just return the clean index name - the completion system will handle quoting
+                    tables.push(index_name.to_string());
                 }
             }
         }
