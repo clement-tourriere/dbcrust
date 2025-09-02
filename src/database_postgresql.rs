@@ -718,7 +718,28 @@ impl PostgreSQLClient {
         let mut connect_options = sqlx::postgres::PgConnectOptions::new();
 
         if let Some(ref host) = connection_info.host {
-            connect_options = connect_options.host(host);
+            // Resolve *.localhost to 127.0.0.1 for connection, but preserve original hostname
+            // for proxy routing via application_name or other mechanisms
+            let (connection_host, preserve_original) =
+                if host == "localhost" || host.ends_with(".localhost") {
+                    ("127.0.0.1", true)
+                } else {
+                    (host.as_str(), false)
+                };
+
+            connect_options = connect_options.host(connection_host);
+
+            // If we resolved a *.localhost domain, preserve the original hostname
+            // in the application_name so proxies can route based on it
+            if preserve_original && host != "localhost" {
+                // Get existing application name or use default
+                let app_name = connection_info
+                    .options
+                    .get("application_name")
+                    .map(|name| format!("{name} (host: {host})"))
+                    .unwrap_or_else(|| format!("dbcrust (host: {host})"));
+                connect_options = connect_options.application_name(&app_name);
+            }
         }
 
         if let Some(port) = connection_info.port {

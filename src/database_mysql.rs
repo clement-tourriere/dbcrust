@@ -553,7 +553,16 @@ impl MySqlClient {
         debug!("[MySqlClient::new] Creating MySQL client");
 
         // Build connection URL
-        let host = connection_info.host.as_deref().unwrap_or("localhost");
+        let original_host = connection_info.host.as_deref().unwrap_or("localhost");
+
+        // Resolve *.localhost to 127.0.0.1 for connection
+        let connection_host =
+            if original_host == "localhost" || original_host.ends_with(".localhost") {
+                "127.0.0.1"
+            } else {
+                original_host
+            };
+
         let port = connection_info.port.unwrap_or(3306);
         let username = connection_info.username.as_deref().unwrap_or("root");
         let database = connection_info
@@ -562,20 +571,37 @@ impl MySqlClient {
             .unwrap_or_else(|| "mysql".to_string());
 
         let mut database_url = if let Some(password) = &connection_info.password {
-            format!("mysql://{username}:{password}@{host}:{port}/{database}")
+            format!("mysql://{username}:{password}@{connection_host}:{port}/{database}")
         } else {
-            format!("mysql://{username}@{host}:{port}/{database}")
+            format!("mysql://{username}@{connection_host}:{port}/{database}")
         };
 
-        // Add query parameters
+        // Add query parameters and preserve original hostname if resolved
+        let mut additional_params = Vec::new();
+
+        // If we resolved a *.localhost domain, preserve the original hostname
+        // for potential proxy routing via connection attributes
+        if original_host != connection_host
+            && original_host.ends_with(".localhost")
+            && original_host != "localhost"
+        {
+            use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+            let encoded_host = utf8_percent_encode(original_host, NON_ALPHANUMERIC);
+            additional_params.push(format!("original_host={encoded_host}"));
+        }
+
         if !connection_info.options.is_empty() {
             let params: Vec<String> = connection_info
                 .options
                 .iter()
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect();
+            additional_params.extend(params);
+        }
+
+        if !additional_params.is_empty() {
             database_url.push('?');
-            database_url.push_str(&params.join("&"));
+            database_url.push_str(&additional_params.join("&"));
         }
 
         debug!(

@@ -485,12 +485,18 @@ impl ElasticsearchClient {
             url_string.push_str("http://");
         }
 
-        // Add host and port
-        if let Some(host) = &connection_info.host {
-            url_string.push_str(host);
+        // Add host and port with *.localhost resolution
+        let (connection_host, original_host) = if let Some(host) = &connection_info.host {
+            // Resolve *.localhost to 127.0.0.1 for connection, but preserve original
+            if host == "localhost" || host.ends_with(".localhost") {
+                ("127.0.0.1", Some(host.clone()))
+            } else {
+                (host.as_str(), None)
+            }
         } else {
-            url_string.push_str("localhost");
-        }
+            ("localhost", None)
+        };
+        url_string.push_str(connection_host);
 
         if let Some(port) = connection_info.port {
             url_string.push_str(&format!(":{}", port));
@@ -527,6 +533,20 @@ impl ElasticsearchClient {
             .map_or(false, |v| v == "false")
         {
             transport_builder = transport_builder.cert_validation(CertificateValidation::None);
+        }
+
+        // If we resolved a *.localhost domain, add the original hostname as a header
+        // for proxy routing (but exclude plain "localhost")
+        if let Some(ref original) = original_host {
+            if original != "localhost" {
+                use elasticsearch::http::headers::HeaderMap;
+                use elasticsearch::http::headers::HeaderValue;
+                let mut default_headers = HeaderMap::new();
+                if let Ok(host_value) = HeaderValue::from_str(original) {
+                    default_headers.insert("X-Original-Host", host_value);
+                }
+                transport_builder = transport_builder.headers(default_headers);
+            }
         }
 
         let transport = transport_builder.build().map_err(|e| {

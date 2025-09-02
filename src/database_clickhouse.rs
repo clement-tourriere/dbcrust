@@ -267,8 +267,24 @@ impl ClickHouseClient {
     pub async fn new(connection_info: ConnectionInfo) -> Result<Self, DatabaseError> {
         debug!("[ClickHouseClient::new] Creating ClickHouse client");
 
-        // Build connection URL
-        let host = connection_info.host.as_deref().unwrap_or("localhost");
+        // Build connection URL with *.localhost resolution
+        let original_host = connection_info.host.as_deref().unwrap_or("localhost");
+
+        // Resolve *.localhost to 127.0.0.1 for connection, but preserve original
+        let (connection_host, preserve_original_host) =
+            if original_host == "localhost" || original_host.ends_with(".localhost") {
+                (
+                    "127.0.0.1",
+                    if original_host != "localhost" {
+                        Some(original_host)
+                    } else {
+                        None
+                    },
+                )
+            } else {
+                (original_host, None)
+            };
+
         let port = connection_info.port.unwrap_or(8123);
         let username = connection_info.username.as_deref().unwrap_or("");
         let database = connection_info
@@ -280,15 +296,18 @@ impl ClickHouseClient {
         // Database is specified via query parameter or USE statement
         let database_url = if let Some(password) = &connection_info.password {
             if username.is_empty() {
-                format!("http://{}:{}", host, port)
+                format!("http://{}:{}", connection_host, port)
             } else {
-                format!("http://{}:{}@{}:{}", username, password, host, port)
+                format!(
+                    "http://{}:{}@{}:{}",
+                    username, password, connection_host, port
+                )
             }
         } else {
             if username.is_empty() {
-                format!("http://{}:{}", host, port)
+                format!("http://{}:{}", connection_host, port)
             } else {
-                format!("http://{}@{}:{}", username, host, port)
+                format!("http://{}@{}:{}", username, connection_host, port)
             }
         };
 
@@ -297,9 +316,18 @@ impl ClickHouseClient {
             crate::password_sanitizer::sanitize_connection_url(&database_url)
         );
 
-        let client = Client::default()
+        let mut client = Client::default()
             .with_url(database_url)
             .with_database(&database);
+
+        // If we resolved a *.localhost domain, add the original hostname as a header
+        // for proxy routing (but exclude plain "localhost")
+        if let Some(original) = preserve_original_host {
+            // Try to add a custom header for the original hostname
+            // Note: The exact method depends on the ClickHouse client implementation
+            // This preserves the original hostname for HTTP proxies that can route based on headers
+            client = client.with_header("X-Original-Host", original);
+        }
 
         // Test the connection with a simple ping query
         client

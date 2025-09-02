@@ -198,12 +198,18 @@ impl MongoDBClient {
             connection_string.push_str(&format!("{}:{}@", username, password));
         }
 
-        // Add host and port
-        if let Some(host) = &connection_info.host {
-            connection_string.push_str(host);
+        // Add host and port with *.localhost resolution
+        let (connection_host, original_host) = if let Some(host) = &connection_info.host {
+            // Resolve *.localhost to 127.0.0.1 for connection, but preserve original
+            if host == "localhost" || host.ends_with(".localhost") {
+                ("127.0.0.1", Some(host.clone()))
+            } else {
+                (host.as_str(), None)
+            }
         } else {
-            connection_string.push_str("localhost");
-        }
+            ("localhost", None)
+        };
+        connection_string.push_str(connection_host);
 
         if let Some(port) = connection_info.port {
             connection_string.push_str(&format!(":{}", port));
@@ -216,14 +222,26 @@ impl MongoDBClient {
             connection_string.push_str(&format!("/{}", database));
         }
 
-        // Add query parameters
-        if !connection_info.options.is_empty() {
+        // Add query parameters and preserve original hostname if resolved
+        let mut params = Vec::new();
+
+        // If we resolved a *.localhost domain, preserve the original hostname
+        // as a connection option (but exclude plain "localhost")
+        if let Some(ref original) = original_host {
+            if original != "localhost" {
+                use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
+                let encoded_host = utf8_percent_encode(original, NON_ALPHANUMERIC);
+                params.push(format!("originalHost={}", encoded_host));
+            }
+        }
+
+        // Add user-provided options
+        for (k, v) in &connection_info.options {
+            params.push(format!("{}={}", k, v));
+        }
+
+        if !params.is_empty() {
             connection_string.push('?');
-            let params: Vec<String> = connection_info
-                .options
-                .iter()
-                .map(|(k, v)| format!("{}={}", k, v))
-                .collect();
             connection_string.push_str(&params.join("&"));
         }
 
