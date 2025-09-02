@@ -1,3 +1,9 @@
+## v0.21.2 (2025-09-02)
+
+### Fix
+
+- elasticsearch index autocompletion
+
 ## v0.21.1 (2025-09-01)
 
 ### Fix
