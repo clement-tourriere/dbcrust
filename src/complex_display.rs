@@ -178,14 +178,20 @@ pub trait ComplexDataDisplay {
 /// Determine effective display mode based on data size and configuration
 fn get_effective_mode(
     requested_mode: &ComplexDisplayMode,
-    metadata: &ComplexDataMetadata,
-    config: &ComplexDisplayConfig,
+    _metadata: &ComplexDataMetadata,
+    _config: &ComplexDisplayConfig,
 ) -> ComplexDisplayMode {
-    // Auto-switch to truncated mode for large data structures
-    if metadata.size > config.size_threshold && requested_mode == &ComplexDisplayMode::Full {
-        ComplexDisplayMode::Truncated
-    } else {
-        requested_mode.clone()
+    // Respect the user's explicit mode choice - don't auto-switch when user specifically requests Full mode
+    // Only auto-switch for default/automatic modes to prevent overwhelming output
+    match requested_mode {
+        ComplexDisplayMode::Full => {
+            // User explicitly requested full mode - always honor it
+            ComplexDisplayMode::Full
+        }
+        ComplexDisplayMode::Truncated | ComplexDisplayMode::Summary | ComplexDisplayMode::Viz => {
+            // For other modes, use them as requested
+            requested_mode.clone()
+        }
     }
 }
 
