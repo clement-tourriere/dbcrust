@@ -1477,7 +1477,14 @@ impl Database {
             && !query_lower.contains("limit")
             && (query_lower.contains("select") && !query_lower.contains("count("))
         {
-            format!("{} LIMIT {}", query, self.default_limit)
+            // Check if query ends with semicolon and insert LIMIT before it
+            let query_trimmed = query.trim_end();
+            if query_trimmed.ends_with(';') {
+                let without_semicolon = query_trimmed.trim_end_matches(';');
+                format!("{} LIMIT {};", without_semicolon, self.default_limit)
+            } else {
+                format!("{} LIMIT {}", query, self.default_limit)
+            }
         } else {
             query.to_string()
         }
