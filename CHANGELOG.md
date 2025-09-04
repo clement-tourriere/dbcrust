@@ -1,3 +1,10 @@
+## v0.21.3 (2025-09-04)
+
+### Fix
+
+- full JSON output
+- queries with semi column
+
 ## v0.21.2 (2025-09-02)
 
 ### Fix
