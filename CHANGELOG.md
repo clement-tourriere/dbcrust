@@ -1,3 +1,9 @@
+## v0.21.4 (2025-09-05)
+
+### Fix
+
+- explain and json display
+
 ## v0.21.3 (2025-09-04)
 
 ### Fix
