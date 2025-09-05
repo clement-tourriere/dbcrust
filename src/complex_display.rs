@@ -181,18 +181,9 @@ fn get_effective_mode(
     _metadata: &ComplexDataMetadata,
     _config: &ComplexDisplayConfig,
 ) -> ComplexDisplayMode {
-    // Respect the user's explicit mode choice - don't auto-switch when user specifically requests Full mode
-    // Only auto-switch for default/automatic modes to prevent overwhelming output
-    match requested_mode {
-        ComplexDisplayMode::Full => {
-            // User explicitly requested full mode - always honor it
-            ComplexDisplayMode::Full
-        }
-        ComplexDisplayMode::Truncated | ComplexDisplayMode::Summary | ComplexDisplayMode::Viz => {
-            // For other modes, use them as requested
-            requested_mode.clone()
-        }
-    }
+    // Always respect the user's explicit mode choice
+    // The user can choose to override size-based auto-switching by explicitly setting a mode
+    requested_mode.clone()
 }
 
 /// Helper trait for data types that can be parsed from strings
@@ -765,9 +756,9 @@ mod tests {
             ..Default::default()
         };
 
-        // Should auto-switch from Full to Truncated for large data
+        // Should respect user's explicit Full mode choice (no auto-switching)
         let effective = get_effective_mode(&ComplexDisplayMode::Full, &metadata, &config);
-        assert_eq!(effective, ComplexDisplayMode::Truncated);
+        assert_eq!(effective, ComplexDisplayMode::Full);
 
         // Should preserve other modes
         let effective = get_effective_mode(&ComplexDisplayMode::Summary, &metadata, &config);

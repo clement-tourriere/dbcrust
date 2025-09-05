@@ -861,6 +861,89 @@ impl PostgreSQLClient {
 
         Ok(formatted_results)
     }
+
+    /// Format PostgreSQL value to string without display adapters (for raw JSON)
+    fn format_raw_value(&self, row: &PgRow, column_index: usize) -> Result<String, DatabaseError> {
+        use sqlx::TypeInfo;
+
+        let column = row.column(column_index);
+        let type_name = column.type_info().name();
+        let type_name_upper = type_name.to_uppercase();
+
+        debug!(
+            "[PostgreSQL] Processing type '{}' for raw value (normalized: '{}')",
+            type_name, type_name_upper
+        );
+
+        // Handle NULL values first
+        if let Ok(value) = row.try_get::<Option<String>, _>(column_index) {
+            if value.is_none() {
+                return Ok("".to_string());
+            }
+        }
+
+        // For JSON types, return raw JSON without display formatting
+        if matches!(type_name_upper.as_str(), "JSON" | "JSONB") {
+            return row
+                .try_get::<serde_json::Value, _>(column_index)
+                .map(|v| v.to_string()) // Raw JSON string
+                .map_err(|e| DatabaseError::QueryError(e.to_string()));
+        }
+
+        // For other types, use the regular formatting function
+        format_postgresql_value(row, column_index)
+    }
+
+    /// Execute a query and return raw values without display formatting (for EXPLAIN JSON)
+    async fn execute_query_raw_json(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+        debug!("[PostgreSQLClient::execute_query_raw_json] Executing query for raw JSON");
+
+        // Add timeout to prevent hanging queries
+        let timeout_duration = std::time::Duration::from_secs(30); // 30 seconds timeout
+        let rows =
+            match tokio::time::timeout(timeout_duration, sqlx::query(sql).fetch_all(&self.pool))
+                .await
+            {
+                Ok(Ok(rows)) => rows,
+                Ok(Err(e)) => return Err(DatabaseError::QueryError(e.to_string())),
+                Err(_) => {
+                    return Err(DatabaseError::QueryError(
+                        "Query timed out after 30 seconds".to_string(),
+                    ));
+                }
+            };
+
+        if rows.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut results = Vec::new();
+
+        // Get column names from the first row
+        let first_row = &rows[0];
+        let column_names: Vec<String> = (0..first_row.len())
+            .map(|i| first_row.column(i).name().to_string())
+            .collect();
+
+        results.push(column_names);
+
+        // Convert rows to strings WITHOUT display formatting for JSON
+        for row in rows {
+            let mut string_row = Vec::new();
+            for i in 0..row.len() {
+                // For EXPLAIN queries, we need raw JSON, not formatted display
+                let value = self.format_raw_value(&row, i)?;
+                string_row.push(value);
+            }
+            results.push(string_row);
+        }
+
+        debug!(
+            "[PostgreSQLClient::execute_query_raw_json] Query completed with {} rows",
+            results.len() - 1
+        );
+        Ok(results)
+    }
 }
 
 #[async_trait]
@@ -939,13 +1022,13 @@ impl DatabaseClient for PostgreSQLClient {
 
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         let explain_sql = format!("EXPLAIN (FORMAT JSON) {sql}");
-        let raw_results = self.execute_query(&explain_sql).await?;
+        let raw_results = self.execute_query_raw_json(&explain_sql).await?;
         self.format_explain_output(raw_results).await
     }
 
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         let explain_sql = format!("EXPLAIN (FORMAT JSON) {sql}");
-        self.execute_query(&explain_sql).await
+        self.execute_query_raw_json(&explain_sql).await
     }
 
     async fn list_databases(&self) -> Result<Vec<Vec<String>>, DatabaseError> {
