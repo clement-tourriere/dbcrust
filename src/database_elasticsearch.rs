@@ -269,6 +269,7 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
             check_constraints: Vec::new(),
             foreign_keys: Vec::new(),
             referenced_by: Vec::new(),
+            nested_field_details: std::collections::HashMap::new(),
         })
     }
 

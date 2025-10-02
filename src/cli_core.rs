@@ -459,11 +459,15 @@ impl CliCore {
             crate::database::DatabaseType::MongoDB => DatabaseType::MongoDB,
             crate::database::DatabaseType::Elasticsearch => DatabaseType::Elasticsearch,
             crate::database::DatabaseType::ClickHouse => DatabaseType::ClickHouse,
-            crate::database::DatabaseType::SQLite => {
-                // SQLite doesn't use passwords, return original error
-                eprintln!("Failed to connect to SQLite database");
+            crate::database::DatabaseType::SQLite
+            | crate::database::DatabaseType::Parquet
+            | crate::database::DatabaseType::CSV
+            | crate::database::DatabaseType::JSON
+            | crate::database::DatabaseType::DuckDB => {
+                // File-based databases don't use passwords, return original error
+                eprintln!("Failed to connect to file-based database");
                 return Err(CliError::ConnectionError(
-                    "SQLite connection failed".to_string(),
+                    "File-based connection failed".to_string(),
                 ));
             }
         };

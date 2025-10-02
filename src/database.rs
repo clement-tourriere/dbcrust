@@ -18,6 +18,11 @@ pub enum DatabaseType {
     ClickHouse,
     MongoDB,
     Elasticsearch,
+    // File formats (via DataFusion)
+    Parquet,
+    CSV,
+    JSON,
+    DuckDB,
 }
 
 impl fmt::Display for DatabaseType {
@@ -80,6 +85,10 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => Some(8123),    // HTTP interface
             DatabaseType::MongoDB => Some(27017),      // MongoDB default port
             DatabaseType::Elasticsearch => Some(9200), // HTTP REST API
+            DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => None, // File-based
         }
     }
 
@@ -91,6 +100,10 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => "ClickHouse",
             DatabaseType::MongoDB => "MongoDB",
             DatabaseType::Elasticsearch => "Elasticsearch",
+            DatabaseType::Parquet => "Parquet",
+            DatabaseType::CSV => "CSV",
+            DatabaseType::JSON => "JSON",
+            DatabaseType::DuckDB => "DuckDB",
         }
     }
 
@@ -101,7 +114,11 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::ClickHouse
             | DatabaseType::MongoDB
             | DatabaseType::Elasticsearch => true,
-            DatabaseType::SQLite => false, // File-based, no network connection
+            DatabaseType::SQLite
+            | DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => false, // File-based, no network connection
         }
     }
 
@@ -113,12 +130,20 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => &["clickhouse"],
             DatabaseType::MongoDB => &["mongodb", "mongodb+srv"],
             DatabaseType::Elasticsearch => &["elasticsearch", "elastic", "es"],
+            DatabaseType::Parquet => &["parquet"],
+            DatabaseType::CSV => &["csv"],
+            DatabaseType::JSON => &["json", "ndjson"],
+            DatabaseType::DuckDB => &["duckdb"],
         }
     }
 
     fn is_file_based(&self) -> bool {
         match self {
-            DatabaseType::SQLite => true,
+            DatabaseType::SQLite
+            | DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => true,
             DatabaseType::PostgreSQL
             | DatabaseType::MySQL
             | DatabaseType::ClickHouse
@@ -132,7 +157,11 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::PostgreSQL
             | DatabaseType::ClickHouse
             | DatabaseType::MongoDB
-            | DatabaseType::Elasticsearch => true,
+            | DatabaseType::Elasticsearch
+            | DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => true, // DataFusion supports EXPLAIN
             DatabaseType::MySQL | DatabaseType::SQLite => false,
         }
     }
@@ -144,7 +173,11 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::ClickHouse
             | DatabaseType::MongoDB
             | DatabaseType::Elasticsearch => true,
-            DatabaseType::SQLite => false,
+            DatabaseType::SQLite
+            | DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => false, // File-based, no auth needed
         }
     }
 
@@ -156,6 +189,10 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => "clickhouse",
             DatabaseType::MongoDB => "mongodb",
             DatabaseType::Elasticsearch => "elasticsearch",
+            DatabaseType::Parquet => "parquet",
+            DatabaseType::CSV => "csv",
+            DatabaseType::JSON => "json",
+            DatabaseType::DuckDB => "duckdb",
         }
     }
 
@@ -346,6 +383,111 @@ impl DatabaseTypeExt for DatabaseType {
                 "ELSE",
                 "END",
             ],
+            // DataFusion SQL functions (for file formats)
+            DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => &[
+                // Aggregate functions
+                "COUNT",
+                "SUM",
+                "AVG",
+                "MIN",
+                "MAX",
+                "STDDEV",
+                "VAR",
+                "MEDIAN",
+                "APPROX_DISTINCT",
+                "APPROX_PERCENTILE_CONT",
+                "ARRAY_AGG",
+                "FIRST_VALUE",
+                "LAST_VALUE",
+                // Scalar functions
+                "ABS",
+                "CEIL",
+                "FLOOR",
+                "ROUND",
+                "TRUNC",
+                "SQRT",
+                "POW",
+                "EXP",
+                "LN",
+                "LOG",
+                "LOG2",
+                "LOG10",
+                // String functions
+                "ASCII",
+                "BIT_LENGTH",
+                "BTRIM",
+                "CHARACTER_LENGTH",
+                "CHAR_LENGTH",
+                "CONCAT",
+                "CONCAT_WS",
+                "INITCAP",
+                "LEFT",
+                "LENGTH",
+                "LOWER",
+                "LPAD",
+                "LTRIM",
+                "OCTET_LENGTH",
+                "REPEAT",
+                "REPLACE",
+                "REVERSE",
+                "RIGHT",
+                "RPAD",
+                "RTRIM",
+                "SPLIT_PART",
+                "STARTS_WITH",
+                "STRPOS",
+                "SUBSTR",
+                "SUBSTRING",
+                "TRANSLATE",
+                "TRIM",
+                "UPPER",
+                // Date/time functions
+                "NOW",
+                "CURRENT_DATE",
+                "CURRENT_TIME",
+                "CURRENT_TIMESTAMP",
+                "DATE_TRUNC",
+                "DATE_PART",
+                "EXTRACT",
+                "TO_TIMESTAMP",
+                "TO_TIMESTAMP_MILLIS",
+                "TO_TIMESTAMP_MICROS",
+                "TO_TIMESTAMP_SECONDS",
+                // Conditional functions
+                "COALESCE",
+                "NULLIF",
+                "CASE",
+                "WHEN",
+                "THEN",
+                "ELSE",
+                "END",
+                // Type conversion
+                "CAST",
+                "TRY_CAST",
+                // Array functions
+                "ARRAY_LENGTH",
+                "ARRAY_POSITION",
+                "ARRAY_APPEND",
+                "ARRAY_CONCAT",
+                "ARRAY_CONTAINS",
+                "ARRAY_DISTINCT",
+                "ARRAY_ELEMENT",
+                "ARRAY_REMOVE",
+                "ARRAY_REPLACE",
+                "CARDINALITY",
+                // Window functions
+                "ROW_NUMBER",
+                "RANK",
+                "DENSE_RANK",
+                "PERCENT_RANK",
+                "CUME_DIST",
+                "NTILE",
+                "LAG",
+                "LEAD",
+            ],
         }
     }
 
@@ -354,7 +496,11 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::MySQL
             | DatabaseType::ClickHouse
             | DatabaseType::MongoDB
-            | DatabaseType::Elasticsearch => true,
+            | DatabaseType::Elasticsearch
+            | DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => true, // DataFusion supports timestamp functions
             DatabaseType::PostgreSQL | DatabaseType::SQLite => false,
         }
     }
@@ -363,7 +509,11 @@ impl DatabaseTypeExt for DatabaseType {
         match self {
             DatabaseType::PostgreSQL => &["POSTGRES_USER", "PGUSER"],
             DatabaseType::MySQL => &["MYSQL_USER"],
-            DatabaseType::SQLite => &[],
+            DatabaseType::SQLite
+            | DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => &[],
             DatabaseType::ClickHouse => &["CLICKHOUSE_USER"],
             DatabaseType::MongoDB => &["MONGO_INITDB_ROOT_USERNAME"],
             DatabaseType::Elasticsearch => &["ELASTIC_USERNAME", "ES_USERNAME"],
@@ -374,7 +524,11 @@ impl DatabaseTypeExt for DatabaseType {
         match self {
             DatabaseType::PostgreSQL => &["POSTGRES_PASSWORD", "PGPASSWORD"],
             DatabaseType::MySQL => &["MYSQL_PASSWORD", "MYSQL_ROOT_PASSWORD"],
-            DatabaseType::SQLite => &[],
+            DatabaseType::SQLite
+            | DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => &[],
             DatabaseType::ClickHouse => &["CLICKHOUSE_PASSWORD"],
             DatabaseType::MongoDB => &["MONGO_INITDB_ROOT_PASSWORD"],
             DatabaseType::Elasticsearch => &["ELASTIC_PASSWORD", "ES_PASSWORD"],
@@ -385,7 +539,11 @@ impl DatabaseTypeExt for DatabaseType {
         match self {
             DatabaseType::PostgreSQL => &["POSTGRES_DB", "PGDATABASE"],
             DatabaseType::MySQL => &["MYSQL_DATABASE"],
-            DatabaseType::SQLite => &[],
+            DatabaseType::SQLite
+            | DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => &[],
             DatabaseType::ClickHouse => &["CLICKHOUSE_DB"],
             DatabaseType::MongoDB => &["MONGO_INITDB_DATABASE"],
             DatabaseType::Elasticsearch => &["ELASTIC_INDEX", "ES_INDEX"],
@@ -396,7 +554,11 @@ impl DatabaseTypeExt for DatabaseType {
         match self {
             DatabaseType::PostgreSQL => "postgres",
             DatabaseType::MySQL => "root",
-            DatabaseType::SQLite => "",
+            DatabaseType::SQLite
+            | DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => "",
             DatabaseType::ClickHouse => "default",
             DatabaseType::MongoDB => "admin",
             DatabaseType::Elasticsearch => "elastic",
@@ -414,6 +576,10 @@ impl DatabaseType {
             "clickhouse" => Ok(DatabaseType::ClickHouse),
             "mongodb" | "mongodb+srv" => Ok(DatabaseType::MongoDB),
             "elasticsearch" | "elastic" | "es" => Ok(DatabaseType::Elasticsearch),
+            "parquet" => Ok(DatabaseType::Parquet),
+            "csv" => Ok(DatabaseType::CSV),
+            "json" | "ndjson" => Ok(DatabaseType::JSON),
+            "duckdb" => Ok(DatabaseType::DuckDB),
             "docker" => Ok(DatabaseType::PostgreSQL), // Default to PostgreSQL for docker:// URLs
             scheme => Err(DatabaseError::UnsupportedScheme(scheme.to_string())),
         }
@@ -537,6 +703,9 @@ pub enum DatabaseError {
 
     #[error("SQLx error: {0}")]
     SqlxError(#[from] sqlx::Error),
+
+    #[error("DataFusion error: {0}")]
+    DataFusionError(#[from] datafusion::error::DataFusionError),
 }
 
 /// Factory for creating database clients
@@ -567,6 +736,11 @@ pub async fn create_database_client(
         DatabaseType::Elasticsearch => {
             let client =
                 crate::database_elasticsearch::ElasticsearchClient::new(connection_info).await?;
+            Ok(Box::new(client))
+        }
+        // File formats via DataFusion
+        DatabaseType::Parquet | DatabaseType::CSV | DatabaseType::JSON | DatabaseType::DuckDB => {
+            let client = crate::database_datafusion::DataFusionClient::new(connection_info).await?;
             Ok(Box::new(client))
         }
     }

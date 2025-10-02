@@ -168,6 +168,13 @@ impl SqlParserFactory {
                 // Elasticsearch uses SQL API, use PostgreSQL parser as base
                 Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
             }
+            // File formats via DataFusion - use PostgreSQL parser (DataFusion SQL is similar to PostgreSQL)
+            DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => {
+                Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
+            }
         }
     }
 
@@ -332,6 +339,12 @@ pub mod parsing_utils {
             DatabaseType::ClickHouse => ch.is_alphanumeric() || ch == '_',
             DatabaseType::MongoDB => ch.is_alphanumeric() || ch == '_', // MongoDB collection/field names
             DatabaseType::Elasticsearch => ch.is_alphanumeric() || ch == '_' || ch == '.', // Elasticsearch field names can contain dots
+            DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => {
+                ch.is_alphanumeric() || ch == '_' // DataFusion uses similar rules to PostgreSQL
+            }
         }
     }
 
@@ -383,6 +396,16 @@ pub mod parsing_utils {
                     "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP" | "LIMIT" | "MATCH" | "QUERY"
                 )
             }
+            DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => {
+                // DataFusion uses standard SQL keywords
+                matches!(
+                    upper_identifier.as_str(),
+                    "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP"
+                )
+            }
         }
     }
 
@@ -395,6 +418,10 @@ pub mod parsing_utils {
             DatabaseType::ClickHouse => '`', // ClickHouse uses backticks like MySQL
             DatabaseType::MongoDB => '"',    // MongoDB uses double quotes for field names
             DatabaseType::Elasticsearch => '"', // Elasticsearch uses double quotes for field names
+            DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => '"', // DataFusion uses double quotes
         }
     }
 }

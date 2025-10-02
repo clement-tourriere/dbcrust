@@ -147,6 +147,157 @@ DBCrust supports 8 different URL schemes, each optimized for specific use cases:
     - **Container Auto-Discovery**: Detects Elasticsearch containers and excludes Kibana
     - **Advanced Query Rewriting**: Handles complex queries with proper escaping
 
+### File Format Schemes
+
+DBCrust can query file formats directly using Apache DataFusion, a powerful SQL query engine that operates on Parquet, CSV, and JSON files.
+
+=== "Parquet"
+
+    **Scheme:** `parquet://`
+
+    ```bash
+    # Single Parquet file
+    dbcrust parquet:///data/sales_2024.parquet
+
+    # Multiple files with glob pattern
+    dbcrust 'parquet:///data/sales_*.parquet'
+
+    # Directory-based table name
+    dbcrust 'parquet:///data/warehouse/'
+    > SELECT * FROM warehouse LIMIT 10;
+    ```
+
+    **Features:**
+    - **Columnar Storage Format**: Optimized for analytical queries with efficient compression
+    - **Full Schema Preservation**: Maintains complete type information including nested structures
+    - **Nested Field Support**: Query deeply nested Struct, Array, and Map types
+    - **Predicate Pushdown**: Filters applied at file level for optimal performance
+    - **Multi-Level Autocomplete**: Navigate nested fields like `data.exact_paths.auth/token/create`
+    - **Glob Pattern Support**: Query multiple files matching patterns
+
+    **Multi-Level Nested Field Navigation:**
+    ```sql
+    -- Autocomplete shows all nested levels
+    SELECT data.[TAB] FROM sales
+    -- → data, data.customer, data.customer.address, data.customer.address.city
+
+    -- Navigate to any depth
+    SELECT data.customer.address.[TAB] FROM sales
+    -- → Shows: city, state, zip, country
+
+    -- Works with complex field names
+    SELECT data.exact_paths.[TAB] FROM policies
+    -- → Shows: auth/token/create, aws_okta/creds/management-ecr, ...
+    ```
+
+=== "CSV"
+
+    **Scheme:** `csv://`
+
+    ```bash
+    # CSV with header row (default)
+    dbcrust csv:///data/users.csv
+
+    # Custom delimiter (tab-separated)
+    dbcrust 'csv:///data/data.tsv?delimiter=\t'
+
+    # No header row
+    dbcrust 'csv:///data/logs.csv?header=false'
+
+    # Multiple CSV files with glob pattern
+    dbcrust 'csv:///logs/*.csv?header=true'
+    > SELECT date, COUNT(*) FROM logs GROUP BY date;
+    ```
+
+    **Query Parameters:**
+    - `?header=true|false` - CSV has header row (default: true)
+    - `?delimiter=,` - Field delimiter character (default: ',')
+
+    **Features:**
+    - **Schema Inference**: Automatic column type detection
+    - **Flexible Delimiters**: Support for CSV, TSV, and custom-delimited files
+    - **Glob Patterns**: Query multiple files matching `*.csv` patterns
+    - **Header Detection**: Configurable header row handling
+
+=== "JSON"
+
+    **Scheme:** `json://`
+
+    ```bash
+    # Standard JSON file
+    dbcrust json:///api_responses.json
+
+    # NDJSON (newline-delimited JSON)
+    dbcrust json:///events.ndjson
+
+    # JSON with nested structures
+    dbcrust json:///vault_policies.json
+    > SELECT data.exact_paths FROM res;
+    ```
+
+    **Features:**
+    - **Automatic NDJSON Detection**: Recognizes and converts newline-delimited JSON
+    - **Deep Nested Field Support**: Navigate multi-level nested objects with autocomplete
+    - **Schema Inference**: Automatic type detection from JSON structure
+    - **Multi-Level Field Access**: Use dot notation like `data.field.subfield.value`
+    - **Complex Type Display**: Shows `Struct<N fields>` with expandable details
+
+    **Nested Field Schema Display:**
+    ```
+    \d res
+
+    Table: res
+    Column           | Type
+    -----------------+--------------------
+    data             | Struct<4 fields>
+    timestamp        | Utf8
+    id               | Int64
+
+    Nested field details:
+      data (Struct):
+        - chroot_namespace: Utf8
+        - exact_paths: Struct<25 fields>
+        - glob_paths: Struct<10 fields>
+        - root: Utf8
+
+      data.exact_paths (Struct):
+        - auth/token/create: Struct<1 fields>
+        - auth/token/lookup-self: Struct<1 fields>
+        ... and 23 more fields
+    ```
+
+**DataFusion SQL Features:**
+
+All file formats support the full DataFusion SQL dialect:
+
+- **Aggregate Functions**: `COUNT`, `SUM`, `AVG`, `MIN`, `MAX`, `STDDEV`, `VAR`, `MEDIAN`, `APPROX_DISTINCT`
+- **Window Functions**: `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`
+- **String Functions**: `CONCAT`, `UPPER`, `LOWER`, `SUBSTRING`, `TRIM`, `REPLACE`, `SPLIT_PART`, `LENGTH`
+- **Date/Time Functions**: `NOW`, `CURRENT_DATE`, `DATE_TRUNC`, `EXTRACT`, `TO_TIMESTAMP`
+- **Array Functions**: `ARRAY_AGG`, `ARRAY_LENGTH`, `ARRAY_CONTAINS`, `ARRAY_CONCAT`
+- **Type Conversion**: `CAST`, `TRY_CAST`
+
+**Cross-Format Queries:**
+
+You can JOIN data across different file formats:
+
+```sql
+-- Join Parquet and CSV data
+SELECT
+    u.name,
+    o.total
+FROM 'users.parquet' u
+JOIN 'orders.csv' o ON u.id = o.user_id
+WHERE o.total > 100;
+
+-- Combine JSON and Parquet
+SELECT
+    p.data.customer.name,
+    s.amount
+FROM 'policies.json' p
+JOIN 'sales.parquet' s ON p.id = s.policy_id;
+```
+
 ### Advanced Connection Schemes
 
 === "Docker Containers"
@@ -321,6 +472,9 @@ dbc my[TAB]  → mysql://
 dbc sq[TAB]  → sqlite://
 dbc cl[TAB]  → clickhouse://
 dbc mo[TAB]  → mongodb://
+dbc par[TAB] → parquet://
+dbc cs[TAB]  → csv://
+dbc js[TAB]  → json://
 dbc doc[TAB] → docker://
 dbc ses[TAB] → session://
 dbc rec[TAB] → recent://

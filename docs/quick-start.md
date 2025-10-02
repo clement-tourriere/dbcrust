@@ -61,11 +61,14 @@ Get up and running with DBCrust in under 2 minutes! This guide will have you con
 
 ## 🔌 First Connection
 
-DBCrust supports 8 different URL schemes with intelligent shell autocompletion. Type a partial scheme and press **TAB** for suggestions:
+DBCrust supports 11 different URL schemes with intelligent shell autocompletion. Type a partial scheme and press **TAB** for suggestions:
 
 ```bash
 dbc pos[TAB] → postgres://
 dbc click[TAB] → clickhouse://
+dbc par[TAB] → parquet://
+dbc cs[TAB] → csv://
+dbc js[TAB] → json://
 dbc doc[TAB] → docker://
 dbc ses[TAB] → session://
 ```
@@ -119,6 +122,32 @@ dbc ses[TAB] → session://
     # Remote ClickHouse server
     dbcrust clickhouse://user:pass@clickhouse.company.com:8123/analytics
     ```
+
+=== "Parquet/CSV/JSON Files"
+
+    ```bash
+    # Query Parquet file
+    dbcrust parquet:///data/sales_2024.parquet
+    > SELECT COUNT(*), AVG(amount) FROM sales_2024;
+
+    # Query CSV with glob pattern
+    dbcrust csv:///logs/*.csv?header=true
+    > SELECT date, COUNT(*) FROM logs GROUP BY date;
+
+    # Query JSON with nested structures
+    dbcrust json:///api_data.json
+    > SELECT data.customer.name FROM api_data LIMIT 10;
+
+    # Navigate nested fields with autocomplete
+    > SELECT data.exact_paths.[TAB]
+    # → Shows: auth/token/create, aws_okta/creds/...
+    ```
+
+    **Features:**
+    - Full SQL support via Apache DataFusion
+    - Multi-level nested field autocomplete
+    - Glob patterns for multiple files
+    - Cross-format JOINs
 
 === "Docker"
 

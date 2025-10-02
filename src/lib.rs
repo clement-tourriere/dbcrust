@@ -11,6 +11,7 @@ pub mod complex_display; // Unified display system for complex data types
 pub mod config;
 pub mod database; // New database abstraction layer
 pub mod database_clickhouse; // ClickHouse implementation
+pub mod database_datafusion; // DataFusion implementation for file formats (Parquet, CSV, JSON)
 pub mod database_elasticsearch; // Elasticsearch implementation
 pub mod database_mongodb; // MongoDB implementation
 pub mod database_mysql; // MySQL implementation

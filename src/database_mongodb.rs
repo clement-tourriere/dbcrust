@@ -163,6 +163,7 @@ impl MetadataProvider for MongoDBMetadataProvider {
             check_constraints: Vec::new(), // MongoDB doesn't have traditional constraints
             foreign_keys: Vec::new(),
             referenced_by: Vec::new(),
+            nested_field_details: std::collections::HashMap::new(),
         })
     }
 

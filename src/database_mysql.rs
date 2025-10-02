@@ -525,6 +525,7 @@ impl MetadataProvider for MySqlMetadataProvider {
             check_constraints: Vec::new(), // MySQL check constraints are available in newer versions
             foreign_keys,
             referenced_by: Vec::new(), // Would need complex query to find referencing tables
+            nested_field_details: std::collections::HashMap::new(),
         };
 
         debug!("[MySqlMetadataProvider::get_table_details] Table details retrieved successfully");

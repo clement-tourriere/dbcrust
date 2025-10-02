@@ -4,8 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-DBCrust is a high-performance PostgreSQL interactive client written in Rust with Python bindings. It features advanced
-CLI capabilities including autocomplete, SSH tunneling, HashiCorp Vault integration, and rich output formatting.
+DBCrust is a high-performance multi-database interactive client written in Rust with Python bindings. It supports traditional databases (PostgreSQL, MySQL, SQLite, MongoDB, ClickHouse, Elasticsearch) and file formats (Parquet, CSV, JSON) through Apache DataFusion. Features include advanced CLI capabilities, autocomplete, SSH tunneling, HashiCorp Vault integration, and rich output formatting.
 
 ## Build System & Development Commands
 
@@ -80,6 +79,17 @@ maturin build --release
 - **`src/script.rs`**: External editor integration for multiline SQL editing
 - **`src/pgpass.rs`**: `.pgpass` file integration for password management
 
+### Database Implementations
+
+- **`src/database.rs`**: Core database abstraction layer with `DatabaseClient` and `MetadataProvider` traits
+- **`src/database_postgresql.rs`**: PostgreSQL client implementation
+- **`src/database_mysql.rs`**: MySQL/MariaDB client implementation
+- **`src/database_sqlite.rs`**: SQLite client implementation
+- **`src/database_clickhouse.rs`**: ClickHouse client implementation
+- **`src/database_mongodb.rs`**: MongoDB client implementation
+- **`src/database_elasticsearch.rs`**: Elasticsearch client implementation
+- **`src/database_datafusion.rs`**: **Apache DataFusion client for file formats (Parquet, CSV, JSON, DuckDB)**
+
 ### Display & User Interface Features
 
 - **Interactive Column Selection**: Visual checkbox interface for selecting columns from large result sets
@@ -98,6 +108,98 @@ The client supports multiple connection approaches:
 5. Session URLs: `session://saved_session_name`
 6. Recent URLs: `recent://` (interactive selection)
 7. Docker URLs: `docker://container_name/database`
+8. File URLs (DataFusion):
+   - Parquet: `parquet:///path/to/file.parquet` or `parquet:///path/to/*.parquet`
+   - CSV: `csv:///path/to/file.csv?header=true&delimiter=,`
+   - JSON: `json:///path/to/file.json`
+   - DuckDB: `duckdb:///path/to/database.duckdb`
+
+## File Format Support (Apache DataFusion)
+
+DBCrust can query file formats directly using Apache DataFusion, a powerful SQL query engine that operates on Parquet, CSV, JSON, and other file formats.
+
+### Supported File Formats
+
+- **Parquet**: Columnar storage format optimized for analytics
+- **CSV**: Comma-separated values with configurable delimiters
+- **JSON/NDJSON**: JSON records (newline-delimited supported)
+- **DuckDB**: DuckDB database files (future support)
+
+### Connection Examples
+
+```bash
+# Query a Parquet file
+dbcrust parquet:///data/sales_2024.parquet
+> SELECT COUNT(*), AVG(amount) FROM sales_2024;
+
+# Query multiple CSV files with glob pattern
+dbcrust csv:///logs/*.csv?header=true
+> SELECT date, COUNT(*) FROM logs WHERE level = 'ERROR' GROUP BY date;
+
+# Query JSON file
+dbcrust json:///api_responses.json
+> SELECT user_id, AVG(response_time) FROM api_responses GROUP BY user_id;
+
+# Custom CSV delimiter
+dbcrust 'csv:///data.tsv?delimiter=\t&header=true'
+> SELECT * FROM data LIMIT 10;
+```
+
+### Features Available for File Formats
+
+All standard DBCrust features work with file formats:
+
+- **Full SQL Support**: SELECT, JOIN, GROUP BY, ORDER BY, aggregations, window functions
+- **Autocomplete**: Table names from filenames, column names from file schemas
+- **EXPLAIN**: Query plan analysis with DataFusion's optimizer
+- **Multiple Files**: Query multiple files with glob patterns (`*.parquet`)
+- **Column Selection**: Interactive column selection for wide datasets
+- **Output Formatting**: All display modes (table, expanded, JSON, CSV)
+
+### DataFusion SQL Features
+
+DataFusion provides a rich SQL dialect similar to PostgreSQL:
+
+**Aggregate Functions**: COUNT, SUM, AVG, MIN, MAX, STDDEV, VAR, MEDIAN, APPROX_DISTINCT
+
+**Window Functions**: ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, FIRST_VALUE, LAST_VALUE
+
+**String Functions**: CONCAT, UPPER, LOWER, SUBSTRING, TRIM, REPLACE, SPLIT_PART, LENGTH
+
+**Date/Time Functions**: NOW, CURRENT_DATE, DATE_TRUNC, EXTRACT, TO_TIMESTAMP
+
+**Array Functions**: ARRAY_AGG, ARRAY_LENGTH, ARRAY_CONTAINS, ARRAY_CONCAT
+
+**Type Conversion**: CAST, TRY_CAST
+
+### Cross-Format Queries
+
+You can reference multiple files in a single query using file paths:
+
+```sql
+-- Join Parquet and CSV data
+SELECT
+    u.name,
+    o.total
+FROM 'users.parquet' u
+JOIN 'orders.csv' o ON u.id = o.user_id
+WHERE o.total > 100;
+```
+
+### File Format Configuration
+
+CSV files support query parameters for customization:
+
+- `?header=true|false` - CSV has header row (default: true)
+- `?delimiter=,` - Field delimiter character (default: ',')
+
+### Architecture Notes
+
+- DataFusion 50.0.0 uses Apache Arrow for in-memory columnar processing
+- Parquet files leverage efficient columnar storage and predicate pushdown
+- SQL parser uses PostgreSQL compatibility mode
+- Metadata operations (table/column listing) work through DataFusion's catalog
+- File names are automatically sanitized to create valid SQL table identifiers (dots, dashes → underscores)
 
 ## Unified CLI Architecture
 

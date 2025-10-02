@@ -20,6 +20,11 @@ dbc pos[TAB] → postgres://
 dbc docker://my[TAB] → docker://my-postgres-container
 dbc session://prod[TAB] → session://production_db
 
+# File formats (Parquet, CSV, JSON)
+dbcrust parquet:///data/sales_2024.parquet
+dbcrust csv:///logs/*.csv?header=true
+dbcrust json:///api_responses.json
+
 # With options
 dbcrust --ssh-tunnel jumphost.com postgres://user@db.internal/app
 
@@ -224,6 +229,65 @@ SELECT users.[TAB] FROM users
 SELECT u.[TAB] FROM users u
 -- Suggests: id, name, email, created_at, status
 ```
+
+#### Multi-Level Nested Field Completion
+
+For file formats (Parquet, JSON) and databases with nested structures, DBCrust supports deep nested field navigation:
+
+```sql
+-- Navigate nested structures (Parquet/JSON files)
+SELECT data.[TAB] FROM sales
+-- Suggests: data, data.customer, data.customer.address, data.order
+
+-- Navigate to any depth
+SELECT data.customer.[TAB] FROM sales
+-- Suggests: data.customer.name, data.customer.email, data.customer.address
+
+-- Navigate even deeper
+SELECT data.customer.address.[TAB] FROM sales
+-- Suggests: data.customer.address.city, data.customer.address.state, data.customer.address.zip
+
+-- Works with complex field names containing special characters
+SELECT data.exact_paths.[TAB] FROM policies
+-- Suggests: auth/token/create, aws_okta/creds/management-ecr, sys/mounts/aws_okta
+
+-- Navigate through multiple levels
+SELECT data.exact_paths.auth/token/create.[TAB] FROM policies
+-- Suggests: capabilities
+
+-- Use in WHERE clauses too
+SELECT * FROM res WHERE data.exact_paths.[TAB]
+-- Suggests nested paths for filtering
+```
+
+**Schema Display for Nested Fields:**
+
+When you describe a table with nested structures, DBCrust shows both a summary and detailed nested field information:
+
+```
+\d policies
+
+Table: policies
+Column           | Type
+-----------------+--------------------
+id               | Int64
+data             | Struct<4 fields>
+timestamp        | Utf8
+
+Nested field details:
+  data (Struct):
+    - chroot_namespace: Utf8
+    - exact_paths: Struct<25 fields>
+    - glob_paths: Struct<10 fields>
+    - root: Utf8
+```
+
+**Features:**
+- **Deep Navigation**: Navigate nested fields to any depth
+- **Direct Children Only**: Autocomplete shows immediate children, not all descendants
+- **Context-Aware**: Works in SELECT, WHERE, ORDER BY, and all SQL clauses
+- **Special Characters**: Handles field names with `/`, `-`, and other characters
+- **Performance**: Fast even with deeply nested structures
 
 #### SQL Keywords
 

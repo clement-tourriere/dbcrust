@@ -19,7 +19,7 @@ L|Rust 2024|https://blog.rust-lang.org/2024/02/29/1.77.0.html|
 **A modern database CLI that speaks your language.** DBCrust combines the speed of Rust with intelligent features like context-aware autocompletion, SSH tunneling, Vault integration, and powerful Django ORM analysis. Whether you're debugging production issues, analyzing data, or optimizing applications, DBCrust provides an unmatched developer experience.
 
 !!! success "One Tool, All Databases + Advanced Features"
-    **PostgreSQL • MySQL • SQLite • ClickHouse • MongoDB** with smart autocompletion • **SSH tunneling** for secure connections • **Vault integration** for dynamic credentials • **Django ORM analyzer** for performance optimization
+    **PostgreSQL • MySQL • SQLite • ClickHouse • MongoDB • Elasticsearch** with smart autocompletion • **Parquet • CSV • JSON** file querying via DataFusion • **SSH tunneling** for secure connections • **Vault integration** for dynamic credentials • **Django ORM analyzer** for performance optimization
 
 ## ✨ Core Features
 
@@ -220,6 +220,11 @@ dbcrust docker://   # Interactive selection
 
 # Saved sessions
 dbcrust session://production_db
+
+# File formats (Parquet, CSV, JSON)
+dbcrust parquet:///data/analytics.parquet
+dbcrust csv:///logs/*.csv?header=true&delimiter=,
+dbcrust json:///api_data.json
 ```
 
 ## 🐍 Django Quick Start

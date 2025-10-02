@@ -614,6 +614,7 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
             check_constraints,
             foreign_keys,
             referenced_by,
+            nested_field_details: std::collections::HashMap::new(),
         };
 
         debug!(

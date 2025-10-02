@@ -717,6 +717,26 @@ pub fn format_table_details(details: &TableDetails) -> String {
                 rf.schema, rf.table, rf.constraint_name, rf.definition
             ));
         }
+        result.push('\n'); // Add a blank line after the Referenced by section
+    }
+
+    // Nested field details (for struct/complex types like in DataFusion/Arrow)
+    if !details.nested_field_details.is_empty() {
+        result.push_str("Nested field details:\n");
+
+        // Sort column names for consistent display
+        let mut column_names: Vec<&String> = details.nested_field_details.keys().collect();
+        column_names.sort();
+
+        for column_name in column_names {
+            if let Some(field_details) = details.nested_field_details.get(column_name) {
+                result.push_str(&format!("  {} (Struct):\n", column_name));
+                for detail in field_details {
+                    result.push_str(&format!("{}\n", detail));
+                }
+                result.push('\n');
+            }
+        }
         result.push('\n'); // Add a blank line after the Referenced by section if it's not empty
     }
 

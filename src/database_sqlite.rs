@@ -253,6 +253,7 @@ impl MetadataProvider for SqliteMetadataProvider {
             check_constraints: Vec::new(), // SQLite check constraints are harder to query
             foreign_keys,
             referenced_by: Vec::new(), // Would need complex query to find referencing tables
+            nested_field_details: std::collections::HashMap::new(),
         };
 
         debug!("[SqliteMetadataProvider::get_table_details] Table details retrieved successfully");

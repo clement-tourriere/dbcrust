@@ -54,6 +54,18 @@ repos:
           -A, "clippy::option_as_ref_deref",          # Style preference
           -A, "clippy::redundant_closure",            # Sometimes clearer intent
           -A, "clippy::manual_range_contains",        # Style preference
-          -A, "clippy::empty_line_after_doc_comments" # Style preference
+          -A, "clippy::empty_line_after_doc_comments", # Style preference
+          -A, "clippy::collapsible_if",               # Style preference - often clearer when not collapsed
+          -A, "clippy::only_used_in_recursion",       # Common pattern in recursive functions
+          -A, "clippy::redundant_pattern_matching",   # ok().is_some() pattern sometimes clearer
+          -A, "clippy::single_match",                 # match with single arm sometimes clearer than if let
+          -A, "clippy::map_or_none",                  # Style preference
+          -A, "clippy::needless_borrow",              # Sometimes explicit borrows are clearer
+          -A, "clippy::collapsible_else_if",          # Related to collapsible_if
+          -A, "clippy::if_same_then_else",            # Sometimes useful for clarity in parallel code paths
+          -A, "clippy::should_implement_trait",       # from_str pattern is clearer than FromStr trait sometimes
+          -A, "clippy::enum_variant_names",           # Enum variant postfix naming is intentional (e.g., TableCompletion)
+          -A, "clippy::map_clone",                    # Explicit closure sometimes clearer than .copied()
+          -A, "clippy::manual_clamp"                  # Manual min/max sometimes clearer than clamp()
         ]
         exclude: ^(python/|tests/)

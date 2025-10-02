@@ -15,7 +15,7 @@ DBCrust is a high-performance database CLI built for modern developers. Beyond s
 
 ## 🚀 Key Features
 
-- **🐳 Multi-Database Support** - PostgreSQL, MySQL, SQLite, MongoDB, ClickHouse, Elasticsearch with container auto-discovery
+- **🐳 Multi-Database & File Format Support** - PostgreSQL, MySQL, SQLite, MongoDB, ClickHouse, Elasticsearch, plus Parquet, CSV, JSON files via Apache DataFusion
 - **⚡ Intelligent CLI** - Context-aware autocompletion, syntax highlighting, and external editor support
 - **🔐 Enterprise Ready** - SSH tunneling, HashiCorp Vault integration, and encrypted connections
 - **🔍 Smart Performance Analysis** - Built-in EXPLAIN visualization and query optimization tools
@@ -47,6 +47,11 @@ dbcrust mongodb://localhost:27017/mydb        # MongoDB
 dbcrust clickhouse://localhost:8123/default   # ClickHouse
 dbcrust docker://postgres-container           # Container auto-discovery
 dbcrust session://production_db               # Saved sessions
+
+# File format connections (Parquet, CSV, JSON)
+dbcrust parquet:///data/sales_2024.parquet    # Parquet files
+dbcrust csv:///logs/*.csv?header=true         # CSV with glob patterns
+dbcrust json:///api_responses.json            # JSON/NDJSON files
 ```
 
 ## Essential Commands

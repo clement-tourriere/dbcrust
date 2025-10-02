@@ -94,6 +94,10 @@ elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features 
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hostname = { version = "0.4", default-features = false }
 
+# DataFusion for file format support (Parquet, CSV, JSON, etc.)
+datafusion = "50.0"  # Latest version with better dependency resolution
+object_store = "0.12"
+
 # Extension support (always available)
 pgvector = { version = "0.4", default-features = false, features = ["sqlx", "halfvec"] }
 half = { version = "2.0", default-features = false }

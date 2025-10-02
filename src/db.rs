@@ -1928,6 +1928,8 @@ pub struct TableDetails {
     pub check_constraints: Vec<CheckConstraintInfo>,
     pub foreign_keys: Vec<ForeignKeyInfo>,
     pub referenced_by: Vec<ReferencedByInfo>,
+    /// Nested field details for struct/complex types (column_name -> field descriptions)
+    pub nested_field_details: std::collections::HashMap<String, Vec<String>>,
 }
 
 #[derive(Debug)]

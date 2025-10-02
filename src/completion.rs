@@ -723,60 +723,125 @@ impl SqlCompleter {
                     table_ref.table
                 );
 
-                // If user typed table prefix (e.g., "users.")
+                // If user typed table prefix (e.g., "users.") or nested fields (e.g., "data.", "data.exact_paths.")
                 if current_word.contains('.') {
-                    let parts: Vec<&str> = current_word.splitn(2, '.').collect();
-                    if parts.len() == 2 {
-                        let table_prefix = parts[0];
-                        let column_prefix = parts[1];
+                    // Find the last dot to support multi-level nested fields
+                    if let Some(last_dot_pos) = current_word.rfind('.') {
+                        let parent_path = &current_word[..last_dot_pos];
+                        let child_filter = &current_word[last_dot_pos + 1..];
 
-                        debug!(
-                            "[SqlCompleter] Table-qualified column completion: {}.{}",
-                            table_prefix, column_prefix
-                        );
+                        // Check if parent_path is a column name (for nested field access at any level)
+                        let is_nested_field_access = columns.iter().any(|c| c == parent_path);
 
-                        // Check if this table matches
-                        let matches = table_ref
-                            .alias
-                            .as_ref()
-                            .map(|a| a == table_prefix)
-                            .unwrap_or(false)
-                            || table_ref.table == table_prefix;
+                        if is_nested_field_access {
+                            debug!(
+                                "[SqlCompleter] Multi-level nested field completion in WHERE: {}.{}",
+                                parent_path, child_filter
+                            );
 
-                        debug!(
-                            "[SqlCompleter] Table match for '{}': {}",
-                            table_prefix, matches
-                        );
-
-                        if matches {
+                            // Complete nested struct fields at any depth
                             let mut added_count = 0;
-                            for column in columns {
-                                if column
-                                    .to_lowercase()
-                                    .starts_with(&column_prefix.to_lowercase())
-                                {
-                                    suggestions.push(Suggestion {
-                                        value: format!("{table_prefix}.{column}"),
-                                        description: Some(format!(
-                                            "Column from {}",
-                                            table_ref.table
-                                        )),
-                                        span: Span {
-                                            start: word_start,
-                                            end: pos,
-                                        },
-                                        append_whitespace: false,
-                                        extra: None,
-                                        style: Some(Style::new().fg(Color::Cyan)),
-                                    });
-                                    added_count += 1;
-                                    columns_added = true;
+                            for column in &columns {
+                                // Match columns that start with "parent_path." (nested fields)
+                                if column.starts_with(&format!("{}.", parent_path)) {
+                                    // Extract the path after the parent
+                                    let remaining_path = &column[parent_path.len() + 1..];
+
+                                    // Only show DIRECT children (no additional dots)
+                                    let field_name = if let Some(dot_pos) = remaining_path.find('.')
+                                    {
+                                        &remaining_path[..dot_pos]
+                                    } else {
+                                        remaining_path
+                                    };
+
+                                    // Build full path for this direct child
+                                    let full_path = format!("{}.{}", parent_path, field_name);
+
+                                    // Check if matches partial input and not already added (avoid duplicates)
+                                    if field_name
+                                        .to_lowercase()
+                                        .starts_with(&child_filter.to_lowercase())
+                                        && !suggestions
+                                            .iter()
+                                            .any(|s: &Suggestion| s.value == full_path)
+                                    {
+                                        suggestions.push(Suggestion {
+                                            value: full_path,
+                                            description: Some(format!(
+                                                "Nested field from {}",
+                                                parent_path
+                                            )),
+                                            span: Span {
+                                                start: word_start,
+                                                end: pos,
+                                            },
+                                            append_whitespace: false,
+                                            extra: None,
+                                            style: Some(Style::new().fg(Color::Magenta)), // Different color for nested fields
+                                        });
+                                        added_count += 1;
+                                        columns_added = true;
+                                    }
                                 }
                             }
                             debug!(
-                                "[SqlCompleter] Added {} qualified column suggestions",
+                                "[SqlCompleter] Added {} nested field suggestions",
                                 added_count
                             );
+                        } else {
+                            // Original table.column logic
+                            let table_prefix = parent_path;
+                            let column_prefix = child_filter;
+
+                            debug!(
+                                "[SqlCompleter] Table-qualified column completion: {}.{}",
+                                table_prefix, column_prefix
+                            );
+
+                            // Check if this table matches
+                            let matches = table_ref
+                                .alias
+                                .as_ref()
+                                .map(|a| a == table_prefix)
+                                .unwrap_or(false)
+                                || table_ref.table == table_prefix;
+
+                            debug!(
+                                "[SqlCompleter] Table match for '{}': {}",
+                                table_prefix, matches
+                            );
+
+                            if matches {
+                                let mut added_count = 0;
+                                for column in columns {
+                                    if column
+                                        .to_lowercase()
+                                        .starts_with(&column_prefix.to_lowercase())
+                                    {
+                                        suggestions.push(Suggestion {
+                                            value: format!("{table_prefix}.{column}"),
+                                            description: Some(format!(
+                                                "Column from {}",
+                                                table_ref.table
+                                            )),
+                                            span: Span {
+                                                start: word_start,
+                                                end: pos,
+                                            },
+                                            append_whitespace: false,
+                                            extra: None,
+                                            style: Some(Style::new().fg(Color::Cyan)),
+                                        });
+                                        added_count += 1;
+                                        columns_added = true;
+                                    }
+                                }
+                                debug!(
+                                    "[SqlCompleter] Added {} qualified column suggestions",
+                                    added_count
+                                );
+                            }
                         }
                     }
                 } else {
@@ -935,59 +1000,124 @@ impl SqlCompleter {
                     );
                     total_columns_found += columns.len();
 
-                    // Handle table-qualified columns (e.g., "users.")
+                    // Handle table-qualified columns (e.g., "users.") or nested fields (e.g., "data.", "data.exact_paths.")
                     if current_word.contains('.') {
-                        let parts: Vec<&str> = current_word.splitn(2, '.').collect();
-                        if parts.len() == 2 {
-                            let table_prefix = parts[0];
-                            let column_prefix = parts[1];
+                        // Find the last dot to support multi-level nested fields
+                        if let Some(last_dot_pos) = current_word.rfind('.') {
+                            let parent_path = &current_word[..last_dot_pos];
+                            let child_filter = &current_word[last_dot_pos + 1..];
 
-                            debug!(
-                                "[SqlCompleter] Table-qualified column completion for future table: {}.{}",
-                                table_prefix, column_prefix
-                            );
+                            // Check if parent_path is a column name (for nested field access at any level)
+                            let is_nested_field_access = columns.iter().any(|c| c == parent_path);
 
-                            // Check if this table matches
-                            let matches = table_ref
-                                .alias
-                                .as_ref()
-                                .map(|a| a == table_prefix)
-                                .unwrap_or(false)
-                                || table_ref.table == table_prefix;
+                            if is_nested_field_access {
+                                debug!(
+                                    "[SqlCompleter] Multi-level nested field completion in SELECT: {}.{}",
+                                    parent_path, child_filter
+                                );
 
-                            debug!(
-                                "[SqlCompleter] Future table match for '{}': {}",
-                                table_prefix, matches
-                            );
-
-                            if matches {
+                                // Complete nested struct fields at any depth
                                 let mut added_count = 0;
-                                for column in columns {
-                                    if column
-                                        .to_lowercase()
-                                        .starts_with(&column_prefix.to_lowercase())
-                                    {
-                                        suggestions.push(Suggestion {
-                                            value: format!("{table_prefix}.{column}"),
-                                            description: Some(format!(
-                                                "Column from {} (forward-looking)",
-                                                table_ref.table
-                                            )),
-                                            span: Span {
-                                                start: word_start,
-                                                end: pos,
-                                            },
-                                            append_whitespace: false,
-                                            extra: None,
-                                            style: Some(Style::new().fg(Color::Cyan)),
-                                        });
-                                        added_count += 1;
+                                for column in &columns {
+                                    // Match columns that start with "parent_path." (nested fields)
+                                    if column.starts_with(&format!("{}.", parent_path)) {
+                                        // Extract the path after the parent
+                                        let remaining_path = &column[parent_path.len() + 1..];
+
+                                        // Only show DIRECT children (no additional dots)
+                                        let field_name =
+                                            if let Some(dot_pos) = remaining_path.find('.') {
+                                                &remaining_path[..dot_pos]
+                                            } else {
+                                                remaining_path
+                                            };
+
+                                        // Build full path for this direct child
+                                        let full_path = format!("{}.{}", parent_path, field_name);
+
+                                        // Check if matches partial input and not already added (avoid duplicates)
+                                        if field_name
+                                            .to_lowercase()
+                                            .starts_with(&child_filter.to_lowercase())
+                                            && !suggestions
+                                                .iter()
+                                                .any(|s: &Suggestion| s.value == full_path)
+                                        {
+                                            suggestions.push(Suggestion {
+                                                value: full_path,
+                                                description: Some(format!(
+                                                    "Nested field from {}",
+                                                    parent_path
+                                                )),
+                                                span: Span {
+                                                    start: word_start,
+                                                    end: pos,
+                                                },
+                                                append_whitespace: false,
+                                                extra: None,
+                                                style: Some(Style::new().fg(Color::Magenta)),
+                                            });
+                                            added_count += 1;
+                                            columns_added = true;
+                                        }
                                     }
                                 }
                                 debug!(
-                                    "[SqlCompleter] Added {} qualified column suggestions from future table",
+                                    "[SqlCompleter] Added {} nested field suggestions in SELECT",
                                     added_count
                                 );
+                            } else {
+                                // Original table.column logic
+                                let table_prefix = parent_path;
+                                let column_prefix = child_filter;
+
+                                debug!(
+                                    "[SqlCompleter] Table-qualified column completion for future table: {}.{}",
+                                    table_prefix, column_prefix
+                                );
+
+                                // Check if this table matches
+                                let matches = table_ref
+                                    .alias
+                                    .as_ref()
+                                    .map(|a| a == table_prefix)
+                                    .unwrap_or(false)
+                                    || table_ref.table == table_prefix;
+
+                                debug!(
+                                    "[SqlCompleter] Future table match for '{}': {}",
+                                    table_prefix, matches
+                                );
+
+                                if matches {
+                                    let mut added_count = 0;
+                                    for column in columns {
+                                        if column
+                                            .to_lowercase()
+                                            .starts_with(&column_prefix.to_lowercase())
+                                        {
+                                            suggestions.push(Suggestion {
+                                                value: format!("{table_prefix}.{column}"),
+                                                description: Some(format!(
+                                                    "Column from {} (forward-looking)",
+                                                    table_ref.table
+                                                )),
+                                                span: Span {
+                                                    start: word_start,
+                                                    end: pos,
+                                                },
+                                                append_whitespace: false,
+                                                extra: None,
+                                                style: Some(Style::new().fg(Color::Cyan)),
+                                            });
+                                            added_count += 1;
+                                        }
+                                    }
+                                    debug!(
+                                        "[SqlCompleter] Added {} qualified column suggestions from future table",
+                                        added_count
+                                    );
+                                }
                             }
                         }
                     } else {
@@ -1207,59 +1337,126 @@ impl SqlCompleter {
                             table_ref.table
                         );
 
-                        // If user typed table prefix (e.g., "users.")
+                        // If user typed table prefix (e.g., "users.") or nested fields (e.g., "data.", "data.exact_paths.")
                         if current_word.contains('.') {
-                            let parts: Vec<&str> = current_word.splitn(2, '.').collect();
-                            if parts.len() == 2 {
-                                let table_prefix = parts[0];
-                                let column_prefix = parts[1];
+                            // Find the last dot to support multi-level nested fields
+                            if let Some(last_dot_pos) = current_word.rfind('.') {
+                                let parent_path = &current_word[..last_dot_pos];
+                                let child_filter = &current_word[last_dot_pos + 1..];
 
-                                debug!(
-                                    "[SqlCompleter] Table-qualified column completion: {}.{}",
-                                    table_prefix, column_prefix
-                                );
+                                // Check if parent_path is a column name (for nested field access at any level)
+                                let is_nested_field_access =
+                                    columns.iter().any(|c| c == parent_path);
 
-                                // Check if this table matches
-                                let matches = table_ref
-                                    .alias
-                                    .as_ref()
-                                    .map(|a| a == table_prefix)
-                                    .unwrap_or(false)
-                                    || table_ref.table == table_prefix;
+                                if is_nested_field_access {
+                                    debug!(
+                                        "[SqlCompleter] Multi-level nested field completion: {}.{}",
+                                        parent_path, child_filter
+                                    );
 
-                                debug!(
-                                    "[SqlCompleter] Table match for '{}': {}",
-                                    table_prefix, matches
-                                );
-
-                                if matches {
+                                    // Complete nested struct fields at any depth
                                     let mut added_count = 0;
-                                    for column in columns {
-                                        if column
-                                            .to_lowercase()
-                                            .starts_with(&column_prefix.to_lowercase())
-                                        {
-                                            suggestions.push(Suggestion {
-                                                value: format!("{table_prefix}.{column}"),
-                                                description: Some(format!(
-                                                    "Column from {}",
-                                                    table_ref.table
-                                                )),
-                                                span: Span {
-                                                    start: word_start,
-                                                    end: pos,
-                                                },
-                                                append_whitespace: false,
-                                                extra: None,
-                                                style: Some(Style::new().fg(Color::Cyan)),
-                                            });
-                                            added_count += 1;
+                                    for column in &columns {
+                                        // Match columns that start with "parent_path." (nested fields)
+                                        if column.starts_with(&format!("{}.", parent_path)) {
+                                            // Extract the path after the parent
+                                            let remaining_path = &column[parent_path.len() + 1..];
+
+                                            // Only show DIRECT children (no additional dots)
+                                            let field_name =
+                                                if let Some(dot_pos) = remaining_path.find('.') {
+                                                    &remaining_path[..dot_pos]
+                                                } else {
+                                                    remaining_path
+                                                };
+
+                                            // Build full path for this direct child
+                                            let full_path =
+                                                format!("{}.{}", parent_path, field_name);
+
+                                            // Check if matches partial input and not already added (avoid duplicates)
+                                            if field_name
+                                                .to_lowercase()
+                                                .starts_with(&child_filter.to_lowercase())
+                                                && !suggestions
+                                                    .iter()
+                                                    .any(|s: &Suggestion| s.value == full_path)
+                                            {
+                                                suggestions.push(Suggestion {
+                                                    value: full_path,
+                                                    description: Some(format!(
+                                                        "Nested field from {}",
+                                                        parent_path
+                                                    )),
+                                                    span: Span {
+                                                        start: word_start,
+                                                        end: pos,
+                                                    },
+                                                    append_whitespace: false,
+                                                    extra: None,
+                                                    style: Some(Style::new().fg(Color::Magenta)),
+                                                });
+                                                added_count += 1;
+                                                columns_added = true;
+                                            }
                                         }
                                     }
                                     debug!(
-                                        "[SqlCompleter] Added {} qualified column suggestions",
+                                        "[SqlCompleter] Added {} nested field suggestions",
                                         added_count
                                     );
+                                } else {
+                                    // Original table.column logic
+                                    let table_prefix = parent_path;
+                                    let column_prefix = child_filter;
+
+                                    debug!(
+                                        "[SqlCompleter] Table-qualified column completion: {}.{}",
+                                        table_prefix, column_prefix
+                                    );
+
+                                    // Check if this table matches
+                                    let matches = table_ref
+                                        .alias
+                                        .as_ref()
+                                        .map(|a| a == table_prefix)
+                                        .unwrap_or(false)
+                                        || table_ref.table == table_prefix;
+
+                                    debug!(
+                                        "[SqlCompleter] Table match for '{}': {}",
+                                        table_prefix, matches
+                                    );
+
+                                    if matches {
+                                        let mut added_count = 0;
+                                        for column in columns {
+                                            if column
+                                                .to_lowercase()
+                                                .starts_with(&column_prefix.to_lowercase())
+                                            {
+                                                suggestions.push(Suggestion {
+                                                    value: format!("{table_prefix}.{column}"),
+                                                    description: Some(format!(
+                                                        "Column from {}",
+                                                        table_ref.table
+                                                    )),
+                                                    span: Span {
+                                                        start: word_start,
+                                                        end: pos,
+                                                    },
+                                                    append_whitespace: false,
+                                                    extra: None,
+                                                    style: Some(Style::new().fg(Color::Cyan)),
+                                                });
+                                                added_count += 1;
+                                            }
+                                        }
+                                        debug!(
+                                            "[SqlCompleter] Added {} qualified column suggestions",
+                                            added_count
+                                        );
+                                    }
                                 }
                             }
                         } else {
@@ -1693,6 +1890,10 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::Elasticsearch => {
                                         "[elasticsearch]"
                                     }
+                                    crate::database::DatabaseType::Parquet => "[parquet]",
+                                    crate::database::DatabaseType::CSV => "[csv]",
+                                    crate::database::DatabaseType::JSON => "[json]",
+                                    crate::database::DatabaseType::DuckDB => "[duckdb]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
@@ -1760,6 +1961,10 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::Elasticsearch => {
                                         "[elasticsearch]"
                                     }
+                                    crate::database::DatabaseType::Parquet => "[parquet]",
+                                    crate::database::DatabaseType::CSV => "[csv]",
+                                    crate::database::DatabaseType::JSON => "[json]",
+                                    crate::database::DatabaseType::DuckDB => "[duckdb]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
