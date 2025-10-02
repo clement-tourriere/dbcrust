@@ -1,3 +1,9 @@
+## v0.22.0 (2025-10-02)
+
+### Feat
+
+- add more sources for dbcrust
+
 ## v0.21.4 (2025-09-05)
 
 ### Fix
