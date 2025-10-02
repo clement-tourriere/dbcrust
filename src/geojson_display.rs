@@ -20,31 +20,28 @@ impl GeoJsonDisplayAdapter {
 
     /// Extract GeoJSON geometry type
     fn get_geometry_type(&self) -> Option<String> {
-        match &self.value {
-            Value::Object(map) => {
-                // Check for geometry type in geometry object
-                if let Some(Value::Object(geom)) = map.get("geometry") {
-                    if let Some(Value::String(geom_type)) = geom.get("type") {
-                        return Some(geom_type.clone());
-                    }
-                }
-                // Check for direct geometry type (for geometry objects)
-                if let Some(Value::String(geom_type)) = map.get("type") {
-                    if matches!(
-                        geom_type.as_str(),
-                        "Point"
-                            | "LineString"
-                            | "Polygon"
-                            | "MultiPoint"
-                            | "MultiLineString"
-                            | "MultiPolygon"
-                            | "GeometryCollection"
-                    ) {
-                        return Some(geom_type.clone());
-                    }
+        if let Value::Object(map) = &self.value {
+            // Check for geometry type in geometry object
+            if let Some(Value::Object(geom)) = map.get("geometry") {
+                if let Some(Value::String(geom_type)) = geom.get("type") {
+                    return Some(geom_type.clone());
                 }
             }
-            _ => {}
+            // Check for direct geometry type (for geometry objects)
+            if let Some(Value::String(geom_type)) = map.get("type") {
+                if matches!(
+                    geom_type.as_str(),
+                    "Point"
+                        | "LineString"
+                        | "Polygon"
+                        | "MultiPoint"
+                        | "MultiLineString"
+                        | "MultiPolygon"
+                        | "GeometryCollection"
+                ) {
+                    return Some(geom_type.clone());
+                }
+            }
         }
         None
     }
@@ -83,37 +80,34 @@ impl GeoJsonDisplayAdapter {
     }
 
     fn extract_coordinates(&self, value: &Value) -> Option<CoordinateInfo> {
-        match value {
-            Value::Object(map) => {
-                // Look for coordinates in geometry
-                if let Some(coords) = map.get("coordinates") {
-                    return self.analyze_coordinates(coords);
-                }
+        if let Value::Object(map) = value {
+            // Look for coordinates in geometry
+            if let Some(coords) = map.get("coordinates") {
+                return self.analyze_coordinates(coords);
+            }
 
-                // Look for geometry object
-                if let Some(geometry) = map.get("geometry") {
-                    return self.extract_coordinates(geometry);
-                }
+            // Look for geometry object
+            if let Some(geometry) = map.get("geometry") {
+                return self.extract_coordinates(geometry);
+            }
 
-                // Look for features array
-                if let Some(Value::Array(features)) = map.get("features") {
-                    let mut all_coords = Vec::new();
-                    for feature in features {
-                        if let Some(coord_info) = self.extract_coordinates(feature) {
-                            all_coords.extend(coord_info.sample_coords);
-                        }
+            // Look for features array
+            if let Some(Value::Array(features)) = map.get("features") {
+                let mut all_coords = Vec::new();
+                for feature in features {
+                    if let Some(coord_info) = self.extract_coordinates(feature) {
+                        all_coords.extend(coord_info.sample_coords);
                     }
-                    if !all_coords.is_empty() {
-                        let bounds = self.calculate_bounds(&all_coords);
-                        return Some(CoordinateInfo {
-                            total_points: all_coords.len(),
-                            sample_coords: all_coords.into_iter().take(5).collect(),
-                            bounds,
-                        });
-                    }
+                }
+                if !all_coords.is_empty() {
+                    let bounds = self.calculate_bounds(&all_coords);
+                    return Some(CoordinateInfo {
+                        total_points: all_coords.len(),
+                        sample_coords: all_coords.into_iter().take(5).collect(),
+                        bounds,
+                    });
                 }
             }
-            _ => {}
         }
         None
     }
@@ -134,21 +128,18 @@ impl GeoJsonDisplayAdapter {
     }
 
     fn flatten_coordinates(&self, value: &Value, coords: &mut Vec<Coordinate>) {
-        match value {
-            Value::Array(arr) => {
-                if arr.len() == 2 && arr.iter().all(|v| v.is_f64()) {
-                    // This is a coordinate pair [lng, lat]
-                    if let (Some(lng), Some(lat)) = (arr[0].as_f64(), arr[1].as_f64()) {
-                        coords.push(Coordinate { lng, lat });
-                    }
-                } else {
-                    // Recurse into nested arrays
-                    for item in arr {
-                        self.flatten_coordinates(item, coords);
-                    }
+        if let Value::Array(arr) = value {
+            if arr.len() == 2 && arr.iter().all(|v| v.is_f64()) {
+                // This is a coordinate pair [lng, lat]
+                if let (Some(lng), Some(lat)) = (arr[0].as_f64(), arr[1].as_f64()) {
+                    coords.push(Coordinate { lng, lat });
+                }
+            } else {
+                // Recurse into nested arrays
+                for item in arr {
+                    self.flatten_coordinates(item, coords);
                 }
             }
-            _ => {}
         }
     }
 
@@ -190,24 +181,21 @@ impl GeoJsonDisplayAdapter {
     }
 
     fn collect_property_keys(&self, value: &Value, keys: &mut HashSet<String>, count: &mut usize) {
-        match value {
-            Value::Object(map) => {
-                // Check if this is a feature with properties
-                if let Some(Value::Object(props)) = map.get("properties") {
-                    *count += 1;
-                    for key in props.keys() {
-                        keys.insert(key.clone());
-                    }
-                }
-
-                // Check for features array
-                if let Some(Value::Array(features)) = map.get("features") {
-                    for feature in features {
-                        self.collect_property_keys(feature, keys, count);
-                    }
+        if let Value::Object(map) = value {
+            // Check if this is a feature with properties
+            if let Some(Value::Object(props)) = map.get("properties") {
+                *count += 1;
+                for key in props.keys() {
+                    keys.insert(key.clone());
                 }
             }
-            _ => {}
+
+            // Check for features array
+            if let Some(Value::Array(features)) = map.get("features") {
+                for feature in features {
+                    self.collect_property_keys(feature, keys, count);
+                }
+            }
         }
     }
 
@@ -304,9 +292,9 @@ impl ComplexDataDisplay for GeoJsonDisplayAdapter {
                 let geom_type = self
                     .get_geometry_type()
                     .unwrap_or_else(|| "Unknown".to_string());
-                format!("Feature({})", geom_type)
+                format!("Feature({geom_type})")
             }
-            geom_type => format!("Geometry({})", geom_type),
+            geom_type => format!("Geometry({geom_type})"),
         };
 
         ComplexDataMetadata {
@@ -382,9 +370,9 @@ impl ComplexDataDisplay for GeoJsonDisplayAdapter {
                     let shown = feature_count.min(config.truncation_length);
                     let remaining = feature_count.saturating_sub(config.truncation_length);
 
-                    let mut result = format!("FeatureCollection with {} features", shown);
+                    let mut result = format!("FeatureCollection with {shown} features");
                     if remaining > 0 {
-                        result.push_str(&format!(" (... {} more)", remaining));
+                        result.push_str(&format!(" (... {remaining} more)"));
                     }
 
                     if config.show_dimensions {
@@ -410,7 +398,7 @@ impl ComplexDataDisplay for GeoJsonDisplayAdapter {
                 let geom_type = self
                     .get_geometry_type()
                     .unwrap_or_else(|| "Unknown".to_string());
-                let mut result = format!("Feature({})", geom_type);
+                let mut result = format!("Feature({geom_type})");
 
                 if let Some(coord_info) = self.get_coordinate_info() {
                     result.push_str(&format!(" with {} points", coord_info.total_points));
@@ -426,7 +414,7 @@ impl ComplexDataDisplay for GeoJsonDisplayAdapter {
                 result
             }
             geom_type => {
-                let mut result = format!("Geometry({})", geom_type);
+                let mut result = format!("Geometry({geom_type})");
 
                 if let Some(coord_info) = self.get_coordinate_info() {
                     result.push_str(&format!(" with {} points", coord_info.total_points));
@@ -447,7 +435,7 @@ impl ComplexDataDisplay for GeoJsonDisplayAdapter {
         match geojson_type.as_str() {
             "FeatureCollection" => {
                 if let Some(feature_count) = self.count_features() {
-                    summary_parts.push(format!("Features: {}", feature_count));
+                    summary_parts.push(format!("Features: {feature_count}"));
                 }
                 if !prop_summary.unique_keys.is_empty() {
                     let key_preview: Vec<_> =
@@ -461,16 +449,16 @@ impl ComplexDataDisplay for GeoJsonDisplayAdapter {
                     } else {
                         key_preview.join(", ")
                     };
-                    summary_parts.push(format!("Properties: [{}]", key_display));
+                    summary_parts.push(format!("Properties: [{key_display}]"));
                 }
             }
             "Feature" => {
                 if let Some(geom_type) = self.get_geometry_type() {
-                    summary_parts.push(format!("Geometry: {}", geom_type));
+                    summary_parts.push(format!("Geometry: {geom_type}"));
                 }
             }
             geom_type => {
-                summary_parts.push(format!("Type: {}", geom_type));
+                summary_parts.push(format!("Type: {geom_type}"));
             }
         }
 
@@ -485,7 +473,7 @@ impl ComplexDataDisplay for GeoJsonDisplayAdapter {
 
                 let width = bounds.max_lng - bounds.min_lng;
                 let height = bounds.max_lat - bounds.min_lat;
-                summary_parts.push(format!("Extent: {:.3}° × {:.3}°", width, height));
+                summary_parts.push(format!("Extent: {width:.3}° × {height:.3}°"));
             }
         }
 
@@ -511,25 +499,21 @@ impl ComplexDataParser<GeoJsonDisplayAdapter> for GeoJsonDisplayAdapter {
     }
 
     fn validate(raw_data: &str) -> bool {
-        if let Ok(value) = serde_json::from_str::<Value>(raw_data) {
+        if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(raw_data) {
             // Basic GeoJSON validation - check for required "type" field
-            if let Value::Object(map) = value {
-                if let Some(Value::String(obj_type)) = map.get("type") {
-                    matches!(
-                        obj_type.as_str(),
-                        "Feature"
-                            | "FeatureCollection"
-                            | "Point"
-                            | "LineString"
-                            | "Polygon"
-                            | "MultiPoint"
-                            | "MultiLineString"
-                            | "MultiPolygon"
-                            | "GeometryCollection"
-                    )
-                } else {
-                    false
-                }
+            if let Some(Value::String(obj_type)) = map.get("type") {
+                matches!(
+                    obj_type.as_str(),
+                    "Feature"
+                        | "FeatureCollection"
+                        | "Point"
+                        | "LineString"
+                        | "Polygon"
+                        | "MultiPoint"
+                        | "MultiLineString"
+                        | "MultiPolygon"
+                        | "GeometryCollection"
+                )
             } else {
                 false
             }

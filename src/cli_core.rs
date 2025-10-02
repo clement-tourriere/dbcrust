@@ -1114,6 +1114,9 @@ impl CliCore {
             .map_err(|e| CliError::CommandError(format!("Command parsing failed: {e}")))?;
 
         // Execute the typed command using the CommandExecutor trait
+        // Note: config lock is held across await, but this is necessary to ensure
+        // mutable config access is synchronized during command execution
+        #[allow(clippy::await_holding_lock)]
         match command
             .execute(
                 db_arc,
@@ -1142,12 +1145,14 @@ impl CliCore {
     }
 
     /// Execute SQL query in interactive mode
+    #[allow(clippy::await_holding_lock)]
     async fn execute_sql_interactive(
         &mut self,
         sql: &str,
         db_arc: &Arc<Mutex<Database>>,
         interrupt_flag: &Arc<AtomicBool>,
     ) -> Result<(), CliError> {
+        // Lock held across await for query execution with column selection
         let results_with_info = {
             let mut db_guard = db_arc.lock().unwrap();
             match db_guard

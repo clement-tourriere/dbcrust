@@ -225,11 +225,11 @@ mod tests {
         // This test verifies the NoVaultToken error case
         // Skip if ~/.vault-token exists (common in development environments)
         let vault_token_file = dirs::home_dir().map(|d| d.join(".vault-token"));
-        if let Some(path) = vault_token_file {
-            if path.exists() {
-                eprintln!("Skipping test because ~/.vault-token exists");
-                return;
-            }
+        if let Some(path) = vault_token_file
+            && path.exists()
+        {
+            eprintln!("Skipping test because ~/.vault-token exists");
+            return;
         }
 
         // Save current token if it exists

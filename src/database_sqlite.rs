@@ -432,13 +432,13 @@ impl SqliteClient {
         // Parse and format each row with enhanced performance information
         for (step_num, row) in data_rows.iter().enumerate() {
             if row.len() >= 4 {
-                let id = &row[0];
+                let _id = &row[0];
                 let parent = &row[1];
                 let _notused = &row[2];
                 let detail = &row[3];
 
                 // Determine indentation based on parent relationships
-                let indent = self.calculate_indent(id, parent, data_rows);
+                let indent = self.calculate_indent(parent, data_rows);
                 let indent_str = "  ".repeat(indent);
 
                 // Format the step with better structure
@@ -495,7 +495,7 @@ impl SqliteClient {
     }
 
     /// Calculate indentation level based on parent-child relationships
-    fn calculate_indent(&self, _id: &str, parent: &str, all_rows: &[Vec<String>]) -> usize {
+    fn calculate_indent(&self, parent: &str, all_rows: &[Vec<String>]) -> usize {
         // Simple indentation based on parent ID
         if parent == "0" || parent.is_empty() {
             0
@@ -503,7 +503,7 @@ impl SqliteClient {
             // Find parent's indentation and add 1
             for row in all_rows {
                 if row.len() >= 4 && row[0] == *parent {
-                    return self.calculate_indent(&row[0], &row[1], all_rows) + 1;
+                    return self.calculate_indent(&row[1], all_rows) + 1;
                 }
             }
             1 // Default to 1 level if parent not found
@@ -633,13 +633,12 @@ impl DatabaseClient for SqliteClient {
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
         debug!("[SqliteClient::test_query] Testing query for validation");
         // For SQLite, we can use EXPLAIN QUERY PLAN to validate query syntax without executing it
-        let explain_sql = format!("EXPLAIN QUERY PLAN {}", sql);
+        let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
 
         match sqlx::query(&explain_sql).fetch_all(&self.pool).await {
             Ok(_) => Ok(()),
             Err(e) => Err(DatabaseError::QueryError(format!(
-                "Query validation failed: {}",
-                e
+                "Query validation failed: {e}"
             ))),
         }
     }
@@ -803,9 +802,7 @@ impl DatabaseClient for SqliteClient {
         let version_row = sqlx::query(version_query)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to get SQLite version: {}", e))
-            })?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to get SQLite version: {e}")))?;
 
         let version_string: String = version_row.get(0);
         debug!(
@@ -847,7 +844,7 @@ impl DatabaseClient for SqliteClient {
                         let db_size_mb = (db_size_bytes as f64) / (1024.0 * 1024.0);
                         server_info
                             .additional_info
-                            .insert("database_size_mb".to_string(), format!("{:.2}", db_size_mb));
+                            .insert("database_size_mb".to_string(), format!("{db_size_mb:.2}"));
                     }
                 }
             }

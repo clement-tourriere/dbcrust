@@ -511,11 +511,11 @@ pub fn has_path_permission(
     required_capabilities: &[&str],
 ) -> bool {
     // First check exact paths
-    if let Some(path_capabilities) = acl_data.exact_paths.get(path) {
-        if has_capabilities(&path_capabilities.capabilities, required_capabilities) {
-            debug!("Found exact path match: {}", path);
-            return true;
-        }
+    if let Some(path_capabilities) = acl_data.exact_paths.get(path)
+        && has_capabilities(&path_capabilities.capabilities, required_capabilities)
+    {
+        debug!("Found exact path match: {}", path);
+        return true;
     }
 
     // Then check glob paths
@@ -543,10 +543,10 @@ pub fn glob_matches(pattern: &str, path: &str) -> bool {
 
     // Case 2: Trailing slash (directory match)
     // e.g., "path/" matches "path" and "path/subpath"
-    if let Some(prefix) = pattern.strip_suffix('/') {
-        if path == prefix || path.starts_with(&format!("{prefix}/")) {
-            return true;
-        }
+    if let Some(prefix) = pattern.strip_suffix('/')
+        && (path == prefix || path.starts_with(&format!("{prefix}/")))
+    {
+        return true;
     }
 
     // Case 3: Trailing asterisk (wildcard match)

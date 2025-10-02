@@ -386,7 +386,7 @@ pub fn save_password(
     // Write entries back to file
     let mut file = File::create(&dbcrust_path)?;
     for entry in entries {
-        writeln!(file, "{}", entry)?;
+        writeln!(file, "{entry}")?;
     }
 
     // Set correct permissions
@@ -486,7 +486,7 @@ pub fn delete_password(
         // Write entries back to file
         let mut file = File::create(&dbcrust_path)?;
         for entry in entries {
-            writeln!(file, "{}", entry)?;
+            writeln!(file, "{entry}")?;
         }
         set_correct_permissions(&dbcrust_path)?;
     }
@@ -543,7 +543,7 @@ pub fn encrypt_all_passwords() -> Result<usize, DbcrustPassError> {
         // Write entries back to file
         let mut file = File::create(&dbcrust_path)?;
         for entry in entries {
-            writeln!(file, "{}", entry)?;
+            writeln!(file, "{entry}")?;
         }
         set_correct_permissions(&dbcrust_path)?;
     }

@@ -169,6 +169,7 @@ impl DatabaseAwareCompleter {
         Self { database }
     }
 
+    #[allow(clippy::await_holding_lock)]
     async fn get_table_names(&self) -> CompletionResult<Vec<String>> {
         let db = self.database.lock().unwrap();
         if !db.has_database_connection() {
@@ -180,6 +181,7 @@ impl DatabaseAwareCompleter {
         let tables = tokio::task::block_in_place(|| {
             let handle = tokio::runtime::Handle::current();
             handle.block_on(async {
+                // Lock held across await for fetching table metadata
                 let mut db_guard = db_arc.lock().unwrap();
                 db_guard.get_tables_and_views(None).await
             })
@@ -189,6 +191,7 @@ impl DatabaseAwareCompleter {
         Ok(tables)
     }
 
+    #[allow(clippy::await_holding_lock)]
     async fn get_database_names(&self) -> CompletionResult<Vec<String>> {
         let db = self.database.lock().unwrap();
         if !db.has_database_connection() {
@@ -199,6 +202,7 @@ impl DatabaseAwareCompleter {
         let databases = tokio::task::block_in_place(|| {
             let handle = tokio::runtime::Handle::current();
             handle.block_on(async {
+                // Lock held across await for fetching database metadata
                 let mut db_guard = db_arc.lock().unwrap();
                 db_guard.list_databases().await
             })

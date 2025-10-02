@@ -848,15 +848,14 @@ impl Database {
                 crate::database::DatabaseType::MongoDB => {
                     // Create index using MongoDB command
                     let index_spec = match index_type {
-                        Some("text") => format!("{{ \"{}\": \"text\" }}", field),
-                        Some("hash") => format!("{{ \"{}\": \"hashed\" }}", field),
-                        Some("desc") => format!("{{ \"{}\": -1 }}", field),
-                        _ => format!("{{ \"{}\": 1 }}", field), // default ascending
+                        Some("text") => format!("{{ \"{field}\": \"text\" }}"),
+                        Some("hash") => format!("{{ \"{field}\": \"hashed\" }}"),
+                        Some("desc") => format!("{{ \"{field}\": -1 }}"),
+                        _ => format!("{{ \"{field}\": 1 }}"), // default ascending
                     };
 
                     let query = format!(
-                        "db.runCommand({{ createIndexes: \"{}\", indexes: [{{ key: {}, name: \"{}_{}_idx\" }}] }})",
-                        collection, index_spec, collection, field
+                        "db.runCommand({{ createIndexes: \"{collection}\", indexes: [{{ key: {index_spec}, name: \"{collection}_{field}_idx\" }}] }})"
                     );
 
                     self.execute_query(&query)
@@ -890,8 +889,7 @@ impl Database {
                 crate::database::DatabaseType::MongoDB => {
                     // Drop index using MongoDB command
                     let query = format!(
-                        "db.runCommand({{ dropIndexes: \"{}\", index: \"{}\" }})",
-                        collection, index_name
+                        "db.runCommand({{ dropIndexes: \"{collection}\", index: \"{index_name}\" }})"
                     );
 
                     self.execute_query(&query)
@@ -955,13 +953,11 @@ impl Database {
                 crate::database::DatabaseType::MongoDB => {
                     // Build MongoDB find query
                     let filter_str = filter.unwrap_or("{}");
-                    let projection_str = projection.map(|p| format!(", {}", p)).unwrap_or_default();
-                    let limit_str = limit.map(|l| format!(", limit: {}", l)).unwrap_or_default();
+                    let projection_str = projection.map(|p| format!(", {p}")).unwrap_or_default();
+                    let limit_str = limit.map(|l| format!(", limit: {l}")).unwrap_or_default();
 
-                    let query = format!(
-                        "db.{}.find({}{}){}",
-                        collection, filter_str, projection_str, limit_str
-                    );
+                    let query =
+                        format!("db.{collection}.find({filter_str}{projection_str}){limit_str}");
 
                     self.execute_query(&query)
                         .await
@@ -994,7 +990,7 @@ impl Database {
             match connection_info.database_type {
                 crate::database::DatabaseType::MongoDB => {
                     // Execute aggregation pipeline
-                    let query = format!("db.{}.aggregate({})", collection, pipeline);
+                    let query = format!("db.{collection}.aggregate({pipeline})");
 
                     self.execute_query(&query)
                         .await
@@ -1025,7 +1021,7 @@ impl Database {
             match connection_info.database_type {
                 crate::database::DatabaseType::MongoDB => {
                     // Execute MongoDB text search using $text operator
-                    let filter = format!(r#"{{"$text": {{"$search": "{}"}}}}"#, search_term);
+                    let filter = format!(r#"{{"$text": {{"$search": "{search_term}"}}}}"#);
                     self.mongo_find(collection, Some(&filter), None, Some(10))
                         .await
                         .map_err(|e| format!("Error executing text search: {e}").into())
@@ -1087,8 +1083,8 @@ impl Database {
 
     // Pool management methods removed - now handled by database clients
 
-    pub fn get_database_client(&self) -> Option<&Box<dyn DatabaseClient>> {
-        self.database_client.as_ref()
+    pub fn get_database_client(&self) -> Option<&dyn DatabaseClient> {
+        self.database_client.as_deref()
     }
 
     pub async fn is_connected(&self) -> bool {

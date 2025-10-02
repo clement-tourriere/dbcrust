@@ -653,7 +653,7 @@ impl ServerInfo {
     pub fn mysql(server_version: String) -> Self {
         let mut info = Self::new("MySQL".to_string(), server_version);
         info.supports_transactions = true;
-        info.supports_roles = info.version_major.map_or(false, |major| major >= 8);
+        info.supports_roles = info.version_major.is_some_and(|major| major >= 8);
         info.parse_version_numbers();
         info
     }
@@ -848,8 +848,7 @@ impl ConnectionInfo {
                             .decode_utf8()
                             .map_err(|e| {
                                 DatabaseError::InvalidUrl(format!(
-                                    "Failed to decode database name '{}': {}",
-                                    db_name, e
+                                    "Failed to decode database name '{db_name}': {e}"
                                 ))
                             })?
                             .to_string();

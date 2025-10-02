@@ -40,32 +40,13 @@ repos:
           -D, "clippy::perf",
           -W, "clippy::style",
           -W, "clippy::complexity",
-          -A, "clippy::await_holding_lock",           # Architectural issue requiring major changes
-          -A, "clippy::uninlined_format_args",        # Style preference
-          -A, "clippy::useless_format",               # Style preference
+          -A, "clippy::await_holding_lock",           # Architectural issue requiring major changes (TODO: migrate to tokio::sync::Mutex)
           -A, "clippy::needless_return",              # Style preference
-          -A, "clippy::field_reassign_with_default",  # Style preference
-          -A, "clippy::derivable_impls",              # Style preference
           -A, "clippy::too_many_arguments",           # Architectural choice
-          -A, "clippy::borrowed_box",                 # Trait object pattern
           -A, "clippy::type_complexity",              # Complex types often necessary
-          -A, "clippy::items_after_test_module",      # Module organization preference
-          -A, "clippy::single_char_add_str",          # Style preference
-          -A, "clippy::option_as_ref_deref",          # Style preference
-          -A, "clippy::redundant_closure",            # Sometimes clearer intent
-          -A, "clippy::manual_range_contains",        # Style preference
-          -A, "clippy::empty_line_after_doc_comments", # Style preference
           -A, "clippy::collapsible_if",               # Style preference - often clearer when not collapsed
-          -A, "clippy::only_used_in_recursion",       # Common pattern in recursive functions
-          -A, "clippy::redundant_pattern_matching",   # ok().is_some() pattern sometimes clearer
-          -A, "clippy::single_match",                 # match with single arm sometimes clearer than if let
-          -A, "clippy::map_or_none",                  # Style preference
-          -A, "clippy::needless_borrow",              # Sometimes explicit borrows are clearer
-          -A, "clippy::collapsible_else_if",          # Related to collapsible_if
-          -A, "clippy::if_same_then_else",            # Sometimes useful for clarity in parallel code paths
+          -A, "clippy::only_used_in_recursion",       # Common pattern in recursive functions (9 remaining)
           -A, "clippy::should_implement_trait",       # from_str pattern is clearer than FromStr trait sometimes
-          -A, "clippy::enum_variant_names",           # Enum variant postfix naming is intentional (e.g., TableCompletion)
-          -A, "clippy::map_clone",                    # Explicit closure sometimes clearer than .copied()
-          -A, "clippy::manual_clamp"                  # Manual min/max sometimes clearer than clamp()
+          -A, "clippy::enum_variant_names",           # Enum variant postfix naming is intentional (PowerShell brand name)
         ]
         exclude: ^(python/|tests/)

@@ -43,8 +43,7 @@ fn generate_bash_completion<W: Write>(
 # DBCrust URL scheme completion
 _{bin_name}_complete_url_schemes() {{
     local schemes=(
-"#,
-        bin_name = bin_name
+"#
     );
 
     // Add all URL schemes
@@ -122,7 +121,7 @@ _{bin_name}_complete_url() {{
         esac
     fi
 }}
-"#, bin_name = bin_name));
+"#));
 
     // Insert our custom functions before the main completion function
     let insertion_point = completion_script
@@ -146,8 +145,7 @@ _{bin_name}_complete_url() {{
                     fi
                 fi
             fi
-"#,
-            bin_name = bin_name
+"#
         );
         completion_script.insert_str(pos, &insert_code);
     }
@@ -175,8 +173,7 @@ fn generate_zsh_completion<W: Write>(
 # DBCrust URL scheme completion functions
 _{bin_name}_url_schemes() {{
     local schemes=(
-"#,
-        bin_name = bin_name
+"#
     );
 
     for scheme in UrlScheme::iter() {
@@ -266,7 +263,7 @@ _{bin_name}_complete_url() {{
         esac
     fi
 }}
-"#, bin_name = bin_name));
+"#));
 
     // Insert custom functions after #compdef but before main function
     let insert_pos = if let Some(pos) = completion_script.find(&format!("_{bin_name}() {{")) {

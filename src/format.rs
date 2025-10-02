@@ -8,7 +8,7 @@ fn format_type_with_enum_values(data_type: &str, enum_values: &Option<Vec<String
         Some(values) if !values.is_empty() => {
             // Format enum values in a readable way
             let values_str = values.join(", ");
-            format!("{} ({})", data_type, values_str)
+            format!("{data_type} ({values_str})")
         }
         _ => data_type.to_string(),
     }
@@ -730,9 +730,9 @@ pub fn format_table_details(details: &TableDetails) -> String {
 
         for column_name in column_names {
             if let Some(field_details) = details.nested_field_details.get(column_name) {
-                result.push_str(&format!("  {} (Struct):\n", column_name));
+                result.push_str(&format!("  {column_name} (Struct):\n"));
                 for detail in field_details {
-                    result.push_str(&format!("{}\n", detail));
+                    result.push_str(&format!("{detail}\n"));
                 }
                 result.push('\n');
             }

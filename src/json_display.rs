@@ -78,7 +78,7 @@ impl JsonDisplayAdapter {
                 } else {
                     fields.join(", ")
                 };
-                format!("Object {{ {} }}", field_summary)
+                format!("Object {{ {field_summary} }}")
             }
             Value::Array(arr) => {
                 if arr.is_empty() {
@@ -134,7 +134,7 @@ impl JsonDisplayAdapter {
                         }
                         result.push('\n');
                     }
-                    result.push_str(&format!("{}}}", indent_str));
+                    result.push_str(&format!("{indent_str}}}"));
                     result
                 }
             }
@@ -161,11 +161,11 @@ impl JsonDisplayAdapter {
                         }
                         result.push('\n');
                     }
-                    result.push_str(&format!("{}]", indent_str));
+                    result.push_str(&format!("{indent_str}]"));
                     result
                 }
             }
-            Value::String(s) => format!("\"{}\"", s),
+            Value::String(s) => format!("\"{s}\""),
             Value::Number(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Null => "null".to_string(),
@@ -221,10 +221,10 @@ impl ComplexDataDisplay for JsonDisplayAdapter {
                         if i > 0 {
                             result.push_str(", ");
                         }
-                        result.push_str(&format!("\"{}\": ...", key));
+                        result.push_str(&format!("\"{key}\": ..."));
                     }
                     if remaining > 0 {
-                        result.push_str(&format!(", ... {} more", remaining));
+                        result.push_str(&format!(", ... {remaining} more"));
                     }
                     result.push_str(" }");
 
@@ -248,7 +248,7 @@ impl ComplexDataDisplay for JsonDisplayAdapter {
                     let mut result = format!("[{}", shown.join(", "));
 
                     if remaining > 0 {
-                        result.push_str(&format!(", ... {} more", remaining));
+                        result.push_str(&format!(", ... {remaining} more"));
                     }
                     result.push(']');
 
@@ -343,7 +343,7 @@ impl ComplexDataDisplay for JsonDisplayAdapter {
                         Value::Bool(b) => b.to_string(),
                         Value::Null => "null".to_string(),
                     };
-                    lines.push(format!("  {}: {}", key, value_desc));
+                    lines.push(format!("  {key}: {value_desc}"));
                 }
                 if map.len() > config.viz_width / 4 {
                     lines.push(format!(
@@ -366,7 +366,7 @@ impl ComplexDataDisplay for JsonDisplayAdapter {
                         Value::Bool(b) => b.to_string(),
                         Value::Null => "null".to_string(),
                     };
-                    lines.push(format!("  [{}]: {}", i, value_desc));
+                    lines.push(format!("  [{i}]: {value_desc}"));
                 }
                 if arr.len() > config.viz_width / 6 {
                     lines.push(format!(

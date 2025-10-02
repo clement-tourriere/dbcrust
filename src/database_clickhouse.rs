@@ -61,10 +61,7 @@ impl MetadataProvider for ClickHouseMetadataProvider {
         );
 
         let query = if let Some(schema_name) = schema {
-            format!(
-                "SELECT name FROM system.tables WHERE database = '{}' ORDER BY name",
-                schema_name
-            )
+            format!("SELECT name FROM system.tables WHERE database = '{schema_name}' ORDER BY name")
         } else {
             "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name"
                 .to_string()
@@ -103,13 +100,11 @@ impl MetadataProvider for ClickHouseMetadataProvider {
 
         let query = if let Some(schema_name) = schema {
             format!(
-                "SELECT name FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
-                schema_name, table
+                "SELECT name FROM system.columns WHERE database = '{schema_name}' AND table = '{table}' ORDER BY position"
             )
         } else {
             format!(
-                "SELECT name FROM system.columns WHERE database = currentDatabase() AND table = '{}' ORDER BY position",
-                table
+                "SELECT name FROM system.columns WHERE database = currentDatabase() AND table = '{table}' ORDER BY position"
             )
         };
 
@@ -124,7 +119,7 @@ impl MetadataProvider for ClickHouseMetadataProvider {
             .fetch_all::<ColumnName>()
             .await
             .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to get columns for table {}: {e}", table))
+                DatabaseError::QueryError(format!("Failed to get columns for table {table}: {e}"))
             })?;
 
         let column_names: Vec<String> = columns.into_iter().map(|col| col.name).collect();
@@ -180,13 +175,11 @@ impl MetadataProvider for ClickHouseMetadataProvider {
         // Get column information
         let columns_query = if schema.is_some() {
             format!(
-                "SELECT name, type, default_expression, is_in_primary_key FROM system.columns WHERE database = '{}' AND table = '{}' ORDER BY position",
-                database_name, table
+                "SELECT name, type, default_expression, is_in_primary_key FROM system.columns WHERE database = '{database_name}' AND table = '{table}' ORDER BY position"
             )
         } else {
             format!(
-                "SELECT name, type, default_expression, is_in_primary_key FROM system.columns WHERE database = currentDatabase() AND table = '{}' ORDER BY position",
-                table
+                "SELECT name, type, default_expression, is_in_primary_key FROM system.columns WHERE database = currentDatabase() AND table = '{table}' ORDER BY position"
             )
         };
 
@@ -237,7 +230,7 @@ impl MetadataProvider for ClickHouseMetadataProvider {
         Ok(TableDetails {
             name: table.to_string(),
             schema: schema_name.to_string(),
-            full_name: format!("{}.{}", schema_name, table),
+            full_name: format!("{schema_name}.{table}"),
             columns: column_infos,
             indexes,
             check_constraints,
@@ -297,19 +290,14 @@ impl ClickHouseClient {
         // Database is specified via query parameter or USE statement
         let database_url = if let Some(password) = &connection_info.password {
             if username.is_empty() {
-                format!("http://{}:{}", connection_host, port)
+                format!("http://{connection_host}:{port}")
             } else {
-                format!(
-                    "http://{}:{}@{}:{}",
-                    username, password, connection_host, port
-                )
+                format!("http://{username}:{password}@{connection_host}:{port}")
             }
+        } else if username.is_empty() {
+            format!("http://{connection_host}:{port}")
         } else {
-            if username.is_empty() {
-                format!("http://{}:{}", connection_host, port)
-            } else {
-                format!("http://{}@{}:{}", username, connection_host, port)
-            }
+            format!("http://{username}@{connection_host}:{port}")
         };
 
         debug!(
@@ -354,7 +342,7 @@ impl ClickHouseClient {
         // Build HTTP URL
         let host = self.connection_info.host.as_deref().unwrap_or("localhost");
         let port = self.connection_info.port.unwrap_or(8123);
-        let url = format!("http://{}:{}", host, port);
+        let url = format!("http://{host}:{port}");
 
         debug!(
             "[ClickHouseClient::execute_http_user_query] Executing HTTP query: {}",
@@ -500,8 +488,7 @@ impl ClickHouseClient {
                     .await
                     .unwrap_or_else(|_| "Unknown error".to_string());
                 Err(DatabaseError::QueryError(format!(
-                    "ClickHouse HTTP error: {}",
-                    error_text
+                    "ClickHouse HTTP error: {error_text}"
                 )))
             }
         }
@@ -653,7 +640,7 @@ impl DatabaseClient for ClickHouseClient {
         debug!("[ClickHouseClient::test_query] Testing query: {}", sql);
 
         // For ClickHouse, we can test by trying to explain the query
-        let explain_query = format!("EXPLAIN {}", sql);
+        let explain_query = format!("EXPLAIN {sql}");
         self.client
             .query(&explain_query)
             .fetch_one::<String>()
@@ -669,7 +656,7 @@ impl DatabaseClient for ClickHouseClient {
             sql
         );
 
-        let explain_sql = format!("EXPLAIN PLAN {}", sql);
+        let explain_sql = format!("EXPLAIN PLAN {sql}");
         self.execute_raw_query(&explain_sql).await
     }
 
@@ -680,7 +667,7 @@ impl DatabaseClient for ClickHouseClient {
         );
 
         // ClickHouse EXPLAIN with more details
-        let explain_sql = format!("EXPLAIN SYNTAX {}", sql);
+        let explain_sql = format!("EXPLAIN SYNTAX {sql}");
         self.execute_raw_query(&explain_sql).await
     }
 
@@ -727,10 +714,7 @@ impl DatabaseClient for ClickHouseClient {
 
     async fn is_connected(&self) -> bool {
         // Test connection with a simple query
-        match self.client.query("SELECT 1").fetch_one::<u8>().await {
-            Ok(_) => true,
-            Err(_) => false,
-        }
+        (self.client.query("SELECT 1").fetch_one::<u8>().await).is_ok()
     }
 
     async fn close(&mut self) -> Result<(), DatabaseError> {

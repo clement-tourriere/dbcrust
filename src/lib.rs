@@ -92,6 +92,8 @@ pub struct PyConnection {
     connection_url: String,
     database_type: Option<crate::database::DatabaseType>,
     auto_commit: bool,
+    // Reserved for future use: connection timeout configuration
+    #[allow(dead_code)]
     timeout: Option<f64>,
 }
 
@@ -757,14 +759,14 @@ impl PyCursor {
         }
 
         let current_results = &self.results[self.current_result_index];
-        let mut rows = Vec::new();
-
-        for i in self.current_row_index..current_results.len() {
-            rows.push(PyRow {
-                data: current_results[i].clone(),
+        let rows: Vec<PyRow> = current_results
+            .iter()
+            .skip(self.current_row_index)
+            .map(|data| PyRow {
+                data: data.clone(),
                 column_names: self.column_names.clone(),
-            });
-        }
+            })
+            .collect();
 
         self.current_row_index = current_results.len();
         Ok(rows)

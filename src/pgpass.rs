@@ -282,14 +282,12 @@ mod tests {
             let test_path = temp_dir.join(format!("dbcrust_test_{test_name}_{pid}_{timestamp}"));
 
             // Create parent directory if needed
-            if let Some(parent) = test_path.parent() {
-                if !parent.exists() {
-                    fs::create_dir_all(parent).unwrap_or_else(|e| {
-                        eprintln!(
-                            "Warning: Could not create parent directory for test pgpass: {e}"
-                        );
-                    });
-                }
+            if let Some(parent) = test_path.parent()
+                && !parent.exists()
+            {
+                fs::create_dir_all(parent).unwrap_or_else(|e| {
+                    eprintln!("Warning: Could not create parent directory for test pgpass: {e}");
+                });
             }
 
             // Delete file if it exists
@@ -305,12 +303,12 @@ mod tests {
         // Add a password entry to the test file
         fn add_entry(&self, host: &str, port: u16, dbname: &str, username: &str, password: &str) {
             // Ensure the directory exists
-            if let Some(parent) = self.path.parent() {
-                if !parent.exists() {
-                    fs::create_dir_all(parent).unwrap_or_else(|e| {
-                        eprintln!("Warning: Could not create parent directory: {e}");
-                    });
-                }
+            if let Some(parent) = self.path.parent()
+                && !parent.exists()
+            {
+                fs::create_dir_all(parent).unwrap_or_else(|e| {
+                    eprintln!("Warning: Could not create parent directory: {e}");
+                });
             }
 
             // Setup a temporary environment to redirect PGPASSFILE to our test file

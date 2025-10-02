@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 /// Global vector display configuration
@@ -57,17 +58,24 @@ impl fmt::Display for VectorDisplayMode {
     }
 }
 
-impl VectorDisplayMode {
-    pub fn from_str(s: &str) -> Option<VectorDisplayMode> {
+impl FromStr for VectorDisplayMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "full" => Some(VectorDisplayMode::Full),
-            "truncated" | "trunc" => Some(VectorDisplayMode::Truncated),
-            "summary" | "stats" => Some(VectorDisplayMode::Summary),
-            "viz" => Some(VectorDisplayMode::Viz),
-            _ => None,
+            "full" => Ok(VectorDisplayMode::Full),
+            "truncated" | "trunc" => Ok(VectorDisplayMode::Truncated),
+            "summary" | "stats" => Ok(VectorDisplayMode::Summary),
+            "viz" => Ok(VectorDisplayMode::Viz),
+            _ => Err(format!(
+                "Invalid vector display mode: '{}'. Valid modes: full, truncated, summary, viz",
+                s
+            )),
         }
     }
+}
 
+impl VectorDisplayMode {
     pub fn all_modes() -> Vec<&'static str> {
         vec!["full", "truncated", "summary", "viz"]
     }
@@ -261,7 +269,7 @@ impl<'a> VectorFormatter<'a> {
         let pairs: Vec<String> = indices
             .iter()
             .zip(values.iter())
-            .map(|(i, v)| format!("{}:{:.3}", i, v))
+            .map(|(i, v)| format!("{i}:{v:.3}"))
             .collect();
 
         let content = if pairs.len() > self.config.truncation_length * 2 {
@@ -310,7 +318,7 @@ impl<'a> VectorFormatter<'a> {
         // Calculate formatting width based on the data
         let max_val_str_len = values
             .iter()
-            .map(|&v| format!("{:.3}", v).len())
+            .map(|&v| format!("{v:.3}").len())
             .max()
             .unwrap_or(6);
         let element_width = max_val_str_len.max(6); // Minimum 6 chars
@@ -329,13 +337,13 @@ impl<'a> VectorFormatter<'a> {
             // Add row number if enabled
             if show_row_numbers {
                 let start_idx = row_idx * elements_per_row;
-                row.push_str(&format!("[{:3}]: ", start_idx));
+                row.push_str(&format!("[{start_idx:3}]: "));
             }
 
             // Add elements in this row
             let formatted_elements: Vec<String> = chunk
                 .iter()
-                .map(|&val| format!("{:>width$.3}", val, width = element_width))
+                .map(|&val| format!("{val:>element_width$.3}"))
                 .collect();
 
             row.push_str(&formatted_elements.join(" "));
@@ -352,17 +360,17 @@ impl<'a> VectorFormatter<'a> {
 
         let content = if len <= trunc_len * 2 + 3 {
             // Show all if not much longer than truncation would be
-            let elements: Vec<String> = values.iter().map(|v| format!("{:.3}", v)).collect();
+            let elements: Vec<String> = values.iter().map(|v| format!("{v:.3}")).collect();
             format!("[{}]", elements.join(","))
         } else {
             // Show start and end with ellipsis
             let start: Vec<String> = values[..trunc_len]
                 .iter()
-                .map(|v| format!("{:.3}", v))
+                .map(|v| format!("{v:.3}"))
                 .collect();
             let end: Vec<String> = values[len - trunc_len..]
                 .iter()
-                .map(|v| format!("{:.3}", v))
+                .map(|v| format!("{v:.3}"))
                 .collect();
             format!("[{}, ..., {}]", start.join(","), end.join(","))
         };
@@ -407,7 +415,7 @@ impl<'a> VectorFormatter<'a> {
 
         let viz = self.generate_viz(values);
 
-        let base = format!("[{}]", viz);
+        let base = format!("[{viz}]");
 
         let mut result = if self.config.show_dimensions {
             format!("{} ({}d)", base, stats.dimensions)
@@ -486,27 +494,12 @@ mod tests {
 
     #[test]
     fn test_vector_display_mode_parsing() {
-        assert_eq!(
-            VectorDisplayMode::from_str("full"),
-            Some(VectorDisplayMode::Full)
-        );
-        assert_eq!(
-            VectorDisplayMode::from_str("truncated"),
-            Some(VectorDisplayMode::Truncated)
-        );
-        assert_eq!(
-            VectorDisplayMode::from_str("trunc"),
-            Some(VectorDisplayMode::Truncated)
-        );
-        assert_eq!(
-            VectorDisplayMode::from_str("summary"),
-            Some(VectorDisplayMode::Summary)
-        );
-        assert_eq!(
-            VectorDisplayMode::from_str("viz"),
-            Some(VectorDisplayMode::Viz)
-        );
-        assert_eq!(VectorDisplayMode::from_str("invalid"), None);
+        assert_eq!("full".parse(), Ok(VectorDisplayMode::Full));
+        assert_eq!("truncated".parse(), Ok(VectorDisplayMode::Truncated));
+        assert_eq!("trunc".parse(), Ok(VectorDisplayMode::Truncated));
+        assert_eq!("summary".parse(), Ok(VectorDisplayMode::Summary));
+        assert_eq!("viz".parse(), Ok(VectorDisplayMode::Viz));
+        assert!("invalid".parse::<VectorDisplayMode>().is_err());
     }
 
     #[test]

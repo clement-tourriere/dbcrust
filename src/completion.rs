@@ -1,6 +1,9 @@
 //! Enhanced SQL autocompletion system
 //! Complete rewrite with proper SQL parsing and context awareness
 
+// Locks are held across awaits for database metadata operations
+#![allow(clippy::await_holding_lock)]
+
 use crate::command_completion::CommandCompletionManager;
 use crate::commands::CommandShortcut;
 use crate::completion_provider::TableInfo;
@@ -743,7 +746,7 @@ impl SqlCompleter {
                             let mut added_count = 0;
                             for column in &columns {
                                 // Match columns that start with "parent_path." (nested fields)
-                                if column.starts_with(&format!("{}.", parent_path)) {
+                                if column.starts_with(&format!("{parent_path}.")) {
                                     // Extract the path after the parent
                                     let remaining_path = &column[parent_path.len() + 1..];
 
@@ -756,7 +759,7 @@ impl SqlCompleter {
                                     };
 
                                     // Build full path for this direct child
-                                    let full_path = format!("{}.{}", parent_path, field_name);
+                                    let full_path = format!("{parent_path}.{field_name}");
 
                                     // Check if matches partial input and not already added (avoid duplicates)
                                     if field_name
@@ -769,8 +772,7 @@ impl SqlCompleter {
                                         suggestions.push(Suggestion {
                                             value: full_path,
                                             description: Some(format!(
-                                                "Nested field from {}",
-                                                parent_path
+                                                "Nested field from {parent_path}"
                                             )),
                                             span: Span {
                                                 start: word_start,
@@ -914,7 +916,7 @@ impl SqlCompleter {
                                 let value = if database_type == DatabaseType::Elasticsearch
                                     && self.elasticsearch_needs_quoting(clean_name)
                                 {
-                                    format!("\"{}\"", clean_name)
+                                    format!("\"{clean_name}\"")
                                 } else {
                                     clean_name.to_string()
                                 };
@@ -1020,7 +1022,7 @@ impl SqlCompleter {
                                 let mut added_count = 0;
                                 for column in &columns {
                                     // Match columns that start with "parent_path." (nested fields)
-                                    if column.starts_with(&format!("{}.", parent_path)) {
+                                    if column.starts_with(&format!("{parent_path}.")) {
                                         // Extract the path after the parent
                                         let remaining_path = &column[parent_path.len() + 1..];
 
@@ -1033,7 +1035,7 @@ impl SqlCompleter {
                                             };
 
                                         // Build full path for this direct child
-                                        let full_path = format!("{}.{}", parent_path, field_name);
+                                        let full_path = format!("{parent_path}.{field_name}");
 
                                         // Check if matches partial input and not already added (avoid duplicates)
                                         if field_name
@@ -1046,8 +1048,7 @@ impl SqlCompleter {
                                             suggestions.push(Suggestion {
                                                 value: full_path,
                                                 description: Some(format!(
-                                                    "Nested field from {}",
-                                                    parent_path
+                                                    "Nested field from {parent_path}"
                                                 )),
                                                 span: Span {
                                                     start: word_start,
@@ -1295,7 +1296,7 @@ impl SqlCompleter {
                             let value = if database_type == DatabaseType::Elasticsearch
                                 && self.elasticsearch_needs_quoting(clean_name)
                             {
-                                format!("\"{}\"", clean_name)
+                                format!("\"{clean_name}\"")
                             } else {
                                 clean_name.to_string()
                             };
@@ -1358,7 +1359,7 @@ impl SqlCompleter {
                                     let mut added_count = 0;
                                     for column in &columns {
                                         // Match columns that start with "parent_path." (nested fields)
-                                        if column.starts_with(&format!("{}.", parent_path)) {
+                                        if column.starts_with(&format!("{parent_path}.")) {
                                             // Extract the path after the parent
                                             let remaining_path = &column[parent_path.len() + 1..];
 
@@ -1371,8 +1372,7 @@ impl SqlCompleter {
                                                 };
 
                                             // Build full path for this direct child
-                                            let full_path =
-                                                format!("{}.{}", parent_path, field_name);
+                                            let full_path = format!("{parent_path}.{field_name}");
 
                                             // Check if matches partial input and not already added (avoid duplicates)
                                             if field_name
@@ -1385,8 +1385,7 @@ impl SqlCompleter {
                                                 suggestions.push(Suggestion {
                                                     value: full_path,
                                                     description: Some(format!(
-                                                        "Nested field from {}",
-                                                        parent_path
+                                                        "Nested field from {parent_path}"
                                                     )),
                                                     span: Span {
                                                         start: word_start,
@@ -1775,7 +1774,7 @@ impl SqlCompleter {
                         let value = if database_type == DatabaseType::Elasticsearch
                             && self.elasticsearch_needs_quoting(clean_name)
                         {
-                            format!("\"{}\"", clean_name)
+                            format!("\"{clean_name}\"")
                         } else {
                             clean_name.to_string()
                         };
@@ -1972,7 +1971,7 @@ impl SqlCompleter {
 
                         suggestions.push(Suggestion {
                             value: query_name.clone(),
-                            description: Some(format!("Delete named query {}", scope_str)),
+                            description: Some(format!("Delete named query {scope_str}")),
                             span: Span {
                                 start: word_start,
                                 end: pos,

@@ -1,6 +1,10 @@
 //! Type-safe enum-based command system with traits for compile-time validation
 //! This replaces the string-based BackslashCommandRegistry with a robust type system
 
+// Note: Many database operations in this module hold locks across await points.
+// This is intentional and necessary for maintaining data consistency during async operations.
+#![allow(clippy::await_holding_lock)]
+
 use crate::config::{Config as DbCrustConfig, NamedQueryScope};
 use crate::database::{DatabaseType, DatabaseTypeExt};
 use crate::db::Database;
@@ -1892,8 +1896,8 @@ impl CommandExecutor for Command {
                     )));
                 }
 
-                match VectorDisplayMode::from_str(mode) {
-                    Some(new_mode) => {
+                match mode.parse::<VectorDisplayMode>() {
+                    Ok(new_mode) => {
                         config.vector_display.display_mode = new_mode;
 
                         // Update global config so formatters can use it immediately
@@ -1905,15 +1909,10 @@ impl CommandExecutor for Command {
                             .save()
                             .map_err(|e| CommandError::DatabaseError(e.into()))?;
                         Ok(CommandResult::Output(format!(
-                            "Vector display mode set to: {}",
-                            mode
+                            "Vector display mode set to: {mode}"
                         )))
                     }
-                    None => Ok(CommandResult::Error(format!(
-                        "Invalid vector display mode: '{}'\nAvailable modes: {}",
-                        mode,
-                        VectorDisplayMode::all_modes().join(", ")
-                    ))),
+                    Err(e) => Ok(CommandResult::Error(e.to_string())),
                 }
             }
 
@@ -1951,8 +1950,7 @@ impl CommandExecutor for Command {
                     "disabled"
                 };
                 Ok(CommandResult::Output(format!(
-                    "Vector statistics display is now {}.",
-                    status
+                    "Vector statistics display is now {status}."
                 )))
             }
 
@@ -2229,8 +2227,7 @@ impl CommandExecutor for Command {
 
                     match delete_password(db_type.clone(), host, port, database, username) {
                         Ok(true) => Ok(CommandResult::Output(format!(
-                            "Password deleted: {}",
-                            selection
+                            "Password deleted: {selection}"
                         ))),
                         Ok(false) => Ok(CommandResult::Output(
                             "No matching password found to delete.".to_string(),
@@ -2254,8 +2251,7 @@ impl CommandExecutor for Command {
                         "No plaintext passwords found to encrypt.".to_string(),
                     )),
                     Ok(count) => Ok(CommandResult::Output(format!(
-                        "Encrypted {} password(s) in .dbcrust file.",
-                        count
+                        "Encrypted {count} password(s) in .dbcrust file."
                     ))),
                     Err(e) => Ok(CommandResult::Error(format!(
                         "Failed to encrypt passwords: {e}"
@@ -2284,8 +2280,7 @@ impl CommandExecutor for Command {
                         // Show current mode
                         let current_mode = config.complex_display.display_mode.clone();
                         Ok(CommandResult::Output(format!(
-                            "Current complex display mode: {}",
-                            current_mode
+                            "Current complex display mode: {current_mode}"
                         )))
                     }
                     Some(mode_str) => {
@@ -2302,14 +2297,12 @@ impl CommandExecutor for Command {
                                 // Save config
                                 if let Err(e) = config.save_with_documentation() {
                                     return Ok(CommandResult::Error(format!(
-                                        "Failed to save config: {}",
-                                        e
+                                        "Failed to save config: {e}"
                                     )));
                                 }
 
                                 Ok(CommandResult::Output(format!(
-                                    "Complex display mode set to: {}",
-                                    new_mode
+                                    "Complex display mode set to: {new_mode}"
                                 )))
                             }
                             None => Ok(CommandResult::Error(
@@ -2331,10 +2324,7 @@ impl CommandExecutor for Command {
 
                 // Save config
                 if let Err(e) = config.save_with_documentation() {
-                    return Ok(CommandResult::Error(format!(
-                        "Failed to save config: {}",
-                        e
-                    )));
+                    return Ok(CommandResult::Error(format!("Failed to save config: {e}")));
                 }
 
                 let status = if config.complex_display.json_pretty_print {
@@ -2343,8 +2333,7 @@ impl CommandExecutor for Command {
                     "disabled"
                 };
                 Ok(CommandResult::Output(format!(
-                    "JSON pretty printing {}",
-                    status
+                    "JSON pretty printing {status}"
                 )))
             }
 
@@ -2423,8 +2412,7 @@ impl CommandExecutor for Command {
                     .await
                 {
                     Ok(_) => Ok(CommandResult::Output(format!(
-                        "Index created successfully on collection '{}' field '{}'",
-                        collection, field
+                        "Index created successfully on collection '{collection}' field '{field}'"
                     ))),
                     Err(e) => Ok(CommandResult::Error(format!("Failed to create index: {e}"))),
                 }
@@ -2437,8 +2425,7 @@ impl CommandExecutor for Command {
                 let mut db = database.lock().unwrap();
                 match db.drop_mongo_index(collection, index_name).await {
                     Ok(_) => Ok(CommandResult::Output(format!(
-                        "Index '{}' dropped successfully from collection '{}'",
-                        index_name, collection
+                        "Index '{index_name}' dropped successfully from collection '{collection}'"
                     ))),
                     Err(e) => Ok(CommandResult::Error(format!("Failed to drop index: {e}"))),
                 }

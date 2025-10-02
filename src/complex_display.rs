@@ -396,22 +396,22 @@ impl<'a> ComplexDataDisplay for VectorDisplayAdapter<'a> {
         let trunc_len = config.truncation_length;
 
         let content = if len <= trunc_len * 2 + 3 {
-            let elements: Vec<String> = self.values.iter().map(|v| format!("{:.3}", v)).collect();
+            let elements: Vec<String> = self.values.iter().map(|v| format!("{v:.3}")).collect();
             format!("[{}]", elements.join(","))
         } else {
             let start: Vec<String> = self.values[..trunc_len]
                 .iter()
-                .map(|v| format!("{:.3}", v))
+                .map(|v| format!("{v:.3}"))
                 .collect();
             let end: Vec<String> = self.values[len - trunc_len..]
                 .iter()
-                .map(|v| format!("{:.3}", v))
+                .map(|v| format!("{v:.3}"))
                 .collect();
             format!("[{}, ..., {}]", start.join(","), end.join(","))
         };
 
         if config.show_dimensions {
-            format!("{} ({}d)", content, len)
+            format!("{content} ({len}d)")
         } else {
             content
         }
@@ -526,7 +526,7 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
                     if c == 1 {
                         t.to_string()
                     } else {
-                        format!("{}×{}", t, c)
+                        format!("{t}×{c}")
                     }
                 })
                 .collect();
@@ -606,7 +606,7 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
                 .collect();
             let mut result = format!("[{}]", elements.join(", "));
             if config.show_dimensions {
-                result.push_str(&format!(" ({})", len));
+                result.push_str(&format!(" ({len})"));
             }
             result
         } else {
@@ -637,7 +637,7 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
                 end.join(", ")
             );
             if config.show_dimensions {
-                result.push_str(&format!(" ({})", len));
+                result.push_str(&format!(" ({len})"));
             }
             result
         }
@@ -667,7 +667,7 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
             "Array Visualization ({} elements):",
             self.elements.len()
         )];
-        let max_items = (config.viz_width / 8).max(5).min(10);
+        let max_items = (config.viz_width / 8).clamp(5, 10);
 
         for (i, element) in self.elements.iter().take(max_items).enumerate() {
             let display_value = if element.len() > 15 {
@@ -676,7 +676,7 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
                 element.clone()
             };
 
-            lines.push(format!("  [{:2}] {}", i, display_value));
+            lines.push(format!("  [{i:2}] {display_value}"));
         }
 
         if self.elements.len() > max_items {

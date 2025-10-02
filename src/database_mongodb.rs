@@ -36,7 +36,7 @@ impl MetadataProvider for MongoDBMetadataProvider {
         // For MongoDB, collections are like tables
         let collections =
             self.database.list_collection_names().await.map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to list collections: {}", e))
+                DatabaseError::QueryError(format!("Failed to list collections: {e}"))
             })?;
 
         Ok(collections)
@@ -52,7 +52,7 @@ impl MetadataProvider for MongoDBMetadataProvider {
         let sample_docs = collection_handle
             .find(Document::new())
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to sample documents: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to sample documents: {e}")))?;
 
         // Collect sample documents (limit to 10 for schema inference)
         let mut sample_documents = Vec::new();
@@ -95,7 +95,7 @@ impl MetadataProvider for MongoDBMetadataProvider {
             })
             .await
             .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to get collection stats: {}", e))
+                DatabaseError::QueryError(format!("Failed to get collection stats: {e}"))
             })?;
 
         // Get sample documents to infer schema
@@ -103,7 +103,7 @@ impl MetadataProvider for MongoDBMetadataProvider {
         let sample_docs = collection_handle
             .find(Document::new())
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to sample documents: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to sample documents: {e}")))?;
 
         // Collect sample documents (limit to 10 for schema inference)
         let mut sample_documents = Vec::new();
@@ -136,19 +136,19 @@ impl MetadataProvider for MongoDBMetadataProvider {
             .collection::<Document>("system.indexes")
             .find(doc! { "ns": format!("{}.{}", self.database.name(), collection) })
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to get indexes: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to get indexes: {e}")))?;
 
         let mut index_cursor = index_cursor;
         let mut indexes = Vec::new();
         while let Ok(Some(index_doc)) = index_cursor.try_next().await {
-            if let Some(name) = index_doc.get_str("name").ok() {
+            if let Ok(name) = index_doc.get_str("name") {
                 indexes.push(crate::db::IndexInfo {
                     name: name.to_string(),
                     index_type: "INDEX".to_string(), // MongoDB doesn't have traditional index types
                     is_primary: false,               // MongoDB doesn't have primary keys like SQL
                     is_unique: false,                // Would need to check index options
                     predicate: None,
-                    definition: format!("{:?}", index_doc),
+                    definition: format!("{index_doc:?}"),
                     constraint_def: None,
                 });
             }
@@ -190,13 +190,13 @@ impl MongoDBClient {
         debug!("[MongoDBClient::new] Creating MongoDB client");
 
         // Build MongoDB connection string
-        let mut connection_string = format!("mongodb://");
+        let mut connection_string = "mongodb://".to_string();
 
         // Add authentication if provided
         if let (Some(username), Some(password)) =
             (&connection_info.username, &connection_info.password)
         {
-            connection_string.push_str(&format!("{}:{}@", username, password));
+            connection_string.push_str(&format!("{username}:{password}@"));
         }
 
         // Add host and port with *.localhost resolution
@@ -213,14 +213,14 @@ impl MongoDBClient {
         connection_string.push_str(connection_host);
 
         if let Some(port) = connection_info.port {
-            connection_string.push_str(&format!(":{}", port));
+            connection_string.push_str(&format!(":{port}"));
         } else if let Some(default_port) = connection_info.database_type.default_port() {
-            connection_string.push_str(&format!(":{}", default_port));
+            connection_string.push_str(&format!(":{default_port}"));
         }
 
         // Add database if specified
         if let Some(database) = &connection_info.database {
-            connection_string.push_str(&format!("/{}", database));
+            connection_string.push_str(&format!("/{database}"));
         }
 
         // Add query parameters and preserve original hostname if resolved
@@ -232,13 +232,13 @@ impl MongoDBClient {
             if original != "localhost" {
                 use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
                 let encoded_host = utf8_percent_encode(original, NON_ALPHANUMERIC);
-                params.push(format!("originalHost={}", encoded_host));
+                params.push(format!("originalHost={encoded_host}"));
             }
         }
 
         // Add user-provided options
         for (k, v) in &connection_info.options {
-            params.push(format!("{}={}", k, v));
+            params.push(format!("{k}={v}"));
         }
 
         if !params.is_empty() {
@@ -256,14 +256,13 @@ impl MongoDBClient {
             .await
             .map_err(|e| {
                 DatabaseError::ConnectionError(format!(
-                    "Failed to parse MongoDB connection string: {}",
-                    e
+                    "Failed to parse MongoDB connection string: {e}"
                 ))
             })?;
 
         // Create client
         let client = Client::with_options(client_options).map_err(|e| {
-            DatabaseError::ConnectionError(format!("Failed to create MongoDB client: {}", e))
+            DatabaseError::ConnectionError(format!("Failed to create MongoDB client: {e}"))
         })?;
 
         // Get database name
@@ -279,7 +278,7 @@ impl MongoDBClient {
             .run_command(doc! { "ping": 1 })
             .await
             .map_err(|e| {
-                DatabaseError::ConnectionError(format!("Failed to connect to MongoDB: {}", e))
+                DatabaseError::ConnectionError(format!("Failed to connect to MongoDB: {e}"))
             })?;
 
         let metadata_provider = MongoDBMetadataProvider::new(database.clone());
@@ -299,7 +298,7 @@ impl MongoDBClient {
 
         let collections =
             self.database.list_collection_names().await.map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to list collections: {}", e))
+                DatabaseError::QueryError(format!("Failed to list collections: {e}"))
             })?;
 
         let mut results = Vec::new();
@@ -328,7 +327,7 @@ impl MongoDBClient {
         // Parse filter JSON or use empty document
         let filter_doc = if let Some(filter_str) = filter {
             serde_json::from_str::<Document>(filter_str)
-                .map_err(|e| DatabaseError::QueryError(format!("Invalid filter JSON: {}", e)))?
+                .map_err(|e| DatabaseError::QueryError(format!("Invalid filter JSON: {e}")))?
         } else {
             Document::new()
         };
@@ -362,13 +361,12 @@ impl MongoDBClient {
         // Build find options with projection
         let mut find_options = mongodb::options::FindOptions::default();
         if let Some(proj_str) = projection {
-            let projection_doc = serde_json::from_str::<Document>(proj_str).map_err(|e| {
-                DatabaseError::QueryError(format!("Invalid projection JSON: {}", e))
-            })?;
+            let projection_doc = serde_json::from_str::<Document>(proj_str)
+                .map_err(|e| DatabaseError::QueryError(format!("Invalid projection JSON: {e}")))?;
             find_options.projection = Some(projection_doc.clone());
 
             // Extract column names from projection document
-            let projected_columns: Vec<String> = projection_doc.keys().map(|k| k.clone()).collect();
+            let projected_columns: Vec<String> = projection_doc.keys().cloned().collect();
 
             find_options.limit = Some(limit);
 
@@ -376,7 +374,7 @@ impl MongoDBClient {
                 .find(filter_doc)
                 .with_options(find_options)
                 .await
-                .map_err(|e| DatabaseError::QueryError(format!("Failed to execute find: {}", e)))?;
+                .map_err(|e| DatabaseError::QueryError(format!("Failed to execute find: {e}")))?;
 
             let mut results = Vec::new();
             results.push(projected_columns.clone());
@@ -384,7 +382,7 @@ impl MongoDBClient {
             while let Some(doc) = cursor
                 .try_next()
                 .await
-                .map_err(|e| DatabaseError::QueryError(format!("Cursor error: {}", e)))?
+                .map_err(|e| DatabaseError::QueryError(format!("Cursor error: {e}")))?
             {
                 let mut row = Vec::new();
                 for column in &projected_columns {
@@ -417,13 +415,13 @@ impl MongoDBClient {
 
         // Parse pipeline JSON
         let pipeline_docs: Vec<Document> = serde_json::from_str(pipeline)
-            .map_err(|e| DatabaseError::QueryError(format!("Invalid pipeline JSON: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Invalid pipeline JSON: {e}")))?;
 
         let mut cursor = collection_handle
             .aggregate(pipeline_docs)
             .await
             .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to execute aggregation: {}", e))
+                DatabaseError::QueryError(format!("Failed to execute aggregation: {e}"))
             })?;
 
         let mut results = Vec::new();
@@ -432,7 +430,7 @@ impl MongoDBClient {
         while let Some(doc) = cursor
             .try_next()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Cursor error: {}", e)))?
+            .map_err(|e| DatabaseError::QueryError(format!("Cursor error: {e}")))?
         {
             let doc_json = serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string());
             results.push(vec![doc_json]);
@@ -453,36 +451,34 @@ impl MongoDBClient {
             .database
             .run_command(doc! { "dbStats": 1 })
             .await
-            .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to get database stats: {}", e))
-            })?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to get database stats: {e}")))?;
 
         let mut results = Vec::new();
         results.push(vec!["Property".to_string(), "Value".to_string()]);
 
         // Add key statistics
-        if let Some(db_name) = stats.get_str("db").ok() {
+        if let Ok(db_name) = stats.get_str("db") {
             results.push(vec!["Database".to_string(), db_name.to_string()]);
         }
-        if let Some(collections) = stats.get_i32("collections").ok() {
+        if let Ok(collections) = stats.get_i32("collections") {
             results.push(vec!["Collections".to_string(), collections.to_string()]);
         }
-        if let Some(objects) = stats.get_i64("objects").ok() {
+        if let Ok(objects) = stats.get_i64("objects") {
             results.push(vec!["Documents".to_string(), objects.to_string()]);
         }
-        if let Some(data_size) = stats.get_f64("dataSize").ok() {
+        if let Ok(data_size) = stats.get_f64("dataSize") {
             results.push(vec![
                 "Data Size".to_string(),
                 format!("{:.2} MB", data_size / (1024.0 * 1024.0)),
             ]);
         }
-        if let Some(storage_size) = stats.get_f64("storageSize").ok() {
+        if let Ok(storage_size) = stats.get_f64("storageSize") {
             results.push(vec![
                 "Storage Size".to_string(),
                 format!("{:.2} MB", storage_size / (1024.0 * 1024.0)),
             ]);
         }
-        if let Some(indexes) = stats.get_i32("indexes").ok() {
+        if let Ok(indexes) = stats.get_i32("indexes") {
             results.push(vec!["Indexes".to_string(), indexes.to_string()]);
         }
 
@@ -621,7 +617,7 @@ impl MongoDBClient {
             .limit(10)
             .await
             .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to sample documents for columns: {}", e))
+                DatabaseError::QueryError(format!("Failed to sample documents for columns: {e}"))
             })?;
 
         let mut all_columns = std::collections::BTreeSet::new();
@@ -631,7 +627,7 @@ impl MongoDBClient {
         while let Some(doc) = sample_cursor
             .try_next()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Cursor error: {}", e)))?
+            .map_err(|e| DatabaseError::QueryError(format!("Cursor error: {e}")))?
         {
             if sample_count >= 10 {
                 break;
@@ -649,7 +645,7 @@ impl MongoDBClient {
             .find(filter_doc)
             .limit(limit)
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to execute find: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to execute find: {e}")))?;
 
         let mut results = Vec::new();
 
@@ -661,7 +657,7 @@ impl MongoDBClient {
         while let Some(doc) = cursor
             .try_next()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Cursor error: {}", e)))?
+            .map_err(|e| DatabaseError::QueryError(format!("Cursor error: {e}")))?
         {
             if row_count >= limit {
                 break;
@@ -731,7 +727,7 @@ impl MongoDBClient {
             Some(bson::Bson::Null) => return "NULL".to_string(),
             Some(other) => {
                 // For other BSON types, try to serialize as JSON
-                serde_json::to_string(other).unwrap_or_else(|_| format!("{:?}", other))
+                serde_json::to_string(other).unwrap_or_else(|_| format!("{other:?}"))
             }
             None => return "".to_string(), // Field not present in this document
         };
@@ -793,8 +789,7 @@ impl MongoDBClient {
                 vec![format!("Database '{}' dropped successfully", database_name)],
             ]),
             Err(e) => Err(DatabaseError::QueryError(format!(
-                "Failed to drop database '{}': {}",
-                database_name, e
+                "Failed to drop database '{database_name}': {e}"
             ))),
         }
     }
@@ -828,8 +823,7 @@ impl MongoDBClient {
                 ])
             }
             Err(e) => Err(DatabaseError::QueryError(format!(
-                "Failed to create database '{}': {}",
-                database_name, e
+                "Failed to create database '{database_name}': {e}"
             ))),
         }
     }
@@ -856,8 +850,7 @@ impl MongoDBClient {
                 )],
             ]),
             Err(e) => Err(DatabaseError::QueryError(format!(
-                "Failed to create collection '{}': {}",
-                collection_name, e
+                "Failed to create collection '{collection_name}': {e}"
             ))),
         }
     }
@@ -883,8 +876,7 @@ impl MongoDBClient {
                 )],
             ]),
             Err(e) => Err(DatabaseError::QueryError(format!(
-                "Failed to drop collection '{}': {}",
-                collection_name, e
+                "Failed to drop collection '{collection_name}': {e}"
             ))),
         }
     }
@@ -1075,8 +1067,7 @@ impl MongoDBClient {
         }
 
         Err(DatabaseError::QueryError(format!(
-            "Unsupported WHERE condition: {}",
-            condition
+            "Unsupported WHERE condition: {condition}"
         )))
     }
 
@@ -1123,9 +1114,7 @@ impl MongoDBClient {
     /// Convert SQL LIKE pattern to MongoDB regex pattern
     fn sql_like_to_regex(&self, pattern: &str) -> String {
         let mut regex = String::new();
-        let mut chars = pattern.chars().peekable();
-
-        while let Some(ch) = chars.next() {
+        for ch in pattern.chars() {
             match ch {
                 '%' => regex.push_str(".*"),
                 '_' => regex.push('.'),
@@ -1393,15 +1382,14 @@ impl DatabaseClient for MongoDBClient {
 
         let collections =
             self.database.list_collection_names().await.map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to list collections: {}", e))
+                DatabaseError::QueryError(format!("Failed to list collections: {e}"))
             })?;
 
         if collections.contains(&collection_name.to_string()) {
             Ok(())
         } else {
             Err(DatabaseError::QueryError(format!(
-                "Collection '{}' does not exist",
-                collection_name
+                "Collection '{collection_name}' does not exist"
             )))
         }
     }
@@ -1416,7 +1404,7 @@ impl DatabaseClient for MongoDBClient {
         let _explain_result = collection
             .find(Document::new())
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to explain query: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to explain query: {e}")))?;
 
         // For now, return a simple explanation
         let mut results = Vec::new();
@@ -1441,12 +1429,12 @@ impl DatabaseClient for MongoDBClient {
         let databases = admin_db
             .run_command(cmd)
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to list databases: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to list databases: {e}")))?;
 
         let mut results = Vec::new();
         results.push(vec!["Name".to_string(), "Size".to_string()]);
 
-        if let Some(databases_array) = databases.get_array("databases").ok() {
+        if let Ok(databases_array) = databases.get_array("databases") {
             for db_doc in databases_array {
                 if let Some(db_obj) = db_doc.as_document() {
                     let name = db_obj.get_str("name").unwrap_or("N/A").to_string();
@@ -1503,13 +1491,13 @@ impl DatabaseClient for MongoDBClient {
         let server_info = admin_db
             .run_command(doc! { "buildInfo": 1 })
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to get server info: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to get server info: {e}")))?;
 
         let version = server_info.get_str("version").unwrap_or("unknown");
         let mut additional_info = std::collections::HashMap::new();
 
-        if let Some(modules) = server_info.get_array("modules").ok() {
-            additional_info.insert("modules".to_string(), format!("{:?}", modules));
+        if let Ok(modules) = server_info.get_array("modules") {
+            additional_info.insert("modules".to_string(), format!("{modules:?}"));
         }
 
         Ok(crate::database::ServerInfo {

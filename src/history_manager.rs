@@ -22,39 +22,27 @@ impl SessionId {
     pub fn from_connection_info(connection_info: &ConnectionInfo) -> Self {
         let identifier = if connection_info.database_type.is_file_based() {
             if let Some(file_path) = &connection_info.file_path {
-                format!("sqlite:{}", file_path)
+                format!("sqlite:{file_path}")
             } else {
                 "sqlite:memory".to_string()
             }
         } else {
-            let host = connection_info
-                .host
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("localhost");
+            let host = connection_info.host.as_deref().unwrap_or("localhost");
             let port = connection_info
                 .port
                 .unwrap_or_else(|| connection_info.database_type.default_port().unwrap_or(0));
-            let username = connection_info
-                .username
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("unknown");
-            let database = connection_info
-                .database
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("unknown");
+            let username = connection_info.username.as_deref().unwrap_or("unknown");
+            let database = connection_info.database.as_deref().unwrap_or("unknown");
 
             // Check for special cases
             if let Some(container) = &connection_info.docker_container {
-                format!("docker:{}:{}", container, database)
+                format!("docker:{container}:{database}")
             } else if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
                 connection_info.options.get("vault_mount"),
                 connection_info.options.get("vault_database"),
                 connection_info.options.get("vault_role"),
             ) {
-                format!("vault:{}:{}:{}", vault_mount, vault_database, vault_role)
+                format!("vault:{vault_mount}:{vault_database}:{vault_role}")
             } else {
                 format!(
                     "{}:{}:{}:{}:{}",
@@ -69,40 +57,28 @@ impl SessionId {
 
         let display_name = if connection_info.database_type.is_file_based() {
             if let Some(file_path) = &connection_info.file_path {
-                format!("sqlite:{}", file_path)
+                format!("sqlite:{file_path}")
             } else {
                 "sqlite:memory".to_string()
             }
         } else {
-            let host = connection_info
-                .host
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("localhost");
+            let host = connection_info.host.as_deref().unwrap_or("localhost");
             let port = connection_info
                 .port
                 .unwrap_or_else(|| connection_info.database_type.default_port().unwrap_or(0));
-            let username = connection_info
-                .username
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("unknown");
-            let database = connection_info
-                .database
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("unknown");
+            let username = connection_info.username.as_deref().unwrap_or("unknown");
+            let database = connection_info.database.as_deref().unwrap_or("unknown");
 
             if let Some(container) = &connection_info.docker_container {
-                format!("{}@docker:{}/{}", username, container, database)
+                format!("{username}@docker:{container}/{database}")
             } else if let (Some(vault_mount), Some(vault_database), Some(_vault_role)) = (
                 connection_info.options.get("vault_mount"),
                 connection_info.options.get("vault_database"),
                 connection_info.options.get("vault_role"),
             ) {
-                format!("{}@vault:{}/{}", username, vault_mount, vault_database)
+                format!("{username}@vault:{vault_mount}/{vault_database}")
             } else {
-                format!("{}@{}:{}/{}", username, host, port, database)
+                format!("{username}@{host}:{port}/{database}")
             }
         };
 
@@ -116,7 +92,7 @@ impl SessionId {
     pub fn from_database(database: &Database) -> Option<Self> {
         database
             .get_connection_info()
-            .map(|info| Self::from_connection_info(info))
+            .map(Self::from_connection_info)
     }
 
     /// Generate file-safe hash for the session identifier
@@ -124,7 +100,7 @@ impl SessionId {
         let mut hasher = Sha256::new();
         hasher.update(self.identifier.as_bytes());
         let result = hasher.finalize();
-        format!("{:x}", result)[..16].to_string() // Use first 16 chars for brevity
+        format!("{result:x}")[..16].to_string() // Use first 16 chars for brevity
     }
 
     /// Get the history filename for this session
@@ -233,7 +209,7 @@ impl SessionHistoryManager {
                         / 86400;
 
                     // Try to estimate entry count by file size (rough heuristic)
-                    let estimated_entries = (metadata.len() / 50).max(0) as usize; // ~50 bytes per entry average
+                    let estimated_entries = (metadata.len() / 50) as usize; // ~50 bytes per entry average
 
                     histories.push(SessionHistoryInfo {
                         filename: filename.to_string(),

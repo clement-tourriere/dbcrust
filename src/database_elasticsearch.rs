@@ -46,10 +46,10 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
             .format("json")
             .send()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to list indices: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to list indices: {e}")))?;
 
         let body: Value = response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse indices response: {}", e))
+            DatabaseError::QueryError(format!("Failed to parse indices response: {e}"))
         })?;
 
         let mut schemas = Vec::new();
@@ -86,10 +86,10 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
             .format("json")
             .send()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to list indices: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to list indices: {e}")))?;
 
         let body: Value = response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse indices response: {}", e))
+            DatabaseError::QueryError(format!("Failed to parse indices response: {e}"))
         })?;
 
         let mut tables = Vec::new();
@@ -117,10 +117,10 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
             .get_mapping(IndicesGetMappingParts::Index(&[table]))
             .send()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to get mapping: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to get mapping: {e}")))?;
 
         let body: Value = response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse mapping response: {}", e))
+            DatabaseError::QueryError(format!("Failed to parse mapping response: {e}"))
         })?;
 
         let mut columns = Vec::new();
@@ -152,11 +152,11 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
                 .send()
                 .await
                 .map_err(|e| {
-                    DatabaseError::QueryError(format!("Failed to get sample document: {}", e))
+                    DatabaseError::QueryError(format!("Failed to get sample document: {e}"))
                 })?;
 
             let search_body: Value = search_response.json().await.map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to parse search response: {}", e))
+                DatabaseError::QueryError(format!("Failed to parse search response: {e}"))
             })?;
 
             if let Some(hits) = search_body
@@ -213,10 +213,10 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
             .get_mapping(IndicesGetMappingParts::Index(&[&clean_table_name]))
             .send()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to get mapping: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to get mapping: {e}")))?;
 
         let mapping_body: Value = mapping_response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse mapping response: {}", e))
+            DatabaseError::QueryError(format!("Failed to parse mapping response: {e}"))
         })?;
 
         let mut columns = Vec::new();
@@ -304,7 +304,7 @@ impl ElasticsearchMetadataProvider {
                 let full_field_name = if prefix.is_empty() {
                     field_name.clone()
                 } else {
-                    format!("{}.{}", prefix, field_name)
+                    format!("{prefix}.{field_name}")
                 };
 
                 // Add the main field if it has a type
@@ -334,7 +334,7 @@ impl ElasticsearchMetadataProvider {
                                     self.analyze_field_capabilities(sub_field_type, sub_field_def);
 
                                 columns.push(crate::db::ColumnInfo {
-                                    name: format!("{}.{}", full_field_name, sub_field_name),
+                                    name: format!("{full_field_name}.{sub_field_name}"),
                                     data_type: enhanced_type,
                                     collation: capabilities,
                                     nullable: true,
@@ -431,22 +431,20 @@ impl ElasticsearchMetadataProvider {
         }
 
         // Check if indexing is disabled
-        if field_def
+        if !field_def
             .get("index")
             .and_then(|v| v.as_bool())
             .unwrap_or(true)
-            == false
         {
             capabilities.retain(|&c| c != "filter" && c != "search");
             capabilities.push("no-index");
         }
 
         // Check if doc_values is disabled (affects aggregation and sorting)
-        if field_def
+        if !field_def
             .get("doc_values")
             .and_then(|v| v.as_bool())
             .unwrap_or(true)
-            == false
         {
             capabilities.retain(|&c| c != "agg" && c != "sort" && c != "group");
             capabilities.push("no-docval");
@@ -474,7 +472,7 @@ impl ElasticsearchClient {
             && connection_info
                 .options
                 .get("ssl")
-                .map_or(false, |v| v == "true")
+                .is_some_and(|v| v == "true")
         {
             url_string.push_str("https://");
         } else {
@@ -495,9 +493,9 @@ impl ElasticsearchClient {
         url_string.push_str(connection_host);
 
         if let Some(port) = connection_info.port {
-            url_string.push_str(&format!(":{}", port));
+            url_string.push_str(&format!(":{port}"));
         } else if let Some(default_port) = connection_info.database_type.default_port() {
-            url_string.push_str(&format!(":{}", default_port));
+            url_string.push_str(&format!(":{default_port}"));
         }
 
         debug!(
@@ -507,7 +505,7 @@ impl ElasticsearchClient {
 
         // Parse URL
         let url = Url::parse(&url_string).map_err(|e| {
-            DatabaseError::ConnectionError(format!("Invalid Elasticsearch URL: {}", e))
+            DatabaseError::ConnectionError(format!("Invalid Elasticsearch URL: {e}"))
         })?;
 
         // Create connection pool
@@ -526,7 +524,7 @@ impl ElasticsearchClient {
         if connection_info
             .options
             .get("verify_certs")
-            .map_or(false, |v| v == "false")
+            .is_some_and(|v| v == "false")
         {
             transport_builder = transport_builder.cert_validation(CertificateValidation::None);
         }
@@ -546,17 +544,14 @@ impl ElasticsearchClient {
         }
 
         let transport = transport_builder.build().map_err(|e| {
-            DatabaseError::ConnectionError(format!(
-                "Failed to build Elasticsearch transport: {}",
-                e
-            ))
+            DatabaseError::ConnectionError(format!("Failed to build Elasticsearch transport: {e}"))
         })?;
 
         let client = Elasticsearch::new(transport);
 
         // Test connection
         let _info_response = client.info().send().await.map_err(|e| {
-            DatabaseError::ConnectionError(format!("Failed to connect to Elasticsearch: {}", e))
+            DatabaseError::ConnectionError(format!("Failed to connect to Elasticsearch: {e}"))
         })?;
 
         debug!("[ElasticsearchClient::new] Connection successful");
@@ -612,7 +607,7 @@ impl ElasticsearchClient {
     fn auto_quote_table_names_in_sql(sql: &str) -> Result<String, DatabaseError> {
         // Regex to match table names after FROM, JOIN, UPDATE, INTO keywords
         let table_regex = Regex::new(r"(?i)\b(FROM|JOIN|UPDATE|INTO)\s+([^\s;,()]+)")
-            .map_err(|e| DatabaseError::QueryError(format!("Regex error: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Regex error: {e}")))?;
 
         let result = table_regex.replace_all(sql, |caps: &regex::Captures| {
             let keyword = &caps[1];
@@ -623,7 +618,7 @@ impl ElasticsearchClient {
 
             // Auto-quote if needed and not already quoted
             if Self::needs_quoting(&clean_name) && !Self::is_already_quoted(&clean_name) {
-                format!("{} \"{}\"", keyword, clean_name)
+                format!("{keyword} \"{clean_name}\"")
             } else {
                 caps[0].to_string()
             }
@@ -669,10 +664,10 @@ impl ElasticsearchClient {
             .get_mapping(IndicesGetMappingParts::Index(&[index_name]))
             .send()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to get mapping: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to get mapping: {e}")))?;
 
         let body: Value = response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse mapping response: {}", e))
+            DatabaseError::QueryError(format!("Failed to parse mapping response: {e}"))
         })?;
 
         let mut field_types = HashMap::new();
@@ -701,7 +696,7 @@ impl ElasticsearchClient {
                 let full_field_name = if prefix.is_empty() {
                     field_name.clone()
                 } else {
-                    format!("{}.{}", prefix, field_name)
+                    format!("{prefix}.{field_name}")
                 };
 
                 if let Some(field_type) = field_def.get("type").and_then(|t| t.as_str()) {
@@ -736,11 +731,11 @@ impl ElasticsearchClient {
             .send()
             .await
             .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to get sample document: {}", e))
+                DatabaseError::QueryError(format!("Failed to get sample document: {e}"))
             })?;
 
         let search_body: Value = search_response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse search response: {}", e))
+            DatabaseError::QueryError(format!("Failed to parse search response: {e}"))
         })?;
 
         let mut safe_fields = Vec::new();
@@ -786,23 +781,20 @@ impl ElasticsearchClient {
         prefix: &str,
         array_fields: &mut HashSet<String>,
     ) {
-        match value {
-            Value::Object(obj) => {
-                for (key, val) in obj {
-                    let full_key = if prefix.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{}.{}", prefix, key)
-                    };
+        if let Value::Object(obj) = value {
+            for (key, val) in obj {
+                let full_key = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
 
-                    if val.is_array() {
-                        array_fields.insert(full_key.clone());
-                    } else {
-                        self.identify_array_fields(val, &full_key, array_fields);
-                    }
+                if val.is_array() {
+                    array_fields.insert(full_key.clone());
+                } else {
+                    self.identify_array_fields(val, &full_key, array_fields);
                 }
             }
-            _ => {}
         }
     }
 
@@ -822,7 +814,7 @@ impl ElasticsearchClient {
             }
 
             let columns_list = safe_fields.join(", ");
-            let rewritten_query = sql.replacen("SELECT *", &format!("SELECT {}", columns_list), 1);
+            let rewritten_query = sql.replacen("SELECT *", &format!("SELECT {columns_list}"), 1);
 
             // Get list of excluded fields for user info
             let field_mappings = self.get_field_mappings(&index_name).await?;
@@ -913,11 +905,12 @@ impl ElasticsearchClient {
             }))
             .send()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("SQL query failed: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("SQL query failed: {e}")))?;
 
-        let body: Value = response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse SQL response: {}", e))
-        })?;
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to parse SQL response: {e}")))?;
 
         debug!(
             "[ElasticsearchClient::execute_sql_query] Response body: {:?}",
@@ -929,21 +922,19 @@ impl ElasticsearchClient {
             let error_msg = if let Some(reason) = error.get("reason").and_then(|r| r.as_str()) {
                 if reason.contains("backquoted identifiers not supported") {
                     format!(
-                        "Elasticsearch SQL Error: {}. Hint: Use double quotes (\") instead of backticks (`) for identifiers with special characters.",
-                        reason
+                        "Elasticsearch SQL Error: {reason}. Hint: Use double quotes (\") instead of backticks (`) for identifiers with special characters."
                     )
                 } else if reason.contains("mismatched input")
                     && (reason.contains("-") || reason.contains("."))
                 {
                     format!(
-                        "Elasticsearch SQL Error: {}. Hint: Index names with hyphens, dots, or special characters must be quoted with double quotes (\").",
-                        reason
+                        "Elasticsearch SQL Error: {reason}. Hint: Index names with hyphens, dots, or special characters must be quoted with double quotes (\")."
                     )
                 } else {
-                    format!("Elasticsearch SQL Error: {}", reason)
+                    format!("Elasticsearch SQL Error: {reason}")
                 }
             } else {
-                format!("Elasticsearch SQL Error: {:?}", error)
+                format!("Elasticsearch SQL Error: {error:?}")
             };
             return Err(DatabaseError::QueryError(error_msg));
         }
@@ -1096,7 +1087,7 @@ impl ElasticsearchClient {
         }
 
         if cmd_upper.starts_with("DESCRIBE ") || cmd_upper.starts_with("DESC ") {
-            let table_name = command.trim().split_whitespace().nth(1).unwrap_or("*");
+            let table_name = command.split_whitespace().nth(1).unwrap_or("*");
             return self.describe_index(table_name).await;
         }
 
@@ -1115,10 +1106,10 @@ impl ElasticsearchClient {
             .format("json")
             .send()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to list indices: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to list indices: {e}")))?;
 
         let body: Value = response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse indices response: {}", e))
+            DatabaseError::QueryError(format!("Failed to parse indices response: {e}"))
         })?;
 
         let mut results = Vec::new();
@@ -1184,10 +1175,10 @@ impl ElasticsearchClient {
             .get_mapping(IndicesGetMappingParts::Index(&[&clean_index_name]))
             .send()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to get mapping: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to get mapping: {e}")))?;
 
         let body: Value = response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse mapping response: {}", e))
+            DatabaseError::QueryError(format!("Failed to parse mapping response: {e}"))
         })?;
 
         let mut results = Vec::new();
@@ -1253,7 +1244,7 @@ impl ElasticsearchClient {
                 let full_field_name = if prefix.is_empty() {
                     field_name.clone()
                 } else {
-                    format!("{}.{}", prefix, field_name)
+                    format!("{prefix}.{field_name}")
                 };
 
                 let field_type = field_def
@@ -1332,7 +1323,7 @@ impl DatabaseClient for ElasticsearchClient {
             }))
             .send()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Query validation failed: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Query validation failed: {e}")))?;
 
         Ok(())
     }
@@ -1353,10 +1344,10 @@ impl DatabaseClient for ElasticsearchClient {
             }))
             .send()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Query translation failed: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Query translation failed: {e}")))?;
 
         let body: Value = response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse translation response: {}", e))
+            DatabaseError::QueryError(format!("Failed to parse translation response: {e}"))
         })?;
 
         let mut results = Vec::new();
@@ -1392,13 +1383,12 @@ impl DatabaseClient for ElasticsearchClient {
             .send()
             .await
             .map_err(|e| {
-                DatabaseError::ConnectionError(format!("Failed to check index existence: {}", e))
+                DatabaseError::ConnectionError(format!("Failed to check index existence: {e}"))
             })?;
 
         if exists_response.status_code().as_u16() != 200 {
             return Err(DatabaseError::ConnectionError(format!(
-                "Index '{}' does not exist",
-                database
+                "Index '{database}' does not exist"
             )));
         }
 
@@ -1438,12 +1428,13 @@ impl DatabaseClient for ElasticsearchClient {
     async fn get_server_info(&self) -> Result<ServerInfo, DatabaseError> {
         let response =
             self.client.info().send().await.map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to get server info: {}", e))
+                DatabaseError::QueryError(format!("Failed to get server info: {e}"))
             })?;
 
-        let body: Value = response.json().await.map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to parse server info: {}", e))
-        })?;
+        let body: Value = response
+            .json()
+            .await
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to parse server info: {e}")))?;
 
         let version = body
             .get("version")

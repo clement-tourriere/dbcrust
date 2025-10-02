@@ -85,7 +85,7 @@ impl DataFusionClient {
             let table_name = dir_path
                 .file_name()
                 .and_then(|s| s.to_str())
-                .map(|s| Self::sanitize_table_name(s))
+                .map(Self::sanitize_table_name)
                 .unwrap_or_else(|| "data".to_string());
 
             (dir_path.to_str().unwrap().to_string(), table_name)
@@ -105,16 +105,17 @@ impl DataFusionClient {
         match self.connection_info.database_type {
             DatabaseType::Parquet => {
                 // Configure options to preserve column names from Parquet metadata
-                let mut options = ParquetReadOptions::default();
-                options.skip_metadata = Some(false); // Preserve metadata including column names
+                let options = ParquetReadOptions {
+                    skip_metadata: Some(false), // Preserve metadata including column names
+                    ..Default::default()
+                };
 
                 Arc::as_ref(&self.ctx)
                     .register_parquet(&table_name, &register_path, options)
                     .await
                     .map_err(|e| {
                         DatabaseError::ConnectionError(format!(
-                            "Failed to register Parquet file: {}",
-                            e
+                            "Failed to register Parquet file: {e}"
                         ))
                     })?;
 
@@ -141,10 +142,7 @@ impl DataFusionClient {
                     .register_csv(&table_name, &register_path, options)
                     .await
                     .map_err(|e| {
-                        DatabaseError::ConnectionError(format!(
-                            "Failed to register CSV file: {}",
-                            e
-                        ))
+                        DatabaseError::ConnectionError(format!("Failed to register CSV file: {e}"))
                     })?;
             }
             DatabaseType::JSON => {
@@ -162,7 +160,7 @@ impl DataFusionClient {
                     if !register_path.ends_with(".json") {
                         // Create a temporary .json symlink
                         let temp_dir = std::env::temp_dir();
-                        let temp_path = temp_dir.join(format!("{}.json", table_name));
+                        let temp_path = temp_dir.join(format!("{table_name}.json"));
 
                         // Remove existing symlink if it exists
                         let _ = std::fs::remove_file(&temp_path);
@@ -173,8 +171,7 @@ impl DataFusionClient {
                             std::os::unix::fs::symlink(&register_path, &temp_path).map_err(
                                 |e| {
                                     DatabaseError::ConnectionError(format!(
-                                        "Failed to create symlink: {}",
-                                        e
+                                        "Failed to create symlink: {e}"
                                     ))
                                 },
                             )?;
@@ -200,8 +197,7 @@ impl DataFusionClient {
                             .await
                             .map_err(|e| {
                                 DatabaseError::ConnectionError(format!(
-                                    "Failed to register NDJSON file: {}",
-                                    e
+                                    "Failed to register NDJSON file: {e}"
                                 ))
                             })?;
                     } else {
@@ -214,8 +210,7 @@ impl DataFusionClient {
                             .await
                             .map_err(|e| {
                                 DatabaseError::ConnectionError(format!(
-                                    "Failed to register NDJSON file: {}",
-                                    e
+                                    "Failed to register NDJSON file: {e}"
                                 ))
                             })?;
                     }
@@ -235,16 +230,14 @@ impl DataFusionClient {
                         let json_content =
                             std::fs::read_to_string(&register_path).map_err(|e| {
                                 DatabaseError::ConnectionError(format!(
-                                    "Failed to read JSON file: {}",
-                                    e
+                                    "Failed to read JSON file: {e}"
                                 ))
                             })?;
 
                         let ndjson_content =
                             Self::convert_json_to_ndjson(&json_content).map_err(|e| {
                                 DatabaseError::ConnectionError(format!(
-                                    "Failed to convert JSON to NDJSON: {}",
-                                    e
+                                    "Failed to convert JSON to NDJSON: {e}"
                                 ))
                             })?;
 
@@ -254,15 +247,13 @@ impl DataFusionClient {
                             .tempfile()
                             .map_err(|e| {
                                 DatabaseError::ConnectionError(format!(
-                                    "Failed to create temp file: {}",
-                                    e
+                                    "Failed to create temp file: {e}"
                                 ))
                             })?;
 
                         std::fs::write(temp_file.path(), &ndjson_content).map_err(|e| {
                             DatabaseError::ConnectionError(format!(
-                                "Failed to write temp NDJSON file: {}",
-                                e
+                                "Failed to write temp NDJSON file: {e}"
                             ))
                         })?;
 
@@ -273,8 +264,7 @@ impl DataFusionClient {
                             .await
                             .map_err(|e| {
                                 DatabaseError::ConnectionError(format!(
-                                    "Failed to register converted JSON file: {}",
-                                    e
+                                    "Failed to register converted JSON file: {e}"
                                 ))
                             })?;
 
@@ -322,7 +312,7 @@ impl DataFusionClient {
             .ok_or_else(|| DatabaseError::MetadataError("Schema not found".to_string()))?;
 
         let table = schema_provider.table(table_name).await?.ok_or_else(|| {
-            DatabaseError::MetadataError(format!("Table '{}' not found", table_name))
+            DatabaseError::MetadataError(format!("Table '{table_name}' not found"))
         })?;
 
         let table_schema = table.schema();
@@ -351,7 +341,7 @@ impl DataFusionClient {
             .ctx
             .table(table_name)
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to access table: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to access table: {e}")))?;
 
         // Build SELECT expressions with lowercase aliases
         use datafusion::prelude::*;
@@ -365,7 +355,7 @@ impl DataFusionClient {
                 if original_name != &lowercase_name {
                     // Use quoted identifier to preserve exact case for uppercase columns
                     // This prevents DataFusion from lowercasing the column name
-                    let quoted_col = format!("\"{}\"", original_name);
+                    let quoted_col = format!("\"{original_name}\"");
                     col(quoted_col).alias(&lowercase_name)
                 } else {
                     // No change needed - already lowercase
@@ -375,20 +365,20 @@ impl DataFusionClient {
             .collect();
 
         // Apply the projection to create normalized DataFrame
-        let normalized_df = df.select(select_exprs).map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to normalize columns: {}", e))
-        })?;
+        let normalized_df = df
+            .select(select_exprs)
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to normalize columns: {e}")))?;
 
         // Deregister the original table
         self.ctx.deregister_table(table_name).map_err(|e| {
-            DatabaseError::QueryError(format!("Failed to deregister original table: {}", e))
+            DatabaseError::QueryError(format!("Failed to deregister original table: {e}"))
         })?;
 
         // Register the normalized DataFrame with the same table name
         self.ctx
             .register_table(table_name, normalized_df.into_view())
             .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to register normalized table: {}", e))
+                DatabaseError::QueryError(format!("Failed to register normalized table: {e}"))
             })?;
 
         debug!(
@@ -415,8 +405,8 @@ impl DataFusionClient {
         let table_name = name.replace(['.', '-', ' ', '/', '\\'], "_");
 
         // If name starts with a digit, prefix with underscore
-        if table_name.chars().next().map_or(false, |c| c.is_numeric()) {
-            format!("_{}", table_name)
+        if table_name.chars().next().is_some_and(|c| c.is_numeric()) {
+            format!("_{table_name}")
         } else {
             table_name
         }
@@ -431,7 +421,7 @@ impl DataFusionClient {
         use serde_json::Value;
 
         let json_value: Value =
-            serde_json::from_str(json_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+            serde_json::from_str(json_str).map_err(|e| format!("Failed to parse JSON: {e}"))?;
 
         let mut ndjson_lines = Vec::new();
 
@@ -440,7 +430,7 @@ impl DataFusionClient {
             Value::Array(arr) => {
                 for item in arr {
                     let line = serde_json::to_string(item)
-                        .map_err(|e| format!("Failed to serialize array item: {}", e))?;
+                        .map_err(|e| format!("Failed to serialize array item: {e}"))?;
                     ndjson_lines.push(line);
                 }
             }
@@ -457,7 +447,7 @@ impl DataFusionClient {
                             for item in arr {
                                 if matches!(item, Value::Object(_)) {
                                     let line = serde_json::to_string(item).map_err(|e| {
-                                        format!("Failed to serialize nested array item: {}", e)
+                                        format!("Failed to serialize nested array item: {e}")
                                     })?;
                                     ndjson_lines.push(line);
                                 }
@@ -474,7 +464,7 @@ impl DataFusionClient {
                     // This allows access to both top-level fields and nested structures
                     // Example: request_id, lease_id, data.chroot_namespace, etc.
                     let line = serde_json::to_string(&json_value)
-                        .map_err(|e| format!("Failed to serialize object: {}", e))?;
+                        .map_err(|e| format!("Failed to serialize object: {e}"))?;
                     ndjson_lines.push(line);
                 }
             }
@@ -482,7 +472,7 @@ impl DataFusionClient {
             _ => {
                 let wrapped = serde_json::json!({"value": json_value});
                 let line = serde_json::to_string(&wrapped)
-                    .map_err(|e| format!("Failed to serialize primitive value: {}", e))?;
+                    .map_err(|e| format!("Failed to serialize primitive value: {e}"))?;
                 ndjson_lines.push(line);
             }
         }
@@ -502,16 +492,17 @@ impl DataFusionClient {
         );
 
         // Execute query
-        let df =
-            self.ctx.sql(sql).await.map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to execute query: {}", e))
-            })?;
+        let df = self
+            .ctx
+            .sql(sql)
+            .await
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to execute query: {e}")))?;
 
         // Collect results
         let batches = df
             .collect()
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to collect results: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to collect results: {e}")))?;
 
         // Convert to Vec<Vec<String>>
         Self::record_batches_to_strings(&batches)
@@ -615,11 +606,11 @@ impl DataFusionClient {
             }
             DataType::Date32 | DataType::Date64 | DataType::Timestamp(_, _) => {
                 // Format dates/timestamps
-                format!("{:?}", array)
+                format!("{array:?}")
             }
             _ => {
                 // Fallback for other types
-                format!("{:?}", array)
+                format!("{array:?}")
             }
         }
     }
@@ -651,8 +642,7 @@ impl DataFusionMetadataProvider {
                 let max_fields = 10;
                 let mut details = Vec::new();
                 for field in fields.iter().take(max_fields) {
-                    let field_type =
-                        Self::simplify_datatype_for_display_simple(field.data_type(), 1);
+                    let field_type = Self::simplify_datatype_for_display_simple(field.data_type());
                     details.push(format!("  - {}: {}", field.name(), field_type));
                 }
 
@@ -665,15 +655,12 @@ impl DataFusionMetadataProvider {
 
                 (summary, Some(details))
             }
-            _ => (
-                Self::simplify_datatype_for_display_simple(data_type, 0),
-                None,
-            ),
+            _ => (Self::simplify_datatype_for_display_simple(data_type), None),
         }
     }
 
     /// Simplified type display without nested expansion (for inline display)
-    fn simplify_datatype_for_display_simple(data_type: &DataType, depth: usize) -> String {
+    fn simplify_datatype_for_display_simple(data_type: &DataType) -> String {
         match data_type {
             DataType::Struct(fields) => {
                 format!("Struct<{} fields>", fields.len())
@@ -681,23 +668,23 @@ impl DataFusionMetadataProvider {
             DataType::List(field) => {
                 format!(
                     "List<{}>",
-                    Self::simplify_datatype_for_display_simple(field.data_type(), depth + 1)
+                    Self::simplify_datatype_for_display_simple(field.data_type())
                 )
             }
             DataType::LargeList(field) => {
                 format!(
                     "LargeList<{}>",
-                    Self::simplify_datatype_for_display_simple(field.data_type(), depth + 1)
+                    Self::simplify_datatype_for_display_simple(field.data_type())
                 )
             }
             DataType::Map(entries, _) => {
                 format!(
                     "Map<{}>",
-                    Self::simplify_datatype_for_display_simple(entries.data_type(), depth + 1)
+                    Self::simplify_datatype_for_display_simple(entries.data_type())
                 )
             }
             // Simple types - use debug format
-            _ => format!("{:?}", data_type),
+            _ => format!("{data_type:?}"),
         }
     }
 
@@ -774,7 +761,7 @@ impl MetadataProvider for DataFusionMetadataProvider {
         let table_provider = schema
             .table(table)
             .await?
-            .ok_or_else(|| DatabaseError::MetadataError(format!("Table '{}' not found", table)))?;
+            .ok_or_else(|| DatabaseError::MetadataError(format!("Table '{table}' not found")))?;
 
         let table_schema = table_provider.schema();
 
@@ -806,7 +793,7 @@ impl MetadataProvider for DataFusionMetadataProvider {
         let table_provider = schema
             .table(table)
             .await?
-            .ok_or_else(|| DatabaseError::MetadataError(format!("Table '{}' not found", table)))?;
+            .ok_or_else(|| DatabaseError::MetadataError(format!("Table '{table}' not found")))?;
 
         let table_schema = table_provider.schema();
 
@@ -837,7 +824,7 @@ impl MetadataProvider for DataFusionMetadataProvider {
         Ok(TableDetails {
             name: table.to_string(),
             schema: "public".to_string(),
-            full_name: format!("public.{}", table),
+            full_name: format!("public.{table}"),
             columns,
             nested_field_details,
             indexes: vec![],
@@ -867,12 +854,12 @@ impl DatabaseClient for DataFusionClient {
         self.ctx
             .sql(sql)
             .await
-            .map_err(|e| DatabaseError::QueryError(format!("Query validation failed: {}", e)))?;
+            .map_err(|e| DatabaseError::QueryError(format!("Query validation failed: {e}")))?;
         Ok(())
     }
 
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
-        let explain_sql = format!("EXPLAIN {}", sql);
+        let explain_sql = format!("EXPLAIN {sql}");
         self.execute_datafusion_query(&explain_sql).await
     }
 

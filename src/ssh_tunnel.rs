@@ -1,3 +1,6 @@
+// Locks are held across awaits for SSH tunnel process management
+#![allow(clippy::await_holding_lock)]
+
 use crate::config::SSHTunnelConfig;
 use rand::{Rng, rng};
 use std::io;

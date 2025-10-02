@@ -135,11 +135,11 @@ impl NamedQueriesStorage {
     /// Generate a unique key for a named query based on name and scope
     pub fn generate_key(name: &str, scope: &NamedQueryScope) -> String {
         match scope {
-            NamedQueryScope::Global => format!("global::{}", name),
+            NamedQueryScope::Global => format!("global::{name}"),
             NamedQueryScope::DatabaseType(db_type) => {
                 format!("{}::{}", db_type.to_string().to_lowercase(), name)
             }
-            NamedQueryScope::Session(session_id) => format!("session::{}::{}", session_id, name),
+            NamedQueryScope::Session(session_id) => format!("session::{session_id}::{name}"),
         }
     }
 
@@ -242,24 +242,19 @@ impl NamedQueriesStorage {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 pub enum LogLevel {
     #[serde(rename = "trace")]
     Trace,
     #[serde(rename = "debug")]
     Debug,
     #[serde(rename = "info")]
+    #[default]
     Info,
     #[serde(rename = "warn")]
     Warn,
     #[serde(rename = "error")]
     Error,
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        LogLevel::Info
-    }
 }
 
 impl std::fmt::Display for LogLevel {
@@ -944,13 +939,13 @@ impl Config {
             .is_err()
         {
             // Another config load is in progress, return default config silently
-            let mut config = Config::default();
-            config.recent_connections_storage = Self::load_recent_connections();
-            config.saved_sessions_storage = Self::load_saved_sessions();
-            config.vault_credential_storage = Self::load_vault_credentials();
-            config.named_queries_storage = Self::load_named_queries();
-
-            return config;
+            return Config {
+                recent_connections_storage: Self::load_recent_connections(),
+                saved_sessions_storage: Self::load_saved_sessions(),
+                vault_credential_storage: Self::load_vault_credentials(),
+                named_queries_storage: Self::load_named_queries(),
+                ..Default::default()
+            };
         }
 
         // We now own the lock, proceed with normal loading
@@ -976,13 +971,13 @@ impl Config {
             eprintln!(
                 "Please check your config file manually or delete it to regenerate: ~/.config/dbcrust/config.toml"
             );
-            let mut config = Config::default();
-            config.recent_connections_storage = Self::load_recent_connections();
-            config.saved_sessions_storage = Self::load_saved_sessions();
-            config.vault_credential_storage = Self::load_vault_credentials();
-            config.named_queries_storage = Self::load_named_queries();
-
-            return config;
+            return Config {
+                recent_connections_storage: Self::load_recent_connections(),
+                saved_sessions_storage: Self::load_saved_sessions(),
+                vault_credential_storage: Self::load_vault_credentials(),
+                named_queries_storage: Self::load_named_queries(),
+                ..Default::default()
+            };
         }
 
         if retry_count > 0 {
@@ -1100,13 +1095,11 @@ impl Config {
                                                 tunnel_config.to_string(),
                                             );
                                             println!(
-                                                "Preserved SSH tunnel pattern: {} -> {}",
-                                                pattern, tunnel_config
+                                                "Preserved SSH tunnel pattern: {pattern} -> {tunnel_config}"
                                             );
                                         } else {
                                             eprintln!(
-                                                "Skipping invalid SSH tunnel pattern: {} -> {}",
-                                                pattern, tunnel_config
+                                                "Skipping invalid SSH tunnel pattern: {pattern} -> {tunnel_config}"
                                             );
                                         }
                                     }
@@ -1147,24 +1140,26 @@ impl Config {
                                 );
 
                                 // Return default config to prevent further retries
-                                let mut config = Config::default();
-                                config.recent_connections_storage = Self::load_recent_connections();
-                                config.saved_sessions_storage = Self::load_saved_sessions();
-                                config.vault_credential_storage = Self::load_vault_credentials();
-                                config.named_queries_storage = Self::load_named_queries();
-
-                                config
+                                Config {
+                                    recent_connections_storage: Self::load_recent_connections(),
+                                    saved_sessions_storage: Self::load_saved_sessions(),
+                                    vault_credential_storage: Self::load_vault_credentials(),
+                                    named_queries_storage: Self::load_named_queries(),
+                                    ..Default::default()
+                                }
                             }
                         }
                     }
                 }
                 Err(_) => {
                     // Config file doesn't exist, create it with comprehensive documentation
-                    let mut config = Config::default();
-                    config.recent_connections_storage = Self::load_recent_connections();
-                    config.saved_sessions_storage = Self::load_saved_sessions();
-                    config.vault_credential_storage = Self::load_vault_credentials();
-                    config.named_queries_storage = Self::load_named_queries();
+                    let config = Config {
+                        recent_connections_storage: Self::load_recent_connections(),
+                        saved_sessions_storage: Self::load_saved_sessions(),
+                        vault_credential_storage: Self::load_vault_credentials(),
+                        named_queries_storage: Self::load_named_queries(),
+                        ..Default::default()
+                    };
 
                     // Create the config file with comprehensive documentation
                     if let Err(e) = config.save_with_documentation() {
@@ -1177,13 +1172,13 @@ impl Config {
             }
         } else {
             // No config path available, return default config without creating file
-            let mut config = Config::default();
-            config.recent_connections_storage = Self::load_recent_connections();
-            config.saved_sessions_storage = Self::load_saved_sessions();
-            config.vault_credential_storage = Self::load_vault_credentials();
-            config.named_queries_storage = Self::load_named_queries();
-
-            config
+            Config {
+                recent_connections_storage: Self::load_recent_connections(),
+                saved_sessions_storage: Self::load_saved_sessions(),
+                vault_credential_storage: Self::load_vault_credentials(),
+                named_queries_storage: Self::load_named_queries(),
+                ..Default::default()
+            }
         }
     }
 
@@ -1208,8 +1203,7 @@ impl Config {
             .is_err()
         {
             // Another config save is in progress, return error to prevent recursion
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "Config save already in progress - preventing recursion",
             ));
         }
@@ -1242,58 +1236,46 @@ impl Config {
             content.push_str("# Control how query results and interface elements are displayed\n");
             content.push_str("# ================================================================================\n\n");
 
-            content.push_str(&format!(
-                "# Default row limit for query results (default: 100)\n"
-            ));
+            content.push_str("# Default row limit for query results (default: 100)\n");
             content.push_str(&format!("default_limit = {}\n\n", self.default_limit));
 
-            content.push_str(&format!(
-                "# Use expanded display mode by default (default: false)\n"
-            ));
+            content.push_str("# Use expanded display mode by default (default: false)\n");
             content.push_str(&format!(
                 "expanded_display_default = {}\n\n",
                 self.expanded_display_default
             ));
 
-            content.push_str(&format!("# Show banner on startup (default: false)\n"));
+            content.push_str("# Show banner on startup (default: false)\n");
             content.push_str(&format!("show_banner = {}\n\n", self.show_banner));
 
-            content.push_str(&format!(
-                "# Show server info on connection (default: true)\n"
-            ));
+            content.push_str("# Show server info on connection (default: true)\n");
             content.push_str(&format!("show_server_info = {}\n\n", self.show_server_info));
 
-            content.push_str(&format!(
-                "# Indicator for multiline prompts (default: empty)\n"
-            ));
+            content.push_str("# Indicator for multiline prompts (default: empty)\n");
             content.push_str(&format!(
                 "multiline_prompt_indicator = \"{}\"\n\n",
                 self.multiline_prompt_indicator
             ));
 
-            content.push_str(&format!(
-                "# Number of columns to trigger interactive column selection (default: 10)\n"
-            ));
-            content.push_str(&format!(
-                "# Set to 0 to disable automatic column selection\n"
-            ));
+            content.push_str(
+                "# Number of columns to trigger interactive column selection (default: 10)\n",
+            );
+            content.push_str("# Set to 0 to disable automatic column selection\n");
             content.push_str(&format!(
                 "column_selection_threshold = {}\n\n",
                 self.column_selection_threshold
             ));
 
-            content.push_str(&format!("# Default all columns selected in column selection (true = opt-out, false = opt-in) (default: false)\n"));
+            content.push_str("# Default all columns selected in column selection (true = opt-out, false = opt-in) (default: false)\n");
             content.push_str(&format!(
                 "column_selection_default_all = {}\n\n",
                 self.column_selection_default_all
             ));
 
-            content.push_str(&format!(
-                "# Test named queries before saving them (default: true)\n"
-            ));
-            content.push_str(&format!(
-                "# When enabled, queries are validated by running EXPLAIN before saving\n"
-            ));
+            content.push_str("# Test named queries before saving them (default: true)\n");
+            content.push_str(
+                "# When enabled, queries are validated by running EXPLAIN before saving\n",
+            );
             content.push_str(&format!(
                 "test_named_query_before_saving = {}\n\n",
                 self.test_named_query_before_saving
@@ -1305,17 +1287,13 @@ impl Config {
             content.push_str("# Configure output paging for large result sets\n");
             content.push_str("# ================================================================================\n\n");
 
-            content.push_str(&format!(
-                "# Enable pager for large outputs (default: true)\n"
-            ));
+            content.push_str("# Enable pager for large outputs (default: true)\n");
             content.push_str(&format!("pager_enabled = {}\n\n", self.pager_enabled));
 
-            content.push_str(&format!("# Pager command (default: \"less -R\")\n"));
+            content.push_str("# Pager command (default: \"less -R\")\n");
             content.push_str(&format!("pager_command = \"{}\"\n\n", self.pager_command));
 
-            content.push_str(&format!(
-                "# Lines before triggering pager, 0 = terminal height (default: 0)\n"
-            ));
+            content.push_str("# Lines before triggering pager, 0 = terminal height (default: 0)\n");
             content.push_str(&format!(
                 "pager_threshold_lines = {}\n\n",
                 self.pager_threshold_lines
@@ -1327,23 +1305,19 @@ impl Config {
             content.push_str("# Enable or disable various features\n");
             content.push_str("# ================================================================================\n\n");
 
-            content.push_str(&format!("# Enable SQL autocomplete (default: true)\n"));
+            content.push_str("# Enable SQL autocomplete (default: true)\n");
             content.push_str(&format!(
                 "autocomplete_enabled = {}\n\n",
                 self.autocomplete_enabled
             ));
 
-            content.push_str(&format!(
-                "# Enable EXPLAIN mode by default (default: false)\n"
-            ));
+            content.push_str("# Enable EXPLAIN mode by default (default: false)\n");
             content.push_str(&format!(
                 "explain_mode_default = {}\n\n",
                 self.explain_mode_default
             ));
 
-            content.push_str(&format!(
-                "# Maximum number of recent connections to remember (default: 10)\n"
-            ));
+            content.push_str("# Maximum number of recent connections to remember (default: 10)\n");
             content.push_str(&format!(
                 "max_recent_connections = {}\n\n",
                 self.max_recent_connections
@@ -1355,17 +1329,13 @@ impl Config {
             content.push_str("# Configure query and metadata operation timeouts\n");
             content.push_str("# ================================================================================\n\n");
 
-            content.push_str(&format!(
-                "# Query execution timeout in seconds (default: 30)\n"
-            ));
+            content.push_str("# Query execution timeout in seconds (default: 30)\n");
             content.push_str(&format!(
                 "query_timeout_seconds = {}\n\n",
                 self.query_timeout_seconds
             ));
 
-            content.push_str(&format!(
-                "# Metadata query timeout in seconds (default: 10)\n"
-            ));
+            content.push_str("# Metadata query timeout in seconds (default: 10)\n");
             content.push_str(&format!(
                 "metadata_timeout_seconds = {}\n\n",
                 self.metadata_timeout_seconds
@@ -1379,50 +1349,43 @@ impl Config {
             );
             content.push_str("# ================================================================================\n\n");
 
-            content.push_str(&format!(
-                "# Display mode: full, truncated, summary, viz (default: truncated)\n"
-            ));
-            content.push_str(&format!("[vector_display]\n"));
+            content
+                .push_str("# Display mode: full, truncated, summary, viz (default: truncated)\n");
+            content.push_str("[vector_display]\n");
             content.push_str(&format!(
                 "display_mode = \"{}\"\n\n",
                 self.vector_display.display_mode
             ));
 
-            content.push_str(&format!(
-                "# Number of elements to show at start/end when truncated (default: 5)\n"
-            ));
+            content.push_str(
+                "# Number of elements to show at start/end when truncated (default: 5)\n",
+            );
             content.push_str(&format!(
                 "truncation_length = {}\n\n",
                 self.vector_display.truncation_length
             ));
 
-            content.push_str(&format!(
-                "# Width of ASCII viz visualization (default: 40)\n"
-            ));
+            content.push_str("# Width of ASCII viz visualization (default: 40)\n");
             content.push_str(&format!(
                 "viz_width = {}\n\n",
                 self.vector_display.viz_width
             ));
 
-            content.push_str(&format!(
-                "# Show summary statistics with other modes (default: false)\n"
-            ));
+            content.push_str("# Show summary statistics with other modes (default: false)\n");
             content.push_str(&format!(
                 "show_statistics = {}\n\n",
                 self.vector_display.show_statistics
             ));
 
-            content.push_str(&format!(
-                "# Auto-switch to truncated mode above this dimension count (default: 20)\n"
-            ));
+            content.push_str(
+                "# Auto-switch to truncated mode above this dimension count (default: 20)\n",
+            );
             content.push_str(&format!(
                 "dimension_threshold = {}\n\n",
                 self.vector_display.dimension_threshold
             ));
 
-            content.push_str(&format!(
-                "# Show dimension count in all display modes (default: true)\n"
-            ));
+            content.push_str("# Show dimension count in all display modes (default: true)\n");
             content.push_str(&format!(
                 "show_dimensions = {}\n\n",
                 self.vector_display.show_dimensions
@@ -1434,25 +1397,23 @@ impl Config {
             content.push_str("# HashiCorp Vault credential caching settings\n");
             content.push_str("# ================================================================================\n\n");
 
-            content.push_str(&format!(
-                "# Enable Vault credential caching (default: true)\n"
-            ));
+            content.push_str("# Enable Vault credential caching (default: true)\n");
             content.push_str(&format!(
                 "vault_credential_cache_enabled = {}\n\n",
                 self.vault_credential_cache_enabled
             ));
 
-            content.push_str(&format!(
-                "# Renew credentials when this fraction of TTL remains (default: 0.25 = 25%)\n"
-            ));
+            content.push_str(
+                "# Renew credentials when this fraction of TTL remains (default: 0.25 = 25%)\n",
+            );
             content.push_str(&format!(
                 "vault_cache_renewal_threshold = {}\n\n",
                 self.vault_cache_renewal_threshold
             ));
 
-            content.push_str(&format!(
-                "# Don't cache credentials with TTL less than this (seconds, default: 300)\n"
-            ));
+            content.push_str(
+                "# Don't cache credentials with TTL less than this (seconds, default: 300)\n",
+            );
             content.push_str(&format!(
                 "vault_cache_min_ttl_seconds = {}\n\n",
                 self.vault_cache_min_ttl_seconds
@@ -1480,13 +1441,10 @@ impl Config {
                     // Properly escape strings for TOML format
                     let escaped_pattern = pattern.replace('\\', "\\\\").replace('"', "\\\"");
                     let escaped_config = tunnel_config.replace('\\', "\\\\").replace('"', "\\\"");
-                    content.push_str(&format!(
-                        "\"{}\" = \"{}\"\n",
-                        escaped_pattern, escaped_config
-                    ));
+                    content.push_str(&format!("\"{escaped_pattern}\" = \"{escaped_config}\"\n"));
                 }
             }
-            content.push_str("\n");
+            content.push('\n');
 
             // Logging Configuration
             content.push_str("# ================================================================================\n");
@@ -1494,31 +1452,23 @@ impl Config {
             content.push_str("# Configure application logging for debugging\n");
             content.push_str("# ================================================================================\n\n");
             content.push_str("[logging]\n");
-            content.push_str(&format!(
-                "# Log level: \"trace\", \"debug\", \"info\", \"warn\", \"error\" (default: info)\n"
-            ));
+            content.push_str("# Log level: \"trace\", \"debug\", \"info\", \"warn\", \"error\" (default: info)\n");
             content.push_str(&format!("level = \"{}\"\n\n", self.logging.level));
-            content.push_str(&format!("# Output logs to console (default: true)\n"));
+            content.push_str("# Output logs to console (default: true)\n");
             content.push_str(&format!(
                 "console_output = {}\n\n",
                 self.logging.console_output
             ));
-            content.push_str(&format!("# Output logs to file (default: false)\n"));
+            content.push_str("# Output logs to file (default: false)\n");
             content.push_str(&format!("file_output = {}\n\n", self.logging.file_output));
-            content.push_str(&format!(
-                "# Log file path (default: ~/.config/dbcrust/logs/dbcrust.log)\n"
-            ));
+            content.push_str("# Log file path (default: ~/.config/dbcrust/logs/dbcrust.log)\n");
             content.push_str(&format!("file_path = \"{}\"\n\n", self.logging.file_path));
-            content.push_str(&format!(
-                "# Maximum log file size in MB before rotation (default: 10)\n"
-            ));
+            content.push_str("# Maximum log file size in MB before rotation (default: 10)\n");
             content.push_str(&format!(
                 "max_file_size_mb = {}\n\n",
                 self.logging.max_file_size_mb
             ));
-            content.push_str(&format!(
-                "# Number of rotated log files to keep (default: 5)\n"
-            ));
+            content.push_str("# Number of rotated log files to keep (default: 5)\n");
             content.push_str(&format!("max_files = {}\n\n", self.logging.max_files));
 
             // History Configuration
@@ -1527,23 +1477,19 @@ impl Config {
             content.push_str("# Configure per-session command history management\n");
             content.push_str("# ================================================================================\n\n");
             content.push_str("[history]\n");
-            content.push_str(&format!(
-                "# Enable per-session history (separate history per connection) (default: true)\n"
-            ));
+            content.push_str(
+                "# Enable per-session history (separate history per connection) (default: true)\n",
+            );
             content.push_str(&format!(
                 "per_session_enabled = {}\n\n",
                 self.history.per_session_enabled
             ));
-            content.push_str(&format!(
-                "# Maximum number of history files to keep (default: 50)\n"
-            ));
+            content.push_str("# Maximum number of history files to keep (default: 50)\n");
             content.push_str(&format!(
                 "max_history_files = {}\n\n",
                 self.history.max_history_files
             ));
-            content.push_str(&format!(
-                "# Clean up old unused history files after N days (default: 90)\n"
-            ));
+            content.push_str("# Clean up old unused history files after N days (default: 90)\n");
             content.push_str(&format!(
                 "cleanup_after_days = {}\n\n",
                 self.history.cleanup_after_days
@@ -2061,7 +2007,7 @@ impl Config {
             // sqlite:///path (3 slashes) = relative path that needs normalization
             let relative_path = connection_url.strip_prefix("sqlite:///").unwrap_or("");
             let normalized_path = Self::normalize_sqlite_path(relative_path)?;
-            format!("sqlite:///{}", normalized_path)
+            format!("sqlite:///{normalized_path}")
         } else {
             // sqlite:////path (4 slashes) = absolute path, keep as is
             // or non-SQLite URLs, keep as is
@@ -2109,7 +2055,7 @@ impl Config {
             // sqlite:///path (3 slashes) = relative path that needs normalization
             let relative_path = connection_url.strip_prefix("sqlite:///").unwrap_or("");
             let normalized_path = Self::normalize_sqlite_path(relative_path)?;
-            format!("sqlite:///{}", normalized_path)
+            format!("sqlite:///{normalized_path}")
         } else {
             // sqlite:////path (4 slashes) = absolute path, keep as is
             // or non-SQLite URLs, keep as is
@@ -2169,7 +2115,7 @@ impl Config {
 
     /// Generate cache key for vault credentials
     pub fn vault_cache_key(mount_path: &str, database_name: &str, role_name: &str) -> String {
-        format!("{}/{}/{}", mount_path, database_name, role_name)
+        format!("{mount_path}/{database_name}/{role_name}")
     }
 
     /// Get cached vault credentials if valid and not expired

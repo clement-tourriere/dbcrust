@@ -238,7 +238,7 @@ impl PerformanceAnalyzer {
         // Extract schema-qualified relation name if available
         if let Some(JsonValue::String(schema)) = node_obj.get("Schema") {
             if let Some(table) = &metric.table_name {
-                metric.table_name = Some(format!("{}.{}", schema, table));
+                metric.table_name = Some(format!("{schema}.{table}"));
             }
         }
 
@@ -254,14 +254,14 @@ impl PerformanceAnalyzer {
 
         // Extract index conditions
         if let Some(JsonValue::String(index_cond)) = node_obj.get("Index Cond") {
-            metric.add_filter_condition(format!("Index condition: {}", index_cond));
+            metric.add_filter_condition(format!("Index condition: {index_cond}"));
             // Parse column names from index condition
             Self::extract_columns_from_condition(index_cond, &mut metric.columns_used);
         }
 
         // Extract recheck conditions
         if let Some(JsonValue::String(recheck_cond)) = node_obj.get("Recheck Cond") {
-            metric.add_filter_condition(format!("Recheck condition: {}", recheck_cond));
+            metric.add_filter_condition(format!("Recheck condition: {recheck_cond}"));
             Self::extract_columns_from_condition(recheck_cond, &mut metric.columns_used);
         }
 
@@ -273,13 +273,13 @@ impl PerformanceAnalyzer {
 
         // Extract hash condition for hash joins
         if let Some(JsonValue::String(hash_cond)) = node_obj.get("Hash Cond") {
-            metric.add_join_condition(format!("Hash condition: {}", hash_cond));
+            metric.add_join_condition(format!("Hash condition: {hash_cond}"));
             Self::extract_columns_from_condition(hash_cond, &mut metric.columns_used);
         }
 
         // Extract merge condition for merge joins
         if let Some(JsonValue::String(merge_cond)) = node_obj.get("Merge Cond") {
-            metric.add_join_condition(format!("Merge condition: {}", merge_cond));
+            metric.add_join_condition(format!("Merge condition: {merge_cond}"));
             Self::extract_columns_from_condition(merge_cond, &mut metric.columns_used);
         }
 
@@ -318,9 +318,9 @@ impl PerformanceAnalyzer {
             "Seq Scan" | "Index Scan" | "Index Only Scan" | "Bitmap Heap Scan" => {
                 if let Some(table) = &metric.table_name {
                     if let Some(index) = &metric.index_name {
-                        metric.sql_fragment = Some(format!("Scanning {} using {}", table, index));
+                        metric.sql_fragment = Some(format!("Scanning {table} using {index}"));
                     } else {
-                        metric.sql_fragment = Some(format!("Scanning {}", table));
+                        metric.sql_fragment = Some(format!("Scanning {table}"));
                     }
                 }
             }
@@ -350,7 +350,7 @@ impl PerformanceAnalyzer {
             }
             "Subquery Scan" => {
                 if let Some(table) = &metric.table_name {
-                    metric.sql_fragment = Some(format!("Processing subquery result: {}", table));
+                    metric.sql_fragment = Some(format!("Processing subquery result: {table}"));
                 } else {
                     metric.sql_fragment = Some("Processing subquery result".to_string());
                 }
@@ -479,8 +479,7 @@ impl PerformanceAnalyzer {
                         ));
                     } else {
                         metric.add_recommendation(format!(
-                            "Consider adding an index on table '{}'",
-                            table
+                            "Consider adding an index on table '{table}'"
                         ));
                     }
                 }
@@ -494,7 +493,7 @@ impl PerformanceAnalyzer {
             }
             "Index Scan" | "Index Only Scan" => {
                 if let Some(index) = &metric.index_name {
-                    metric.sql_fragment = Some(format!("Uses index: {}", index));
+                    metric.sql_fragment = Some(format!("Uses index: {index}"));
                 }
 
                 // Check for index scan efficiency
@@ -574,8 +573,7 @@ impl PerformanceAnalyzer {
                             if !metric.columns_used.is_empty() {
                                 let columns = metric.columns_used.join(", ");
                                 metric.add_recommendation(format!(
-                                    "Or add index to avoid sorting: CREATE INDEX ON {} ({});",
-                                    table, columns
+                                    "Or add index to avoid sorting: CREATE INDEX ON {table} ({columns});"
                                 ));
                             }
                         }
@@ -633,7 +631,7 @@ impl PerformanceAnalyzer {
         if let (Some(estimated), Some(actual)) = (metric.estimated_rows, metric.rows_returned) {
             if estimated > 0 && actual > 0 {
                 let ratio = estimated as f64 / actual as f64;
-                if ratio > 100.0 || ratio < 0.01 {
+                if !(0.01..=100.0).contains(&ratio) {
                     metric.add_warning(format!(
                         "Poor row estimate: expected {}, got {} ({}x off)",
                         estimated,
@@ -811,13 +809,11 @@ impl PerformanceAnalyzer {
     fn calculate_sqlite_performance_level(detail: &str) -> PerformanceLevel {
         let detail_lower = detail.to_lowercase();
 
-        if detail_lower.contains("using covering index") {
+        if detail_lower.contains("using covering index")
+            || detail_lower.contains("using integer primary key")
+        {
             PerformanceLevel::Excellent
-        } else if detail_lower.contains("using integer primary key") {
-            PerformanceLevel::Excellent
-        } else if detail_lower.contains("using index") {
-            PerformanceLevel::Good
-        } else if detail_lower.contains("search table") {
+        } else if detail_lower.contains("using index") || detail_lower.contains("search table") {
             PerformanceLevel::Good
         } else if detail_lower.contains("scan table") {
             PerformanceLevel::Critical
@@ -981,8 +977,8 @@ impl PerformanceAnalyzer {
                 formatted.push(format!(
                     "  📊 Rows: {} estimated {} vs {} actual ({})",
                     accuracy.0,
-                    Color::DarkGray.paint(format!("{}", estimated)),
-                    accuracy.1.paint(format!("{}", actual)),
+                    Color::DarkGray.paint(format!("{estimated}")),
+                    accuracy.1.paint(format!("{actual}")),
                     if estimated > 0 {
                         format!("{:.1}x", actual as f64 / estimated as f64)
                     } else {
@@ -1016,7 +1012,7 @@ impl PerformanceAnalyzer {
                     };
                     formatted.push(format!(
                         "  🔄 Loops: {}",
-                        loop_color.paint(format!("{}", loops))
+                        loop_color.paint(format!("{loops}"))
                     ));
                 }
             }
@@ -1170,25 +1166,25 @@ impl PerformanceAnalyzer {
         if total_tables > 0 {
             dashboard.push(format!(
                 "🏷️  Tables Involved: {}",
-                Color::Blue.paint(format!("{}", total_tables))
+                Color::Blue.paint(format!("{total_tables}"))
             ));
         }
         if total_indexes > 0 {
             dashboard.push(format!(
                 "🔍 Indexes Used: {}",
-                Color::Green.paint(format!("{}", total_indexes))
+                Color::Green.paint(format!("{total_indexes}"))
             ));
         }
         if total_filters > 0 {
             dashboard.push(format!(
                 "🔍 Filter Conditions: {}",
-                Color::Yellow.paint(format!("{}", total_filters))
+                Color::Yellow.paint(format!("{total_filters}"))
             ));
         }
         if total_joins > 0 {
             dashboard.push(format!(
                 "🔗 Join Operations: {}",
-                Color::Cyan.paint(format!("{}", total_joins))
+                Color::Cyan.paint(format!("{total_joins}"))
             ));
         }
         if total_warnings > 0 {

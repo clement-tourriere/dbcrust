@@ -39,7 +39,7 @@ fn derive_machine_key() -> Result<[u8; 32], PasswordEncryptionError> {
     {
         // macOS: Use IOKit Hardware UUID
         if let Ok(output) = std::process::Command::new("ioreg")
-            .args(&["-rd1", "-c", "IOPlatformExpertDevice"])
+            .args(["-rd1", "-c", "IOPlatformExpertDevice"])
             .output()
         {
             // Extract IOPlatformUUID from the output
@@ -56,7 +56,7 @@ fn derive_machine_key() -> Result<[u8; 32], PasswordEncryptionError> {
         } else {
             // Alternative: use system_profiler
             if let Ok(output) = std::process::Command::new("system_profiler")
-                .args(&["SPHardwareDataType"])
+                .args(["SPHardwareDataType"])
                 .output()
             {
                 let output_str = String::from_utf8_lossy(&output.stdout);
@@ -112,7 +112,7 @@ fn derive_machine_key() -> Result<[u8; 32], PasswordEncryptionError> {
         if let Some(home) = dirs::home_dir() {
             if let Ok(metadata) = fs::metadata(&home) {
                 let uid = metadata.uid();
-                hasher.update(&uid.to_le_bytes());
+                hasher.update(uid.to_le_bytes());
             }
         }
     }

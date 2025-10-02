@@ -343,7 +343,7 @@ impl PostgreSQLMetadataProvider {
         // Build query to get enum values for all the specified types
         let type_list = enum_types
             .iter()
-            .map(|t| format!("'{}'", t))
+            .map(|t| format!("'{t}'"))
             .collect::<Vec<_>>()
             .join(",");
 
@@ -356,10 +356,9 @@ impl PostgreSQLMetadataProvider {
             JOIN pg_enum e ON t.oid = e.enumtypid
             JOIN pg_namespace n ON t.typnamespace = n.oid
             WHERE n.nspname = $1
-              AND t.typname IN ({})
+              AND t.typname IN ({type_list})
             ORDER BY t.typname, e.enumsortorder
-            "#,
-            type_list
+            "#
         );
 
         let rows = sqlx::query(&query)
@@ -608,7 +607,7 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
         let table_details = TableDetails {
             name: table.to_string(),
             schema: schema_name.to_string(),
-            full_name: format!("{}.{}", schema_name, table),
+            full_name: format!("{schema_name}.{table}"),
             columns,
             indexes,
             check_constraints,
@@ -1001,7 +1000,7 @@ impl DatabaseClient for PostgreSQLClient {
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
         debug!("[PostgreSQLClient::test_query] Testing query for validation");
         // For PostgreSQL, we can use EXPLAIN to validate query syntax without executing it
-        let explain_sql = format!("EXPLAIN {}", sql);
+        let explain_sql = format!("EXPLAIN {sql}");
         let timeout_duration = std::time::Duration::from_secs(10); // Shorter timeout for tests
 
         match tokio::time::timeout(
@@ -1012,8 +1011,7 @@ impl DatabaseClient for PostgreSQLClient {
         {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(e)) => Err(DatabaseError::QueryError(format!(
-                "Query validation failed: {}",
-                e
+                "Query validation failed: {e}"
             ))),
             Err(_) => Err(DatabaseError::QueryError(
                 "Query validation timed out".to_string(),
@@ -1096,7 +1094,7 @@ impl DatabaseClient for PostgreSQLClient {
             .fetch_one(&self.pool)
             .await
             .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to get PostgreSQL version: {}", e))
+                DatabaseError::QueryError(format!("Failed to get PostgreSQL version: {e}"))
             })?;
 
         let version_string: String = version_row.get(0);
@@ -1182,8 +1180,7 @@ fn handle_custom_postgresql_type(
                     // If as_str() fails, try to decode as bytes and convert to UTF-8
                     let bytes = value_ref.as_bytes().map_err(|e| {
                         DatabaseError::QueryError(format!(
-                            "Failed to get raw bytes for custom type '{}': {}",
-                            type_name, e
+                            "Failed to get raw bytes for custom type '{type_name}': {e}"
                         ))
                     })?;
 
@@ -1202,15 +1199,14 @@ fn handle_custom_postgresql_type(
                             );
                             // As a last resort, represent as hex bytes
                             let hex_representation = hex::encode(bytes);
-                            Ok(format!("\\x{}", hex_representation))
+                            Ok(format!("\\x{hex_representation}"))
                         }
                     }
                 }
             }
         }
         Err(e) => Err(DatabaseError::QueryError(format!(
-            "Failed to get raw value for custom type '{}': {}",
-            type_name, e
+            "Failed to get raw value for custom type '{type_name}': {e}"
         ))),
     }
 }
@@ -1429,8 +1425,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     })
                     .map_err(|e| {
                         DatabaseError::QueryError(format!(
-                            "Failed to format {} type '{}': {}",
-                            type_name_upper, type_name, e
+                            "Failed to format {type_name_upper} type '{type_name}': {e}"
                         ))
                     }),
                 "HALFVEC" => row
@@ -1438,8 +1433,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     .map(|v| formatter.format_half(v.as_slice()))
                     .map_err(|e| {
                         DatabaseError::QueryError(format!(
-                            "Failed to format {} type '{}': {}",
-                            type_name_upper, type_name, e
+                            "Failed to format {type_name_upper} type '{type_name}': {e}"
                         ))
                     }),
                 "SPARSEVEC" => row
@@ -1447,8 +1441,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     .map(|v| formatter.format_sparse(v.indices(), v.values()))
                     .map_err(|e| {
                         DatabaseError::QueryError(format!(
-                            "Failed to format {} type '{}': {}",
-                            type_name_upper, type_name, e
+                            "Failed to format {type_name_upper} type '{type_name}': {e}"
                         ))
                     }),
                 _ => unreachable!(),
@@ -1468,7 +1461,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
             // Enhanced PostGIS processing with complex display support
             if raw_value.starts_with("01") || raw_value.starts_with("00") {
                 // This looks like WKB (Well-Known Binary) format
-                Ok(format!("WKB: {}", raw_value))
+                Ok(format!("WKB: {raw_value}"))
             } else if GenericComplexTypeDetector::detect_type(&raw_value)
                 == Some(ComplexDataType::GeoJson)
             {
@@ -1507,8 +1500,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                 })
                 .map_err(|e| {
                     DatabaseError::QueryError(format!(
-                        "Failed to format {} type '{}': {}",
-                        type_name_upper, type_name, e
+                        "Failed to format {type_name_upper} type '{type_name}': {e}"
                     ))
                 })
         }
@@ -1522,16 +1514,15 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                 .map(|s| {
                     // ltree paths are typically dot-separated, ensure they're readable
                     match type_name_upper.as_str() {
-                        "LTREE" => s,                               // Path format is already readable
-                        "LQUERY" => format!("Query: {}", s), // Prefix to indicate it's a query
-                        "LTXTQUERY" => format!("TextQuery: {}", s), // Prefix for text query
+                        "LTREE" => s,                             // Path format is already readable
+                        "LQUERY" => format!("Query: {s}"),        // Prefix to indicate it's a query
+                        "LTXTQUERY" => format!("TextQuery: {s}"), // Prefix for text query
                         _ => s,
                     }
                 })
                 .map_err(|e| {
                     DatabaseError::QueryError(format!(
-                        "Failed to format {} type '{}': {}",
-                        type_name_upper, type_name, e
+                        "Failed to format {type_name_upper} type '{type_name}': {e}"
                     ))
                 })
         }
@@ -1548,13 +1539,12 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     if s.starts_with('(') && s.ends_with(')') {
                         s // Already formatted properly
                     } else {
-                        format!("Cube: {}", s)
+                        format!("Cube: {s}")
                     }
                 })
                 .map_err(|e| {
                     DatabaseError::QueryError(format!(
-                        "Failed to format {} type '{}': {}",
-                        type_name_upper, type_name, e
+                        "Failed to format {type_name_upper} type '{type_name}': {e}"
                     ))
                 })
         }

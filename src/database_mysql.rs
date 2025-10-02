@@ -930,13 +930,12 @@ impl DatabaseClient for MySqlClient {
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
         debug!("[MySqlClient::test_query] Testing query for validation");
         // For MySQL, we can use EXPLAIN to validate query syntax without executing it
-        let explain_sql = format!("EXPLAIN {}", sql);
+        let explain_sql = format!("EXPLAIN {sql}");
 
         match sqlx::query(&explain_sql).fetch_all(&self.pool).await {
             Ok(_) => Ok(()),
             Err(e) => Err(DatabaseError::QueryError(format!(
-                "Query validation failed: {}",
-                e
+                "Query validation failed: {e}"
             ))),
         }
     }
@@ -1127,9 +1126,7 @@ impl DatabaseClient for MySqlClient {
         let version_row = sqlx::query(version_query)
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to get MySQL version: {}", e))
-            })?;
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to get MySQL version: {e}")))?;
 
         let version_string: String = version_row.get(0);
         debug!(

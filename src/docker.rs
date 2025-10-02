@@ -147,10 +147,7 @@ impl DockerClient {
         &self,
         container_id: &str,
     ) -> Result<DockerContainerInfo, DockerError> {
-        let options = InspectContainerOptions {
-            size: false,
-            ..Default::default()
-        };
+        let options = InspectContainerOptions { size: false };
         let container = self
             .docker
             .inspect_container(container_id, Some(options))
@@ -283,13 +280,11 @@ impl DockerClient {
             if let Some(ports) = &network_settings.ports {
                 // Look for the database port
                 let port_key = format!("{default_port}/tcp");
-                if let Some(port_bindings) = ports.get(&port_key) {
-                    if let Some(port_binding) = port_bindings {
-                        if let Some(binding) = port_binding.first() {
-                            if let Some(host_port_str) = &binding.host_port {
-                                if let Ok(host_port) = host_port_str.parse::<u16>() {
-                                    return Ok((Some(host_port), Some(default_port)));
-                                }
+                if let Some(Some(port_binding)) = ports.get(&port_key) {
+                    if let Some(binding) = port_binding.first() {
+                        if let Some(host_port_str) = &binding.host_port {
+                            if let Ok(host_port) = host_port_str.parse::<u16>() {
+                                return Ok((Some(host_port), Some(default_port)));
                             }
                         }
                     }

@@ -1,6 +1,6 @@
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::{Mutex, Once};
 use std::time::SystemTime;
@@ -94,7 +94,7 @@ pub fn init() -> io::Result<()> {
 }
 
 /// Get the path to the log file
-fn get_log_file_path(config_dir: &PathBuf) -> PathBuf {
+fn get_log_file_path(config_dir: &Path) -> PathBuf {
     config_dir.join("debug.log")
 }
 
