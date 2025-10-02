@@ -336,41 +336,12 @@ dbcrust postgres://backup-user@replica.db.internal/app \
 
 ## 🌟 Community & Support
 
-<div class="grid cards" markdown>
-
-- :material-book-open-page-variant:{ .lg .middle } **Documentation**
-
-  ---
-
-  Comprehensive guides and API reference
-
-  [:octicons-arrow-right-24: Explore docs](/dbcrust/quick-start/)
-
-- :material-github:{ .lg .middle } **Source Code**
-
-  ---
-
-  Open source on GitHub with MIT license
-
-  [:octicons-arrow-right-24: View source](https://github.com/clement-tourriere/dbcrust)
-
-- :material-package-variant:{ .lg .middle } **PyPI Package**
-
-  ---
-
-  Install via pip or uv package manager
-
-  [:octicons-arrow-right-24: Install now](https://pypi.org/project/dbcrust/)
-
-- :material-chat-question:{ .lg .middle } **Support**
-
-  ---
-
-  Get help via GitHub issues
-
-  [:octicons-arrow-right-24: Get support](https://github.com/clement-tourriere/dbcrust/issues)
-
-</div>
+| Resource | Description |
+|----------|-------------|
+| 📚 **[Documentation](/dbcrust/quick-start/)** | Comprehensive guides and API reference |
+| 💻 **[Source Code](https://github.com/clement-tourriere/dbcrust)** | Open source on GitHub with MIT license |
+| 📦 **[PyPI Package](https://pypi.org/project/dbcrust/)** | Install via pip or uv package manager |
+| 💬 **[Support](https://github.com/clement-tourriere/dbcrust/issues)** | Get help via GitHub issues |
 
 ---
 
