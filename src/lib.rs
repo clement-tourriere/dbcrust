@@ -1,6 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_local_definitions)]
 
+pub mod ai_sql; // AI-powered SQL generation from natural language
 pub mod cli;
 pub mod cli_core; // New unified CLI core
 pub mod command_completion; // Trait-based command completion system
