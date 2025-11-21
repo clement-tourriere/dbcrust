@@ -3,12 +3,14 @@
 use crate::ai_sql::config::{AiProviderType, AiSqlConfig};
 use crate::ai_sql::dialect::SqlDialectProvider;
 use crate::ai_sql::error::{AiError, AiResult};
+use crate::ai_sql::oauth::AnthropicOAuthManager;
 use crate::ai_sql::schema::SchemaContext;
 use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::time::Duration;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// AI response containing generated SQL and metadata
 #[derive(Debug, Clone)]
@@ -51,15 +53,24 @@ pub trait AiProvider: Send + Sync {
     }
 }
 
+/// Authentication method for Anthropic
+#[derive(Debug, Clone)]
+enum AuthMethod {
+    ApiKey(String),
+    OAuth,
+}
+
 /// Anthropic Claude provider implementation
 pub struct AnthropicProvider {
     client: Client,
-    api_key: String,
+    auth_method: AuthMethod,
+    oauth_manager: Option<AnthropicOAuthManager>,
     base_url: String,
     model: String,
 }
 
 impl AnthropicProvider {
+    /// Create provider with API key
     pub fn new(api_key: String, base_url: String, model: String) -> AiResult<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(60))
@@ -68,10 +79,48 @@ impl AnthropicProvider {
 
         Ok(Self {
             client,
-            api_key,
+            auth_method: AuthMethod::ApiKey(api_key),
+            oauth_manager: None,
             base_url,
             model,
         })
+    }
+
+    /// Create provider with OAuth
+    pub fn new_with_oauth(
+        config_dir: PathBuf,
+        base_url: String,
+        model: String,
+    ) -> AiResult<Self> {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .map_err(|e| AiError::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
+
+        let oauth_manager = AnthropicOAuthManager::new(config_dir)?;
+
+        Ok(Self {
+            client,
+            auth_method: AuthMethod::OAuth,
+            oauth_manager: Some(oauth_manager),
+            base_url,
+            model,
+        })
+    }
+
+    /// Get authentication token (OAuth or API key)
+    async fn get_auth_token(&self) -> AiResult<String> {
+        match &self.auth_method {
+            AuthMethod::ApiKey(key) => Ok(key.clone()),
+            AuthMethod::OAuth => {
+                let manager = self
+                    .oauth_manager
+                    .as_ref()
+                    .ok_or_else(|| AiError::ConfigurationError("OAuth manager not initialized".to_string()))?;
+
+                manager.get_valid_token().await
+            }
+        }
     }
 
     async fn call_api(
@@ -99,10 +148,13 @@ impl AnthropicProvider {
             self.model, max_tokens, temperature
         );
 
+        // Get auth token (OAuth or API key)
+        let auth_token = self.get_auth_token().await?;
+
         let response = self
             .client
             .post(&url)
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", &auth_token)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&request_body)
@@ -309,17 +361,51 @@ struct ContentBlock {
 pub fn create_ai_client(config: &AiSqlConfig) -> AiResult<Box<dyn AiProvider>> {
     match config.provider {
         AiProviderType::Anthropic => {
-            let api_key = config
-                .get_anthropic_api_key()
-                .ok_or_else(|| AiError::ConfigurationError("Anthropic API key not configured. Set ANTHROPIC_API_KEY environment variable or add anthropic_api_key to config.".to_string()))?;
+            // Try OAuth first if enabled
+            if config.anthropic_use_oauth {
+                info!("Attempting to use OAuth authentication for Anthropic");
 
-            let provider = AnthropicProvider::new(
-                api_key,
-                config.anthropic_base_url.clone(),
-                config.anthropic_model.clone(),
-            )?;
+                // Get config directory for OAuth token storage
+                match crate::config::Config::get_config_directory() {
+                    Ok(config_dir) => {
+                        match AnthropicProvider::new_with_oauth(
+                            config_dir,
+                            config.anthropic_base_url.clone(),
+                            config.anthropic_model.clone(),
+                        ) {
+                            Ok(provider) => {
+                                info!("Using OAuth authentication for Anthropic");
+                                return Ok(Box::new(provider));
+                            }
+                            Err(e) => {
+                                warn!("OAuth authentication failed: {}. Falling back to API key...", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to get config directory: {}. Falling back to API key...", e);
+                    }
+                }
+            }
 
-            Ok(Box::new(provider))
+            // Fall back to API key
+            if let Some(api_key) = config.get_anthropic_api_key() {
+                info!("Using API key authentication for Anthropic");
+                let provider = AnthropicProvider::new(
+                    api_key,
+                    config.anthropic_base_url.clone(),
+                    config.anthropic_model.clone(),
+                )?;
+
+                Ok(Box::new(provider))
+            } else {
+                Err(AiError::ConfigurationError(
+                    "Anthropic authentication not configured. Options:\n\
+                     1. Use OAuth: Run \\aiauth command to authenticate with your subscription\n\
+                     2. Use API Key: Set ANTHROPIC_API_KEY environment variable or add anthropic_api_key to config\n\
+                     3. Disable OAuth: Set anthropic_use_oauth = false in config".to_string()
+                ))
+            }
         }
         AiProviderType::OpenAI => {
             // TODO: Implement OpenAI provider

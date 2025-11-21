@@ -66,7 +66,11 @@ pub struct AiSqlConfig {
     pub provider: AiProviderType,
 
     // === Anthropic Configuration ===
+    /// Prefer OAuth authentication over API key
+    pub anthropic_use_oauth: bool,
+
     /// Anthropic API key (can also use ANTHROPIC_API_KEY env var)
+    /// Falls back to this if OAuth is not configured or fails
     pub anthropic_api_key: Option<String>,
 
     /// Anthropic model name
@@ -176,6 +180,7 @@ impl Default for AiSqlConfig {
             provider: AiProviderType::Anthropic,
 
             // Anthropic defaults
+            anthropic_use_oauth: true, // Prefer OAuth over API key
             anthropic_api_key: None,
             anthropic_model: "claude-3-5-sonnet-20241022".to_string(),
             anthropic_base_url: "https://api.anthropic.com".to_string(),
@@ -320,9 +325,15 @@ impl AiSqlConfig {
             ("provider", "AI provider: anthropic, openai, ollama, custom (default: anthropic)"),
             ("", ""),
             ("# Anthropic Configuration", ""),
-            ("anthropic_api_key", "Anthropic API key (or use ANTHROPIC_API_KEY env var)"),
+            ("anthropic_use_oauth", "Prefer OAuth authentication over API key (default: true)"),
+            ("anthropic_api_key", "Anthropic API key - fallback if OAuth not configured (or use ANTHROPIC_API_KEY env var)"),
             ("anthropic_model", "Model name (default: claude-3-5-sonnet-20241022)"),
             ("anthropic_base_url", "Base URL for Anthropic API (default: https://api.anthropic.com)"),
+            ("", ""),
+            ("# OAuth Authentication", ""),
+            ("", "To authenticate with your Anthropic subscription, use: \\aiauth"),
+            ("", "To logout: \\ailogout"),
+            ("", "OAuth tokens are stored securely and refreshed automatically"),
             ("", ""),
             ("# OpenAI Configuration", ""),
             ("openai_api_key", "OpenAI API key (or use OPENAI_API_KEY env var)"),

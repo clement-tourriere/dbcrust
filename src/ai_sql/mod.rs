@@ -27,6 +27,7 @@ pub mod client;
 pub mod config;
 pub mod dialect;
 pub mod error;
+pub mod oauth;
 pub mod prompt;
 pub mod schema;
 pub mod ui;
@@ -40,7 +41,6 @@ pub use prompt::PromptGenerator;
 pub use schema::{SchemaContext, SchemaExtractor};
 pub use ui::InteractiveMode;
 
-use crate::database::DatabaseType;
 use crate::db::Database;
 use std::sync::Arc;
 use tokio::sync::Mutex;
