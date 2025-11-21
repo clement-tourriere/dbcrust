@@ -2730,7 +2730,7 @@ impl CommandExecutor for Command {
 
                 // Prompt for authorization code
                 use inquire::Text;
-                let code = match Text::new("Authorization code:")
+                let auth_response = match Text::new("Authorization code:")
                     .with_help_message("Paste the code shown on the Anthropic authorization page")
                     .prompt()
                 {
@@ -2743,9 +2743,31 @@ impl CommandExecutor for Command {
                     }
                 };
 
+                // Parse authorization response: format is "CODE#STATE"
+                let auth_response = auth_response.trim();
+                let (code, state) = if let Some((c, s)) = auth_response.split_once('#') {
+                    (c, Some(s))
+                } else {
+                    (auth_response, None)
+                };
+
+                // Validate state parameter if present (CSRF protection)
+                if let Some(returned_state) = state {
+                    if returned_state != pkce.state {
+                        return Ok(CommandResult::Error(format!(
+                            "❌ Authentication failed: State parameter mismatch!\n\
+                             Expected: {}\n\
+                             Received: {}\n\
+                             This could indicate a security issue (CSRF attack).\n\
+                             Please try again with \\aiauth",
+                            pkce.state, returned_state
+                        )));
+                    }
+                }
+
                 // Exchange code for token
                 println!("\nExchanging authorization code for access token...");
-                match oauth_manager.exchange_code(code.trim(), &pkce.verifier).await {
+                match oauth_manager.exchange_code(code, &pkce.verifier).await {
                     Ok(token) => {
                         let expires_at = token
                             .expires_at

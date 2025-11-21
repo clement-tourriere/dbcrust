@@ -181,13 +181,33 @@ async fn handle_ai_auth_subcommand(action: &dbcrust::cli::AiAuthAction) -> Resul
 
             // Prompt for authorization code
             use inquire::Text;
-            let code = Text::new("Authorization code:")
+            let auth_response = Text::new("Authorization code:")
                 .with_help_message("Paste the code shown on the Anthropic authorization page")
                 .prompt()?;
 
+            // Parse authorization response: format is "CODE#STATE"
+            let auth_response = auth_response.trim();
+            let (code, state) = if let Some((c, s)) = auth_response.split_once('#') {
+                (c, Some(s))
+            } else {
+                (auth_response, None)
+            };
+
+            // Validate state parameter if present (CSRF protection)
+            if let Some(returned_state) = state {
+                if returned_state != pkce.state {
+                    eprintln!("\n❌ Authentication failed: State parameter mismatch!");
+                    eprintln!("Expected: {}", pkce.state);
+                    eprintln!("Received: {}", returned_state);
+                    eprintln!("This could indicate a security issue (CSRF attack).");
+                    eprintln!("Please try again with 'dbcrust ai-auth login'");
+                    std::process::exit(1);
+                }
+            }
+
             // Exchange code for token
             println!("\nExchanging authorization code for access token...");
-            match oauth.exchange_code(code.trim(), &pkce.verifier).await {
+            match oauth.exchange_code(code, &pkce.verifier).await {
                 Ok(token) => {
                     println!("\n✅ Successfully authenticated!");
                     println!("Token expires: {}", token.expires_at.format("%Y-%m-%d %H:%M:%S UTC"));
