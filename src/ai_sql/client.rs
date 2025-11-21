@@ -162,14 +162,30 @@ impl AnthropicProvider {
         // Get auth token (OAuth or API key)
         let auth_token = self.get_auth_token().await?;
 
-        // Build request - OAuth access tokens are used as x-api-key for Anthropic API
-        // (Claude Pro/Team OAuth tokens work as API keys)
-        let response = self
+        // Build request with appropriate authentication
+        let mut request = self
             .client
             .post(&url)
-            .header("x-api-key", &auth_token)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+
+        // Use different auth method based on auth type
+        request = match &self.auth_method {
+            AuthMethod::ApiKey(_) => {
+                // API keys use x-api-key header
+                request
+                    .header("x-api-key", &auth_token)
+                    .header("anthropic-version", "2023-06-01")
+            }
+            AuthMethod::OAuth => {
+                // OAuth uses Bearer auth + special beta header (from opencode implementation)
+                request
+                    .bearer_auth(&auth_token)
+                    .header("anthropic-beta", "oauth-2025-04-20")
+                    .header("anthropic-version", "2023-06-01")
+            }
+        };
+
+        let response = request
             .json(&request_body)
             .send()
             .await
@@ -320,12 +336,30 @@ impl AiProvider for AnthropicProvider {
         // Get auth token (OAuth or API key)
         let auth_token = self.get_auth_token().await?;
 
-        // Call Anthropic /v1/models API - OAuth access tokens are used as x-api-key
-        let response = self
+        // Build request with appropriate authentication
+        let mut request = self
             .client
-            .get(format!("{}/v1/models", self.base_url))
-            .header("x-api-key", &auth_token)
-            .header("anthropic-version", "2023-06-01")
+            .get(format!("{}/v1/models", self.base_url));
+
+        // Use different auth method based on auth type
+        request = match &self.auth_method {
+            AuthMethod::ApiKey(_) => {
+                // API keys use x-api-key header
+                request
+                    .header("x-api-key", &auth_token)
+                    .header("anthropic-version", "2023-06-01")
+            }
+            AuthMethod::OAuth => {
+                // OAuth uses Bearer auth + special beta header
+                request
+                    .bearer_auth(&auth_token)
+                    .header("anthropic-beta", "oauth-2025-04-20")
+                    .header("anthropic-version", "2023-06-01")
+            }
+        };
+
+        // Call Anthropic /v1/models API
+        let response = request
             .send()
             .await
             .map_err(|e| AiError::NetworkError(format!("Failed to fetch models: {}", e)))?;
