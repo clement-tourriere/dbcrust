@@ -162,12 +162,20 @@ impl AnthropicProvider {
         // Get auth token (OAuth or API key)
         let auth_token = self.get_auth_token().await?;
 
-        let response = self
+        // Build request with appropriate authentication header
+        let mut request = self
             .client
             .post(&url)
-            .header("x-api-key", &auth_token)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+
+        // Use correct auth header based on auth method
+        request = match &self.auth_method {
+            AuthMethod::ApiKey(_) => request.header("x-api-key", &auth_token),
+            AuthMethod::OAuth => request.bearer_auth(&auth_token),
+        };
+
+        let response = request
             .json(&request_body)
             .send()
             .await
@@ -318,12 +326,20 @@ impl AiProvider for AnthropicProvider {
         // Get auth token (OAuth or API key)
         let auth_token = self.get_auth_token().await?;
 
-        // Call Anthropic /v1/models API
-        let response = self
+        // Build request with appropriate authentication header
+        let mut request = self
             .client
             .get(format!("{}/v1/models", self.base_url))
-            .header("x-api-key", &auth_token)
-            .header("anthropic-version", "2023-06-01")
+            .header("anthropic-version", "2023-06-01");
+
+        // Use correct auth header based on auth method
+        request = match &self.auth_method {
+            AuthMethod::ApiKey(_) => request.header("x-api-key", &auth_token),
+            AuthMethod::OAuth => request.bearer_auth(&auth_token),
+        };
+
+        // Call Anthropic /v1/models API
+        let response = request
             .send()
             .await
             .map_err(|e| AiError::NetworkError(format!("Failed to fetch models: {}", e)))?;
