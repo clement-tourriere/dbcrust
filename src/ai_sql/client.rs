@@ -162,20 +162,14 @@ impl AnthropicProvider {
         // Get auth token (OAuth or API key)
         let auth_token = self.get_auth_token().await?;
 
-        // Build request with appropriate authentication header
-        let mut request = self
+        // Build request - OAuth access tokens are used as x-api-key for Anthropic API
+        // (Claude Pro/Team OAuth tokens work as API keys)
+        let response = self
             .client
             .post(&url)
+            .header("x-api-key", &auth_token)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json");
-
-        // Use correct auth header based on auth method
-        request = match &self.auth_method {
-            AuthMethod::ApiKey(_) => request.header("x-api-key", &auth_token),
-            AuthMethod::OAuth => request.bearer_auth(&auth_token),
-        };
-
-        let response = request
+            .header("content-type", "application/json")
             .json(&request_body)
             .send()
             .await
@@ -326,20 +320,12 @@ impl AiProvider for AnthropicProvider {
         // Get auth token (OAuth or API key)
         let auth_token = self.get_auth_token().await?;
 
-        // Build request with appropriate authentication header
-        let mut request = self
+        // Call Anthropic /v1/models API - OAuth access tokens are used as x-api-key
+        let response = self
             .client
             .get(format!("{}/v1/models", self.base_url))
-            .header("anthropic-version", "2023-06-01");
-
-        // Use correct auth header based on auth method
-        request = match &self.auth_method {
-            AuthMethod::ApiKey(_) => request.header("x-api-key", &auth_token),
-            AuthMethod::OAuth => request.bearer_auth(&auth_token),
-        };
-
-        // Call Anthropic /v1/models API
-        let response = request
+            .header("x-api-key", &auth_token)
+            .header("anthropic-version", "2023-06-01")
             .send()
             .await
             .map_err(|e| AiError::NetworkError(format!("Failed to fetch models: {}", e)))?;
