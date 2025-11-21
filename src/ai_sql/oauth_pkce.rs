@@ -153,6 +153,11 @@ impl AnthropicOAuthPkce {
         pkce_verifier: &str,
     ) -> AiResult<OAuthToken> {
         info!("Exchanging authorization code for access token");
+        info!("Token URL: {}", self.token_url);
+        info!("Client ID: {}", self.client_id);
+        info!("Redirect URI: {}", self.redirect_uri);
+        info!("Code length: {}", code.len());
+        info!("Code verifier length: {}", pkce_verifier.len());
 
         // Build request body as JSON (Anthropic expects JSON, not form-encoded)
         let body = serde_json::json!({
@@ -163,22 +168,26 @@ impl AnthropicOAuthPkce {
             "code_verifier": pkce_verifier,
         });
 
-        debug!("Token exchange request body: {:?}", body);
+        info!("Token exchange request body: {}", serde_json::to_string_pretty(&body).unwrap());
 
         let response = self
             .client
             .post(&self.token_url)
+            .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await
             .map_err(|e| AiError::NetworkError(format!("Token exchange request failed: {}", e)))?;
 
         let status = response.status();
+        info!("Response status: {}", status);
+
         if !status.is_success() {
             let error_text = response
                 .text()
                 .await
                 .unwrap_or_else(|_| "Unknown error".to_string());
+            info!("Error response body: {}", error_text);
             return Err(AiError::ApiError {
                 status_code: status.as_u16(),
                 message: format!("Token exchange failed: {}", error_text),
