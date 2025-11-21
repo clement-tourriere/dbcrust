@@ -154,18 +154,21 @@ impl AnthropicOAuthPkce {
     ) -> AiResult<OAuthToken> {
         info!("Exchanging authorization code for access token");
 
-        let params = [
-            ("grant_type", "authorization_code"),
-            ("client_id", self.client_id.as_str()),
-            ("redirect_uri", self.redirect_uri.as_str()),
-            ("code", code),
-            ("code_verifier", pkce_verifier),
-        ];
+        // Build request body as JSON (Anthropic expects JSON, not form-encoded)
+        let body = serde_json::json!({
+            "grant_type": "authorization_code",
+            "client_id": self.client_id,
+            "redirect_uri": self.redirect_uri,
+            "code": code,
+            "code_verifier": pkce_verifier,
+        });
+
+        debug!("Token exchange request body: {:?}", body);
 
         let response = self
             .client
             .post(&self.token_url)
-            .form(&params)
+            .json(&body)
             .send()
             .await
             .map_err(|e| AiError::NetworkError(format!("Token exchange request failed: {}", e)))?;
@@ -207,16 +210,17 @@ impl AnthropicOAuthPkce {
     pub async fn refresh_token(&self, refresh_token: &str) -> AiResult<OAuthToken> {
         info!("Refreshing access token");
 
-        let params = [
-            ("grant_type", "refresh_token"),
-            ("client_id", self.client_id.as_str()),
-            ("refresh_token", refresh_token),
-        ];
+        // Build request body as JSON (Anthropic expects JSON, not form-encoded)
+        let body = serde_json::json!({
+            "grant_type": "refresh_token",
+            "client_id": self.client_id,
+            "refresh_token": refresh_token,
+        });
 
         let response = self
             .client
             .post(&self.token_url)
-            .form(&params)
+            .json(&body)
             .send()
             .await
             .map_err(|e| AiError::NetworkError(format!("Token refresh request failed: {}", e)))?;
