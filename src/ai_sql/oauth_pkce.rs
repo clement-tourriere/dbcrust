@@ -174,6 +174,14 @@ impl AnthropicOAuthPkce {
             .client
             .post(&self.token_url)
             .header("Content-Type", "application/json")
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Origin", "https://console.anthropic.com")
+            .header("Referer", "https://console.anthropic.com/")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "same-origin")
             .json(&body)
             .send()
             .await
@@ -229,6 +237,15 @@ impl AnthropicOAuthPkce {
         let response = self
             .client
             .post(&self.token_url)
+            .header("Content-Type", "application/json")
+            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .header("Accept", "application/json, text/plain, */*")
+            .header("Accept-Language", "en-US,en;q=0.9")
+            .header("Origin", "https://console.anthropic.com")
+            .header("Referer", "https://console.anthropic.com/")
+            .header("Sec-Fetch-Dest", "empty")
+            .header("Sec-Fetch-Mode", "cors")
+            .header("Sec-Fetch-Site", "same-origin")
             .json(&body)
             .send()
             .await
