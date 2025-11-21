@@ -200,6 +200,9 @@ pub enum Command {
     },
     AiConfig,
     AiClearCache,
+    AiSetModel {
+        model: Option<String>,
+    },
 }
 
 #[derive(Error, Debug)]
@@ -338,6 +341,7 @@ pub enum CommandShortcut {
     Ai,
     Aiconfig,
     Aiclearcache,
+    Aimodel,
 }
 
 impl CommandShortcut {
@@ -421,6 +425,7 @@ impl CommandShortcut {
             CommandShortcut::Ai => "\\ai",
             CommandShortcut::Aiconfig => "\\aiconfig",
             CommandShortcut::Aiclearcache => "\\aiclearcache",
+            CommandShortcut::Aimodel => "\\aimodel",
         }
     }
 
@@ -504,6 +509,7 @@ impl CommandShortcut {
             CommandShortcut::Ai => "Generate SQL from natural language prompt",
             CommandShortcut::Aiconfig => "Show AI SQL configuration",
             CommandShortcut::Aiclearcache => "Clear AI query cache",
+            CommandShortcut::Aimodel => "Show or set AI model (list, <model-name>)",
         }
     }
 
@@ -580,7 +586,8 @@ impl CommandShortcut {
             | CommandShortcut::Aistatus
             | CommandShortcut::Ai
             | CommandShortcut::Aiconfig
-            | CommandShortcut::Aiclearcache => CommandCategory::AiSqlGeneration,
+            | CommandShortcut::Aiclearcache
+            | CommandShortcut::Aimodel => CommandCategory::AiSqlGeneration,
         }
     }
 }
@@ -1028,6 +1035,13 @@ impl CommandParser {
             }
             "aiconfig" => Ok(Command::AiConfig),
             "aiclearcache" => Ok(Command::AiClearCache),
+            "aimodel" => Ok(Command::AiSetModel {
+                model: if args.is_empty() {
+                    None
+                } else {
+                    Some(args.to_string())
+                },
+            }),
 
             _ => Err(CommandError::UnknownCommand(cmd.to_string())),
         }
@@ -2993,6 +3007,69 @@ impl CommandExecutor for Command {
                      Note: Cache is per-session and automatically expires after the configured TTL.".to_string(),
                 ))
             }
+
+            Command::AiSetModel { model } => {
+                // Available Anthropic models
+                let available_models = vec![
+                    ("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet (Latest) - Best for SQL generation"),
+                    ("claude-3-5-haiku-20241022", "Claude 3.5 Haiku - Faster and cheaper"),
+                    ("claude-3-opus-20240229", "Claude 3 Opus - Most capable"),
+                    ("claude-3-sonnet-20240229", "Claude 3 Sonnet - Balanced performance"),
+                    ("claude-3-haiku-20240307", "Claude 3 Haiku - Fastest"),
+                ];
+
+                match model.as_deref() {
+                    None => {
+                        // Show current model
+                        Ok(CommandResult::Output(format!(
+                            "Current model: {}\n\nUse '\\aimodel list' to see available models\nUse '\\aimodel <model-name>' to change model",
+                            config.ai_sql.anthropic_model
+                        )))
+                    }
+                    Some("list") => {
+                        // Show available models
+                        let mut output = String::new();
+                        output.push_str("=== Available Anthropic Models ===\n\n");
+
+                        for (model_id, description) in &available_models {
+                            let current = if *model_id == config.ai_sql.anthropic_model {
+                                " (current)"
+                            } else {
+                                ""
+                            };
+                            output.push_str(&format!("• {}{}\n  {}\n\n", model_id, current, description));
+                        }
+
+                        output.push_str("Use '\\aimodel <model-name>' to change model\n");
+                        Ok(CommandResult::Output(output))
+                    }
+                    Some(model_name) => {
+                        // Validate and set model
+                        let valid_models: Vec<&str> = available_models.iter().map(|(id, _)| *id).collect();
+
+                        if valid_models.contains(&model_name) {
+                            config.ai_sql.anthropic_model = model_name.to_string();
+
+                            // Save config
+                            match config.save() {
+                                Ok(_) => Ok(CommandResult::Output(format!(
+                                    "✅ Model changed to: {}\n\nThe new model will be used for all future AI queries.",
+                                    model_name
+                                ))),
+                                Err(e) => Ok(CommandResult::Error(format!(
+                                    "Failed to save configuration: {}",
+                                    e
+                                ))),
+                            }
+                        } else {
+                            Ok(CommandResult::Error(format!(
+                                "Invalid model: {}\n\nUse '\\aimodel list' to see available models",
+                                model_name
+                            )))
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -3079,6 +3156,7 @@ impl CommandExecutor for Command {
             Command::AiGenerate { .. } => "Generate SQL from natural language prompt",
             Command::AiConfig => "Show AI SQL configuration",
             Command::AiClearCache => "Clear AI query cache",
+            Command::AiSetModel { .. } => "Show or set AI model",
         }
     }
 
@@ -3163,6 +3241,7 @@ impl CommandExecutor for Command {
             Command::AiGenerate { .. } => "\\ai <prompt>",
             Command::AiConfig => "\\aiconfig",
             Command::AiClearCache => "\\aiclearcache",
+            Command::AiSetModel { .. } => "\\aimodel [list|<model-name>]",
         }
     }
 
@@ -3244,7 +3323,8 @@ impl CommandExecutor for Command {
             | Command::AiStatus
             | Command::AiGenerate { .. }
             | Command::AiConfig
-            | Command::AiClearCache => CommandCategory::AiSqlGeneration,
+            | Command::AiClearCache
+            | Command::AiSetModel { .. } => CommandCategory::AiSqlGeneration,
         }
     }
 }
