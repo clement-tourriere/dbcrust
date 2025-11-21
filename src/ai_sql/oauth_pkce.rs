@@ -43,14 +43,19 @@ impl OAuthToken {
 pub struct PkceChallenge {
     pub verifier: String,
     pub challenge: String,
+    pub state: String,
 }
 
 impl PkceChallenge {
     /// Generate a new PKCE challenge
     pub fn generate() -> Self {
-        // Generate random verifier (43-128 characters)
         let mut rng = rand::rng();
+
+        // Generate random verifier (43-128 characters)
         let verifier = Alphanumeric.sample_string(&mut rng, 64);
+
+        // Generate random state for CSRF protection
+        let state = Alphanumeric.sample_string(&mut rng, 32);
 
         // Create S256 challenge: BASE64URL(SHA256(ASCII(code_verifier)))
         let mut hasher = Sha256::new();
@@ -61,6 +66,7 @@ impl PkceChallenge {
         Self {
             verifier,
             challenge,
+            state,
         }
     }
 }
@@ -116,6 +122,7 @@ impl AnthropicOAuthPkce {
             ("redirect_uri", self.redirect_uri.as_str()),
             ("response_type", "code"),
             ("scope", self.scopes.as_str()),
+            ("state", pkce.state.as_str()),
             ("code_challenge", pkce.challenge.as_str()),
             ("code_challenge_method", "S256"),
         ];
