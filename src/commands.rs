@@ -1,6 +1,8 @@
 //! Type-safe enum-based command system with traits for compile-time validation
 //! This replaces the string-based BackslashCommandRegistry with a robust type system
 
+use crate::ai_sql::client::AnthropicProvider;
+use crate::ai_sql::AiProvider;
 use crate::config::{Config as DbCrustConfig, NamedQueryScope};
 use crate::database::{DatabaseType, DatabaseTypeExt};
 use crate::db::Database;
@@ -509,7 +511,7 @@ impl CommandShortcut {
             CommandShortcut::Ai => "Generate SQL from natural language prompt",
             CommandShortcut::Aiconfig => "Show AI SQL configuration",
             CommandShortcut::Aiclearcache => "Clear AI query cache",
-            CommandShortcut::Aimodel => "Show or set AI model (list, <model-name>)",
+            CommandShortcut::Aimodel => "Show or set AI model (list, refresh, <model-name>)",
         }
     }
 
@@ -3009,8 +3011,8 @@ impl CommandExecutor for Command {
             }
 
             Command::AiSetModel { model } => {
-                // Available Anthropic models (current as of 2025)
-                let available_models = vec![
+                // Known Anthropic models (current as of 2025) - used for static list
+                let known_models = vec![
                     ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5 - Smartest model for complex agents and coding (recommended for SQL)"),
                     ("claude-haiku-4-5-20251001", "Claude Haiku 4.5 - Fastest with near-frontier intelligence"),
                     ("claude-opus-4-1-20250805", "Claude Opus 4.1 - Exceptional for specialized reasoning tasks"),
@@ -3020,16 +3022,16 @@ impl CommandExecutor for Command {
                     None => {
                         // Show current model
                         Ok(CommandResult::Output(format!(
-                            "Current model: {}\n\nUse '\\aimodel list' to see available models\nUse '\\aimodel <model-name>' to change model",
+                            "Current model: {}\n\nUse '\\aimodel list' to see available models\nUse '\\aimodel refresh' to fetch latest from Anthropic API\nUse '\\aimodel <model-name>' to change model",
                             config.ai_sql.anthropic_model
                         )))
                     }
                     Some("list") => {
-                        // Show available models
+                        // Show known models (fast, no auth required)
                         let mut output = String::new();
                         output.push_str("=== Available Anthropic Models ===\n\n");
 
-                        for (model_id, description) in &available_models {
+                        for (model_id, description) in &known_models {
                             let current = if *model_id == config.ai_sql.anthropic_model {
                                 " (current)"
                             } else {
@@ -3039,31 +3041,107 @@ impl CommandExecutor for Command {
                         }
 
                         output.push_str("Use '\\aimodel <model-name>' to change model\n");
+                        output.push_str("Use '\\aimodel refresh' to fetch latest models from API\n");
+                        Ok(CommandResult::Output(output))
+                    }
+                    Some("refresh") => {
+                        // Fetch latest models from Anthropic API (requires auth)
+                        if !config.ai_sql.enabled {
+                            return Ok(CommandResult::Error(
+                                "AI SQL feature is disabled. Enable it in config.toml".to_string()
+                            ));
+                        }
+
+                        // Create provider to fetch models
+                        let config_dir = match crate::config::Config::get_config_directory() {
+                            Ok(dir) => dir,
+                            Err(e) => {
+                                return Ok(CommandResult::Error(format!(
+                                    "Failed to get config directory: {}",
+                                    e
+                                )));
+                            }
+                        };
+
+                        let provider_result = if config.ai_sql.anthropic_use_oauth {
+                            AnthropicProvider::new_with_oauth(
+                                config_dir,
+                                config.ai_sql.anthropic_base_url.clone(),
+                                config.ai_sql.anthropic_model.clone(),
+                            )
+                        } else if let Some(api_key) = config.ai_sql.get_anthropic_api_key() {
+                            AnthropicProvider::new(
+                                api_key,
+                                config.ai_sql.anthropic_base_url.clone(),
+                                config.ai_sql.anthropic_model.clone(),
+                            )
+                        } else {
+                            return Ok(CommandResult::Error(
+                                "No authentication configured.\nUse '\\aiauth' for OAuth or set anthropic_api_key in config".to_string()
+                            ));
+                        };
+
+                        let provider = match provider_result {
+                            Ok(p) => p,
+                            Err(e) => {
+                                return Ok(CommandResult::Error(format!(
+                                    "Failed to create provider: {}\n\nTry '\\aiauth' to authenticate",
+                                    e
+                                )));
+                            }
+                        };
+
+                        // Fetch models from API
+                        println!("Fetching models from Anthropic API...");
+                        let models = match provider.list_models().await {
+                            Ok(m) => m,
+                            Err(e) => {
+                                return Ok(CommandResult::Error(format!(
+                                    "Failed to fetch models: {}\n\nFalling back to '\\aimodel list' for known models",
+                                    e
+                                )));
+                            }
+                        };
+
+                        // Display fetched models
+                        let mut output = String::new();
+                        output.push_str("=== Available Anthropic Models (from API) ===\n\n");
+
+                        if models.is_empty() {
+                            output.push_str("No models returned from API.\n");
+                        } else {
+                            for model in &models {
+                                let current = if model.id == config.ai_sql.anthropic_model {
+                                    " (current)"
+                                } else {
+                                    ""
+                                };
+                                output.push_str(&format!("• {}{}\n", model.id, current));
+                                output.push_str(&format!("  {}\n", model.display_name));
+                                if let Some(desc) = &model.description {
+                                    output.push_str(&format!("  {}\n", desc));
+                                }
+                                output.push_str("\n");
+                            }
+                        }
+
+                        output.push_str("Use '\\aimodel <model-name>' to change model\n");
                         Ok(CommandResult::Output(output))
                     }
                     Some(model_name) => {
-                        // Validate and set model
-                        let valid_models: Vec<&str> = available_models.iter().map(|(id, _)| *id).collect();
+                        // Set model (validate against known models, but allow any string)
+                        config.ai_sql.anthropic_model = model_name.to_string();
 
-                        if valid_models.contains(&model_name) {
-                            config.ai_sql.anthropic_model = model_name.to_string();
-
-                            // Save config
-                            match config.save() {
-                                Ok(_) => Ok(CommandResult::Output(format!(
-                                    "✅ Model changed to: {}\n\nThe new model will be used for all future AI queries.",
-                                    model_name
-                                ))),
-                                Err(e) => Ok(CommandResult::Error(format!(
-                                    "Failed to save configuration: {}",
-                                    e
-                                ))),
-                            }
-                        } else {
-                            Ok(CommandResult::Error(format!(
-                                "Invalid model: {}\n\nUse '\\aimodel list' to see available models",
+                        // Save config
+                        match config.save() {
+                            Ok(_) => Ok(CommandResult::Output(format!(
+                                "✅ Model changed to: {}\n\nThe new model will be used for all future AI queries.",
                                 model_name
-                            )))
+                            ))),
+                            Err(e) => Ok(CommandResult::Error(format!(
+                                "Failed to save configuration: {}",
+                                e
+                            ))),
                         }
                     }
                 }
@@ -3239,7 +3317,7 @@ impl CommandExecutor for Command {
             Command::AiGenerate { .. } => "\\ai <prompt>",
             Command::AiConfig => "\\aiconfig",
             Command::AiClearCache => "\\aiclearcache",
-            Command::AiSetModel { .. } => "\\aimodel [list|<model-name>]",
+            Command::AiSetModel { .. } => "\\aimodel [list|refresh|<model-name>]",
         }
     }
 

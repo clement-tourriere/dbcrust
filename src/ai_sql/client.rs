@@ -315,15 +315,15 @@ impl AiProvider for AnthropicProvider {
     async fn list_models(&self) -> AiResult<Vec<AiModel>> {
         info!("Fetching available models from Anthropic API");
 
-        // Get access token
-        let access_token = self.get_access_token().await?;
+        // Get auth token (OAuth or API key)
+        let auth_token = self.get_auth_token().await?;
 
         // Call Anthropic /v1/models API
         let response = self
             .client
             .get(format!("{}/v1/models", self.base_url))
+            .header("x-api-key", &auth_token)
             .header("anthropic-version", "2023-06-01")
-            .bearer_auth(&access_token)
             .send()
             .await
             .map_err(|e| AiError::NetworkError(format!("Failed to fetch models: {}", e)))?;
@@ -331,10 +331,10 @@ impl AiProvider for AnthropicProvider {
         if !response.status().is_success() {
             let status = response.status();
             let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-            return Err(AiError::ApiError(format!(
-                "Failed to fetch models ({}): {}",
-                status, error_text
-            )));
+            return Err(AiError::ApiError {
+                status_code: status.as_u16(),
+                message: format!("Failed to fetch models: {}", error_text),
+            });
         }
 
         #[derive(Deserialize)]
@@ -349,10 +349,10 @@ impl AiProvider for AnthropicProvider {
         }
 
         let models_response: ModelsResponse = response.json().await.map_err(|e| {
-            AiError::ParseError(format!("Failed to parse models response: {}", e))
+            AiError::ProviderError(format!("Failed to parse models response: {}", e))
         })?;
 
-        let models = models_response
+        let models: Vec<AiModel> = models_response
             .data
             .into_iter()
             .map(|m| {
