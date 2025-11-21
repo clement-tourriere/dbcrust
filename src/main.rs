@@ -185,16 +185,11 @@ async fn handle_ai_auth_subcommand(action: &dbcrust::cli::AiAuthAction) -> Resul
                 .with_help_message("Paste the code shown on the Anthropic authorization page")
                 .prompt()?;
 
-            // Parse authorization response: format is "CODE#STATE"
+            // Validate authorization response format: "CODE#STATE"
             let auth_response = auth_response.trim();
-            let (code, state) = if let Some((c, s)) = auth_response.split_once('#') {
-                (c, Some(s))
-            } else {
-                (auth_response, None)
-            };
 
             // Validate state parameter if present (CSRF protection)
-            if let Some(returned_state) = state {
+            if let Some((_, returned_state)) = auth_response.split_once('#') {
                 if returned_state != pkce.state {
                     eprintln!("\n❌ Authentication failed: State parameter mismatch!");
                     eprintln!("Expected: {}", pkce.state);
@@ -205,9 +200,9 @@ async fn handle_ai_auth_subcommand(action: &dbcrust::cli::AiAuthAction) -> Resul
                 }
             }
 
-            // Exchange code for token
+            // Exchange code for token (pass full CODE#STATE string)
             println!("\nExchanging authorization code for access token...");
-            match oauth.exchange_code(code, &pkce.verifier).await {
+            match oauth.exchange_code(auth_response, &pkce.verifier).await {
                 Ok(token) => {
                     println!("\n✅ Successfully authenticated!");
                     println!("Token expires: {}", token.expires_at.format("%Y-%m-%d %H:%M:%S UTC"));

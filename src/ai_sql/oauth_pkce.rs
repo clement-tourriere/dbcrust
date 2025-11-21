@@ -92,7 +92,7 @@ impl AnthropicOAuthPkce {
 
         // Real Anthropic OAuth endpoints (from opencode-anthropic-auth)
         let auth_url = "https://claude.ai/oauth/authorize".to_string();
-        let token_url = "https://console.anthropic.com/oauth/token".to_string();
+        let token_url = "https://console.anthropic.com/v1/oauth/token".to_string();
 
         // Anthropic's callback page (displays code for user to copy)
         let redirect_uri = "https://console.anthropic.com/oauth/code/callback".to_string();
@@ -159,20 +159,30 @@ impl AnthropicOAuthPkce {
         info!("Code length: {}", code.len());
         info!("Code verifier length: {}", pkce_verifier.len());
 
-        info!("Token exchange request body: grant_type=authorization_code, client_id={}, code_length={}, verifier_length={}",
-            self.client_id, code.len(), pkce_verifier.len());
+        // Split code#state format from Anthropic
+        let splits: Vec<&str> = code.split('#').collect();
+        let code_part = splits[0];
+        let state_part = splits.get(1).unwrap_or(&"");
 
-        let params = [
-            ("grant_type", "authorization_code"),
-            ("client_id", self.client_id.as_str()),
-            ("redirect_uri", self.redirect_uri.as_str()),
-            ("code", code),
-            ("code_verifier", pkce_verifier),
-        ];
+        info!("Code part length: {}", code_part.len());
+        info!("State part length: {}", state_part.len());
+
+        // Build JSON request body per OAuth 2.0 spec and Anthropic's implementation
+        let body = serde_json::json!({
+            "code": code_part,
+            "state": state_part,
+            "grant_type": "authorization_code",
+            "client_id": self.client_id,
+            "redirect_uri": self.redirect_uri,
+            "code_verifier": pkce_verifier,
+        });
+
+        info!("Token exchange request body: {}", serde_json::to_string(&body).unwrap_or_default());
 
         let response = self
             .client
             .post(&self.token_url)
+            .header("Content-Type", "application/json")
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .header("Accept", "application/json, text/plain, */*")
             .header("Accept-Language", "en-US,en;q=0.9")
@@ -181,7 +191,7 @@ impl AnthropicOAuthPkce {
             .header("Sec-Fetch-Dest", "empty")
             .header("Sec-Fetch-Mode", "cors")
             .header("Sec-Fetch-Site", "same-origin")
-            .form(&params)
+            .json(&body)
             .send()
             .await
             .map_err(|e| AiError::NetworkError(format!("Token exchange request failed: {}", e)))?;
@@ -226,16 +236,17 @@ impl AnthropicOAuthPkce {
     pub async fn refresh_token(&self, refresh_token: &str) -> AiResult<OAuthToken> {
         info!("Refreshing access token");
 
-        // Build request body as form-encoded (OAuth 2.0 standard)
-        let params = [
-            ("grant_type", "refresh_token"),
-            ("client_id", self.client_id.as_str()),
-            ("refresh_token", refresh_token),
-        ];
+        // Build JSON request body (matching token exchange format)
+        let body = serde_json::json!({
+            "grant_type": "refresh_token",
+            "client_id": self.client_id,
+            "refresh_token": refresh_token,
+        });
 
         let response = self
             .client
             .post(&self.token_url)
+            .header("Content-Type", "application/json")
             .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .header("Accept", "application/json, text/plain, */*")
             .header("Accept-Language", "en-US,en;q=0.9")
@@ -244,7 +255,7 @@ impl AnthropicOAuthPkce {
             .header("Sec-Fetch-Dest", "empty")
             .header("Sec-Fetch-Mode", "cors")
             .header("Sec-Fetch-Site", "same-origin")
-            .form(&params)
+            .json(&body)
             .send()
             .await
             .map_err(|e| AiError::NetworkError(format!("Token refresh request failed: {}", e)))?;

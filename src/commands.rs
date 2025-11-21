@@ -2743,16 +2743,11 @@ impl CommandExecutor for Command {
                     }
                 };
 
-                // Parse authorization response: format is "CODE#STATE"
+                // Validate authorization response format: "CODE#STATE"
                 let auth_response = auth_response.trim();
-                let (code, state) = if let Some((c, s)) = auth_response.split_once('#') {
-                    (c, Some(s))
-                } else {
-                    (auth_response, None)
-                };
 
                 // Validate state parameter if present (CSRF protection)
-                if let Some(returned_state) = state {
+                if let Some((_, returned_state)) = auth_response.split_once('#') {
                     if returned_state != pkce.state {
                         return Ok(CommandResult::Error(format!(
                             "❌ Authentication failed: State parameter mismatch!\n\
@@ -2765,9 +2760,9 @@ impl CommandExecutor for Command {
                     }
                 }
 
-                // Exchange code for token
+                // Exchange code for token (pass full CODE#STATE string)
                 println!("\nExchanging authorization code for access token...");
-                match oauth_manager.exchange_code(code, &pkce.verifier).await {
+                match oauth_manager.exchange_code(auth_response, &pkce.verifier).await {
                     Ok(token) => {
                         let expires_at = token
                             .expires_at
