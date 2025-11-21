@@ -37,6 +37,7 @@ pub use client::{AiProvider, AiResponse};
 pub use config::AiSqlConfig;
 pub use dialect::{SqlDialectProvider, SqlFeatures};
 pub use error::{AiError, AiResult};
+pub use oauth::{AnthropicOAuthManager, OAuthToken};
 pub use prompt::PromptGenerator;
 pub use schema::{SchemaContext, SchemaExtractor};
 pub use ui::InteractiveMode;

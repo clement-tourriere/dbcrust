@@ -190,6 +190,16 @@ pub enum Command {
         mode: Option<String>,
     },
     ComplexDisplayJsonToggle,
+
+    // AI SQL generation commands
+    AiAuthenticate,
+    AiLogout,
+    AiStatus,
+    AiGenerate {
+        prompt: String,
+    },
+    AiConfig,
+    AiClearCache,
 }
 
 #[derive(Error, Debug)]
@@ -245,6 +255,7 @@ pub enum CommandCategory {
     VaultManagement,
     PasswordManagement,
     Advanced,
+    AiSqlGeneration,
 }
 
 /// Command shortcuts with associated metadata for automatic generation
@@ -320,6 +331,13 @@ pub enum CommandShortcut {
     // Complex display commands (minimal set)
     Cd,
     Cdj,
+    // AI SQL generation commands
+    Aiauth,
+    Ailogout,
+    Aistatus,
+    Ai,
+    Aiconfig,
+    Aiclearcache,
 }
 
 impl CommandShortcut {
@@ -396,6 +414,13 @@ impl CommandShortcut {
             // Complex display commands (minimal set)
             CommandShortcut::Cd => "\\cd",
             CommandShortcut::Cdj => "\\cdj",
+            // AI SQL generation commands
+            CommandShortcut::Aiauth => "\\aiauth",
+            CommandShortcut::Ailogout => "\\ailogout",
+            CommandShortcut::Aistatus => "\\aistatus",
+            CommandShortcut::Ai => "\\ai",
+            CommandShortcut::Aiconfig => "\\aiconfig",
+            CommandShortcut::Aiclearcache => "\\aiclearcache",
         }
     }
 
@@ -472,6 +497,13 @@ impl CommandShortcut {
             // Complex display commands (minimal set)
             CommandShortcut::Cd => "Set complex data display mode",
             CommandShortcut::Cdj => "Toggle JSON pretty printing",
+            // AI SQL generation commands
+            CommandShortcut::Aiauth => "Authenticate with Anthropic using OAuth (subscription)",
+            CommandShortcut::Ailogout => "Logout from Anthropic OAuth session",
+            CommandShortcut::Aistatus => "Show current AI authentication status",
+            CommandShortcut::Ai => "Generate SQL from natural language prompt",
+            CommandShortcut::Aiconfig => "Show AI SQL configuration",
+            CommandShortcut::Aiclearcache => "Clear AI query cache",
         }
     }
 
@@ -542,6 +574,13 @@ impl CommandShortcut {
             | CommandShortcut::Ps => CommandCategory::Advanced,
             // Complex display commands
             CommandShortcut::Cd | CommandShortcut::Cdj => CommandCategory::DisplayOptions,
+            // AI SQL generation commands
+            CommandShortcut::Aiauth
+            | CommandShortcut::Ailogout
+            | CommandShortcut::Aistatus
+            | CommandShortcut::Ai
+            | CommandShortcut::Aiconfig
+            | CommandShortcut::Aiclearcache => CommandCategory::AiSqlGeneration,
         }
     }
 }
@@ -973,6 +1012,22 @@ impl CommandParser {
                     search_term,
                 })
             }
+
+            // AI SQL generation commands
+            "aiauth" => Ok(Command::AiAuthenticate),
+            "ailogout" => Ok(Command::AiLogout),
+            "aistatus" => Ok(Command::AiStatus),
+            "ai" => {
+                if args.is_empty() {
+                    Err(CommandError::MissingArgument("prompt".to_string()))
+                } else {
+                    Ok(Command::AiGenerate {
+                        prompt: args.to_string(),
+                    })
+                }
+            }
+            "aiconfig" => Ok(Command::AiConfig),
+            "aiclearcache" => Ok(Command::AiClearCache),
 
             _ => Err(CommandError::UnknownCommand(cmd.to_string())),
         }
@@ -2623,6 +2678,48 @@ impl CommandExecutor for Command {
                     }
                 }
             }
+
+            // AI SQL generation commands
+            Command::AiAuthenticate => {
+                // TODO: Implement OAuth authentication flow
+                // Call oauth_manager.authenticate()
+                Ok(CommandResult::Output(
+                    "AI authentication not yet fully implemented. Coming soon!".to_string(),
+                ))
+            }
+            Command::AiLogout => {
+                // TODO: Implement OAuth logout
+                // Call oauth_manager.logout()
+                Ok(CommandResult::Output(
+                    "AI logout not yet fully implemented. Coming soon!".to_string(),
+                ))
+            }
+            Command::AiStatus => {
+                // TODO: Check authentication status
+                // Call oauth_manager.is_authenticated()
+                Ok(CommandResult::Output(
+                    "AI status check not yet fully implemented. Coming soon!".to_string(),
+                ))
+            }
+            Command::AiGenerate { prompt } => {
+                // TODO: Implement SQL generation from natural language
+                Ok(CommandResult::Output(format!(
+                    "AI SQL generation not yet fully implemented. Your prompt was: {}\nComing soon!",
+                    prompt
+                )))
+            }
+            Command::AiConfig => {
+                // TODO: Show AI SQL configuration
+                Ok(CommandResult::Output(
+                    "AI config display not yet fully implemented. Coming soon!".to_string(),
+                ))
+            }
+            Command::AiClearCache => {
+                // TODO: Clear AI query cache
+                Ok(CommandResult::Output(
+                    "AI cache clear not yet fully implemented. Coming soon!".to_string(),
+                ))
+            }
         }
     }
 
@@ -2702,6 +2799,13 @@ impl CommandExecutor for Command {
             Command::MongoFind { .. } => "Execute MongoDB find query",
             Command::MongoAggregate { .. } => "Execute MongoDB aggregation pipeline",
             Command::MongoTextSearch { .. } => "Execute MongoDB text search",
+            // AI SQL generation commands
+            Command::AiAuthenticate => "Authenticate with Anthropic using OAuth",
+            Command::AiLogout => "Logout from Anthropic OAuth session",
+            Command::AiStatus => "Show AI authentication status",
+            Command::AiGenerate { .. } => "Generate SQL from natural language prompt",
+            Command::AiConfig => "Show AI SQL configuration",
+            Command::AiClearCache => "Clear AI query cache",
         }
     }
 
@@ -2779,6 +2883,13 @@ impl CommandExecutor for Command {
             Command::MongoFind { .. } => "\\find <collection> [filter] [projection] [limit]",
             Command::MongoAggregate { .. } => "\\aggregate <collection> <pipeline>",
             Command::MongoTextSearch { .. } => "\\search <collection> <search_term>",
+            // AI SQL generation commands
+            Command::AiAuthenticate => "\\aiauth",
+            Command::AiLogout => "\\ailogout",
+            Command::AiStatus => "\\aistatus",
+            Command::AiGenerate { .. } => "\\ai <prompt>",
+            Command::AiConfig => "\\aiconfig",
+            Command::AiClearCache => "\\aiclearcache",
         }
     }
 
@@ -2854,6 +2965,13 @@ impl CommandExecutor for Command {
             Command::MongoFind { .. } => CommandCategory::DatabaseSpecific,
             Command::MongoAggregate { .. } => CommandCategory::DatabaseSpecific,
             Command::MongoTextSearch { .. } => CommandCategory::DatabaseSpecific,
+            // AI SQL generation commands
+            Command::AiAuthenticate
+            | Command::AiLogout
+            | Command::AiStatus
+            | Command::AiGenerate { .. }
+            | Command::AiConfig
+            | Command::AiClearCache => CommandCategory::AiSqlGeneration,
         }
     }
 }
