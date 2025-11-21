@@ -93,6 +93,8 @@ impl AnthropicOAuthPkce {
         // Real Anthropic OAuth endpoints (from opencode-anthropic-auth)
         let auth_url = "https://claude.ai/oauth/authorize".to_string();
         let token_url = "https://console.anthropic.com/v1/oauth/token".to_string();
+
+        // Anthropic's callback page (displays code for user to copy)
         let redirect_uri = "https://console.anthropic.com/oauth/code/callback".to_string();
 
         // Public client ID from opencode-anthropic-auth

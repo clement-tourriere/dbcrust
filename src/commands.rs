@@ -2721,81 +2721,31 @@ impl CommandExecutor for Command {
                 let auth_url = oauth_manager.start_authorization(&pkce);
 
                 println!("Please follow these steps:");
-                println!("1. Open your browser and visit:");
+                println!("1. Open your browser and visit this URL:");
                 println!("\n   {}\n", auth_url);
                 println!("2. Sign in with your Anthropic account (Claude Pro/Team)");
                 println!("3. Authorize dbcrust to access your account");
-                println!("4. You'll be redirected to a URL starting with:");
-                println!("   https://console.anthropic.com/oauth/code/callback?code=...&state=...");
-                println!("\n5. Copy the ENTIRE redirect URL and paste it here:\n");
+                println!("4. Anthropic will display an authorization code");
+                println!("5. Copy the authorization code and paste it below\n");
 
-                // Prompt for the complete redirect URL
+                // Prompt for authorization code
                 use inquire::Text;
-                let redirect_url = match Text::new("Redirect URL:")
-                    .with_help_message("Paste the complete URL from your browser address bar")
+                let code = match Text::new("Authorization code:")
+                    .with_help_message("Paste the code shown on the Anthropic authorization page")
                     .prompt()
                 {
-                    Ok(url) => url,
+                    Ok(code) => code,
                     Err(e) => {
                         return Ok(CommandResult::Error(format!(
-                            "Failed to get redirect URL: {}",
+                            "Failed to get authorization code: {}",
                             e
                         )));
                     }
                 };
-
-                // Parse the URL to extract code and state
-                println!("\nParsing authorization response...");
-                let parsed_url = match url::Url::parse(redirect_url.trim()) {
-                    Ok(url) => url,
-                    Err(e) => {
-                        return Ok(CommandResult::Error(format!(
-                            "Invalid URL format: {}. Please paste the complete redirect URL.",
-                            e
-                        )));
-                    }
-                };
-
-                // Extract code parameter
-                let code = match parsed_url
-                    .query_pairs()
-                    .find(|(key, _)| key == "code")
-                    .map(|(_, value)| value.to_string())
-                {
-                    Some(c) => c,
-                    None => {
-                        return Ok(CommandResult::Error(
-                            "No 'code' parameter found in URL. Please make sure you copied the complete redirect URL.".to_string()
-                        ));
-                    }
-                };
-
-                // Extract state parameter
-                let returned_state = match parsed_url
-                    .query_pairs()
-                    .find(|(key, _)| key == "state")
-                    .map(|(_, value)| value.to_string())
-                {
-                    Some(s) => s,
-                    None => {
-                        return Ok(CommandResult::Error(
-                            "No 'state' parameter found in URL. This might indicate a problem with the OAuth flow.".to_string()
-                        ));
-                    }
-                };
-
-                // Validate state parameter (CSRF protection)
-                if returned_state != pkce.state {
-                    return Ok(CommandResult::Error(
-                        "❌ Authentication failed: State parameter mismatch!\n\
-                         This could indicate a security issue (CSRF attack).\n\
-                         Please try again with \\aiauth".to_string()
-                    ));
-                }
 
                 // Exchange code for token
-                println!("Exchanging authorization code for access token...");
-                match oauth_manager.exchange_code(&code, &pkce.verifier).await {
+                println!("\nExchanging authorization code for access token...");
+                match oauth_manager.exchange_code(code.trim(), &pkce.verifier).await {
                     Ok(token) => {
                         let expires_at = token
                             .expires_at
