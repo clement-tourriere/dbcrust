@@ -177,18 +177,50 @@ async fn handle_ai_auth_subcommand(action: &dbcrust::cli::AiAuthAction) -> Resul
             println!("2. Sign in with your Anthropic account (Claude Pro/Team)");
             println!("3. Authorize dbcrust to access your account");
             println!("4. You'll be redirected to a URL starting with:");
-            println!("   https://console.anthropic.com/oauth/code/callback?code=...");
-            println!("\n5. Copy the 'code' parameter value from that URL and paste it here:\n");
+            println!("   https://console.anthropic.com/oauth/code/callback?code=...&state=...");
+            println!("\n5. Copy the ENTIRE redirect URL and paste it here:\n");
 
-            // Prompt for authorization code
+            // Prompt for the complete redirect URL
             use inquire::Text;
-            let code = Text::new("Authorization code:")
-                .with_help_message("Paste the code from the redirect URL")
+            let redirect_url = Text::new("Redirect URL:")
+                .with_help_message("Paste the complete URL from your browser address bar")
                 .prompt()?;
 
+            // Parse the URL to extract code and state
+            println!("\nParsing authorization response...");
+            let parsed_url = url::Url::parse(redirect_url.trim()).map_err(|e| {
+                format!("Invalid URL format: {}. Please paste the complete redirect URL.", e)
+            })?;
+
+            // Extract code parameter
+            let code = parsed_url
+                .query_pairs()
+                .find(|(key, _)| key == "code")
+                .map(|(_, value)| value.to_string())
+                .ok_or_else(|| {
+                    "No 'code' parameter found in URL. Please make sure you copied the complete redirect URL.".to_string()
+                })?;
+
+            // Extract state parameter
+            let returned_state = parsed_url
+                .query_pairs()
+                .find(|(key, _)| key == "state")
+                .map(|(_, value)| value.to_string())
+                .ok_or_else(|| {
+                    "No 'state' parameter found in URL. This might indicate a problem with the OAuth flow.".to_string()
+                })?;
+
+            // Validate state parameter (CSRF protection)
+            if returned_state != pkce.state {
+                eprintln!("\n❌ Authentication failed: State parameter mismatch!");
+                eprintln!("This could indicate a security issue (CSRF attack).");
+                eprintln!("Please try again with 'dbcrust ai-auth login'");
+                std::process::exit(1);
+            }
+
             // Exchange code for token
-            println!("\nExchanging code for access token...");
-            match oauth.exchange_code(&code.trim(), &pkce.verifier).await {
+            println!("Exchanging authorization code for access token...");
+            match oauth.exchange_code(&code, &pkce.verifier).await {
                 Ok(token) => {
                     println!("\n✅ Successfully authenticated!");
                     println!("Token expires: {}", token.expires_at.format("%Y-%m-%d %H:%M:%S UTC"));

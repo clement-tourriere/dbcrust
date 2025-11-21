@@ -2699,8 +2699,8 @@ impl CommandExecutor for Command {
                     }
                 };
 
-                // Create OAuth manager
-                let oauth_manager = match crate::ai_sql::AnthropicOAuthManager::new(config_dir) {
+                // Create OAuth manager with PKCE
+                let oauth_manager = match crate::ai_sql::AnthropicOAuthPkce::new(config_dir) {
                     Ok(m) => m,
                     Err(e) => {
                         return Ok(CommandResult::Error(format!(
@@ -2710,18 +2710,99 @@ impl CommandExecutor for Command {
                     }
                 };
 
-                // Start authentication flow
-                println!("Starting Anthropic OAuth authentication...");
+                // Start authentication flow with PKCE
+                println!("🔐 Authenticating with Anthropic OAuth...\n");
                 println!("This will use your Anthropic subscription for Claude API access.\n");
 
-                match oauth_manager.authenticate().await {
+                // Generate PKCE challenge
+                let pkce = crate::ai_sql::PkceChallenge::generate();
+
+                // Get authorization URL
+                let auth_url = oauth_manager.start_authorization(&pkce);
+
+                println!("Please follow these steps:");
+                println!("1. Open your browser and visit:");
+                println!("\n   {}\n", auth_url);
+                println!("2. Sign in with your Anthropic account (Claude Pro/Team)");
+                println!("3. Authorize dbcrust to access your account");
+                println!("4. You'll be redirected to a URL starting with:");
+                println!("   https://console.anthropic.com/oauth/code/callback?code=...&state=...");
+                println!("\n5. Copy the ENTIRE redirect URL and paste it here:\n");
+
+                // Prompt for the complete redirect URL
+                use inquire::Text;
+                let redirect_url = match Text::new("Redirect URL:")
+                    .with_help_message("Paste the complete URL from your browser address bar")
+                    .prompt()
+                {
+                    Ok(url) => url,
+                    Err(e) => {
+                        return Ok(CommandResult::Error(format!(
+                            "Failed to get redirect URL: {}",
+                            e
+                        )));
+                    }
+                };
+
+                // Parse the URL to extract code and state
+                println!("\nParsing authorization response...");
+                let parsed_url = match url::Url::parse(redirect_url.trim()) {
+                    Ok(url) => url,
+                    Err(e) => {
+                        return Ok(CommandResult::Error(format!(
+                            "Invalid URL format: {}. Please paste the complete redirect URL.",
+                            e
+                        )));
+                    }
+                };
+
+                // Extract code parameter
+                let code = match parsed_url
+                    .query_pairs()
+                    .find(|(key, _)| key == "code")
+                    .map(|(_, value)| value.to_string())
+                {
+                    Some(c) => c,
+                    None => {
+                        return Ok(CommandResult::Error(
+                            "No 'code' parameter found in URL. Please make sure you copied the complete redirect URL.".to_string()
+                        ));
+                    }
+                };
+
+                // Extract state parameter
+                let returned_state = match parsed_url
+                    .query_pairs()
+                    .find(|(key, _)| key == "state")
+                    .map(|(_, value)| value.to_string())
+                {
+                    Some(s) => s,
+                    None => {
+                        return Ok(CommandResult::Error(
+                            "No 'state' parameter found in URL. This might indicate a problem with the OAuth flow.".to_string()
+                        ));
+                    }
+                };
+
+                // Validate state parameter (CSRF protection)
+                if returned_state != pkce.state {
+                    return Ok(CommandResult::Error(
+                        "❌ Authentication failed: State parameter mismatch!\n\
+                         This could indicate a security issue (CSRF attack).\n\
+                         Please try again with \\aiauth".to_string()
+                    ));
+                }
+
+                // Exchange code for token
+                println!("Exchanging authorization code for access token...");
+                match oauth_manager.exchange_code(&code, &pkce.verifier).await {
                     Ok(token) => {
                         let expires_at = token
                             .expires_at
                             .format("%Y-%m-%d %H:%M:%S UTC")
                             .to_string();
                         Ok(CommandResult::Output(format!(
-                            "✓ Successfully authenticated with Anthropic!\n\
+                            "✅ Successfully authenticated with Anthropic!\n\
                              Token expires at: {}\n\
                              You can now use \\ai command to generate SQL queries.",
                             expires_at
@@ -2747,8 +2828,8 @@ impl CommandExecutor for Command {
                     }
                 };
 
-                // Create OAuth manager
-                let oauth_manager = match crate::ai_sql::AnthropicOAuthManager::new(config_dir) {
+                // Create OAuth manager with PKCE
+                let oauth_manager = match crate::ai_sql::AnthropicOAuthPkce::new(config_dir) {
                     Ok(m) => m,
                     Err(e) => {
                         return Ok(CommandResult::Error(format!(
@@ -2761,7 +2842,7 @@ impl CommandExecutor for Command {
                 // Logout
                 match oauth_manager.logout().await {
                     Ok(_) => Ok(CommandResult::Output(
-                        "✓ Successfully logged out from Anthropic.\n\
+                        "✅ Successfully logged out from Anthropic.\n\
                          Your OAuth token has been removed.".to_string(),
                     )),
                     Err(e) => Ok(CommandResult::Error(format!("Logout failed: {}", e))),
@@ -2796,7 +2877,7 @@ impl CommandExecutor for Command {
                         }
                     };
 
-                    let oauth_manager = match crate::ai_sql::AnthropicOAuthManager::new(config_dir) {
+                    let oauth_manager = match crate::ai_sql::AnthropicOAuthPkce::new(config_dir) {
                         Ok(m) => m,
                         Err(e) => {
                             return Ok(CommandResult::Error(format!(
@@ -2816,7 +2897,7 @@ impl CommandExecutor for Command {
                                         .format("%Y-%m-%d %H:%M:%S UTC")
                                         .to_string();
                                     status.push_str(&format!(
-                                        "Authentication: OAuth (Authenticated ✓)\n"
+                                        "Authentication: OAuth (Authenticated ✅)\n"
                                     ));
                                     status.push_str(&format!("Token expires: {}\n", expires_at));
                                 }
@@ -2827,7 +2908,7 @@ impl CommandExecutor for Command {
                             }
                         }
                         Err(_) => {
-                            status.push_str("Authentication: OAuth (Not authenticated ✗)\n");
+                            status.push_str("Authentication: OAuth (Not authenticated ❌)\n");
                             status.push_str("Run \\aiauth to authenticate\n");
                         }
                     }
