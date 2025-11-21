@@ -393,6 +393,10 @@ pub struct Config {
     #[serde(default)]
     pub complex_display: crate::complex_display::ComplexDisplayConfig,
 
+    // AI SQL generation configuration
+    #[serde(default)]
+    pub ai_sql: crate::ai_sql::AiSqlConfig,
+
     // Recent connections - not serialized with main config, stored separately
     #[serde(skip)]
     recent_connections_storage: RecentConnectionsStorage,
@@ -437,6 +441,7 @@ impl Default for Config {
             metadata_timeout_seconds: default_metadata_timeout(),
             vector_display: crate::vector_display::VectorDisplayConfig::default(),
             complex_display: crate::complex_display::ComplexDisplayConfig::default(),
+            ai_sql: crate::ai_sql::AiSqlConfig::default(),
             recent_connections_storage: {
                 // For tests, use empty storage to avoid loading user data
                 let is_test = std::env::var("RUST_TEST_MODE").is_ok()
@@ -1548,6 +1553,66 @@ impl Config {
                 "cleanup_after_days = {}\n\n",
                 self.history.cleanup_after_days
             ));
+
+            // AI SQL Generation Settings
+            content.push_str("# ================================================================================\n");
+            content.push_str("# AI SQL GENERATION SETTINGS\n");
+            content.push_str("# Configure AI-powered SQL generation from natural language\n");
+            content.push_str("# ================================================================================\n\n");
+            content.push_str("[ai_sql]\n");
+            content.push_str(&format!(
+                "# Enable AI SQL generation features (default: false)\n"
+            ));
+            content.push_str(&format!("enabled = {}\n\n", self.ai_sql.enabled));
+
+            content.push_str(&format!(
+                "# AI provider to use: 'anthropic', 'openai', 'ollama', or 'custom' (default: 'anthropic')\n"
+            ));
+            content.push_str(&format!("provider = \"{}\"\n\n",
+                match self.ai_sql.provider {
+                    crate::ai_sql::config::AiProviderType::Anthropic => "anthropic",
+                    crate::ai_sql::config::AiProviderType::OpenAI => "openai",
+                    crate::ai_sql::config::AiProviderType::Ollama => "ollama",
+                    crate::ai_sql::config::AiProviderType::Custom => "custom",
+                }
+            ));
+
+            content.push_str("# === Anthropic Configuration ===\n");
+            content.push_str(&format!(
+                "# Use OAuth authentication instead of API key (default: true)\n"
+            ));
+            content.push_str(&format!(
+                "# Set to false to use anthropic_api_key instead\n"
+            ));
+            content.push_str(&format!("anthropic_use_oauth = {}\n\n", self.ai_sql.anthropic_use_oauth));
+
+            content.push_str(&format!(
+                "# Anthropic API key (used when anthropic_use_oauth = false)\n"
+            ));
+            content.push_str(&format!(
+                "# Get your API key from: https://console.anthropic.com/\n"
+            ));
+            if let Some(ref key) = self.ai_sql.anthropic_api_key {
+                content.push_str(&format!("anthropic_api_key = \"{}\"\n\n", key));
+            } else {
+                content.push_str("# anthropic_api_key = \"sk-ant-...\"\n\n");
+            }
+
+            content.push_str(&format!(
+                "# Claude model to use (default: 'claude-sonnet-4-5-20250929')\n"
+            ));
+            content.push_str(&format!("anthropic_model = \"{}\"\n\n", self.ai_sql.anthropic_model));
+
+            content.push_str("# === Cache Configuration ===\n");
+            content.push_str(&format!(
+                "# Enable query caching for performance (default: true)\n"
+            ));
+            content.push_str(&format!("cache_enabled = {}\n\n", self.ai_sql.cache_enabled));
+
+            content.push_str(&format!(
+                "# Cache TTL in seconds (default: 3600 = 1 hour)\n"
+            ));
+            content.push_str(&format!("cache_ttl_seconds = {}\n\n", self.ai_sql.cache_ttl_seconds));
 
             let mut file = File::create(&config_path)?;
             file.write_all(content.as_bytes())?;

@@ -7,8 +7,7 @@ use crate::ai_sql::error::{AiError, AiResult};
 use crate::database::DatabaseType;
 use crate::db::Database;
 use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info};
 
 /// Column metadata for AI context
@@ -86,7 +85,7 @@ impl SchemaExtractor {
         database: &Arc<Mutex<Database>>,
         query_hint: Option<&str>,
     ) -> AiResult<SchemaContext> {
-        let mut db = database.lock().await;
+        let mut db = database.lock().unwrap();
         let db_name = db.get_current_db();
 
         // Get database type from connection info

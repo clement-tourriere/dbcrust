@@ -43,8 +43,7 @@ pub use schema::{SchemaContext, SchemaExtractor};
 pub use ui::InteractiveMode;
 
 use crate::db::Database;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info};
 
 /// Main AI SQL engine that orchestrates SQL generation
@@ -64,7 +63,7 @@ impl AiSqlEngine {
         database: Arc<Mutex<Database>>,
     ) -> AiResult<Self> {
         let database_type = {
-            let db = database.lock().await;
+            let db = database.lock().unwrap();
             db.get_connection_info()
                 .map(|info| info.database_type.clone())
                 .ok_or_else(|| AiError::SchemaError("No connection info available".to_string()))?
@@ -179,7 +178,7 @@ impl AiSqlEngine {
 
         let db_type = self.dialect_provider.database_type();
         let db_name = {
-            let db = self.database.blocking_lock();
+            let db = self.database.lock().unwrap();
             db.get_current_db()
         };
 

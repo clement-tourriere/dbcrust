@@ -6,8 +6,7 @@ use crate::ai_sql::dialect::SqlDialectProvider;
 use crate::ai_sql::error::{AiError, AiResult};
 use crate::db::Database;
 use inquire::{Select, Text};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Interactive mode for AI SQL generation
 pub struct InteractiveMode<'a> {
