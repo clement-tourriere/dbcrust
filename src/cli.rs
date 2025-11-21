@@ -1,5 +1,5 @@
 use crate::password_sanitizer::{sanitize_connection_url, sanitize_ssh_tunnel_string};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// DBCrust - A blazing-fast multi-database client
 #[derive(Parser, Clone)]
@@ -33,6 +33,36 @@ pub struct Args {
     /// Execute SQL command and exit
     #[arg(short, long, action = clap::ArgAction::Append)]
     pub command: Vec<String>,
+
+    /// Subcommands for AI authentication and other features
+    #[command(subcommand)]
+    pub subcommand: Option<SubCommand>,
+}
+
+/// Available subcommands
+#[derive(Subcommand, Clone, Debug)]
+pub enum SubCommand {
+    /// Authenticate with AI providers (Anthropic Claude)
+    #[command(name = "ai-auth")]
+    AiAuth {
+        #[command(subcommand)]
+        action: AiAuthAction,
+    },
+}
+
+/// AI authentication actions
+#[derive(Subcommand, Clone, Debug)]
+pub enum AiAuthAction {
+    /// Login with OAuth (for Claude Pro/Team subscribers)
+    Login {
+        /// AI provider to authenticate with
+        #[arg(long, default_value = "anthropic")]
+        provider: String,
+    },
+    /// Logout and remove stored credentials
+    Logout,
+    /// Show authentication status
+    Status,
 }
 
 impl std::fmt::Debug for Args {
@@ -54,6 +84,7 @@ impl std::fmt::Debug for Args {
             )
             .field("completions", &self.completions)
             .field("command", &self.command)
+            .field("subcommand", &self.subcommand)
             .finish()
     }
 }

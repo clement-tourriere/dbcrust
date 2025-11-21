@@ -81,15 +81,34 @@ struct RefreshTokenResponse {
 impl AnthropicOAuthManager {
     /// Create a new OAuth manager
     pub fn new(config_dir: PathBuf) -> AiResult<Self> {
+        // NOTE: Anthropic does not currently offer public OAuth authentication.
+        // This implementation is a placeholder for when OAuth becomes available.
+        // For now, users MUST use API key authentication.
+        //
+        // To use API keys instead:
+        // 1. Set anthropic_use_oauth = false in config
+        // 2. Set anthropic_api_key = "sk-ant-..." in config
+        // 3. Or set ANTHROPIC_API_KEY environment variable
+
+        return Err(AiError::ConfigurationError(
+            "OAuth authentication is not yet supported by Anthropic.\n\
+             Please use API key authentication instead:\n\
+             1. Set anthropic_use_oauth = false in [ai_sql] config\n\
+             2. Set anthropic_api_key = \"sk-ant-...\" in config\n\
+             3. Get your API key from: https://console.anthropic.com/".to_string()
+        ));
+
+        // Future implementation when Anthropic releases OAuth:
+        /*
         let client = Client::builder()
             .timeout(StdDuration::from_secs(30))
             .build()
             .map_err(|e| AiError::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
 
-        // Anthropic OAuth endpoints (these are placeholders - adjust to actual endpoints)
+        // These endpoints will need to be updated when Anthropic releases OAuth
         let auth_url = "https://auth.anthropic.com/oauth2/device/authorize".to_string();
         let token_url = "https://auth.anthropic.com/oauth2/token".to_string();
-        let client_id = "dbcrust-cli".to_string(); // This would be registered with Anthropic
+        let client_id = "dbcrust-cli".to_string(); // Will need to be registered with Anthropic
 
         let token_storage_path = config_dir.join("anthropic_oauth_token.json");
 
@@ -100,6 +119,7 @@ impl AnthropicOAuthManager {
             client_id,
             token_storage_path,
         })
+        */
     }
 
     /// Start device authorization flow

@@ -1773,6 +1773,7 @@ dependencies = [
  "aes-gcm",
  "arboard",
  "async-trait",
+ "base64 0.22.1",
  "bollard",
  "bson",
  "chrono",

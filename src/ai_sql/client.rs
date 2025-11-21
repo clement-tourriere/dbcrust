@@ -3,7 +3,7 @@
 use crate::ai_sql::config::{AiProviderType, AiSqlConfig};
 use crate::ai_sql::dialect::SqlDialectProvider;
 use crate::ai_sql::error::{AiError, AiResult};
-use crate::ai_sql::oauth::AnthropicOAuthManager;
+use crate::ai_sql::oauth_pkce::AnthropicOAuthPkce;
 use crate::ai_sql::schema::SchemaContext;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -64,7 +64,7 @@ enum AuthMethod {
 pub struct AnthropicProvider {
     client: Client,
     auth_method: AuthMethod,
-    oauth_manager: Option<AnthropicOAuthManager>,
+    oauth_manager: Option<AnthropicOAuthPkce>,
     base_url: String,
     model: String,
 }
@@ -97,7 +97,7 @@ impl AnthropicProvider {
             .build()
             .map_err(|e| AiError::NetworkError(format!("Failed to create HTTP client: {}", e)))?;
 
-        let oauth_manager = AnthropicOAuthManager::new(config_dir)?;
+        let oauth_manager = AnthropicOAuthPkce::new(config_dir)?;
 
         Ok(Self {
             client,

@@ -130,6 +130,18 @@ async fn main() -> Result<(), Box<dyn StdError>> {
     }
 
     let args = Args::parse();
+
+    // Handle subcommands first
+    if let Some(subcommand) = &args.subcommand {
+        match subcommand {
+            dbcrust::cli::SubCommand::AiAuth { action } => {
+                handle_ai_auth_subcommand(action).await?;
+                std::process::exit(0);
+            }
+        }
+    }
+
+    // Regular database connection flow
     match dbcrust::cli_core::CliCore::run_with_args(args).await {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(e) => {
@@ -138,4 +150,92 @@ async fn main() -> Result<(), Box<dyn StdError>> {
             std::process::exit(1);
         }
     }
+}
+
+/// Handle AI authentication subcommands
+async fn handle_ai_auth_subcommand(action: &dbcrust::cli::AiAuthAction) -> Result<(), Box<dyn StdError>> {
+    use dbcrust::ai_sql::{AnthropicOAuthPkce, PkceChallenge};
+    use dbcrust::cli::AiAuthAction;
+    use dbcrust::config::Config;
+
+    let config_dir = Config::get_config_directory()?;
+    let oauth = AnthropicOAuthPkce::new(config_dir)?;
+
+    match action {
+        AiAuthAction::Login { provider } => {
+            println!("🔐 Authenticating with {} OAuth...\n", provider);
+
+            // Generate PKCE challenge
+            let pkce = PkceChallenge::generate();
+
+            // Get authorization URL
+            let auth_url = oauth.start_authorization(&pkce);
+
+            println!("Please follow these steps:");
+            println!("1. Open your browser and visit:");
+            println!("\n   {}\n", auth_url);
+            println!("2. Sign in with your Anthropic account (Claude Pro/Team)");
+            println!("3. Authorize dbcrust to access your account");
+            println!("4. You'll be redirected to a URL starting with:");
+            println!("   https://console.anthropic.com/oauth/code/callback?code=...");
+            println!("\n5. Copy the 'code' parameter value from that URL and paste it here:\n");
+
+            // Prompt for authorization code
+            use inquire::Text;
+            let code = Text::new("Authorization code:")
+                .with_help_message("Paste the code from the redirect URL")
+                .prompt()?;
+
+            // Exchange code for token
+            println!("\nExchanging code for access token...");
+            match oauth.exchange_code(&code.trim(), &pkce.verifier).await {
+                Ok(token) => {
+                    println!("\n✅ Successfully authenticated!");
+                    println!("Token expires: {}", token.expires_at.format("%Y-%m-%d %H:%M:%S UTC"));
+                    println!("\nYou can now use \\ai commands in dbcrust to generate SQL!");
+                }
+                Err(e) => {
+                    eprintln!("\n❌ Authentication failed: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+
+        AiAuthAction::Logout => {
+            println!("Logging out...");
+            oauth.logout().await?;
+            println!("✅ Successfully logged out. OAuth token removed.");
+        }
+
+        AiAuthAction::Status => {
+            if oauth.is_authenticated().await {
+                match oauth.load_token().await {
+                    Ok(token) => {
+                        println!("✅ Authenticated");
+                        println!("Token expires: {}", token.expires_at.format("%Y-%m-%d %H:%M:%S UTC"));
+
+                        if token.is_expired() {
+                            println!("\n⚠️  Token is expired or will expire soon!");
+                            if token.can_refresh() {
+                                println!("   It will be refreshed automatically on next use.");
+                            } else {
+                                println!("   Please run 'dbcrust ai-auth login' to re-authenticate.");
+                            }
+                        } else {
+                            println!("\n🟢 Token is valid");
+                        }
+                    }
+                    Err(e) => {
+                        println!("❌ Not authenticated: {}", e);
+                        println!("\nRun 'dbcrust ai-auth login' to authenticate.");
+                    }
+                }
+            } else {
+                println!("❌ Not authenticated");
+                println!("\nRun 'dbcrust ai-auth login' to authenticate with Anthropic OAuth.");
+            }
+        }
+    }
+
+    Ok(())
 }

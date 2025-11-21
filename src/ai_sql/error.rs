@@ -26,6 +26,9 @@ pub enum AiError {
     #[error("API error: {status_code} - {message}")]
     ApiError { status_code: u16, message: String },
 
+    #[error("Authentication error: {0}")]
+    AuthenticationError(String),
+
     #[error("Timeout error: operation took longer than {timeout_secs}s")]
     TimeoutError { timeout_secs: u64 },
 
@@ -78,6 +81,9 @@ impl AiError {
                 status_code,
                 message,
             } => format!("API error ({}): {}", status_code, message),
+            AiError::AuthenticationError(msg) => {
+                format!("Authentication error: {}. Please re-authenticate using 'dbcrust ai-auth login'", msg)
+            }
             AiError::TimeoutError { timeout_secs } => {
                 format!("Request timed out after {} seconds. Try again or increase timeout in config.", timeout_secs)
             }

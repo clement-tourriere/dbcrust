@@ -72,7 +72,7 @@ tokio = { version = "1", default-features = false, features = [
     "sync",
 ] }
 async-trait = { version = "0.1", default-features = false }
-rand = { version = "0.9", default-features = false, features = ["std", "std_rng", "thread_rng"] }
+rand = "0.9"
 thiserror = { version = "2.0", default-features = false }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter"] }
@@ -87,6 +87,7 @@ bollard = { version = "0.19", default-features = false, features = ["http", "pip
 strum = { version = "0.27", features = ["derive"], default-features = false }
 aes-gcm = { version = "0.10", default-features = false, features = ["std", "aes", "getrandom"] }
 sha2 = { version = "0.10", default-features = false, features = ["std"] }
+base64 = { version = "0.22", default-features = false, features = ["std"] }
 clickhouse = "0.13.3"
 mongodb = { version = "3.0", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
 bson = { version = "2.0", default-features = false }
