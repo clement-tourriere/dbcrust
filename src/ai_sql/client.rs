@@ -22,6 +22,14 @@ pub struct AiResponse {
     pub suggestions: Vec<String>,
 }
 
+/// AI model information
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiModel {
+    pub id: String,
+    pub display_name: String,
+    pub description: Option<String>,
+}
+
 /// Trait for AI providers
 #[async_trait]
 pub trait AiProvider: Send + Sync {
@@ -51,6 +59,9 @@ pub trait AiProvider: Send + Sync {
     fn supports_streaming(&self) -> bool {
         false
     }
+
+    /// List available models for this provider
+    async fn list_models(&self) -> AiResult<Vec<AiModel>>;
 }
 
 /// Authentication method for Anthropic
@@ -299,6 +310,73 @@ impl AiProvider for AnthropicProvider {
 
     fn supports_streaming(&self) -> bool {
         true
+    }
+
+    async fn list_models(&self) -> AiResult<Vec<AiModel>> {
+        info!("Fetching available models from Anthropic API");
+
+        // Get access token
+        let access_token = self.get_access_token().await?;
+
+        // Call Anthropic /v1/models API
+        let response = self
+            .client
+            .get(format!("{}/v1/models", self.base_url))
+            .header("anthropic-version", "2023-06-01")
+            .bearer_auth(&access_token)
+            .send()
+            .await
+            .map_err(|e| AiError::NetworkError(format!("Failed to fetch models: {}", e)))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            return Err(AiError::ApiError(format!(
+                "Failed to fetch models ({}): {}",
+                status, error_text
+            )));
+        }
+
+        #[derive(Deserialize)]
+        struct ModelsResponse {
+            data: Vec<ModelData>,
+        }
+
+        #[derive(Deserialize)]
+        struct ModelData {
+            id: String,
+            display_name: String,
+        }
+
+        let models_response: ModelsResponse = response.json().await.map_err(|e| {
+            AiError::ParseError(format!("Failed to parse models response: {}", e))
+        })?;
+
+        let models = models_response
+            .data
+            .into_iter()
+            .map(|m| {
+                // Add descriptions based on model family
+                let description = if m.id.contains("sonnet-4") {
+                    Some("Smartest model for complex agents and coding".to_string())
+                } else if m.id.contains("haiku-4") {
+                    Some("Fastest with near-frontier intelligence".to_string())
+                } else if m.id.contains("opus-4") {
+                    Some("Exceptional for specialized reasoning tasks".to_string())
+                } else {
+                    None
+                };
+
+                AiModel {
+                    id: m.id,
+                    display_name: m.display_name,
+                    description,
+                }
+            })
+            .collect();
+
+        info!("Successfully fetched {} models", models.len());
+        Ok(models)
     }
 }
 

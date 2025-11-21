@@ -3009,13 +3009,11 @@ impl CommandExecutor for Command {
             }
 
             Command::AiSetModel { model } => {
-                // Available Anthropic models
+                // Available Anthropic models (current as of 2025)
                 let available_models = vec![
-                    ("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet (Latest) - Best for SQL generation"),
-                    ("claude-3-5-haiku-20241022", "Claude 3.5 Haiku - Faster and cheaper"),
-                    ("claude-3-opus-20240229", "Claude 3 Opus - Most capable"),
-                    ("claude-3-sonnet-20240229", "Claude 3 Sonnet - Balanced performance"),
-                    ("claude-3-haiku-20240307", "Claude 3 Haiku - Fastest"),
+                    ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5 - Smartest model for complex agents and coding (recommended for SQL)"),
+                    ("claude-haiku-4-5-20251001", "Claude Haiku 4.5 - Fastest with near-frontier intelligence"),
+                    ("claude-opus-4-1-20250805", "Claude Opus 4.1 - Exceptional for specialized reasoning tasks"),
                 ];
 
                 match model.as_deref() {

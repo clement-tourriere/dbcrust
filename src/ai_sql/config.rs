@@ -182,7 +182,7 @@ impl Default for AiSqlConfig {
             // Anthropic defaults
             anthropic_use_oauth: true, // Prefer OAuth over API key
             anthropic_api_key: None,
-            anthropic_model: "claude-3-5-sonnet-20241022".to_string(),
+            anthropic_model: "claude-sonnet-4-5-20250929".to_string(),
             anthropic_base_url: "https://api.anthropic.com".to_string(),
 
             // OpenAI defaults
@@ -327,7 +327,7 @@ impl AiSqlConfig {
             ("# Anthropic Configuration", ""),
             ("anthropic_use_oauth", "Prefer OAuth authentication over API key (default: true)"),
             ("anthropic_api_key", "Anthropic API key - fallback if OAuth not configured (or use ANTHROPIC_API_KEY env var)"),
-            ("anthropic_model", "Model name (default: claude-3-5-sonnet-20241022)"),
+            ("anthropic_model", "Model name (default: claude-sonnet-4-5-20250929). Use \\aimodel to see available models"),
             ("anthropic_base_url", "Base URL for Anthropic API (default: https://api.anthropic.com)"),
             ("", ""),
             ("# OAuth Authentication", ""),

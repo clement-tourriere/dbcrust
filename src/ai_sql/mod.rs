@@ -34,7 +34,7 @@ pub mod schema;
 pub mod ui;
 
 pub use cache::QueryCache;
-pub use client::{AiProvider, AiResponse};
+pub use client::{AiModel, AiProvider, AiResponse};
 pub use config::AiSqlConfig;
 pub use dialect::{SqlDialectProvider, SqlFeatures};
 pub use error::{AiError, AiResult};
