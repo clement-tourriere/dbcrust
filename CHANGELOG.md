@@ -1,3 +1,9 @@
+## v0.22.1 (2025-12-04)
+
+### Fix
+
+- errors for some postgres fields during serialization
+
 ## v0.22.0 (2025-10-02)
 
 ### Feat
