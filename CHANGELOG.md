@@ -1,3 +1,9 @@
+## v0.22.2 (2025-12-04)
+
+### Fix
+
+- building binaries with maturin
+
 ## v0.22.1 (2025-12-04)
 
 ### Fix
