@@ -704,6 +704,68 @@ fn parse_postgresql_vector(value: &str) -> Result<Vec<String>, DatabaseError> {
     }
 }
 
+/// Format a Rust Vec as a PostgreSQL array string representation
+/// e.g., vec!["a", "b", "c"] -> "{a,b,c}"
+fn format_array_as_postgres<T: std::fmt::Display>(arr: &[T]) -> String {
+    if arr.is_empty() {
+        return "{}".to_string();
+    }
+    let elements: Vec<String> = arr
+        .iter()
+        .map(|v| {
+            let s = v.to_string();
+            // Quote strings that contain special characters
+            if s.contains(',')
+                || s.contains('"')
+                || s.contains('{')
+                || s.contains('}')
+                || s.contains('\\')
+                || s.contains(' ')
+            {
+                format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+            } else if s.is_empty() {
+                "\"\"".to_string()
+            } else {
+                s
+            }
+        })
+        .collect();
+    format!("{{{}}}", elements.join(","))
+}
+
+/// Format a Rust Vec<Option<T>> as a PostgreSQL array string representation
+/// Handles NULL elements within arrays
+/// e.g., vec![Some("a"), None, Some("c")] -> "{a,NULL,c}"
+fn format_option_array_as_postgres<T: std::fmt::Display>(arr: &[Option<T>]) -> String {
+    if arr.is_empty() {
+        return "{}".to_string();
+    }
+    let elements: Vec<String> = arr
+        .iter()
+        .map(|v| match v {
+            Some(val) => {
+                let s = val.to_string();
+                // Quote strings that contain special characters
+                if s.contains(',')
+                    || s.contains('"')
+                    || s.contains('{')
+                    || s.contains('}')
+                    || s.contains('\\')
+                    || s.contains(' ')
+                {
+                    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+                } else if s.is_empty() {
+                    "\"\"".to_string()
+                } else {
+                    s
+                }
+            }
+            None => "NULL".to_string(),
+        })
+        .collect();
+    format!("{{{}}}", elements.join(","))
+}
+
 /// PostgreSQL database client implementation
 pub struct PostgreSQLClient {
     pool: PgPool,
@@ -1228,10 +1290,13 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
         type_name, type_name_upper
     );
 
-    // Handle NULL values first - try the most generic nullable type
-    if let Ok(value) = row.try_get::<Option<String>, _>(column_index) {
-        if value.is_none() {
-            return Ok("".to_string());
+    // Handle NULL values first - but NOT for array types (they need special handling)
+    // Array types end with "[]" and need Option<Vec<T>>, not Option<String>
+    if !type_name_upper.ends_with("[]") {
+        if let Ok(value) = row.try_get::<Option<String>, _>(column_index) {
+            if value.is_none() {
+                return Ok("".to_string());
+            }
         }
     }
 
@@ -1363,14 +1428,216 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
         }
 
         // Array types - handle common array types
+        // PostgreSQL arrays must be decoded using Vec<T> in SQLx, not String
+        // IMPORTANT: Always use Option<Vec<T>> to handle NULL arrays properly
         t if t.ends_with("[]") => {
-            // For arrays, try to get as JSON first, then fallback to string
-            match row.try_get::<serde_json::Value, _>(column_index) {
-                Ok(json_val) => Ok(json_val.to_string()),
-                Err(_) => {
-                    // Fallback to string representation
-                    row.try_get::<String, _>(column_index)
-                        .map_err(|e| DatabaseError::QueryError(e.to_string()))
+            // Get the base type by stripping the [] suffix
+            let base_type = t.trim_end_matches("[]");
+
+            // Normalize base type to uppercase for matching
+            let base_type_upper = base_type.to_uppercase();
+
+            // Try type-specific array decoding based on the base type
+            // IMPORTANT: Use Vec<Option<T>> to handle arrays containing NULL elements
+            // Then wrap in Option<> to handle the whole array being NULL
+            match base_type_upper.as_str() {
+                // String array types (most common - VARCHAR[], TEXT[], CHAR[], etc.)
+                // Note: PostgreSQL reports "character varying" for VARCHAR
+                "VARCHAR" | "CHARACTER VARYING" | "TEXT" | "CHAR" | "CHARACTER" | "BPCHAR"
+                | "NAME" | "CITEXT" => {
+                    // Use Vec<Option<String>> to handle NULL elements within the array
+                    match row.try_get::<Option<Vec<Option<String>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                // Integer array types
+                "INT2" | "SMALLINT" => {
+                    match row.try_get::<Option<Vec<Option<i16>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                "INT4" | "INTEGER" | "SERIAL" => {
+                    match row.try_get::<Option<Vec<Option<i32>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                "INT8" | "BIGINT" | "BIGSERIAL" => {
+                    match row.try_get::<Option<Vec<Option<i64>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                // Float array types
+                "FLOAT4" | "REAL" => {
+                    match row.try_get::<Option<Vec<Option<f32>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                "FLOAT8" | "DOUBLE PRECISION" => {
+                    match row.try_get::<Option<Vec<Option<f64>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                // Boolean array types
+                "BOOL" | "BOOLEAN" => {
+                    match row.try_get::<Option<Vec<Option<bool>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                // UUID array types
+                "UUID" => {
+                    match row.try_get::<Option<Vec<Option<sqlx::types::Uuid>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                // Numeric/Decimal array types
+                "NUMERIC" | "DECIMAL" => {
+                    match row.try_get::<Option<Vec<Option<sqlx::types::Decimal>>>, _>(column_index)
+                    {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        // For decimal arrays, try falling back to string array
+                        Err(_) => {
+                            match row.try_get::<Option<Vec<Option<String>>>, _>(column_index) {
+                                Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                                Ok(None) => Ok("".to_string()),
+                                Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                            }
+                        }
+                    }
+                }
+                // JSON array types - JSON values can't be null inside arrays (use jsonb null)
+                "JSON" | "JSONB" => {
+                    match row.try_get::<Option<Vec<Option<serde_json::Value>>>, _>(column_index) {
+                        Ok(Some(arr)) => {
+                            let formatted: Vec<String> = arr
+                                .iter()
+                                .map(|v| match v {
+                                    Some(val) => val.to_string(),
+                                    None => "NULL".to_string(),
+                                })
+                                .collect();
+                            Ok(format_array_as_postgres(&formatted))
+                        }
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                // Timestamp array types
+                "TIMESTAMP"
+                | "TIMESTAMPTZ"
+                | "TIMESTAMP WITH TIME ZONE"
+                | "TIMESTAMP WITHOUT TIME ZONE" => {
+                    match row.try_get::<Option<Vec<Option<chrono::DateTime<chrono::Utc>>>>, _>(
+                        column_index,
+                    ) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(_) => {
+                            // Try NaiveDateTime for timestamp without timezone
+                            match row.try_get::<Option<Vec<Option<chrono::NaiveDateTime>>>, _>(
+                                column_index,
+                            ) {
+                                Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                                Ok(None) => Ok("".to_string()),
+                                Err(_) => {
+                                    // Fallback to string array
+                                    match row
+                                        .try_get::<Option<Vec<Option<String>>>, _>(column_index)
+                                    {
+                                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                                        Ok(None) => Ok("".to_string()),
+                                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                // Date array types
+                "DATE" => {
+                    match row.try_get::<Option<Vec<Option<chrono::NaiveDate>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                // Time array types
+                "TIME" | "TIMETZ" => {
+                    match row.try_get::<Option<Vec<Option<chrono::NaiveTime>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(_) => {
+                            match row.try_get::<Option<Vec<Option<String>>>, _>(column_index) {
+                                Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                                Ok(None) => Ok("".to_string()),
+                                Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                            }
+                        }
+                    }
+                }
+                // Network types array - use string fallback since IpAddr array isn't directly supported
+                "INET" | "CIDR" => {
+                    match row.try_get::<Option<Vec<Option<String>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    }
+                }
+                // Bytea array
+                "BYTEA" => match row.try_get::<Option<Vec<Option<Vec<u8>>>>, _>(column_index) {
+                    Ok(Some(arr)) => {
+                        let formatted: Vec<String> = arr
+                            .iter()
+                            .map(|bytes| match bytes {
+                                Some(b) => format!("\\x{}", hex::encode(b)),
+                                None => "NULL".to_string(),
+                            })
+                            .collect();
+                        Ok(format_array_as_postgres(&formatted))
+                    }
+                    Ok(None) => Ok("".to_string()),
+                    Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                },
+                // Default: try string array first, then fallback for unknown array types
+                _ => {
+                    // Always try Option<Vec<Option<String>>> to handle NULL elements and arrays
+                    match row.try_get::<Option<Vec<Option<String>>>, _>(column_index) {
+                        Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
+                        Ok(None) => Ok("".to_string()),
+                        Err(_) => {
+                            // Last resort: try to get raw bytes and format
+                            match row.try_get::<Option<Vec<u8>>, _>(column_index) {
+                                Ok(Some(bytes)) => {
+                                    // Try to interpret as UTF-8 string
+                                    match String::from_utf8(bytes.clone()) {
+                                        Ok(s) => Ok(s),
+                                        Err(_) => Ok(format!("\\x{}", hex::encode(bytes))),
+                                    }
+                                }
+                                Ok(None) => Ok("".to_string()),
+                                Err(e) => Err(DatabaseError::QueryError(format!(
+                                    "Failed to decode array type '{}': {}",
+                                    t, e
+                                ))),
+                            }
+                        }
+                    }
                 }
             }
         }
