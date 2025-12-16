@@ -79,6 +79,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 tracing-appender = { version = "0.2", default-features = false }
 url = { version = "2.5.0", default-features = false }
 percent-encoding = { version = "2.3", default-features = false }
+# Use ring as the crypto backend for rustls (more portable than aws-lc-rs for cross-compilation)
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 inquire = { version = "0.7.5", default-features = false, features = ["crossterm"] }
 rpassword = { version = "7.3", default-features = false }
@@ -87,7 +88,8 @@ bollard = { version = "0.19", default-features = false, features = ["http", "pip
 strum = { version = "0.27", features = ["derive"], default-features = false }
 aes-gcm = { version = "0.10", default-features = false, features = ["std", "aes", "getrandom"] }
 sha2 = { version = "0.10", default-features = false, features = ["std"] }
-clickhouse = { version = "0.13.3", default-features = false, features = ["lz4", "rustls-tls"] }
+# Use rustls-tls-ring to avoid aws-lc-rs cross-compilation issues on ARM64 Linux
+clickhouse = { version = "0.13.3", default-features = false, features = ["lz4", "rustls-tls-ring", "rustls-tls-webpki-roots"] }
 mongodb = { version = "3.0", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
 bson = { version = "2.0", default-features = false }
 elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
