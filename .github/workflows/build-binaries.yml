@@ -59,7 +59,7 @@ jobs:
           path: dist
 
   macos-x86_64:
-    runs-on: macos-13
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -83,11 +83,6 @@ jobs:
             --locked
             --out dist
             --features python
-
-      - name: "Test wheel"
-        run: |
-          pip install dist/$PACKAGE_NAME-*.whl --force-reinstall
-          $PACKAGE_NAME --help
 
       - name: "Upload wheels"
         uses: actions/upload-artifact@v4
@@ -408,7 +403,7 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-13
+          - os: macos-15
             target: x86_64-apple-darwin
           - os: macos-14
             target: aarch64-apple-darwin
