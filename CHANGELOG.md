@@ -1,3 +1,9 @@
+## v0.22.5 (2025-12-16)
+
+### Fix
+
+- update macOS runner from retired macos-13 to macos-15
+
 ## v0.22.4 (2025-12-16)
 
 ### Fix

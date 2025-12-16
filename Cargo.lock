@@ -1666,7 +1666,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust"
-version = "0.22.4"
+version = "0.22.5"
 dependencies = [
  "aes-gcm",
  "arboard",
