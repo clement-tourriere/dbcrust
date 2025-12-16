@@ -87,7 +87,7 @@ bollard = { version = "0.19", default-features = false, features = ["http", "pip
 strum = { version = "0.27", features = ["derive"], default-features = false }
 aes-gcm = { version = "0.10", default-features = false, features = ["std", "aes", "getrandom"] }
 sha2 = { version = "0.10", default-features = false, features = ["std"] }
-clickhouse = "0.13.3"
+clickhouse = { version = "0.13.3", default-features = false, features = ["lz4", "rustls-tls"] }
 mongodb = { version = "3.0", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
 bson = { version = "2.0", default-features = false }
 elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
@@ -95,8 +95,16 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 hostname = { version = "0.4", default-features = false }
 
 # DataFusion for file format support (Parquet, CSV, JSON, etc.)
-datafusion = "50.0"  # Latest version with better dependency resolution
-object_store = "0.12"
+# Optimized features: disable unused crypto/encoding/nested/compression expressions
+datafusion = { version = "50.0", default-features = false, features = [
+    "parquet",              # Parquet file support (includes CSV, JSON which are core)
+    "string_expressions",   # String functions for SQL queries
+    "datetime_expressions", # Date/time functions for SQL queries
+    "regex_expressions",    # Regex support in SQL queries
+    "unicode_expressions",  # Unicode string handling
+    "recursive_protection", # Stack overflow protection for complex queries
+] }
+# Note: object_store is already a transitive dependency via datafusion
 
 # Extension support (always available)
 pgvector = { version = "0.4", default-features = false, features = ["sqlx", "halfvec"] }
@@ -107,16 +115,24 @@ default = []
 python = ["pyo3", "pyo3/macros"]
 
 [profile.release]
-opt-level = "z"   # Optimize for size instead of speed
-lto = "fat"       # More aggressive Link Time Optimization
-codegen-units = 1 # Maximize performance, slower compile time
-strip = true      # Strip symbols from binary
-panic = "abort"   # Abort on panic for smaller binary size
-debug = false     # No debug info
+opt-level = "z"      # Optimize for size instead of speed
+lto = "thin"         # Thin LTO: good balance of compile time and optimization
+codegen-units = 1    # Single codegen unit for better optimization
+strip = "symbols"    # Strip all symbols from binary
+panic = "abort"      # Abort on panic for smaller binary size
+debug = false        # No debug info
+
+# Fast release profile: for local development (use with --profile fast-release)
+[profile.fast-release]
+inherits = "release"
+lto = "thin"         # Thin LTO
+codegen-units = 16   # Parallel codegen for faster compile
+strip = "symbols"    # Still strip symbols
 
 [profile.dev]
-opt-level = 0 # No optimization for faster compile times during development
-debug = true  # Include debug info
+opt-level = 0          # No optimization for faster compile times during development
+debug = true           # Include debug info
+split-debuginfo = "unpacked"  # macOS: faster incremental builds (up to 70% faster)
 
 [profile.bench]
 opt-level = 3     # Maximum optimization for benchmarks

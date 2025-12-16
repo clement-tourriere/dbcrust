@@ -23,6 +23,10 @@ concurrency:
 env:
   PACKAGE_NAME: dbcrust
   MODULE_NAME: dbcrust
+  # Disable incremental compilation for CI (faster clean builds, better caching)
+  CARGO_INCREMENTAL: 0
+  # Reduce debug info to speed up builds
+  CARGO_PROFILE_RELEASE_DEBUG: 0
 
 jobs:
   sdist:
@@ -59,6 +63,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-x86_64
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
       - name: "Setup Python"
         uses: actions/setup-python@v5
         with:
@@ -89,6 +99,12 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
+
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: macos-aarch64
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
 
       - name: "Setup Python"
         uses: actions/setup-python@v5
@@ -126,6 +142,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
       - name: "Setup Python"
         uses: actions/setup-python@v5
         with:
@@ -159,6 +181,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: linux-aarch64
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
       - name: "Setup Python"
         uses: actions/setup-python@v5
         with:
@@ -188,11 +216,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: musllinux-x86_64
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
       - name: "Setup Python"
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
 
       - name: "Build wheels - x86_64 musl"
         uses: PyO3/maturin-action@v1
@@ -226,11 +259,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: musllinux-aarch64
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
       - name: "Setup Python"
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
 
       - name: "Build wheels - aarch64 musl"
         uses: PyO3/maturin-action@v1
@@ -266,9 +304,16 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
       - name: "Install cross-compilation tools"
         run: |
           sudo apt-get update
+          sudo apt-get install -y lld clang
           if [[ "${{ matrix.target }}" == *"musl"* ]]; then
             sudo apt-get install -y musl-tools
           fi
@@ -297,6 +342,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-gnu
+
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-aarch64-linux
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
 
       - name: "Install cross tool"
         run: |
@@ -331,6 +382,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-windows-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
       - name: "Build native binaries"
         run: |
           cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc
@@ -364,6 +421,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: native-macos-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
       - name: "Build native binaries"
         run: |
           cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc
@@ -387,6 +450,12 @@ jobs:
           - x86_64-pc-windows-msvc
     steps:
       - uses: actions/checkout@v4
+
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
 
       - name: "Setup Python"
         uses: actions/setup-python@v5
@@ -414,4 +483,3 @@ jobs:
         with:
           name: wheels_${{ env.PACKAGE_NAME }}-${{ matrix.target }}
           path: dist
-
