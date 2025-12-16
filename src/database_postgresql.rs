@@ -1206,6 +1206,122 @@ impl DatabaseClient for PostgreSQLClient {
     }
 }
 
+/// Format PostgreSQL INTERVAL from its components (microseconds, days, months)
+/// This is a pure function that can be tested independently
+fn format_interval_components(microseconds: i64, days: i32, months: i32) -> String {
+    let mut parts = Vec::new();
+
+    // Handle years and months
+    if months != 0 {
+        let years = months / 12;
+        let remaining_months = months % 12;
+        if years != 0 {
+            parts.push(format!(
+                "{} {}",
+                years,
+                if years.abs() == 1 { "year" } else { "years" }
+            ));
+        }
+        if remaining_months != 0 {
+            parts.push(format!(
+                "{} {}",
+                remaining_months,
+                if remaining_months.abs() == 1 {
+                    "mon"
+                } else {
+                    "mons"
+                }
+            ));
+        }
+    }
+
+    // Handle days
+    if days != 0 {
+        parts.push(format!(
+            "{} {}",
+            days,
+            if days.abs() == 1 { "day" } else { "days" }
+        ));
+    }
+
+    // Handle time component (microseconds)
+    if microseconds != 0 || parts.is_empty() {
+        let is_negative = microseconds < 0;
+        let abs_microseconds = microseconds.abs();
+        let total_seconds = abs_microseconds / 1_000_000;
+        let remaining_micros = abs_microseconds % 1_000_000;
+
+        let hours = total_seconds / 3600;
+        let minutes = (total_seconds % 3600) / 60;
+        let seconds = total_seconds % 60;
+
+        let sign = if is_negative { "-" } else { "" };
+
+        if remaining_micros > 0 {
+            // Format with fractional seconds
+            let frac = format!("{:06}", remaining_micros);
+            let frac_trimmed = frac.trim_end_matches('0');
+            parts.push(format!(
+                "{}{:02}:{:02}:{:02}.{}",
+                sign, hours, minutes, seconds, frac_trimmed
+            ));
+        } else if hours != 0 || minutes != 0 || seconds != 0 || parts.is_empty() {
+            parts.push(format!(
+                "{}{:02}:{:02}:{:02}",
+                sign, hours, minutes, seconds
+            ));
+        }
+    }
+
+    parts.join(" ")
+}
+
+/// Decode PostgreSQL INTERVAL type from raw binary format
+/// PostgreSQL sends INTERVAL as 16 bytes in binary protocol:
+/// - 8 bytes: microseconds (i64, big-endian)
+/// - 4 bytes: days (i32, big-endian)
+/// - 4 bytes: months (i32, big-endian)
+fn decode_postgresql_interval(row: &PgRow, column_index: usize) -> Result<String, DatabaseError> {
+    use sqlx::ValueRef;
+
+    match row.try_get_raw(column_index) {
+        Ok(value_ref) => {
+            if value_ref.is_null() {
+                return Ok(String::new());
+            }
+
+            // Try to get raw bytes
+            match value_ref.as_bytes() {
+                Ok(bytes) if bytes.len() == 16 => {
+                    // Parse the 16-byte interval format
+                    let microseconds =
+                        i64::from_be_bytes(bytes[0..8].try_into().unwrap_or([0u8; 8]));
+                    let days = i32::from_be_bytes(bytes[8..12].try_into().unwrap_or([0u8; 4]));
+                    let months = i32::from_be_bytes(bytes[12..16].try_into().unwrap_or([0u8; 4]));
+
+                    Ok(format_interval_components(microseconds, days, months))
+                }
+                Ok(_bytes) => {
+                    // Not the expected 16-byte format, fall back to string representation
+                    value_ref
+                        .as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|_| Ok("(interval)".to_string()))
+                }
+                Err(_) => {
+                    // Try string representation as fallback
+                    value_ref.as_str().map(|s| s.to_string()).map_err(|e| {
+                        DatabaseError::QueryError(format!("Failed to decode INTERVAL: {e}"))
+                    })
+                }
+            }
+        }
+        Err(e) => Err(DatabaseError::QueryError(format!(
+            "Failed to get INTERVAL value: {e}"
+        ))),
+    }
+}
+
 /// Handle custom PostgreSQL types (enums, composite types, domains) using raw value access
 fn handle_custom_postgresql_type(
     row: &PgRow,
@@ -1378,9 +1494,9 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                 .map_err(|e| DatabaseError::QueryError(e.to_string()))
         }
         "INTERVAL" => {
-            // PostgreSQL intervals - SQLx doesn't have built-in support, try as string
-            row.try_get::<String, _>(column_index)
-                .map_err(|e| DatabaseError::QueryError(e.to_string()))
+            // PostgreSQL intervals - SQLx doesn't have built-in support for INTERVAL type
+            // PostgreSQL sends INTERVAL as 16 bytes: 8 bytes microseconds, 4 bytes days, 4 bytes months
+            decode_postgresql_interval(row, column_index)
         }
 
         // JSON types with complex display support
@@ -1614,6 +1730,11 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     Ok(None) => Ok("".to_string()),
                     Err(e) => Err(DatabaseError::QueryError(e.to_string())),
                 },
+                // Interval array - use raw value approach since SQLx doesn't have native INTERVAL support
+                "INTERVAL" => {
+                    // Use handle_custom_postgresql_type for the raw array value
+                    handle_custom_postgresql_type(row, column_index, type_name)
+                }
                 // Default: try string array first, then fallback for unknown array types
                 _ => {
                     // Always try Option<Vec<Option<String>>> to handle NULL elements and arrays
@@ -1642,34 +1763,30 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
             }
         }
 
-        // Geometric types - these are complex, try as string
+        // Geometric types - these are complex, use raw value fallback for safety
         "POINT" | "LINE" | "LSEG" | "BOX" | "PATH" | "POLYGON" | "CIRCLE" => row
             .try_get::<String, _>(column_index)
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
 
-        // Range types
+        // Range types - use raw value fallback for safety
         "INT4RANGE" | "INT8RANGE" | "NUMRANGE" | "TSRANGE" | "TSTZRANGE" | "DATERANGE" => row
             .try_get::<String, _>(column_index)
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
 
-        // XML type
+        // XML type - use raw value fallback for safety
         "XML" => row
             .try_get::<String, _>(column_index)
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
 
-        // Bit string types
-        "BIT" | "VARBIT" => {
-            // Bit strings as string representation
-            row.try_get::<String, _>(column_index)
-                .map_err(|e| DatabaseError::QueryError(e.to_string()))
-        }
+        // Bit string types - use raw value fallback for safety
+        "BIT" | "VARBIT" => row
+            .try_get::<String, _>(column_index)
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
 
-        // Money type
-        "MONEY" => {
-            // Money as string representation
-            row.try_get::<String, _>(column_index)
-                .map_err(|e| DatabaseError::QueryError(e.to_string()))
-        }
+        // Money type - use raw value fallback for safety
+        "MONEY" => row
+            .try_get::<String, _>(column_index)
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
 
         // Extension types - provide specific guidance for known extensions
         "VECTOR" | "HALFVEC" | "SPARSEVEC" => {
@@ -1721,9 +1838,10 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                 type_name, type_name_upper
             );
 
+            // Try String first, fallback to raw value extraction
             let raw_value = row
                 .try_get::<String, _>(column_index)
-                .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+                .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name))?;
 
             // Enhanced PostGIS processing with complex display support
             if raw_value.starts_with("01") || raw_value.starts_with("00") {
@@ -1765,11 +1883,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     }
                     // Could add more hstore-specific formatting here
                 })
-                .map_err(|e| {
-                    DatabaseError::QueryError(format!(
-                        "Failed to format {type_name_upper} type '{type_name}': {e}"
-                    ))
-                })
+                .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name))
         }
 
         "LTREE" | "LQUERY" | "LTXTQUERY" => {
@@ -1787,11 +1901,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                         _ => s,
                     }
                 })
-                .map_err(|e| {
-                    DatabaseError::QueryError(format!(
-                        "Failed to format {type_name_upper} type '{type_name}': {e}"
-                    ))
-                })
+                .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name))
         }
 
         "CUBE" => {
@@ -1809,11 +1919,17 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                         format!("Cube: {s}")
                     }
                 })
-                .map_err(|e| {
-                    DatabaseError::QueryError(format!(
-                        "Failed to format {type_name_upper} type '{type_name}': {e}"
-                    ))
-                })
+                .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name))
+        }
+
+        // Full-text search types - use raw value fallback for safety
+        "TSVECTOR" | "TSQUERY" => {
+            debug!(
+                "[PostgreSQL] Processing full-text search type '{}' (normalized: '{}')",
+                type_name, type_name_upper
+            );
+            row.try_get::<String, _>(column_index)
+                .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name))
         }
 
         // Custom/composite types and unknown types - try as string with enhanced error messages
@@ -1970,5 +2086,89 @@ mod tests {
                 panic!("Unexpected error: {e:?}");
             }
         }
+    }
+
+    #[test]
+    fn test_interval_formatting() {
+        // Test zero interval
+        assert_eq!(format_interval_components(0, 0, 0), "00:00:00");
+
+        // Test hours only
+        assert_eq!(
+            format_interval_components(3600 * 1_000_000, 0, 0),
+            "01:00:00"
+        );
+
+        // Test minutes and seconds
+        assert_eq!(format_interval_components(90 * 1_000_000, 0, 0), "00:01:30");
+
+        // Test days only
+        assert_eq!(format_interval_components(0, 5, 0), "5 days");
+
+        // Test single day
+        assert_eq!(format_interval_components(0, 1, 0), "1 day");
+
+        // Test months only
+        assert_eq!(format_interval_components(0, 0, 3), "3 mons");
+
+        // Test single month
+        assert_eq!(format_interval_components(0, 0, 1), "1 mon");
+
+        // Test years
+        assert_eq!(format_interval_components(0, 0, 12), "1 year");
+        assert_eq!(format_interval_components(0, 0, 24), "2 years");
+
+        // Test years and months
+        assert_eq!(format_interval_components(0, 0, 14), "1 year 2 mons");
+
+        // Test complex interval: 1 year 2 months 3 days 04:05:06
+        let microseconds = (4 * 3600 + 5 * 60 + 6) * 1_000_000;
+        assert_eq!(
+            format_interval_components(microseconds, 3, 14),
+            "1 year 2 mons 3 days 04:05:06"
+        );
+
+        // Test fractional seconds
+        let microseconds_with_frac = 1_500_000; // 1.5 seconds
+        assert_eq!(
+            format_interval_components(microseconds_with_frac, 0, 0),
+            "00:00:01.5"
+        );
+
+        // Test more complex fractional seconds
+        let microseconds_complex = 1_234_567; // 1.234567 seconds
+        assert_eq!(
+            format_interval_components(microseconds_complex, 0, 0),
+            "00:00:01.234567"
+        );
+
+        // Test negative values (negative interval)
+        // PostgreSQL represents negative intervals with negative components
+        assert_eq!(
+            format_interval_components(-3600 * 1_000_000, 0, 0),
+            "-01:00:00"
+        );
+    }
+
+    #[test]
+    fn test_interval_edge_cases() {
+        // Test large interval (like from age() function)
+        // Example: 10 hours 23 minutes 45 seconds
+        let microseconds = (10 * 3600 + 23 * 60 + 45) * 1_000_000;
+        assert_eq!(format_interval_components(microseconds, 0, 0), "10:23:45");
+
+        // Test interval with only time component (common from age())
+        let age_microseconds = (2 * 3600 + 15 * 60 + 30) * 1_000_000; // 2h 15m 30s
+        assert_eq!(
+            format_interval_components(age_microseconds, 0, 0),
+            "02:15:30"
+        );
+
+        // Test days and time
+        let microseconds = (5 * 3600) * 1_000_000; // 5 hours
+        assert_eq!(
+            format_interval_components(microseconds, 2, 0),
+            "2 days 05:00:00"
+        );
     }
 }

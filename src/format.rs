@@ -2,6 +2,19 @@ use crate::db::{ColumnFilteringInfo, TableDetails};
 use chrono;
 use prettytable::{Cell, Row, Table};
 
+/// Sanitize a cell value for table display by replacing newlines and control characters
+/// This prevents table formatting from being broken by embedded newlines in query results
+fn sanitize_cell_for_display(value: &str) -> String {
+    // Replace various newline formats with a visual indicator
+    // Use ↵ (U+21B5) as a visual newline indicator
+    // Handle \r\n first to avoid double replacement, then handle remaining \n and \r
+    value
+        .replace("\r\n", "↵")
+        .replace(['\n', '\r'], "↵")
+        // Also handle tabs which can mess up column alignment
+        .replace('\t', "→")
+}
+
 /// Format a data type with enum values if available
 fn format_type_with_enum_values(data_type: &str, enum_values: &Option<Vec<String>>) -> String {
     match enum_values {
@@ -188,10 +201,12 @@ fn format_query_results_psql_internal(
     }
 
     // Calculate widths for all data cells
+    // Use sanitized values to get accurate display widths (newlines replaced with single char)
     for row in data.iter() {
         for (i, cell) in row.iter().enumerate() {
             if i < col_widths.len() {
-                col_widths[i] = col_widths[i].max(cell.len());
+                let sanitized = sanitize_cell_for_display(cell);
+                col_widths[i] = col_widths[i].max(sanitized.len());
             }
             // Note: No warning here since we're handling dynamic column counts
         }
@@ -224,11 +239,10 @@ fn format_query_results_psql_internal(
                 result.push_str(" | ");
             }
 
-            let cell_value = if i < row.len() {
-                &row[i]
-            } else {
-                "" // Empty string for missing columns
-            };
+            let raw_cell_value = if i < row.len() { &row[i] } else { "" };
+
+            // Sanitize cell value to prevent newlines from breaking table format
+            let cell_value = sanitize_cell_for_display(raw_cell_value);
 
             // Try to right-align numeric values, left-align text
             let is_numeric = !cell_value.is_empty()
@@ -237,9 +251,9 @@ fn format_query_results_psql_internal(
                     .all(|c| c.is_ascii_digit() || c == '.' || c == '-' || c == '+');
 
             if is_numeric && !cell_value.is_empty() {
-                result.push_str(&safe_format_with_width(cell_value, col_widths[i], false));
+                result.push_str(&safe_format_with_width(&cell_value, col_widths[i], false));
             } else {
-                result.push_str(&safe_format_with_width(cell_value, col_widths[i], true));
+                result.push_str(&safe_format_with_width(&cell_value, col_widths[i], true));
             }
         }
         result.push('\n');
@@ -932,5 +946,110 @@ mod tests {
             result_no_info.contains("(1 row)"),
             "Should still contain row count"
         );
+    }
+
+    #[test]
+    fn test_newline_handling_in_cells() {
+        // Test that newlines in cell values don't break table formatting
+        let test_data = vec![
+            vec!["pid".to_string(), "state".to_string(), "query".to_string()],
+            vec![
+                "12345".to_string(),
+                "active".to_string(),
+                "SELECT *\nFROM users\nWHERE id = 1".to_string(), // Multi-line query
+            ],
+            vec![
+                "12346".to_string(),
+                "idle".to_string(),
+                "simple query".to_string(),
+            ],
+        ];
+
+        let result = format_query_results_psql(&test_data);
+
+        // Verify the output doesn't have raw newlines breaking the table
+        // Each data row should be on a single line (plus header and separator)
+        let lines: Vec<&str> = result.lines().collect();
+
+        // Should have: header, separator, 2 data rows, row count = 5 lines
+        assert_eq!(
+            lines.len(),
+            5,
+            "Should have exactly 5 lines (header + separator + 2 rows + count)"
+        );
+
+        // Verify the newline indicator is present
+        assert!(
+            result.contains("↵"),
+            "Should contain newline indicator (↵) for embedded newlines"
+        );
+
+        // Verify the query is on a single line with indicators
+        assert!(
+            result.contains("SELECT *↵FROM users↵WHERE id = 1"),
+            "Multi-line query should be on single line with ↵ indicators"
+        );
+
+        // Verify table structure is intact
+        assert!(result.contains(" | "), "Should have column separators");
+        assert!(result.contains("(2 rows)"), "Should have correct row count");
+    }
+
+    #[test]
+    fn test_sanitize_cell_for_display() {
+        // Test the sanitization function directly
+        assert_eq!(sanitize_cell_for_display("hello"), "hello");
+        assert_eq!(sanitize_cell_for_display("hello\nworld"), "hello↵world");
+        assert_eq!(sanitize_cell_for_display("hello\r\nworld"), "hello↵world");
+        assert_eq!(sanitize_cell_for_display("hello\rworld"), "hello↵world");
+        assert_eq!(sanitize_cell_for_display("hello\tworld"), "hello→world");
+        assert_eq!(
+            sanitize_cell_for_display("line1\nline2\nline3"),
+            "line1↵line2↵line3"
+        );
+        assert_eq!(
+            sanitize_cell_for_display("col1\tcol2\tcol3"),
+            "col1→col2→col3"
+        );
+    }
+
+    #[test]
+    fn test_mixed_content_with_newlines() {
+        // Test realistic pg_stat_activity style output
+        let test_data = vec![
+            vec![
+                "pid".to_string(),
+                "state".to_string(),
+                "usename".to_string(),
+                "query".to_string(),
+            ],
+            vec![
+                "100".to_string(),
+                "active".to_string(),
+                "postgres".to_string(),
+                "SELECT pid, state\nFROM pg_stat_activity".to_string(),
+            ],
+            vec![
+                "101".to_string(),
+                "idle".to_string(),
+                "admin".to_string(),
+                "SELECT 1".to_string(),
+            ],
+        ];
+
+        let result = format_query_results_psql(&test_data);
+
+        // All content should be properly aligned
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 5); // header + sep + 2 rows + count
+
+        // The multi-line query should have the newline replaced
+        assert!(result.contains("SELECT pid, state↵FROM pg_stat_activity"));
+
+        // Verify table is properly formatted
+        assert!(result.contains("pid"));
+        assert!(result.contains("state"));
+        assert!(result.contains("active"));
+        assert!(result.contains("idle"));
     }
 }
