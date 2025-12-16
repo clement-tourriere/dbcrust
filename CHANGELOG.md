@@ -1,3 +1,9 @@
+## v0.22.4 (2025-12-16)
+
+### Fix
+
+- use ring backend for rustls to fix ARM64 Linux cross-compilation
+
 ## v0.22.3 (2025-12-16)
 
 ### Fix
