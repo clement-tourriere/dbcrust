@@ -1,3 +1,9 @@
+## v0.22.3 (2025-12-16)
+
+### Fix
+
+- handle PostgreSQL INTERVAL type and newlines in query results
+
 ## v0.22.2 (2025-12-04)
 
 ### Fix

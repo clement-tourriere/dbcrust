@@ -1,6 +1,6 @@
 [package]
 name = "dbcrust"
-version = "0.22.2"
+version = "0.22.3"
 edition = "2024"
 description = "High-performance database CLI engineered for Django developers — Advanced ORM analysis, performance optimization, SSH tunneling, and seamless multi-database support"
 authors = ["dbcrust authors"]
