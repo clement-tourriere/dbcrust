@@ -1,0 +1,31 @@
+=== DBCRUST DATA STRUCTURE ANALYSIS ===
+Query: data_consistency_info
+Timestamp: 2026-02-05 12:55:45 UTC
+=======================================
+
+Header row: 10 columns
+Header contents: ["id", "gg_created_at", "gg_updated_at", "type", "company_id", "status", "commit_search_query", "scan_informations", "platform_account_id", "recurrent"]
+
+Data row analysis:
+ROW 1: 10 columns (OK)
+ROW 2: 5 columns (MISMATCH! Expected 10)
+  Contents: ["2", "2023-01-02 00:00:00+00", "2023-01-02 00:00:00+00", "partial", "124"]
+ROW 3: 11 columns (MISMATCH! Expected 10)
+  Contents: ["3", "2023-01-03 00:00:00+00", "2023-01-03 00:00:00+00", "full", "125", "completed", "{}", "{}", "789", "false", "extra_column"]
+
+FOUND 2 MISMATCHED ROWS: [2, 3]
+Column count range: 5 to 11
+INFO: Some rows have more columns than header!
+SOLUTION: Extended header from 10 to 11 columns with auto-generated names
+INFO: Some rows have fewer columns than header!
+SOLUTION: Missing columns will be displayed as empty cells
+
+=== DATA HANDLING STRATEGY ===
+1. Extended header to accommodate all columns
+2. Rows with missing columns: padded with empty cells
+3. Rows with extra columns: all values displayed
+4. Consistent formatting applied across all rows
+5. No data loss - all values are preserved and shown
+
+RESULT: Table will display all data with consistent formatting.
+Extra columns will have auto-generated names (column_N).

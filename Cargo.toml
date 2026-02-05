@@ -112,6 +112,10 @@ datafusion = { version = "50.0", default-features = false, features = [
 pgvector = { version = "0.4", default-features = false, features = ["sqlx", "halfvec"] }
 half = { version = "2.0", default-features = false }
 
+# TUI support for explain visualizer
+ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
+crossterm = { version = "0.28", default-features = false }
+
 [features]
 default = []
 python = ["pyo3", "pyo3/macros"]

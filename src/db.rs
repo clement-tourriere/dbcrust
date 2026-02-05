@@ -78,6 +78,7 @@ pub struct Database {
     default_limit: usize,
     autocomplete_enabled: bool,
     explain_mode: bool,
+    explain_tui_mode: bool, // TUI-based explain visualizer mode
     column_select_mode: bool,
     banner_enabled: bool,
     column_selection_threshold: usize,
@@ -467,6 +468,7 @@ impl Database {
             default_limit: default_limit.unwrap_or(100),
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: config.explain_mode_default,
+            explain_tui_mode: false,
             column_select_mode: false,
             banner_enabled: config.show_banner,
             column_selection_threshold: config.column_selection_threshold,
@@ -1120,6 +1122,13 @@ impl Database {
         }
     }
 
+    /// Get the current database type
+    pub fn get_database_type(&self) -> DatabaseType {
+        self.get_connection_info()
+            .map(|info| info.database_type.clone())
+            .unwrap_or(DatabaseType::PostgreSQL)
+    }
+
     /// Set or override the connection information for this database
     /// This is useful for cases like Vault connections where the connection info
     /// needs to be set after database creation
@@ -1265,6 +1274,13 @@ impl Database {
         // Check if we should EXPLAIN this query (applies to all database types)
         if self.explain_mode && is_query_explainable(query) {
             debug!("EXPLAIN mode is enabled, executing EXPLAIN query");
+
+            // Check if TUI mode is enabled (PostgreSQL only for now)
+            if self.explain_tui_mode && self.get_database_type() == DatabaseType::PostgreSQL {
+                debug!("TUI mode is enabled, launching visualizer");
+                return self.execute_explain_with_tui(query).await;
+            }
+
             let results = self.execute_explain_query(query).await?;
             return Ok(QueryResultsWithInfo {
                 data: results,
@@ -1328,6 +1344,55 @@ impl Database {
                 data: results,
                 column_info: None,
             })
+        }
+    }
+
+    /// Execute an EXPLAIN query and display in the TUI visualizer
+    async fn execute_explain_with_tui(
+        &mut self,
+        query: &str,
+    ) -> std::result::Result<QueryResultsWithInfo, Box<dyn StdError>> {
+        if let Some(ref database_client) = self.database_client {
+            debug!("Executing EXPLAIN with TUI visualizer");
+
+            // Get the raw JSON plan
+            let raw_results = database_client.explain_query_raw(query).await?;
+
+            // Parse the JSON from results
+            if raw_results.len() > 1 && !raw_results[1].is_empty() {
+                let json_str = &raw_results[1][0];
+
+                // Store for \ecopy
+                self.last_json_plan = Some(json_str.clone());
+
+                // Parse the JSON
+                let plan_json: serde_json::Value = serde_json::from_str(json_str)
+                    .map_err(|e| format!("Failed to parse EXPLAIN JSON: {e}"))?;
+
+                // Run the TUI visualizer
+                match crate::explain_tui::run_explain_tui(&plan_json) {
+                    Ok(_) => {
+                        // TUI exited normally, return empty result to indicate success
+                        Ok(QueryResultsWithInfo {
+                            data: vec![vec!["Plan visualizer closed.".to_string()]],
+                            column_info: None,
+                        })
+                    }
+                    Err(e) => {
+                        // TUI failed, fall back to formatted output
+                        eprintln!("TUI error: {e}. Falling back to text output.");
+                        let results = database_client.explain_query(query).await?;
+                        Ok(QueryResultsWithInfo {
+                            data: results,
+                            column_info: None,
+                        })
+                    }
+                }
+            } else {
+                Err("No EXPLAIN output received".into())
+            }
+        } else {
+            Err("No database client available".into())
         }
     }
 
@@ -1512,6 +1577,21 @@ impl Database {
         self.explain_mode
     }
 
+    /// Check if TUI explain visualizer mode is enabled
+    pub fn is_explain_tui_mode(&self) -> bool {
+        self.explain_tui_mode
+    }
+
+    /// Toggle TUI explain visualizer mode
+    pub fn toggle_explain_tui_mode(&mut self) -> bool {
+        self.explain_tui_mode = !self.explain_tui_mode;
+        // If enabling TUI mode, also enable explain mode
+        if self.explain_tui_mode {
+            self.explain_mode = true;
+        }
+        self.explain_tui_mode
+    }
+
     /// Test network connectivity to a host:port combination with timeout
     pub async fn test_network_connectivity(
         host: &str,
@@ -1596,6 +1676,7 @@ impl Database {
             default_limit: 100,
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: false,
+            explain_tui_mode: false,
             column_select_mode: false,
             banner_enabled: config.show_banner,
             column_selection_threshold: config.column_selection_threshold,

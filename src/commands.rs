@@ -35,6 +35,7 @@ pub enum Command {
     // Display options
     ToggleExpandedDisplay,
     ToggleExplainMode,
+    ToggleExplainTuiMode,
     ShowConfig,
 
     // Script handling
@@ -265,6 +266,7 @@ pub enum CommandShortcut {
     // Display options
     X,
     E,
+    Ev,
     Config,
     // Script handling
     W,
@@ -341,6 +343,7 @@ impl CommandShortcut {
             // Display options
             CommandShortcut::X => "\\x",
             CommandShortcut::E => "\\e",
+            CommandShortcut::Ev => "\\ev",
             CommandShortcut::Config => "\\config",
             // Script handling
             CommandShortcut::W => "\\w",
@@ -417,6 +420,7 @@ impl CommandShortcut {
             // Display options
             CommandShortcut::X => "Toggle expanded display",
             CommandShortcut::E => "Toggle EXPLAIN mode",
+            CommandShortcut::Ev => "Toggle EXPLAIN TUI visualizer mode",
             CommandShortcut::Config => "Show configuration",
             // Script handling
             CommandShortcut::W => "Write script to file",
@@ -491,6 +495,7 @@ impl CommandShortcut {
             // Display options (including some advanced display commands)
             CommandShortcut::X
             | CommandShortcut::E
+            | CommandShortcut::Ev
             | CommandShortcut::Config
             | CommandShortcut::Setmulti
             | CommandShortcut::Pager
@@ -607,6 +612,7 @@ impl CommandParser {
             // Display options
             "x" => Ok(Command::ToggleExpandedDisplay),
             "e" => Ok(Command::ToggleExplainMode),
+            "ev" => Ok(Command::ToggleExplainTuiMode),
             "config" => Ok(Command::ShowConfig),
 
             // Script handling
@@ -1052,6 +1058,48 @@ impl CommandExecutor for Command {
                 db.toggle_explain_mode();
                 let status = if db.is_explain_mode() { "on" } else { "off" };
                 Ok(CommandResult::Output(format!("Explain mode is {status}.")))
+            }
+
+            Command::ToggleExplainTuiMode => {
+                let mut db = database.lock().unwrap();
+                db.toggle_explain_tui_mode();
+                let status = if db.is_explain_tui_mode() {
+                    "ON"
+                } else {
+                    "OFF"
+                };
+                let db_type = db.get_database_type();
+
+                // Check if TUI can run
+                if db.is_explain_tui_mode() {
+                    if !crate::explain_tui::can_run_tui() {
+                        db.toggle_explain_tui_mode(); // Turn it back off
+                        if let Some(reason) = crate::explain_tui::tui_unavailable_reason() {
+                            return Ok(CommandResult::Error(format!(
+                                "Cannot enable TUI mode: {reason}"
+                            )));
+                        }
+                    }
+
+                    // Check database compatibility
+                    if !matches!(db_type, crate::database::DatabaseType::PostgreSQL) {
+                        db.toggle_explain_tui_mode(); // Turn it back off
+                        return Ok(CommandResult::Error(format!(
+                            "Explain TUI mode currently only supports PostgreSQL. Current database: {}",
+                            db_type.display_name()
+                        )));
+                    }
+
+                    Ok(CommandResult::Output(format!(
+                        "Explain TUI visualizer mode: {status}\n\
+                         Queries will now display in an interactive TUI.\n\
+                         Press 'q' to exit the visualizer and return to the prompt."
+                    )))
+                } else {
+                    Ok(CommandResult::Output(format!(
+                        "Explain TUI visualizer mode: {status}"
+                    )))
+                }
             }
 
             Command::ShowConfig => {
@@ -2623,6 +2671,7 @@ impl CommandExecutor for Command {
             Command::ConnectDatabase { .. } => "Connect to a different database",
             Command::ToggleExpandedDisplay => "Toggle expanded/vertical display mode",
             Command::ToggleExplainMode => "Toggle automatic EXPLAIN for queries",
+            Command::ToggleExplainTuiMode => "Toggle TUI explain visualizer mode",
             Command::ShowConfig => "Show current configuration",
             Command::ListSessions => "List saved sessions",
             Command::SaveSession { .. } => "Save current connection as a session",
@@ -2702,6 +2751,7 @@ impl CommandExecutor for Command {
             Command::ConnectDatabase { .. } => "\\c <database_name>",
             Command::ToggleExpandedDisplay => "\\x",
             Command::ToggleExplainMode => "\\e",
+            Command::ToggleExplainTuiMode => "\\ev",
             Command::ShowConfig => "\\config",
             Command::WriteScript { .. } => "\\w <filename>",
             Command::LoadScript { .. } => "\\i <filename>",
@@ -2776,9 +2826,10 @@ impl CommandExecutor for Command {
             | Command::ListTables
             | Command::DescribeTable { .. }
             | Command::ConnectDatabase { .. } => CommandCategory::DatabaseNavigation,
-            Command::ToggleExpandedDisplay | Command::ToggleExplainMode | Command::ShowConfig => {
-                CommandCategory::DisplayOptions
-            }
+            Command::ToggleExpandedDisplay
+            | Command::ToggleExplainMode
+            | Command::ToggleExplainTuiMode
+            | Command::ShowConfig => CommandCategory::DisplayOptions,
             Command::WriteScript { .. }
             | Command::LoadScript { .. }
             | Command::EditMultiline

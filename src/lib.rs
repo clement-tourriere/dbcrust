@@ -20,6 +20,7 @@ pub mod database_sqlite; // SQLite implementation
 pub mod db;
 pub mod dbcrust_pass; // Universal password file (.dbcrust) support
 pub mod docker; // Docker container integration
+pub mod explain_tui;
 pub mod format; // Made format module public
 pub mod geojson_display;
 pub mod highlighter;
@@ -46,7 +47,7 @@ pub mod ssh_tunnel; // Add the SSH tunnel module
 pub mod url_scheme; // URL scheme autocompletion support
 pub mod vault_client; // Add backslash commands module
 pub mod vault_encryption; // Vault credential encryption utilities
-pub mod vector_display; // Vector visualization for PostgreSQL extensions // GeoJSON display implementation
+pub mod vector_display; // Vector visualization for PostgreSQL extensions // GeoJSON display implementation // TUI-based query plan visualizer
 
 // Note: main.rs functions are not directly accessible as modules in lib.rs
 // We'll create PyO3 wrappers that call the main functionality directly
