@@ -148,6 +148,21 @@ impl ExplainTuiApp {
         }
     }
 
+    /// Jump to first visible node
+    pub fn select_first(&mut self) {
+        self.selected_path = vec![];
+        self.details_scroll = 0;
+    }
+
+    /// Jump to last visible node
+    pub fn select_last(&mut self) {
+        let visible = self.build_visible_list();
+        if let Some(last) = visible.last() {
+            self.selected_path = last.clone();
+            self.details_scroll = 0;
+        }
+    }
+
     /// Move to parent node (or collapse if expanded)
     pub fn select_parent_or_collapse(&mut self) {
         let node = self.selected_node();
@@ -269,6 +284,12 @@ impl ExplainTuiApp {
             }
             KeyCode::Right | KeyCode::Char('l') => {
                 self.select_child_or_expand();
+            }
+            KeyCode::Char('g') => {
+                self.select_first();
+            }
+            KeyCode::Char('G') => {
+                self.select_last();
             }
 
             // Toggle expand/collapse

@@ -451,48 +451,101 @@ fn render_details(frame: &mut Frame, app: &ExplainTuiApp, area: Rect) {
         )));
 
         if let Some(ref filter) = node.filter {
-            lines.push(Line::from(vec![
-                Span::styled("  Filter: ", Style::default().fg(Color::Yellow)),
-                Span::styled(truncate_str(filter, 40), Style::default().fg(Color::White)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "  Filter: ",
+                Style::default().fg(Color::Yellow),
+            )]));
+            // Show full filter text wrapped
+            for line in textwrap::wrap(filter, 58) {
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(line.to_string(), Style::default().fg(Color::White)),
+                ]));
+            }
         }
 
         if let Some(ref cond) = node.index_cond {
-            lines.push(Line::from(vec![
-                Span::styled("  Index Cond: ", Style::default().fg(Color::Yellow)),
-                Span::styled(truncate_str(cond, 36), Style::default().fg(Color::White)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "  Index Cond: ",
+                Style::default().fg(Color::Yellow),
+            )]));
+            for line in textwrap::wrap(cond, 56) {
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(line.to_string(), Style::default().fg(Color::White)),
+                ]));
+            }
         }
 
         if let Some(ref cond) = node.hash_cond {
-            lines.push(Line::from(vec![
-                Span::styled("  Hash Cond: ", Style::default().fg(Color::Yellow)),
-                Span::styled(truncate_str(cond, 37), Style::default().fg(Color::White)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "  Hash Cond: ",
+                Style::default().fg(Color::Yellow),
+            )]));
+            for line in textwrap::wrap(cond, 57) {
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(line.to_string(), Style::default().fg(Color::White)),
+                ]));
+            }
         }
 
         if let Some(ref cond) = node.join_filter {
-            lines.push(Line::from(vec![
-                Span::styled("  Join Filter: ", Style::default().fg(Color::Yellow)),
-                Span::styled(truncate_str(cond, 35), Style::default().fg(Color::White)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "  Join Filter: ",
+                Style::default().fg(Color::Yellow),
+            )]));
+            for line in textwrap::wrap(cond, 55) {
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(line.to_string(), Style::default().fg(Color::White)),
+                ]));
+            }
         }
 
         if let Some(ref cond) = node.recheck_cond {
-            lines.push(Line::from(vec![
-                Span::styled("  Recheck: ", Style::default().fg(Color::Yellow)),
-                Span::styled(truncate_str(cond, 39), Style::default().fg(Color::White)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "  Recheck: ",
+                Style::default().fg(Color::Yellow),
+            )]));
+            for line in textwrap::wrap(cond, 59) {
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(line.to_string(), Style::default().fg(Color::White)),
+                ]));
+            }
+        }
+
+        if let Some(ref cond) = node.merge_cond {
+            lines.push(Line::from(vec![Span::styled(
+                "  Merge Cond: ",
+                Style::default().fg(Color::Yellow),
+            )]));
+            for line in textwrap::wrap(cond, 56) {
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(line.to_string(), Style::default().fg(Color::White)),
+                ]));
+            }
         }
     }
 
-    // Sort information
-    if !node.sort_key.is_empty() {
+    // Sort information with detailed space usage
+    if !node.sort_key.is_empty() || node.sort_method.is_some() {
         lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("Sort Key: ", Style::default().fg(Color::Yellow)),
-            Span::styled(node.sort_key.join(", "), Style::default().fg(Color::White)),
-        ]));
+        lines.push(Line::from(Span::styled(
+            "Sort Information:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::UNDERLINED),
+        )));
+
+        if !node.sort_key.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  Key: ", Style::default().fg(Color::Yellow)),
+                Span::styled(node.sort_key.join(", "), Style::default().fg(Color::White)),
+            ]));
+        }
 
         if let Some(ref method) = node.sort_method {
             let method_color = if method.contains("external") {
@@ -501,9 +554,125 @@ fn render_details(frame: &mut Frame, app: &ExplainTuiApp, area: Rect) {
                 Color::Green
             };
             lines.push(Line::from(vec![
-                Span::styled("  Method: ", Style::default().fg(Color::DarkGray)),
+                Span::styled("  Method: ", Style::default().fg(Color::Yellow)),
                 Span::styled(method, Style::default().fg(method_color)),
             ]));
+
+            // Show space usage for external sorts
+            if method.contains("external") {
+                if let Some(space) = node.sort_space_used {
+                    let space_type = node.sort_space_type.as_deref().unwrap_or("unknown");
+                    lines.push(Line::from(vec![
+                        Span::styled("  Space Used: ", Style::default().fg(Color::Yellow)),
+                        Span::styled(
+                            format!(
+                                "{} {} (SLOW - consider increasing work_mem)",
+                                space, space_type
+                            ),
+                            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                }
+            }
+        }
+    }
+
+    // Group information for aggregations
+    if !node.group_key.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Group By:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::UNDERLINED),
+        )));
+        lines.push(Line::from(vec![
+            Span::styled("  Columns: ", Style::default().fg(Color::Yellow)),
+            Span::styled(node.group_key.join(", "), Style::default().fg(Color::White)),
+        ]));
+    }
+
+    // Rows removed by filter (important for debugging)
+    if let Some(removed) = node.rows_removed_by_filter {
+        if removed > 0 {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Filter Efficiency:",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED),
+            )));
+            lines.push(Line::from(vec![
+                Span::styled("  Rows Removed: ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{}", removed),
+                    if removed > 1000 {
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::White)
+                    },
+                ),
+            ]));
+            if let Some(actual) = node.actual_rows {
+                let efficiency = (actual as f64 / (actual + removed) as f64) * 100.0;
+                lines.push(Line::from(vec![
+                    Span::styled("  Selectivity: ", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        format!("{:.1}%", efficiency),
+                        if efficiency < 10.0 {
+                            Style::default().fg(Color::Red)
+                        } else if efficiency < 50.0 {
+                            Style::default().fg(Color::Yellow)
+                        } else {
+                            Style::default().fg(Color::Green)
+                        },
+                    ),
+                ]));
+            }
+        }
+    }
+
+    // Parallel query information
+    if node.workers_planned.is_some() || node.workers_launched.is_some() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Parallel Workers:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::UNDERLINED),
+        )));
+
+        if let Some(planned) = node.workers_planned {
+            lines.push(Line::from(vec![
+                Span::styled("  Planned: ", Style::default().fg(Color::Yellow)),
+                Span::styled(format!("{}", planned), Style::default().fg(Color::White)),
+            ]));
+        }
+
+        if let Some(launched) = node.workers_launched {
+            let launch_style = if node.workers_planned.map_or(false, |p| launched < p) {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  Launched: ", Style::default().fg(Color::Yellow)),
+                Span::styled(format!("{}", launched), launch_style),
+            ]));
+            if node.workers_planned.map_or(false, |p| launched < p) {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        "    ⚠ Fewer workers than planned! ",
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::styled(
+                        "Check max_parallel_workers",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
         }
     }
 
@@ -534,6 +703,87 @@ fn render_details(frame: &mut Frame, app: &ExplainTuiApp, area: Rect) {
                 Span::styled("  Disk Reads: ", Style::default().fg(Color::Yellow)),
                 Span::styled(format!("{}", reads), Style::default().fg(read_color)),
             ]));
+            if reads > 100 {
+                lines.push(Line::from(vec![
+                    Span::styled("    ⚠ High disk I/O ", Style::default().fg(Color::Yellow)),
+                    Span::styled(
+                        "Consider increasing shared_buffers",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+            }
+        }
+    }
+
+    // CTE and Subplan information
+    if node.cte_name.is_some() || node.subplan_name.is_some() || node.parent_relationship.is_some()
+    {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Query Structure:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::UNDERLINED),
+        )));
+
+        if let Some(ref cte) = node.cte_name {
+            lines.push(Line::from(vec![
+                Span::styled("  CTE Name: ", Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    cte.clone(),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
+
+        if let Some(ref subplan) = node.subplan_name {
+            lines.push(Line::from(vec![
+                Span::styled("  Subplan: ", Style::default().fg(Color::Yellow)),
+                Span::styled(subplan.clone(), Style::default().fg(Color::White)),
+            ]));
+        }
+
+        if let Some(ref parent) = node.parent_relationship {
+            lines.push(Line::from(vec![
+                Span::styled("  Parent Relation: ", Style::default().fg(Color::Yellow)),
+                Span::styled(parent.clone(), Style::default().fg(Color::White)),
+            ]));
+        }
+    }
+
+    // Output columns (useful for understanding projections)
+    if !node.output.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Output Columns:",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::UNDERLINED),
+        )));
+
+        // Show columns in a wrapped format
+        let columns_text = node.output.join(", ");
+        for (i, line) in textwrap::wrap(&columns_text, 58).iter().enumerate() {
+            if i == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled("  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(line.to_string(), Style::default().fg(Color::White)),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::styled("    ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(line.to_string(), Style::default().fg(Color::White)),
+                ]));
+            }
+        }
+
+        if node.output.len() > 10 {
+            lines.push(Line::from(vec![Span::styled(
+                format!("  ... and {} more columns", node.output.len() - 10),
+                Style::default().fg(Color::DarkGray),
+            )]));
         }
     }
 
@@ -641,7 +891,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
 
     let help_lines = vec![
         Line::from(Span::styled(
-            "Keyboard Shortcuts",
+            "Query Plan Visualizer - Help",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
@@ -649,26 +899,63 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(vec![Span::styled(
             "  Navigation:",
-            Style::default().fg(Color::Yellow),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from("    j / Down    - Next node"),
         Line::from("    k / Up      - Previous node"),
         Line::from("    h / Left    - Collapse / Go to parent"),
         Line::from("    l / Right   - Expand / Go to first child"),
+        Line::from("    g           - Go to top of tree"),
+        Line::from("    G           - Go to bottom of tree"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "  Tree Control:",
-            Style::default().fg(Color::Yellow),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from("    Enter       - Toggle expand/collapse"),
         Line::from("    e           - Expand all nodes"),
         Line::from("    c           - Collapse all nodes"),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "  Other:",
-            Style::default().fg(Color::Yellow),
+            "  Details Panel:",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )]),
         Line::from("    Tab         - Switch focus (tree/details)"),
+        Line::from("    Ctrl+d      - Scroll details down"),
+        Line::from("    Ctrl+u      - Scroll details up"),
+        Line::from("    PageDown    - Scroll details down faster"),
+        Line::from("    PageUp      - Scroll details up faster"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  Debug Info Shown:",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("    ✓ Costs, timing, row estimates"),
+        Line::from("    ✓ Full filter conditions (wrapped)"),
+        Line::from("    ✓ Join conditions & hash/merge info"),
+        Line::from("    ✓ Index conditions & recheck"),
+        Line::from("    ✓ Buffer usage (cache vs disk)"),
+        Line::from("    ✓ Parallel workers (planned/launched)"),
+        Line::from("    ✓ Sort info (method, space usage)"),
+        Line::from("    ✓ Filter efficiency (rows removed)"),
+        Line::from("    ✓ CTEs, subplans, output columns"),
+        Line::from("    ✓ Performance warnings & suggestions"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "  General:",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("    ?           - Toggle this help"),
         Line::from("    q / Esc     - Quit visualizer"),
         Line::from(""),
         Line::from(Span::styled(
@@ -688,13 +975,4 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         .style(Style::default().bg(Color::Black));
 
     frame.render_widget(help, popup_area);
-}
-
-/// Truncate a string to a maximum length, adding ellipsis if needed
-fn truncate_str(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
 }

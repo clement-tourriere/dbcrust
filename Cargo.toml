@@ -115,6 +115,7 @@ half = { version = "2.0", default-features = false }
 # TUI support for explain visualizer
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.28", default-features = false }
+textwrap = { version = "0.16", default-features = false, features = ["unicode-width"] }
 
 [features]
 default = []

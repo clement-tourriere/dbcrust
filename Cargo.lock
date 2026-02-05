@@ -1769,6 +1769,7 @@ dependencies = [
  "strum 0.27.2",
  "tempfile",
  "terminal_size",
+ "textwrap",
  "thiserror 2.0.17",
  "tokio",
  "toml",
@@ -5108,6 +5109,15 @@ checksum = "60b8cb979cb11c32ce1603f8137b22262a9d131aaa5c37b5678025f22b8becd0"
 dependencies = [
  "rustix 1.1.2",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "textwrap"
+version = "0.16.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c13547615a44dc9c452a8a534638acdf07120d4b6847c8178705da06306a3057"
+dependencies = [
+ "unicode-width 0.2.0",
 ]
 
 [[package]]
