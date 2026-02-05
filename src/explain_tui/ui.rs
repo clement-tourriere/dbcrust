@@ -25,14 +25,15 @@ fn performance_color(level: PerformanceLevel) -> Color {
     }
 }
 
-/// Performance level indicator character
+/// Performance level indicator - uses distinct Unicode symbols
+/// that don't look like UI controls (no brackets!)
 fn performance_indicator(level: PerformanceLevel) -> &'static str {
     match level {
-        PerformanceLevel::Excellent => "[+]",
-        PerformanceLevel::Good => "[+]",
-        PerformanceLevel::Warning => "[!]",
-        PerformanceLevel::Poor => "[!]",
-        PerformanceLevel::Critical => "[X]",
+        PerformanceLevel::Excellent => "●",
+        PerformanceLevel::Good => "◐",
+        PerformanceLevel::Warning => "○",
+        PerformanceLevel::Poor => "◌",
+        PerformanceLevel::Critical => "✕",
     }
 }
 
@@ -238,7 +239,7 @@ fn build_tree_items<'a>(
     let branch = if has_children {
         if is_expanded { "[-] " } else { "[+] " }
     } else {
-        "    "
+        ""
     };
 
     // Performance indicator
