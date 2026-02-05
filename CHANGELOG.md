@@ -1,3 +1,14 @@
+## v0.23.0 (2026-02-05)
+
+### Feat
+
+- enhance TUI details panel with comprehensive debug information
+- add interactive TUI query plan visualizer
+
+### Fix
+
+- remove branch indicator from leaf nodes in TUI tree
+
 ## v0.22.5 (2025-12-16)
 
 ### Fix
