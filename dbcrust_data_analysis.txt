@@ -1,6 +1,6 @@
 === DBCRUST DATA STRUCTURE ANALYSIS ===
 Query: data_consistency_info
-Timestamp: 2026-02-05 12:55:45 UTC
+Timestamp: 2026-02-09 16:45:11 UTC
 =======================================
 
 Header row: 10 columns

@@ -1,3 +1,9 @@
+## v0.23.1 (2026-02-09)
+
+### Fix
+
+- add graceful fallback chains for PostgreSQL type decoding
+
 ## v0.23.0 (2026-02-05)
 
 ### Feat
