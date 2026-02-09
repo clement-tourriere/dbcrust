@@ -11,8 +11,8 @@ use crate::performance_analyzer::PerformanceAnalyzer;
 use async_trait::async_trait;
 use serde_json;
 use sqlx::postgres::{PgPool, PgPoolOptions, PgRow};
-use sqlx::{Column, Row};
-use tracing::debug;
+use sqlx::{Column, Row, TypeInfo};
+use tracing::{debug, warn};
 
 /// Check if a type name is a built-in PostgreSQL type
 fn is_builtin_postgresql_type(type_name: &str) -> bool {
@@ -1046,7 +1046,18 @@ impl DatabaseClient for PostgreSQLClient {
         for row in rows {
             let mut string_row = Vec::new();
             for i in 0..row.len() {
-                let value = format_postgresql_value(&row, i)?;
+                let value = match format_postgresql_value(&row, i) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        warn!(
+                            "[PostgreSQL] Failed to decode column '{}' (type: {}): {}",
+                            row.column(i).name(),
+                            row.column(i).type_info().name(),
+                            e
+                        );
+                        "?error?".to_string()
+                    }
+                };
                 string_row.push(value);
             }
             results.push(string_row);
@@ -1421,35 +1432,35 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
         // String types
         "TEXT" | "VARCHAR" | "CHAR" | "BPCHAR" | "NAME" | "CITEXT" => row
             .try_get::<String, _>(column_index)
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
 
         // Integer types
         "INT2" | "SMALLINT" => row
             .try_get::<i16, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
         "INT4" | "INTEGER" | "SERIAL" => row
             .try_get::<i32, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
         "INT8" | "BIGINT" | "BIGSERIAL" => row
             .try_get::<i64, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
         "OID" => row
             .try_get::<i32, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
 
         // Floating point types
         "FLOAT4" | "REAL" => row
             .try_get::<f32, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
         "FLOAT8" | "DOUBLE PRECISION" => row
             .try_get::<f64, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
         "NUMERIC" | "DECIMAL" => {
             row.try_get::<sqlx::types::Decimal, _>(column_index)
                 .map(|v| v.to_string())
@@ -1464,25 +1475,25 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
         "BOOL" | "BOOLEAN" => row
             .try_get::<bool, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
 
         // Date and time types
         "TIMESTAMPTZ" => row
             .try_get::<chrono::DateTime<chrono::Utc>, _>(column_index)
             .map(|v| v.to_rfc3339())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
         "TIMESTAMP" => row
             .try_get::<chrono::NaiveDateTime, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
         "DATE" => row
             .try_get::<chrono::NaiveDate, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
         "TIME" => row
             .try_get::<chrono::NaiveTime, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
         "TIMETZ" => {
             // PostgreSQL TIMETZ - for now treat as string since chrono doesn't have a direct equivalent
             row.try_get::<String, _>(column_index)
@@ -1504,7 +1515,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
             let raw_value = row
                 .try_get::<serde_json::Value, _>(column_index)
                 .map(|v| v.to_string())
-                .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+                .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name))?;
 
             // Use JsonDisplayAdapter for enhanced formatting
             if let Ok(adapter) = JsonDisplayAdapter::new(raw_value.clone()) {
@@ -1519,13 +1530,13 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
         "UUID" => row
             .try_get::<sqlx::types::Uuid, _>(column_index)
             .map(|v| v.to_string())
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
 
         // Binary data types
         "BYTEA" => row
             .try_get::<Vec<u8>, _>(column_index)
             .map(|v| format!("\\x{}", hex::encode(v)))
-            .map_err(|e| DatabaseError::QueryError(e.to_string())),
+            .or_else(|_| handle_custom_postgresql_type(row, column_index, type_name)),
 
         // Network address types
         "INET" | "CIDR" => {
@@ -1565,7 +1576,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     match row.try_get::<Option<Vec<Option<String>>>, _>(column_index) {
                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 // Integer array types
@@ -1573,21 +1584,21 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     match row.try_get::<Option<Vec<Option<i16>>>, _>(column_index) {
                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 "INT4" | "INTEGER" | "SERIAL" => {
                     match row.try_get::<Option<Vec<Option<i32>>>, _>(column_index) {
                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 "INT8" | "BIGINT" | "BIGSERIAL" => {
                     match row.try_get::<Option<Vec<Option<i64>>>, _>(column_index) {
                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 // Float array types
@@ -1595,14 +1606,14 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     match row.try_get::<Option<Vec<Option<f32>>>, _>(column_index) {
                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 "FLOAT8" | "DOUBLE PRECISION" => {
                     match row.try_get::<Option<Vec<Option<f64>>>, _>(column_index) {
                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 // Boolean array types
@@ -1610,7 +1621,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     match row.try_get::<Option<Vec<Option<bool>>>, _>(column_index) {
                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 // UUID array types
@@ -1618,7 +1629,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     match row.try_get::<Option<Vec<Option<sqlx::types::Uuid>>>, _>(column_index) {
                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 // Numeric/Decimal array types
@@ -1632,7 +1643,9 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                             match row.try_get::<Option<Vec<Option<String>>>, _>(column_index) {
                                 Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                                 Ok(None) => Ok("".to_string()),
-                                Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                                Err(_) => {
+                                    handle_custom_postgresql_type(row, column_index, type_name)
+                                }
                             }
                         }
                     }
@@ -1651,7 +1664,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                             Ok(format_array_as_postgres(&formatted))
                         }
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 // Timestamp array types
@@ -1678,7 +1691,11 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                                     {
                                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                                         Ok(None) => Ok("".to_string()),
-                                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                                        Err(_) => handle_custom_postgresql_type(
+                                            row,
+                                            column_index,
+                                            type_name,
+                                        ),
                                     }
                                 }
                             }
@@ -1690,7 +1707,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     match row.try_get::<Option<Vec<Option<chrono::NaiveDate>>>, _>(column_index) {
                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 // Time array types
@@ -1702,7 +1719,9 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                             match row.try_get::<Option<Vec<Option<String>>>, _>(column_index) {
                                 Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                                 Ok(None) => Ok("".to_string()),
-                                Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                                Err(_) => {
+                                    handle_custom_postgresql_type(row, column_index, type_name)
+                                }
                             }
                         }
                     }
@@ -1712,7 +1731,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                     match row.try_get::<Option<Vec<Option<String>>>, _>(column_index) {
                         Ok(Some(arr)) => Ok(format_option_array_as_postgres(&arr)),
                         Ok(None) => Ok("".to_string()),
-                        Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                        Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                     }
                 }
                 // Bytea array
@@ -1728,7 +1747,7 @@ fn format_postgresql_value(row: &PgRow, column_index: usize) -> Result<String, D
                         Ok(format_array_as_postgres(&formatted))
                     }
                     Ok(None) => Ok("".to_string()),
-                    Err(e) => Err(DatabaseError::QueryError(e.to_string())),
+                    Err(_) => handle_custom_postgresql_type(row, column_index, type_name),
                 },
                 // Interval array - use raw value approach since SQLx doesn't have native INTERVAL support
                 "INTERVAL" => {
@@ -2170,5 +2189,496 @@ mod tests {
             format_interval_components(microseconds, 2, 0),
             "2 days 05:00:00"
         );
+    }
+
+    #[test]
+    fn test_all_builtin_types_have_format_handler() {
+        // Verify that every type listed in is_builtin_postgresql_type is recognized
+        let all_types = vec![
+            // Numeric
+            "SMALLINT",
+            "INT2",
+            "INTEGER",
+            "INT4",
+            "BIGINT",
+            "INT8",
+            "DECIMAL",
+            "NUMERIC",
+            "REAL",
+            "FLOAT4",
+            "DOUBLE PRECISION",
+            "FLOAT8",
+            "SMALLSERIAL",
+            "SERIAL",
+            "BIGSERIAL",
+            "SERIAL2",
+            "SERIAL4",
+            "SERIAL8",
+            "MONEY",
+            "OID",
+            // String
+            "CHARACTER VARYING",
+            "VARCHAR",
+            "CHARACTER",
+            "CHAR",
+            "BPCHAR",
+            "TEXT",
+            "NAME",
+            // Binary
+            "BYTEA",
+            // Date/time
+            "TIMESTAMP",
+            "TIMESTAMPTZ",
+            "TIMESTAMP WITH TIME ZONE",
+            "TIMESTAMP WITHOUT TIME ZONE",
+            "DATE",
+            "TIME",
+            "TIMETZ",
+            "TIME WITH TIME ZONE",
+            "TIME WITHOUT TIME ZONE",
+            "INTERVAL",
+            // Boolean
+            "BOOLEAN",
+            "BOOL",
+            // JSON
+            "JSON",
+            "JSONB",
+            // Network
+            "INET",
+            "CIDR",
+            "MACADDR",
+            "MACADDR8",
+            // UUID
+            "UUID",
+            // Geometric
+            "POINT",
+            "LINE",
+            "LSEG",
+            "BOX",
+            "PATH",
+            "POLYGON",
+            "CIRCLE",
+            // Range
+            "INT4RANGE",
+            "INT8RANGE",
+            "NUMRANGE",
+            "TSRANGE",
+            "TSTZRANGE",
+            "DATERANGE",
+            // Bit
+            "BIT",
+            "VARBIT",
+            // XML
+            "XML",
+            // FTS
+            "TSVECTOR",
+            "TSQUERY",
+            // Extensions
+            "VECTOR",
+            "HALFVEC",
+            "SPARSEVEC",
+            "GEOMETRY",
+            "GEOGRAPHY",
+            "BOX2D",
+            "BOX3D",
+            "HSTORE",
+            "LTREE",
+            "LQUERY",
+            "LTXTQUERY",
+            "CUBE",
+            "CITEXT",
+        ];
+
+        for type_name in &all_types {
+            assert!(
+                is_builtin_postgresql_type(type_name),
+                "Type '{}' should be recognized as built-in",
+                type_name
+            );
+        }
+
+        // Also verify array variants
+        for type_name in &all_types {
+            let array_type = format!("{}[]", type_name);
+            assert!(
+                is_builtin_postgresql_type(&array_type),
+                "Array type '{}' should be recognized as built-in",
+                array_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_option_array_edge_cases() {
+        // All NULLs
+        let all_nulls: Vec<Option<i32>> = vec![None, None, None];
+        assert_eq!(
+            format_option_array_as_postgres(&all_nulls),
+            "{NULL,NULL,NULL}"
+        );
+
+        // Mixed NULLs and values
+        let mixed: Vec<Option<i32>> = vec![Some(1), None, Some(3)];
+        assert_eq!(format_option_array_as_postgres(&mixed), "{1,NULL,3}");
+
+        // Empty array
+        let empty: Vec<Option<i32>> = vec![];
+        assert_eq!(format_option_array_as_postgres(&empty), "{}");
+
+        // Single NULL
+        let single_null: Vec<Option<i32>> = vec![None];
+        assert_eq!(format_option_array_as_postgres(&single_null), "{NULL}");
+
+        // String arrays with special characters
+        let special: Vec<Option<String>> = vec![
+            Some("hello world".to_string()),
+            Some("with,comma".to_string()),
+            None,
+            Some("normal".to_string()),
+        ];
+        assert_eq!(
+            format_option_array_as_postgres(&special),
+            "{\"hello world\",\"with,comma\",NULL,normal}"
+        );
+    }
+
+    #[test]
+    fn test_format_array_edge_cases() {
+        let empty: Vec<String> = vec![];
+        assert_eq!(format_array_as_postgres(&empty), "{}");
+
+        let with_quotes: Vec<String> = vec!["has\"quote".to_string()];
+        assert_eq!(format_array_as_postgres(&with_quotes), "{\"has\\\"quote\"}");
+
+        let with_braces: Vec<String> = vec!["{nested}".to_string()];
+        assert_eq!(format_array_as_postgres(&with_braces), "{\"{nested}\"}");
+
+        // Single element, no special chars
+        let simple: Vec<String> = vec!["hello".to_string()];
+        assert_eq!(format_array_as_postgres(&simple), "{hello}");
+
+        // Multiple elements
+        let multi: Vec<String> = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        assert_eq!(format_array_as_postgres(&multi), "{a,b,c}");
+
+        // Empty string element
+        let with_empty: Vec<String> = vec!["".to_string(), "a".to_string()];
+        assert_eq!(format_array_as_postgres(&with_empty), "{\"\",a}");
+
+        // Backslash in string
+        let with_backslash: Vec<String> = vec!["back\\slash".to_string()];
+        assert_eq!(
+            format_array_as_postgres(&with_backslash),
+            "{\"back\\\\slash\"}"
+        );
+    }
+
+    #[test]
+    fn test_no_hard_error_pattern_in_array_handlers() {
+        // Regression guard: verify that the array type handling section
+        // does not contain hard error returns that would crash on decode failure.
+        // All array type Err arms should use handle_custom_postgresql_type fallback.
+        let source = include_str!("database_postgresql.rs");
+
+        // Find the array handling section between "Array types" comment and the closing
+        // of the array match block. We look for the pattern within the array match arms.
+        let array_section_start = source
+            .find("// Array types - handle common array types")
+            .expect("Should find array types section");
+        let array_section_end = source[array_section_start..]
+            .find("// Geometric types")
+            .expect("Should find geometric types section");
+        let array_section = &source[array_section_start..array_section_start + array_section_end];
+
+        // The pattern "Err(e) => Err(DatabaseError::QueryError(e.to_string()))" should
+        // NOT appear in the array handling section (except in the default fallback's
+        // raw bytes error which is acceptable as an absolute last resort)
+        let hard_error_pattern = "Err(e) => Err(DatabaseError::QueryError(e.to_string()))";
+        let occurrences: Vec<_> = array_section.match_indices(hard_error_pattern).collect();
+
+        // The only acceptable occurrence is in the default "_" arm's raw bytes fallback
+        // which provides its own detailed error message
+        assert!(
+            occurrences.is_empty(),
+            "Found {} hard error pattern(s) in array handlers that should use \
+             handle_custom_postgresql_type fallback instead. \
+             Occurrences at byte offsets: {:?}",
+            occurrences.len(),
+            occurrences.iter().map(|(i, _)| i).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_all_postgresql_types_decode_gracefully() {
+        // Skip if no database available
+        let database_url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!(
+                    "Skipping test_all_postgresql_types_decode_gracefully: DATABASE_URL not set"
+                );
+                return;
+            }
+        };
+
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::PostgreSQL,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: None,
+            options: HashMap::new(),
+            docker_container: None,
+        };
+
+        // Parse the URL to create a proper client
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&database_url)
+            .await;
+
+        let pool = match pool {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Skipping: could not connect to database: {}", e);
+                return;
+            }
+        };
+
+        let metadata_provider = PostgreSQLMetadataProvider::new(pool.clone());
+        let client = PostgreSQLClient {
+            pool,
+            connection_info,
+            current_database: "test".to_string(),
+            metadata_provider,
+        };
+
+        // Comprehensive type query - tests ALL scalar and array types using SELECT with casts
+        let sql = r#"
+            SELECT
+                -- Scalar types
+                1::int2 AS small_int,
+                1::int4 AS integer_val,
+                1::int8 AS big_int,
+                1.5::float4 AS real_val,
+                1.5::float8 AS double_val,
+                1.23::numeric AS numeric_val,
+                true::bool AS bool_val,
+                'hello'::text AS text_val,
+                'c'::char AS char_val,
+                '2024-01-01'::date AS date_val,
+                '2024-01-01 12:00:00'::timestamp AS timestamp_val,
+                now()::timestamptz AS timestamptz_val,
+                '12:00:00'::time AS time_val,
+                '1 year 2 months'::interval AS interval_val,
+                '{"key":"value"}'::json AS json_val,
+                '{"key":"value"}'::jsonb AS jsonb_val,
+                '192.168.1.1'::inet AS inet_val,
+                '192.168.1.0/24'::cidr AS cidr_val,
+                gen_random_uuid()::uuid AS uuid_val,
+                '\xDEADBEEF'::bytea AS bytea_val,
+                '(1,2)'::point AS point_val,
+                '[1,10]'::int4range AS int4range_val,
+                NULL::int4 AS null_int,
+                NULL::text AS null_text,
+
+                -- Array types (main focus)
+                ARRAY[1,2,3]::int4[] AS int4_arr,
+                ARRAY[1,2]::int2[] AS int2_arr,
+                ARRAY[1,2]::int8[] AS int8_arr,
+                ARRAY[1.5,2.5]::float4[] AS float4_arr,
+                ARRAY[1.5,2.5]::float8[] AS float8_arr,
+                ARRAY[true,false]::bool[] AS bool_arr,
+                ARRAY['a','b']::text[] AS text_arr,
+                ARRAY['a','b']::varchar[] AS varchar_arr,
+                ARRAY['2024-01-01'::date]::date[] AS date_arr,
+                ARRAY['2024-01-01 12:00:00'::timestamp]::timestamp[] AS timestamp_arr,
+                ARRAY[now()]::timestamptz[] AS timestamptz_arr,
+                ARRAY['12:00:00'::time]::time[] AS time_arr,
+                ARRAY['{"a":1}'::jsonb]::jsonb[] AS jsonb_arr,
+                ARRAY[gen_random_uuid()]::uuid[] AS uuid_arr,
+                ARRAY[1.23::numeric]::numeric[] AS numeric_arr,
+                ARRAY['\xDEAD'::bytea]::bytea[] AS bytea_arr,
+
+                -- Edge cases
+                ARRAY[NULL::int4] AS arr_with_null,
+                NULL::int4[] AS null_array,
+                '{}'::int4[] AS empty_array
+        "#;
+
+        let result = client.execute_query(sql).await;
+
+        match result {
+            Ok(rows) => {
+                assert!(
+                    rows.len() >= 2,
+                    "Should have header + at least 1 data row, got {} rows",
+                    rows.len()
+                );
+
+                let headers = &rows[0];
+                let data = &rows[1];
+
+                // Verify no column returned the error placeholder
+                for (i, value) in data.iter().enumerate() {
+                    assert_ne!(
+                        value,
+                        "?error?",
+                        "Column '{}' (index {}) returned error placeholder. \
+                         All types should decode gracefully.",
+                        headers.get(i).unwrap_or(&format!("col_{}", i)),
+                        i
+                    );
+                }
+
+                // Verify specific known values
+                assert_eq!(
+                    data[headers.iter().position(|h| h == "small_int").unwrap()],
+                    "1"
+                );
+                assert_eq!(
+                    data[headers.iter().position(|h| h == "integer_val").unwrap()],
+                    "1"
+                );
+                assert_eq!(
+                    data[headers.iter().position(|h| h == "big_int").unwrap()],
+                    "1"
+                );
+                assert_eq!(
+                    data[headers.iter().position(|h| h == "bool_val").unwrap()],
+                    "true"
+                );
+                assert_eq!(
+                    data[headers.iter().position(|h| h == "text_val").unwrap()],
+                    "hello"
+                );
+
+                // Verify NULL values are empty strings
+                assert_eq!(
+                    data[headers.iter().position(|h| h == "null_int").unwrap()],
+                    ""
+                );
+                assert_eq!(
+                    data[headers.iter().position(|h| h == "null_text").unwrap()],
+                    ""
+                );
+                assert_eq!(
+                    data[headers.iter().position(|h| h == "null_array").unwrap()],
+                    ""
+                );
+
+                // Verify empty array
+                assert_eq!(
+                    data[headers.iter().position(|h| h == "empty_array").unwrap()],
+                    "{}"
+                );
+
+                // Verify array with NULL element contains "NULL"
+                let arr_with_null =
+                    &data[headers.iter().position(|h| h == "arr_with_null").unwrap()];
+                assert!(
+                    arr_with_null.contains("NULL"),
+                    "Array with NULL element should contain 'NULL', got: {}",
+                    arr_with_null
+                );
+
+                eprintln!("All {} columns decoded successfully!", headers.len());
+            }
+            Err(e) => {
+                panic!(
+                    "Query should not fail with graceful degradation enabled: {}",
+                    e
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_array_agg_with_nulls() {
+        // Skip if no database available
+        let database_url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Skipping test_array_agg_with_nulls: DATABASE_URL not set");
+                return;
+            }
+        };
+
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::PostgreSQL,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: None,
+            options: HashMap::new(),
+            docker_container: None,
+        };
+
+        let pool = PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&database_url)
+            .await;
+
+        let pool = match pool {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Skipping: could not connect to database: {}", e);
+                return;
+            }
+        };
+
+        let metadata_provider = PostgreSQLMetadataProvider::new(pool.clone());
+        let client = PostgreSQLClient {
+            pool,
+            connection_info,
+            current_database: "test".to_string(),
+            metadata_provider,
+        };
+
+        // Test ARRAY_AGG over NULL values - this is the exact scenario from the user's bug
+        let sql = "SELECT ARRAY_AGG(x) AS agg_result FROM (SELECT NULL::int4 AS x) sub";
+
+        let result = client.execute_query(sql).await;
+        match result {
+            Ok(rows) => {
+                assert!(rows.len() >= 2, "Should have header + data row");
+                let value = &rows[1][0];
+                assert_ne!(
+                    value, "?error?",
+                    "ARRAY_AGG over NULL should not produce error placeholder"
+                );
+                eprintln!("ARRAY_AGG(NULL) result: {}", value);
+            }
+            Err(e) => {
+                panic!("ARRAY_AGG query should not fail: {}", e);
+            }
+        }
+
+        // Test ARRAY_AGG producing a real integer array
+        let sql2 = "SELECT ARRAY_AGG(x) AS agg_ints FROM generate_series(1, 3) AS x";
+        let result2 = client.execute_query(sql2).await;
+        match result2 {
+            Ok(rows) => {
+                assert!(rows.len() >= 2);
+                let value = &rows[1][0];
+                assert_ne!(value, "?error?");
+                // Should contain 1, 2, 3 in some array format
+                assert!(
+                    value.contains('1') && value.contains('2') && value.contains('3'),
+                    "ARRAY_AGG should contain 1, 2, 3, got: {}",
+                    value
+                );
+                eprintln!("ARRAY_AGG(1..3) result: {}", value);
+            }
+            Err(e) => {
+                panic!("ARRAY_AGG query should not fail: {}", e);
+            }
+        }
     }
 }
