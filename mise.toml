@@ -1,7 +1,7 @@
 [tools]
 node = "latest"
-"pipx:commitizen" = "latest"
-"pipx:pre-commit" = "latest"
+hk = "latest"
+pkl = "latest"
 
 [env]
 _.python.venv = ".venv"

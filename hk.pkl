@@ -1,0 +1,45 @@
+amends "package://github.com/jdx/hk/releases/download/v1.39.0/hk@1.39.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.39.0/hk@1.39.0#/Builtins.pkl"
+
+local linters = new Mapping<String, Step> {
+    ["trailing-whitespace"] = Builtins.trailing_whitespace
+    ["newlines"] = Builtins.newlines
+    ["check-merge-conflict"] = Builtins.check_merge_conflict
+    ["cargo-fmt"] {
+        glob = "**/*.rs"
+        exclude = "python/**"
+        check = "cargo fmt -- --check"
+        fix = "cargo fmt"
+    }
+    ["cargo-clippy"] {
+        glob = "**/*.rs"
+        exclude = List("python/**", "tests/**")
+        check = "cargo clippy --lib --bins -- -D clippy::correctness -D clippy::suspicious -D clippy::perf -W clippy::style -W clippy::complexity -A clippy::await_holding_lock -A clippy::needless_return -A clippy::too_many_arguments -A clippy::type_complexity -A clippy::collapsible_if -A clippy::only_used_in_recursion -A clippy::should_implement_trait -A clippy::enum_variant_names"
+    }
+}
+
+hooks {
+    ["pre-commit"] {
+        fix = true
+        stash = "git"
+        steps {
+            ...linters
+        }
+    }
+    ["commit-msg"] {
+        steps {
+            ["check-conventional-commit"] = Builtins.check_conventional_commit
+        }
+    }
+    ["check"] {
+        steps {
+            ...linters
+        }
+    }
+    ["fix"] {
+        fix = true
+        steps {
+            ...linters
+        }
+    }
+}
