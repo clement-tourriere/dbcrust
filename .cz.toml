@@ -4,7 +4,7 @@ version = "0.23.1"
 tag_format = "v$version"
 version_scheme = "semver"
 update_changelog_on_bump = true
-bump_message = "release: v$current_version → v$new_version"
+bump_message = "chore(release): v$current_version → v$new_version"
 gpg_sign = true
 
 
@@ -14,10 +14,10 @@ version_files = [
     "pyproject.toml:version"
 ]
 
-# Pre-bump hooks to update Cargo.lock and run pre-commit before commit
+# Pre-bump hooks to update Cargo.lock and run checks before commit
 pre_bump_hooks = [
     "cargo check", # Update Cargo.lock
-    "pre-commit run", # Fix before tagging
+    "hk run fix", # Fix before tagging
 ]
 
 

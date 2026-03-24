@@ -1,3 +1,9 @@
+## v0.23.2 (2026-03-24)
+
+### Fix
+
+- named query scope flag parsing and add comprehensive test coverage
+
 ## v0.23.1 (2026-02-09)
 
 ### Fix
