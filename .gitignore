@@ -11,3 +11,4 @@ dist/
 
 __pycache__
 *.so
+dbcrust_data_analysis.txt
