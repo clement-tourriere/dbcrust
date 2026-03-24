@@ -103,4 +103,88 @@ mod tests {
             "SELECT * FROM users WHERE age = 30 AND category IN ('home user', 'mobile user')"
         );
     }
+
+    #[test]
+    fn test_no_parameters_passthrough() {
+        let query = "SELECT * FROM users";
+        let args: Vec<&str> = vec![];
+        let processed = process_query(query, &args);
+        assert_eq!(processed, "SELECT * FROM users");
+    }
+
+    #[test]
+    fn test_unmatched_parameter_preserved() {
+        let query = "SELECT * FROM users WHERE id = $3";
+        let args = vec!["only_one"];
+        let processed = process_query(query, &args);
+        // $3 has no matching arg (only 1 arg provided), should remain as $3
+        assert_eq!(processed, "SELECT * FROM users WHERE id = $3");
+    }
+
+    #[test]
+    fn test_empty_args_with_parameters() {
+        let query = "SELECT $1 FROM users";
+        let args: Vec<&str> = vec![];
+        let processed = process_query(query, &args);
+        // No args provided, parameter stays
+        assert_eq!(processed, "SELECT $1 FROM users");
+    }
+
+    #[test]
+    fn test_single_positional_parameter() {
+        let query = "SELECT * FROM $1";
+        let args = vec!["users"];
+        let processed = process_query(query, &args);
+        assert_eq!(processed, "SELECT * FROM users");
+    }
+
+    #[test]
+    fn test_raw_aggregation_single_arg() {
+        let query = "SELECT * FROM users WHERE id IN ($*)";
+        let args = vec!["42"];
+        let processed = process_query(query, &args);
+        assert_eq!(processed, "SELECT * FROM users WHERE id IN (42)");
+    }
+
+    #[test]
+    fn test_string_aggregation_single_arg() {
+        let query = "SELECT * FROM users WHERE name IN ($@)";
+        let args = vec!["Alice"];
+        let processed = process_query(query, &args);
+        assert_eq!(processed, "SELECT * FROM users WHERE name IN ('Alice')");
+    }
+
+    #[test]
+    fn test_special_characters_in_string_aggregation() {
+        // Single quotes in args should be escaped for $@
+        let query = "SELECT * FROM users WHERE name IN ($@)";
+        let args = vec!["O'Brien"];
+        let processed = process_query(query, &args);
+        assert_eq!(processed, "SELECT * FROM users WHERE name IN ('O''Brien')");
+    }
+
+    #[test]
+    fn test_multiple_positional_parameters() {
+        let query = "SELECT * FROM $1 WHERE $2 = $3";
+        let args = vec!["users", "id", "42"];
+        let processed = process_query(query, &args);
+        assert_eq!(processed, "SELECT * FROM users WHERE id = 42");
+    }
+
+    #[test]
+    fn test_no_parameters_with_args_provided() {
+        // Query has no parameters, args are provided but unused
+        let query = "SELECT COUNT(*) FROM orders";
+        let args = vec!["unused_arg"];
+        let processed = process_query(query, &args);
+        assert_eq!(processed, "SELECT COUNT(*) FROM orders");
+    }
+
+    #[test]
+    fn test_raw_aggregation_empty_args() {
+        let query = "SELECT * FROM users WHERE id IN ($*)";
+        let args: Vec<&str> = vec![];
+        let processed = process_query(query, &args);
+        assert_eq!(processed, "SELECT * FROM users WHERE id IN ()");
+    }
 }

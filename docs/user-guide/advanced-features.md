@@ -44,6 +44,8 @@ product_report 'electronics','books','clothing'
 
 ### Scoped Named Queries
 
+Scope flags can be placed before the name or after the query.
+
 **Session-local queries (default):**
 ```sql
 -- Only available in current session
@@ -52,20 +54,23 @@ product_report 'electronics','books','clothing'
 
 **Global queries (available across all databases):**
 ```sql
--- Available everywhere
+-- Available everywhere (flag before name - recommended)
+\ns --global connection_info SELECT current_database(), current_user, version()
+
+-- Flag after query also works
 \ns connection_info SELECT current_database(), current_user, version() --global
 ```
 
 **Database-type specific queries:**
 ```sql
 -- Only available for PostgreSQL connections
-\ns pg_stats SELECT schemaname, tablename, n_tup_ins, n_tup_del FROM pg_stat_user_tables --postgres
+\ns --postgres pg_stats SELECT schemaname, tablename, n_tup_ins, n_tup_del FROM pg_stat_user_tables
 
 -- Only available for MySQL connections
-\ns mysql_processlist SHOW PROCESSLIST --mysql
+\ns --mysql mysql_processlist SHOW PROCESSLIST
 
 -- Only available for SQLite connections
-\ns sqlite_tables SELECT name FROM sqlite_master WHERE type='table' --sqlite
+\ns --sqlite sqlite_tables SELECT name FROM sqlite_master WHERE type='table'
 ```
 
 **Check query scoping:**

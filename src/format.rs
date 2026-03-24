@@ -1052,4 +1052,213 @@ mod tests {
         assert!(result.contains("active"));
         assert!(result.contains("idle"));
     }
+
+    #[test]
+    fn test_expanded_format_single_row() {
+        let data = vec![
+            vec!["id".to_string(), "name".to_string(), "email".to_string()],
+            vec![
+                "1".to_string(),
+                "Alice".to_string(),
+                "alice@example.com".to_string(),
+            ],
+        ];
+
+        let tables = format_query_results_expanded(&data);
+        assert_eq!(
+            tables.len(),
+            1,
+            "Should produce exactly one table for one data row"
+        );
+
+        let output = tables[0].to_string();
+        assert!(
+            output.contains("Record 1"),
+            "Should contain 'Record 1' header"
+        );
+        assert!(output.contains("id"), "Should contain column name 'id'");
+        assert!(output.contains("name"), "Should contain column name 'name'");
+        assert!(
+            output.contains("email"),
+            "Should contain column name 'email'"
+        );
+        assert!(output.contains("1"), "Should contain value '1'");
+        assert!(output.contains("Alice"), "Should contain value 'Alice'");
+        assert!(
+            output.contains("alice@example.com"),
+            "Should contain value 'alice@example.com'"
+        );
+    }
+
+    #[test]
+    fn test_expanded_format_multiple_rows() {
+        let data = vec![
+            vec!["id".to_string(), "city".to_string()],
+            vec!["1".to_string(), "Paris".to_string()],
+            vec!["2".to_string(), "London".to_string()],
+            vec!["3".to_string(), "Tokyo".to_string()],
+        ];
+
+        let tables = format_query_results_expanded(&data);
+        assert_eq!(
+            tables.len(),
+            3,
+            "Should produce one table per data row (3 rows)"
+        );
+
+        let output_1 = tables[0].to_string();
+        assert!(
+            output_1.contains("Record 1"),
+            "First table should be Record 1"
+        );
+        assert!(
+            output_1.contains("Paris"),
+            "First table should contain 'Paris'"
+        );
+
+        let output_2 = tables[1].to_string();
+        assert!(
+            output_2.contains("Record 2"),
+            "Second table should be Record 2"
+        );
+        assert!(
+            output_2.contains("London"),
+            "Second table should contain 'London'"
+        );
+
+        let output_3 = tables[2].to_string();
+        assert!(
+            output_3.contains("Record 3"),
+            "Third table should be Record 3"
+        );
+        assert!(
+            output_3.contains("Tokyo"),
+            "Third table should contain 'Tokyo'"
+        );
+    }
+
+    #[test]
+    fn test_expanded_format_empty_data() {
+        let data: Vec<Vec<String>> = Vec::new();
+        let tables = format_query_results_expanded(&data);
+        assert!(
+            tables.is_empty(),
+            "Empty data should return empty tables vec"
+        );
+    }
+
+    #[test]
+    fn test_expanded_format_header_only() {
+        let data = vec![vec![
+            "id".to_string(),
+            "name".to_string(),
+            "email".to_string(),
+        ]];
+
+        let tables = format_query_results_expanded(&data);
+        assert!(
+            tables.is_empty(),
+            "Header-only data (len < 2) should return empty tables vec"
+        );
+    }
+
+    #[test]
+    fn test_format_table_details_basic() {
+        use crate::db::{
+            CheckConstraintInfo, ColumnInfo, IndexInfo, ReferencedByInfo, TableDetails,
+        };
+
+        let details = TableDetails {
+            name: "users".to_string(),
+            schema: "public".to_string(),
+            full_name: "public.users".to_string(),
+            columns: vec![
+                ColumnInfo {
+                    name: "id".to_string(),
+                    data_type: "integer".to_string(),
+                    collation: "".to_string(),
+                    nullable: false,
+                    default_value: Some("nextval('users_id_seq'::regclass)".to_string()),
+                    enum_values: None,
+                },
+                ColumnInfo {
+                    name: "name".to_string(),
+                    data_type: "text".to_string(),
+                    collation: "default".to_string(),
+                    nullable: true,
+                    default_value: None,
+                    enum_values: None,
+                },
+                ColumnInfo {
+                    name: "email".to_string(),
+                    data_type: "varchar(255)".to_string(),
+                    collation: "default".to_string(),
+                    nullable: false,
+                    default_value: None,
+                    enum_values: None,
+                },
+            ],
+            indexes: vec![IndexInfo {
+                name: "users_pkey".to_string(),
+                index_type: "btree".to_string(),
+                is_primary: true,
+                is_unique: true,
+                predicate: None,
+                definition: "CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)"
+                    .to_string(),
+                constraint_def: None,
+            }],
+            check_constraints: vec![CheckConstraintInfo {
+                name: "users_email_check".to_string(),
+                definition: "CHECK (email ~~ '%@%'::text)".to_string(),
+            }],
+            foreign_keys: vec![],
+            referenced_by: vec![ReferencedByInfo {
+                schema: "public".to_string(),
+                table: "orders".to_string(),
+                constraint_name: "orders_user_id_fkey".to_string(),
+                definition: "FOREIGN KEY (user_id) REFERENCES users(id)".to_string(),
+            }],
+            nested_field_details: std::collections::HashMap::new(),
+        };
+
+        let output = format_table_details(&details);
+
+        // Verify table header
+        assert!(
+            output.contains("Table \"public.users\""),
+            "Should contain table header with schema and name"
+        );
+
+        // Verify column names are present
+        assert!(output.contains("id"), "Should contain column 'id'");
+        assert!(output.contains("name"), "Should contain column 'name'");
+        assert!(output.contains("email"), "Should contain column 'email'");
+
+        // Verify data types are present
+        assert!(output.contains("integer"), "Should contain type 'integer'");
+        assert!(output.contains("text"), "Should contain type 'text'");
+        assert!(
+            output.contains("varchar(255)"),
+            "Should contain type 'varchar(255)'"
+        );
+
+        // Verify index information
+        assert!(
+            output.contains("users_pkey"),
+            "Should contain index name 'users_pkey'"
+        );
+
+        // Verify check constraint
+        assert!(
+            output.contains("users_email_check"),
+            "Should contain check constraint name"
+        );
+
+        // Verify referenced-by information
+        assert!(
+            output.contains("orders_user_id_fkey"),
+            "Should contain referenced-by constraint name"
+        );
+    }
 }

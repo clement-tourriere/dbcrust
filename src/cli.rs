@@ -67,3 +67,59 @@ pub enum Shell {
     PowerShell,
     Elvish,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_no_args() {
+        let args = Args::try_parse_from(["dbcrust"]).unwrap();
+        assert!(args.connection_url.is_none());
+        assert!(args.command.is_empty());
+    }
+
+    #[test]
+    fn test_connection_url() {
+        let args = Args::try_parse_from(["dbcrust", "postgres://localhost/test"]).unwrap();
+        assert_eq!(
+            args.connection_url.as_deref(),
+            Some("postgres://localhost/test")
+        );
+    }
+
+    #[test]
+    fn test_single_command() {
+        let args = Args::try_parse_from(["dbcrust", "-c", "SELECT 1"]).unwrap();
+        assert_eq!(args.command, vec!["SELECT 1"]);
+    }
+
+    #[test]
+    fn test_multiple_commands() {
+        let args = Args::try_parse_from(["dbcrust", "-c", "\\dt", "-c", "SELECT 1"]).unwrap();
+        assert_eq!(args.command, vec!["\\dt", "SELECT 1"]);
+    }
+
+    #[test]
+    fn test_ssh_tunnel() {
+        let args = Args::try_parse_from([
+            "dbcrust",
+            "--ssh-tunnel",
+            "user@host",
+            "postgres://localhost/test",
+        ])
+        .unwrap();
+        assert_eq!(args.ssh_tunnel.as_deref(), Some("user@host"));
+        assert_eq!(
+            args.connection_url.as_deref(),
+            Some("postgres://localhost/test")
+        );
+    }
+
+    #[test]
+    fn test_completions() {
+        let args = Args::try_parse_from(["dbcrust", "--completions", "bash"]).unwrap();
+        assert_eq!(args.completions, Some(Shell::Bash));
+    }
+}

@@ -3117,4 +3117,627 @@ mod tests {
         assert_eq!(session.user, "newuser");
         assert_eq!(session.dbname, "newdb");
     }
+
+    // ==================== Named Queries Storage Tests ====================
+
+    fn make_named_query(query: &str, scope: NamedQueryScope) -> NamedQuery {
+        NamedQuery {
+            query: query.to_string(),
+            scope,
+            created_at: chrono::Utc::now(),
+            description: None,
+        }
+    }
+
+    #[rstest]
+    fn test_named_queries_generate_key() {
+        assert_eq!(
+            NamedQueriesStorage::generate_key("myquery", &NamedQueryScope::Global),
+            "global::myquery"
+        );
+        assert_eq!(
+            NamedQueriesStorage::generate_key(
+                "pgquery",
+                &NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL)
+            ),
+            "postgresql::pgquery"
+        );
+        assert_eq!(
+            NamedQueriesStorage::generate_key(
+                "myquery",
+                &NamedQueryScope::DatabaseType(DatabaseType::MySQL)
+            ),
+            "mysql::myquery"
+        );
+        assert_eq!(
+            NamedQueriesStorage::generate_key(
+                "myquery",
+                &NamedQueryScope::Session("localhost_5432_testdb_user".to_string())
+            ),
+            "session::localhost_5432_testdb_user::myquery"
+        );
+    }
+
+    #[rstest]
+    fn test_named_queries_insert_and_get() {
+        let mut storage = NamedQueriesStorage::default();
+
+        // Insert global query
+        let query = make_named_query("SELECT 1", NamedQueryScope::Global);
+        storage.insert("test", query);
+
+        // Retrieve it
+        let result = storage.get("test", &NamedQueryScope::Global);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().query, "SELECT 1");
+
+        // Try to get with wrong scope
+        let result = storage.get(
+            "test",
+            &NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL),
+        );
+        assert!(result.is_none());
+    }
+
+    #[rstest]
+    fn test_named_queries_insert_multiple_scopes() {
+        let mut storage = NamedQueriesStorage::default();
+
+        // Insert same name with different scopes
+        storage.insert(
+            "count",
+            make_named_query(
+                "SELECT COUNT(*) FROM pg_tables",
+                NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL),
+            ),
+        );
+        storage.insert(
+            "count",
+            make_named_query(
+                "SELECT COUNT(*) FROM information_schema.tables",
+                NamedQueryScope::DatabaseType(DatabaseType::MySQL),
+            ),
+        );
+        storage.insert(
+            "count",
+            make_named_query("SELECT COUNT(*) FROM any_table", NamedQueryScope::Global),
+        );
+
+        // Each scope returns correct query
+        assert_eq!(
+            storage
+                .get(
+                    "count",
+                    &NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL)
+                )
+                .unwrap()
+                .query,
+            "SELECT COUNT(*) FROM pg_tables"
+        );
+        assert_eq!(
+            storage
+                .get("count", &NamedQueryScope::DatabaseType(DatabaseType::MySQL))
+                .unwrap()
+                .query,
+            "SELECT COUNT(*) FROM information_schema.tables"
+        );
+        assert_eq!(
+            storage
+                .get("count", &NamedQueryScope::Global)
+                .unwrap()
+                .query,
+            "SELECT COUNT(*) FROM any_table"
+        );
+    }
+
+    #[rstest]
+    fn test_named_queries_find_by_name_priority() {
+        let mut storage = NamedQueriesStorage::default();
+        let session_id = "localhost_5432_testdb_user";
+
+        // Insert at all three scopes
+        storage.insert(
+            "myquery",
+            make_named_query("global version", NamedQueryScope::Global),
+        );
+        storage.insert(
+            "myquery",
+            make_named_query(
+                "postgres version",
+                NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL),
+            ),
+        );
+        storage.insert(
+            "myquery",
+            make_named_query(
+                "session version",
+                NamedQueryScope::Session(session_id.to_string()),
+            ),
+        );
+
+        // Session scope takes priority
+        let result =
+            storage.find_by_name("myquery", Some(&DatabaseType::PostgreSQL), Some(session_id));
+        assert_eq!(result.unwrap().query, "session version");
+
+        // Without session, database type takes priority
+        let result = storage.find_by_name("myquery", Some(&DatabaseType::PostgreSQL), None);
+        assert_eq!(result.unwrap().query, "postgres version");
+
+        // Without session or db type, global is returned
+        let result = storage.find_by_name("myquery", None, None);
+        assert_eq!(result.unwrap().query, "global version");
+
+        // Non-existent query returns None
+        let result = storage.find_by_name("nonexistent", None, None);
+        assert!(result.is_none());
+    }
+
+    #[rstest]
+    fn test_named_queries_delete() {
+        let mut storage = NamedQueriesStorage::default();
+
+        storage.insert(
+            "deleteme",
+            make_named_query("SELECT 1", NamedQueryScope::Global),
+        );
+        assert!(storage.get("deleteme", &NamedQueryScope::Global).is_some());
+
+        // Delete it
+        let deleted = storage.delete_by_name_and_scope("deleteme", &NamedQueryScope::Global);
+        assert!(deleted);
+        assert!(storage.get("deleteme", &NamedQueryScope::Global).is_none());
+
+        // Delete non-existent returns false
+        let deleted = storage.delete_by_name_and_scope("deleteme", &NamedQueryScope::Global);
+        assert!(!deleted);
+    }
+
+    #[rstest]
+    fn test_named_queries_get_available_queries() {
+        let mut storage = NamedQueriesStorage::default();
+        let session_id = "localhost_5432_testdb_user";
+
+        storage.insert(
+            "global_q",
+            make_named_query("SELECT 1", NamedQueryScope::Global),
+        );
+        storage.insert(
+            "pg_q",
+            make_named_query(
+                "SELECT 2",
+                NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL),
+            ),
+        );
+        storage.insert(
+            "mysql_q",
+            make_named_query(
+                "SELECT 3",
+                NamedQueryScope::DatabaseType(DatabaseType::MySQL),
+            ),
+        );
+        storage.insert(
+            "session_q",
+            make_named_query("SELECT 4", NamedQueryScope::Session(session_id.to_string())),
+        );
+
+        // PostgreSQL context: should see global + pg + session
+        let available =
+            storage.get_available_queries(Some(&DatabaseType::PostgreSQL), Some(session_id));
+        let names: Vec<String> = available.iter().map(|(n, _)| n.clone()).collect();
+        assert!(names.contains(&"global_q".to_string()));
+        assert!(names.contains(&"pg_q".to_string()));
+        assert!(names.contains(&"session_q".to_string()));
+        assert!(!names.contains(&"mysql_q".to_string()));
+
+        // No context: should only see global
+        let available = storage.get_available_queries(None, None);
+        assert_eq!(available.len(), 1);
+        assert_eq!(available[0].0, "global_q");
+    }
+
+    #[rstest]
+    fn test_named_queries_overwrite() {
+        let mut storage = NamedQueriesStorage::default();
+
+        storage.insert(
+            "myquery",
+            make_named_query("SELECT 1", NamedQueryScope::Global),
+        );
+        assert_eq!(
+            storage
+                .get("myquery", &NamedQueryScope::Global)
+                .unwrap()
+                .query,
+            "SELECT 1"
+        );
+
+        // Overwrite with new query
+        storage.insert(
+            "myquery",
+            make_named_query("SELECT 2", NamedQueryScope::Global),
+        );
+        assert_eq!(
+            storage
+                .get("myquery", &NamedQueryScope::Global)
+                .unwrap()
+                .query,
+            "SELECT 2"
+        );
+
+        // Only one entry should exist
+        let count = storage
+            .queries
+            .keys()
+            .filter(|k| k.contains("myquery"))
+            .count();
+        assert_eq!(count, 1);
+    }
+
+    #[rstest]
+    fn test_named_queries_toml_roundtrip() {
+        let mut storage = NamedQueriesStorage::default();
+
+        storage.insert(
+            "global_q",
+            make_named_query("SELECT * FROM users", NamedQueryScope::Global),
+        );
+        storage.insert(
+            "pg_q",
+            make_named_query(
+                "SELECT version()",
+                NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL),
+            ),
+        );
+        storage.insert(
+            "session_q",
+            make_named_query(
+                "SELECT COUNT(*) FROM orders",
+                NamedQueryScope::Session("my_session".to_string()),
+            ),
+        );
+
+        // Serialize to TOML
+        let toml_str = toml::to_string_pretty(&storage).unwrap();
+
+        // Deserialize back
+        let deserialized: NamedQueriesStorage = toml::from_str(&toml_str).unwrap();
+
+        // Verify all queries round-tripped correctly
+        assert_eq!(
+            deserialized
+                .get("global_q", &NamedQueryScope::Global)
+                .unwrap()
+                .query,
+            "SELECT * FROM users"
+        );
+        assert_eq!(
+            deserialized
+                .get(
+                    "pg_q",
+                    &NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL)
+                )
+                .unwrap()
+                .query,
+            "SELECT version()"
+        );
+        assert_eq!(
+            deserialized
+                .get(
+                    "session_q",
+                    &NamedQueryScope::Session("my_session".to_string())
+                )
+                .unwrap()
+                .query,
+            "SELECT COUNT(*) FROM orders"
+        );
+
+        // Verify scopes were preserved
+        assert_eq!(
+            deserialized
+                .get("global_q", &NamedQueryScope::Global)
+                .unwrap()
+                .scope,
+            NamedQueryScope::Global
+        );
+        assert_eq!(
+            deserialized
+                .get(
+                    "pg_q",
+                    &NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL)
+                )
+                .unwrap()
+                .scope,
+            NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL)
+        );
+    }
+
+    // Helper to create a CachedVaultCredentials for testing
+    fn make_test_vault_credential(
+        mount_path: &str,
+        database_name: &str,
+        role_name: &str,
+        ttl_seconds: i64,
+        renewable: bool,
+    ) -> CachedVaultCredentials {
+        let now = chrono::Utc::now();
+        CachedVaultCredentials {
+            username: format!("v-token-{role_name}-test"),
+            password: "s3cret".to_string(),
+            lease_id: format!("{mount_path}/creds/{role_name}/lease-abc123"),
+            lease_duration: ttl_seconds as u64,
+            issue_time: now,
+            expire_time: now + chrono::Duration::seconds(ttl_seconds),
+            renewable,
+            mount_path: mount_path.to_string(),
+            database_name: database_name.to_string(),
+            role_name: role_name.to_string(),
+        }
+    }
+
+    #[rstest]
+    fn test_vault_credential_storage_store_and_retrieve() {
+        let mut config = get_test_config();
+        config.vault_credential_cache_enabled = true;
+
+        let cred = make_test_vault_credential("database", "mydb", "readonly", 3600, true);
+        let key = Config::vault_cache_key("database", "mydb", "readonly");
+        config
+            .vault_credential_storage
+            .cached_credentials
+            .insert(key, cred);
+
+        // Retrieve the credential through the public API
+        let retrieved = config.get_cached_vault_credentials("database", "mydb", "readonly");
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.username, "v-token-readonly-test");
+        assert_eq!(retrieved.password, "s3cret");
+        assert_eq!(retrieved.mount_path, "database");
+        assert_eq!(retrieved.database_name, "mydb");
+        assert_eq!(retrieved.role_name, "readonly");
+        assert_eq!(retrieved.lease_duration, 3600);
+        assert!(retrieved.renewable);
+
+        // Non-existent credential should return None
+        let missing = config.get_cached_vault_credentials("database", "mydb", "nonexistent");
+        assert!(missing.is_none());
+    }
+
+    #[rstest]
+    fn test_vault_credential_storage_ttl_check() {
+        let mut config = get_test_config();
+        config.vault_credential_cache_enabled = true;
+        // Renew when less than 25% of TTL remains
+        config.vault_cache_renewal_threshold = 0.25;
+
+        // Credential with 3600s TTL, issued now — plenty of time left, no renewal needed
+        let cred_fresh = make_test_vault_credential("db", "mydb", "fresh_role", 3600, true);
+        let key_fresh = Config::vault_cache_key("db", "mydb", "fresh_role");
+        config
+            .vault_credential_storage
+            .cached_credentials
+            .insert(key_fresh, cred_fresh);
+
+        assert!(
+            !config.vault_credentials_need_renewal("db", "mydb", "fresh_role"),
+            "Fresh credential (100% TTL remaining) should NOT need renewal"
+        );
+
+        // Credential that expires very soon (10 seconds left on a 3600s lease) — needs renewal
+        let now = chrono::Utc::now();
+        let cred_expiring = CachedVaultCredentials {
+            username: "v-token-expiring-test".to_string(),
+            password: "s3cret".to_string(),
+            lease_id: "db/creds/expiring_role/lease-xyz".to_string(),
+            lease_duration: 3600,
+            issue_time: now - chrono::Duration::seconds(3590),
+            expire_time: now + chrono::Duration::seconds(10),
+            renewable: true,
+            mount_path: "db".to_string(),
+            database_name: "mydb".to_string(),
+            role_name: "expiring_role".to_string(),
+        };
+        let key_expiring = Config::vault_cache_key("db", "mydb", "expiring_role");
+        config
+            .vault_credential_storage
+            .cached_credentials
+            .insert(key_expiring, cred_expiring);
+
+        assert!(
+            config.vault_credentials_need_renewal("db", "mydb", "expiring_role"),
+            "Credential with only 10s left on 3600s lease should need renewal"
+        );
+
+        // Non-renewable credential should never need renewal even if almost expired
+        let cred_nonrenewable = CachedVaultCredentials {
+            username: "v-token-nonrenewable-test".to_string(),
+            password: "s3cret".to_string(),
+            lease_id: "db/creds/nonrenew/lease-000".to_string(),
+            lease_duration: 3600,
+            issue_time: now - chrono::Duration::seconds(3590),
+            expire_time: now + chrono::Duration::seconds(10),
+            renewable: false,
+            mount_path: "db".to_string(),
+            database_name: "mydb".to_string(),
+            role_name: "nonrenew".to_string(),
+        };
+        let key_nonrenew = Config::vault_cache_key("db", "mydb", "nonrenew");
+        config
+            .vault_credential_storage
+            .cached_credentials
+            .insert(key_nonrenew, cred_nonrenewable);
+
+        assert!(
+            !config.vault_credentials_need_renewal("db", "mydb", "nonrenew"),
+            "Non-renewable credential should NOT need renewal"
+        );
+    }
+
+    #[rstest]
+    fn test_vault_credential_storage_cleanup_expired() {
+        let mut config = get_test_config();
+        config.vault_credential_cache_enabled = true;
+
+        let now = chrono::Utc::now();
+
+        // Insert an already-expired credential
+        let expired_cred = CachedVaultCredentials {
+            username: "v-token-expired-test".to_string(),
+            password: "old_secret".to_string(),
+            lease_id: "mount/creds/role_expired/lease-old".to_string(),
+            lease_duration: 3600,
+            issue_time: now - chrono::Duration::seconds(7200),
+            expire_time: now - chrono::Duration::seconds(3600),
+            renewable: true,
+            mount_path: "mount".to_string(),
+            database_name: "mydb".to_string(),
+            role_name: "role_expired".to_string(),
+        };
+        let key_expired = Config::vault_cache_key("mount", "mydb", "role_expired");
+        config
+            .vault_credential_storage
+            .cached_credentials
+            .insert(key_expired, expired_cred);
+
+        // Insert a valid (non-expired) credential
+        let valid_cred = make_test_vault_credential("mount", "mydb", "role_valid", 3600, true);
+        let key_valid = Config::vault_cache_key("mount", "mydb", "role_valid");
+        config
+            .vault_credential_storage
+            .cached_credentials
+            .insert(key_valid, valid_cred);
+
+        assert_eq!(config.vault_credential_storage.cached_credentials.len(), 2);
+
+        // Cleanup expired credentials
+        let removed = config.cleanup_expired_vault_credentials();
+        assert_eq!(
+            removed, 1,
+            "Should have removed exactly 1 expired credential"
+        );
+        assert_eq!(
+            config.vault_credential_storage.cached_credentials.len(),
+            1,
+            "Should have 1 credential remaining"
+        );
+
+        // The valid credential should still be retrievable
+        let remaining = config.get_cached_vault_credentials("mount", "mydb", "role_valid");
+        assert!(
+            remaining.is_some(),
+            "Valid credential should survive cleanup"
+        );
+
+        // The expired one should be gone
+        let gone = config.get_cached_vault_credentials("mount", "mydb", "role_expired");
+        assert!(gone.is_none(), "Expired credential should be removed");
+    }
+
+    #[rstest]
+    fn test_vault_credential_storage_list() {
+        let mut config = get_test_config();
+        config.vault_credential_cache_enabled = true;
+
+        // Start empty
+        assert!(
+            config.list_cached_vault_credentials().is_empty(),
+            "Should start with no cached credentials"
+        );
+
+        // Insert multiple credentials
+        let cred1 = make_test_vault_credential("mount_a", "db1", "role1", 3600, true);
+        let key1 = Config::vault_cache_key("mount_a", "db1", "role1");
+        config
+            .vault_credential_storage
+            .cached_credentials
+            .insert(key1.clone(), cred1);
+
+        let cred2 = make_test_vault_credential("mount_b", "db2", "role2", 7200, false);
+        let key2 = Config::vault_cache_key("mount_b", "db2", "role2");
+        config
+            .vault_credential_storage
+            .cached_credentials
+            .insert(key2.clone(), cred2);
+
+        let cred3 = make_test_vault_credential("mount_a", "db1", "role3", 1800, true);
+        let key3 = Config::vault_cache_key("mount_a", "db1", "role3");
+        config
+            .vault_credential_storage
+            .cached_credentials
+            .insert(key3.clone(), cred3);
+
+        let listed = config.list_cached_vault_credentials();
+        assert_eq!(listed.len(), 3, "Should list all 3 credentials");
+
+        // Verify all keys are present
+        let listed_keys: Vec<String> = listed.iter().map(|(k, _)| k.clone()).collect();
+        assert!(listed_keys.contains(&key1));
+        assert!(listed_keys.contains(&key2));
+        assert!(listed_keys.contains(&key3));
+
+        // Verify credential details are accessible
+        for (key, cred) in &listed {
+            if key == &key2 {
+                assert_eq!(cred.database_name, "db2");
+                assert_eq!(cred.lease_duration, 7200);
+                assert!(!cred.renewable);
+            }
+        }
+    }
+
+    #[rstest]
+    fn test_vault_credential_storage_clear() {
+        let mut config = get_test_config();
+        config.vault_credential_cache_enabled = true;
+
+        // Insert several credentials
+        for i in 0..5 {
+            let cred = make_test_vault_credential(
+                "mount",
+                &format!("db{i}"),
+                &format!("role{i}"),
+                3600,
+                true,
+            );
+            let key = Config::vault_cache_key("mount", &format!("db{i}"), &format!("role{i}"));
+            config
+                .vault_credential_storage
+                .cached_credentials
+                .insert(key, cred);
+        }
+        assert_eq!(
+            config.vault_credential_storage.cached_credentials.len(),
+            5,
+            "Should have 5 credentials before clear"
+        );
+
+        // Clear all credentials directly on the storage (avoids file I/O)
+        config.vault_credential_storage.cached_credentials.clear();
+
+        assert!(
+            config
+                .vault_credential_storage
+                .cached_credentials
+                .is_empty(),
+            "Should have no credentials after clear"
+        );
+        assert!(
+            config.list_cached_vault_credentials().is_empty(),
+            "list_cached_vault_credentials should return empty after clear"
+        );
+
+        // Verify retrieval returns None for previously stored credentials
+        for i in 0..5 {
+            let result = config.get_cached_vault_credentials(
+                "mount",
+                &format!("db{i}"),
+                &format!("role{i}"),
+            );
+            assert!(
+                result.is_none(),
+                "Credential db{i}/role{i} should not be retrievable after clear"
+            );
+        }
+    }
 }

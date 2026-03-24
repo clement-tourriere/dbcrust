@@ -538,4 +538,142 @@ mod tests {
             "Expected new password '{password3}', but got '{new_pass:?}'"
         );
     }
+
+    #[rstest]
+    fn test_lookup_nonexistent_password() {
+        let test_pgpass = TestPgpass::new("nonexistent");
+
+        // Add some entries
+        test_pgpass.add_entry("host1", 5432, "db1", "user1", "pass1");
+        test_pgpass.add_entry("host2", 5433, "db2", "user2", "pass2");
+        test_pgpass.add_entry("host3", 5434, "db3", "user3", "pass3");
+
+        // Add a brief pause to ensure the file is fully written
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Lookup a completely non-matching entry
+        let result = test_pgpass.lookup("nonexistent_host", 9999, "nonexistent_db", "nobody");
+        assert_eq!(result, None, "Expected None for non-matching entry");
+
+        // Lookup with matching host but wrong port
+        let result = test_pgpass.lookup("host1", 9999, "db1", "user1");
+        assert_eq!(result, None, "Expected None when port doesn't match");
+
+        // Lookup with matching host and port but wrong database
+        let result = test_pgpass.lookup("host1", 5432, "wrong_db", "user1");
+        assert_eq!(result, None, "Expected None when database doesn't match");
+
+        // Lookup with matching host, port, database but wrong username
+        let result = test_pgpass.lookup("host1", 5432, "db1", "wrong_user");
+        assert_eq!(result, None, "Expected None when username doesn't match");
+    }
+
+    #[rstest]
+    fn test_wildcard_matching() {
+        let test_pgpass = TestPgpass::new("wildcard");
+
+        // Create a file with wildcard entries directly
+        let parent = test_pgpass.path.parent().unwrap();
+        if !parent.exists() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+
+        let mut file = std::fs::File::create(&test_pgpass.path).unwrap();
+        // Entry with wildcard host
+        writeln!(file, "*:5432:mydb:myuser:pass_any_host").unwrap();
+        // Entry with wildcard port
+        writeln!(file, "specifichost:*:mydb:myuser:pass_any_port").unwrap();
+        // Entry with wildcard database
+        writeln!(file, "dbhost:5432:*:dbuser:pass_any_db").unwrap();
+        // Entry with wildcard username
+        writeln!(file, "userhost:5432:userdb:*:pass_any_user").unwrap();
+        // Entry with all wildcards
+        writeln!(file, "*:*:*:*:pass_catch_all").unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+
+        #[cfg(target_family = "unix")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = std::fs::metadata(&test_pgpass.path).unwrap();
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o600);
+            std::fs::set_permissions(&test_pgpass.path, permissions).unwrap();
+        }
+
+        // Add a brief pause
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Wildcard host: any host with matching port/db/user should match
+        let result = test_pgpass.lookup("anyhost", 5432, "mydb", "myuser");
+        assert_eq!(
+            result,
+            Some("pass_any_host".to_string()),
+            "Wildcard host should match any hostname"
+        );
+
+        // Wildcard port: matching host with any port should match
+        let result = test_pgpass.lookup("specifichost", 9999, "mydb", "myuser");
+        assert_eq!(
+            result,
+            Some("pass_any_port".to_string()),
+            "Wildcard port should match any port"
+        );
+
+        // Wildcard database: matching host/port with any database should match
+        let result = test_pgpass.lookup("dbhost", 5432, "any_database", "dbuser");
+        assert_eq!(
+            result,
+            Some("pass_any_db".to_string()),
+            "Wildcard database should match any database name"
+        );
+
+        // Wildcard username: matching host/port/db with any user should match
+        let result = test_pgpass.lookup("userhost", 5432, "userdb", "anyone");
+        assert_eq!(
+            result,
+            Some("pass_any_user".to_string()),
+            "Wildcard username should match any username"
+        );
+
+        // All wildcards: should match anything that doesn't match earlier entries
+        let result = test_pgpass.lookup("unknown", 1234, "unknowndb", "unknownuser");
+        assert_eq!(
+            result,
+            Some("pass_catch_all".to_string()),
+            "All-wildcard entry should match any connection"
+        );
+    }
+
+    #[rstest]
+    fn test_empty_file_returns_none() {
+        let test_pgpass = TestPgpass::new("empty");
+
+        // Create an empty file
+        let parent = test_pgpass.path.parent().unwrap();
+        if !parent.exists() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+
+        let file = std::fs::File::create(&test_pgpass.path).unwrap();
+        file.sync_all().unwrap();
+
+        #[cfg(target_family = "unix")]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = std::fs::metadata(&test_pgpass.path).unwrap();
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o600);
+            std::fs::set_permissions(&test_pgpass.path, permissions).unwrap();
+        }
+
+        // Verify the file exists and is empty
+        assert!(test_pgpass.path.exists(), "Empty test file should exist");
+        let contents = std::fs::read_to_string(&test_pgpass.path).unwrap();
+        assert!(contents.is_empty(), "File should be empty");
+
+        // Lookup should return None
+        let result = test_pgpass.lookup("anyhost", 5432, "anydb", "anyuser");
+        assert_eq!(result, None, "Empty pgpass file should return None");
+    }
 }

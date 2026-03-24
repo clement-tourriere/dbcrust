@@ -40,7 +40,7 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
     | Command | Description | Example |
     |---------|-------------|---------|
     | `\n` | List named queries | `\n` |
-    | `\ns <name> <query> [--scope]` | Save named query with scope | `\ns users SELECT * FROM users --global` |
+    | `\ns [--scope] <name> <query> [--scope]` | Save named query with scope | `\ns --global users SELECT * FROM users` |
     | `\nd <name>` | Delete named query | `\nd users` |
 
 === "Sessions & History"
@@ -490,45 +490,50 @@ Named queries:
 
 **Scope Priority:** Session-local queries take precedence over database-type queries, which take precedence over global queries when names conflict.
 
-#### `\ns <name> <query> [--scope]` - Save Named Query with Scope
+#### `\ns [--scope] <name> <query> [--scope]` - Save Named Query with Scope
 
 Saves a query with a name and optional scope specification. Supports parameter substitution.
 
 **Scope Options:**
-- `--global` - Available for all database connections
+- `-g` / `--global` - Available for all database connections
 - `--postgres` - Available only for PostgreSQL connections
 - `--mysql` - Available only for MySQL connections
 - `--sqlite` - Available only for SQLite connections
 - No flag (default) - Session-local scope (current database session only)
+
+Scope flags can be placed before the name, between the name and query, or after the query.
 
 **Basic Examples:**
 ```sql
 -- Session-local query (default)
 \ns active_users SELECT * FROM users WHERE status = 'active'
 
--- Global query (all databases)
+-- Global query - flag before name (recommended)
+\ns --global count_all SELECT COUNT(*) FROM $1
+
+-- Global query - flag after query (also works)
 \ns count_all SELECT COUNT(*) FROM $1 --global
 
 -- PostgreSQL-specific query
-\ns pg_activity SELECT * FROM pg_stat_activity --postgres
+\ns --postgres pg_activity SELECT * FROM pg_stat_activity
 
 -- MySQL-specific query
-\ns mysql_status SHOW GLOBAL STATUS LIKE 'Connections' --mysql
+\ns --mysql mysql_status SHOW GLOBAL STATUS LIKE 'Connections'
 
 -- SQLite-specific query
-\ns sqlite_tables SELECT name FROM sqlite_master WHERE type='table' --sqlite
+\ns --sqlite sqlite_tables SELECT name FROM sqlite_master WHERE type='table'
 ```
 
 **Parameter Substitution:**
 ```sql
 -- Single parameter
-\ns user_by_id SELECT * FROM users WHERE id = $1 --global
+\ns --global user_by_id SELECT * FROM users WHERE id = $1
 
 -- Multiple parameters
 \ns user_orders SELECT * FROM orders WHERE user_id = $1 AND status = '$2'
 
 -- All remaining parameters (space-separated)
-\ns search_users SELECT * FROM users WHERE name ILIKE '%$*%' --global
+\ns --global search_users SELECT * FROM users WHERE name ILIKE '%$*%'
 
 -- All remaining parameters (single string)
 \ns full_search SELECT * FROM users WHERE CONCAT(first_name, ' ', last_name) ILIKE '%$@%'
@@ -537,12 +542,12 @@ Saves a query with a name and optional scope specification. Supports parameter s
 **Advanced Scope Examples:**
 ```sql
 -- Database-type specific reporting queries
-\ns pg_table_sizes SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size FROM pg_tables --postgres
+\ns --postgres pg_table_sizes SELECT schemaname, tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size FROM pg_tables
 
-\ns mysql_table_info SELECT table_name, table_rows, data_length FROM information_schema.tables WHERE table_schema = DATABASE() --mysql
+\ns --mysql mysql_table_info SELECT table_name, table_rows, data_length FROM information_schema.tables WHERE table_schema = DATABASE()
 
 -- Global utility queries
-\ns today_records SELECT * FROM $1 WHERE DATE(created_at) = CURRENT_DATE --global
+\ns --global today_records SELECT * FROM $1 WHERE DATE(created_at) = CURRENT_DATE
 
 -- Session-specific queries (no flag needed)
 \ns my_analysis SELECT customer_id, SUM(amount) FROM local_sales_data GROUP BY customer_id
@@ -588,31 +593,31 @@ Named query 'active_users' deleted successfully (scope: session-local).
 \ns debug_orders SELECT * FROM orders WHERE created_at > '2024-01-01' AND status = 'pending'
 
 -- Create global utilities for reuse across projects
-\ns table_info SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema = '$1' --global
+\ns --global table_info SELECT table_name, table_rows FROM information_schema.tables WHERE table_schema = '$1'
 
 -- Create database-specific maintenance queries
-\ns pg_vacuum_analyze VACUUM ANALYZE $1 --postgres
+\ns --postgres pg_vacuum_analyze VACUUM ANALYZE $1
 ```
 
 **Team Collaboration:**
 ```sql
 -- Global queries shared across team
-\ns daily_metrics SELECT DATE(created_at), COUNT(*), AVG(amount) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at) --global
+\ns --global daily_metrics SELECT DATE(created_at), COUNT(*), AVG(amount) FROM orders WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' GROUP BY DATE(created_at)
 
 -- Database-specific performance queries
-\ns pg_slow_queries SELECT query, calls, total_time, mean_time FROM pg_stat_statements ORDER BY mean_time DESC LIMIT 10 --postgres
+\ns --postgres pg_slow_queries SELECT query, calls, total_time, mean_time FROM pg_stat_statements ORDER BY mean_time DESC LIMIT 10
 ```
 
 **Multi-Database Projects:**
 ```sql
 -- PostgreSQL analytics
-\ns user_engagement SELECT user_id, COUNT(*) as actions FROM user_events WHERE created_at > $1 GROUP BY user_id --postgres
+\ns --postgres user_engagement SELECT user_id, COUNT(*) as actions FROM user_events WHERE created_at > $1 GROUP BY user_id
 
 -- MySQL equivalent
-\ns user_engagement SELECT user_id, COUNT(*) as actions FROM user_events WHERE created_at > '$1' GROUP BY user_id --mysql
+\ns --mysql user_engagement SELECT user_id, COUNT(*) as actions FROM user_events WHERE created_at > '$1' GROUP BY user_id
 
 -- Global fallback
-\ns simple_count SELECT COUNT(*) FROM $1 --global
+\ns --global simple_count SELECT COUNT(*) FROM $1
 ```
 
 #### Autocomplete Support
@@ -628,8 +633,8 @@ The named query system provides intelligent autocomplete:
 
 **Scope Flag Completion:**
 ```sql
-\ns myquery SELECT 1 --glo[TAB]    -- Shows: --global
-\ns test SELECT 1 --post[TAB]      -- Shows: --postgres
+\ns --glo[TAB]                     -- Shows: --global (at start)
+\ns myquery SELECT 1 --post[TAB]   -- Shows: --postgres (at end)
 ```
 
 **SQL Completion:**

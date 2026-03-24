@@ -741,4 +741,121 @@ mod tests {
             None => unsafe { env::remove_var("DBCRUST_PASSFILE") },
         }
     }
+
+    #[test]
+    fn test_to_file_line_roundtrip() {
+        let _guard = DBCRUST_PASS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+        let entry = DbcrustPassEntry::new(
+            DatabaseType::PostgreSQL,
+            "myhost.example.com".to_string(),
+            "5432".to_string(),
+            "production_db".to_string(),
+            "admin_user".to_string(),
+            "s3cret_pass!".to_string(),
+        );
+
+        // Convert to file line without encryption
+        let file_line = entry.to_file_line(false).unwrap();
+
+        // Parse it back
+        let parsed = parse_dbcrust_line(&file_line).unwrap().unwrap();
+
+        // Verify all fields match
+        assert_eq!(parsed.database_type, DatabaseType::PostgreSQL);
+        assert_eq!(parsed.hostname, "myhost.example.com");
+        assert_eq!(parsed.port, "5432");
+        assert_eq!(parsed.database, "production_db");
+        assert_eq!(parsed.username, "admin_user");
+        assert_eq!(parsed.password, "s3cret_pass!");
+    }
+
+    #[test]
+    fn test_multiple_database_types() {
+        let _guard = DBCRUST_PASS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+        let test_cases = vec![
+            (DatabaseType::MySQL, "mysql-host", "3306", "mysql"),
+            (DatabaseType::MongoDB, "mongo-host", "27017", "mongodb"),
+            (DatabaseType::ClickHouse, "ch-host", "8123", "clickhouse"),
+            (
+                DatabaseType::Elasticsearch,
+                "es-host",
+                "9200",
+                "elasticsearch",
+            ),
+        ];
+
+        for (db_type, host, port, expected_type_str) in test_cases {
+            let entry = DbcrustPassEntry::new(
+                db_type.clone(),
+                host.to_string(),
+                port.to_string(),
+                "testdb".to_string(),
+                "testuser".to_string(),
+                "testpass".to_string(),
+            );
+
+            // Verify database type string representation
+            assert_eq!(entry.database_type.as_str(), expected_type_str);
+
+            // Convert to file line and parse back
+            let file_line = entry.to_file_line(false).unwrap();
+            let parsed = parse_dbcrust_line(&file_line).unwrap().unwrap();
+
+            assert_eq!(parsed.database_type, db_type);
+            assert_eq!(parsed.hostname, host);
+            assert_eq!(parsed.port, port);
+            assert_eq!(parsed.database, "testdb");
+            assert_eq!(parsed.username, "testuser");
+            assert_eq!(parsed.password, "testpass");
+
+            // Verify matching works for each type
+            let port_num: u16 = port.parse().unwrap();
+            assert!(
+                entry.matches(&db_type, host, port_num, "testdb", "testuser"),
+                "Entry should match for database type {}",
+                expected_type_str
+            );
+        }
+    }
+
+    #[test]
+    fn test_password_with_special_characters() {
+        let _guard = DBCRUST_PASS_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+        let special_passwords = vec![
+            "pass:with:colons",
+            "pass\\with\\backslashes",
+            "pass:with\\both:special\\chars",
+            "p@ss!w0rd#$%^&*()",
+            "pass with spaces",
+            "pass\twith\ttabs",
+            "émojis🔑and🔒unicode",
+        ];
+
+        for password in special_passwords {
+            let entry = DbcrustPassEntry::new(
+                DatabaseType::PostgreSQL,
+                "localhost".to_string(),
+                "5432".to_string(),
+                "testdb".to_string(),
+                "testuser".to_string(),
+                password.to_string(),
+            );
+
+            // Convert to file line (without encryption)
+            let file_line = entry.to_file_line(false).unwrap();
+
+            // Parse it back
+            let parsed = parse_dbcrust_line(&file_line).unwrap().unwrap();
+
+            // The password should survive the roundtrip
+            assert_eq!(
+                parsed.password, password,
+                "Password '{}' should survive roundtrip through file format",
+                password
+            );
+        }
+    }
 }

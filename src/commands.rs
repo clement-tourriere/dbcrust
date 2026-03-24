@@ -656,7 +656,7 @@ impl CommandParser {
                 }
             }
             "ns" => {
-                // Parse scope flags
+                // Parse scope flags - supports flags before name, between name and query, or after query
                 let args_parts: Vec<&str> = args.split_whitespace().collect();
                 if args_parts.len() < 2 {
                     return Err(CommandError::MissingArgument(
@@ -668,40 +668,104 @@ impl CommandParser {
                 let mut postgres = false;
                 let mut mysql = false;
                 let mut sqlite = false;
-                let mut name_index = 0;
 
-                // Check for scope flags at the beginning
-                for (i, part) in args_parts.iter().enumerate() {
-                    match *part {
+                // Phase 1: Consume leading flags, find name, consume middle flags, find query start
+                let mut idx = 0;
+
+                // Consume leading flags (before name)
+                while idx < args_parts.len() {
+                    match args_parts[idx] {
                         "-g" | "--global" => {
                             global = true;
-                            name_index = i + 1;
+                            idx += 1;
                         }
                         "--postgres" => {
                             postgres = true;
-                            name_index = i + 1;
+                            idx += 1;
                         }
                         "--mysql" => {
                             mysql = true;
-                            name_index = i + 1;
+                            idx += 1;
                         }
                         "--sqlite" => {
                             sqlite = true;
-                            name_index = i + 1;
+                            idx += 1;
                         }
                         _ => break,
                     }
                 }
 
-                // Ensure we have at least name and query after flags
-                if name_index + 1 >= args_parts.len() {
+                // idx now points to the name (or past the end if only flags)
+                if idx >= args_parts.len() {
                     return Err(CommandError::MissingArgument(
                         "query name and query after flags".to_string(),
                     ));
                 }
+                let name = args_parts[idx].to_string();
+                idx += 1;
 
-                let name = args_parts[name_index].to_string();
-                let query = args_parts[name_index + 1..].join(" ");
+                // Consume middle flags (between name and query)
+                while idx < args_parts.len() {
+                    match args_parts[idx] {
+                        "-g" | "--global" => {
+                            global = true;
+                            idx += 1;
+                        }
+                        "--postgres" => {
+                            postgres = true;
+                            idx += 1;
+                        }
+                        "--mysql" => {
+                            mysql = true;
+                            idx += 1;
+                        }
+                        "--sqlite" => {
+                            sqlite = true;
+                            idx += 1;
+                        }
+                        _ => break,
+                    }
+                }
+
+                // Everything from idx onward is the query body (before trailing flag stripping)
+                if idx >= args_parts.len() {
+                    return Err(CommandError::MissingArgument(
+                        "query after name and flags".to_string(),
+                    ));
+                }
+
+                let mut query_parts: Vec<&str> = args_parts[idx..].to_vec();
+
+                // Phase 2: Strip trailing flags from query body
+                while !query_parts.is_empty() {
+                    match *query_parts.last().unwrap() {
+                        "-g" | "--global" => {
+                            global = true;
+                            query_parts.pop();
+                        }
+                        "--postgres" => {
+                            postgres = true;
+                            query_parts.pop();
+                        }
+                        "--mysql" => {
+                            mysql = true;
+                            query_parts.pop();
+                        }
+                        "--sqlite" => {
+                            sqlite = true;
+                            query_parts.pop();
+                        }
+                        _ => break,
+                    }
+                }
+
+                if query_parts.is_empty() {
+                    return Err(CommandError::MissingArgument(
+                        "query text is required".to_string(),
+                    ));
+                }
+
+                let query = query_parts.join(" ");
 
                 Ok(Command::SaveNamedQuery {
                     name,
@@ -2757,7 +2821,7 @@ impl CommandExecutor for Command {
             Command::LoadScript { .. } => "\\i <filename>",
             Command::EditMultiline => "\\ed",
             Command::SaveNamedQuery { .. } => {
-                "\\ns [--global|--postgres|--mysql|--sqlite] <name> <query>"
+                "\\ns [-g|--global|--postgres|--mysql|--sqlite] <name> <query> [--scope]"
             }
             Command::DeleteNamedQuery { .. } => "\\nd <name>",
             Command::ExecuteNamedQuery { .. } => "\\n <name> [args...]",
@@ -3155,6 +3219,255 @@ mod tests {
     }
 
     #[test]
+    fn test_named_query_trailing_scope_flags() {
+        // Trailing --global after query
+        assert_eq!(
+            CommandParser::parse("\\ns myquery SELECT 1 --global").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT 1".to_string(),
+                global: true,
+                postgres: false,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+
+        // Trailing --postgres after query
+        assert_eq!(
+            CommandParser::parse("\\ns myquery SELECT * FROM users --postgres").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT * FROM users".to_string(),
+                global: false,
+                postgres: true,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+
+        // Trailing --mysql after query
+        assert_eq!(
+            CommandParser::parse("\\ns myquery SELECT 1 --mysql").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT 1".to_string(),
+                global: false,
+                postgres: false,
+                mysql: true,
+                sqlite: false,
+            }
+        );
+
+        // Trailing --sqlite after query
+        assert_eq!(
+            CommandParser::parse("\\ns myquery SELECT name FROM sqlite_master --sqlite").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT name FROM sqlite_master".to_string(),
+                global: false,
+                postgres: false,
+                mysql: false,
+                sqlite: true,
+            }
+        );
+
+        // Trailing -g (short form) after query
+        assert_eq!(
+            CommandParser::parse("\\ns myquery SELECT 1 -g").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT 1".to_string(),
+                global: true,
+                postgres: false,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+
+        // Long query with trailing flag (matches documented usage)
+        assert_eq!(
+            CommandParser::parse(
+                "\\ns today_records SELECT * FROM $1 WHERE DATE(created_at) = CURRENT_DATE --global"
+            )
+            .unwrap(),
+            Command::SaveNamedQuery {
+                name: "today_records".to_string(),
+                query: "SELECT * FROM $1 WHERE DATE(created_at) = CURRENT_DATE".to_string(),
+                global: true,
+                postgres: false,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+
+        // Multiple trailing flags
+        assert_eq!(
+            CommandParser::parse("\\ns myquery SELECT 1 --global --postgres").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT 1".to_string(),
+                global: true,
+                postgres: true,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_named_query_middle_scope_flags() {
+        // Flag between name and query
+        assert_eq!(
+            CommandParser::parse("\\ns myquery --global SELECT 1").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT 1".to_string(),
+                global: true,
+                postgres: false,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+
+        // --mysql between name and query
+        assert_eq!(
+            CommandParser::parse("\\ns myquery --mysql SELECT 1").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT 1".to_string(),
+                global: false,
+                postgres: false,
+                mysql: true,
+                sqlite: false,
+            }
+        );
+
+        // -g between name and query
+        assert_eq!(
+            CommandParser::parse("\\ns myquery -g SELECT 1").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT 1".to_string(),
+                global: true,
+                postgres: false,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_named_query_flag_not_consumed_from_sql() {
+        // Quoted flag in SQL should NOT be consumed
+        assert_eq!(
+            CommandParser::parse("\\ns myquery SELECT '--global' FROM t").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT '--global' FROM t".to_string(),
+                global: false,
+                postgres: false,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+
+        // Flag-like text in middle of SQL is preserved (not trailing)
+        assert_eq!(
+            CommandParser::parse("\\ns myquery SELECT --global FROM t").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT --global FROM t".to_string(),
+                global: false,
+                postgres: false,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+    }
+
+    #[test]
+    fn test_named_query_error_cases() {
+        // Empty args
+        assert!(matches!(
+            CommandParser::parse("\\ns"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Just name, no query
+        assert!(matches!(
+            CommandParser::parse("\\ns myquery"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Just flag and name, no query
+        assert!(matches!(
+            CommandParser::parse("\\ns --global myquery"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Just flag, no name or query
+        assert!(matches!(
+            CommandParser::parse("\\ns --global"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Name with only trailing flag (no actual query)
+        assert!(matches!(
+            CommandParser::parse("\\ns myquery --global"),
+            Err(CommandError::MissingArgument(_))
+        ));
+    }
+
+    #[test]
+    fn test_named_query_complex_queries() {
+        // Multi-word query preserved
+        assert_eq!(
+            CommandParser::parse(
+                "\\ns report SELECT u.*, COUNT(o.id) FROM users u LEFT JOIN orders o ON u.id = o.user_id GROUP BY u.id"
+            )
+            .unwrap(),
+            Command::SaveNamedQuery {
+                name: "report".to_string(),
+                query: "SELECT u.*, COUNT(o.id) FROM users u LEFT JOIN orders o ON u.id = o.user_id GROUP BY u.id".to_string(),
+                global: false,
+                postgres: false,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+
+        // Query with parameters and trailing flag
+        assert_eq!(
+            CommandParser::parse(
+                "\\ns user_search SELECT * FROM users WHERE name = '$1' AND age > $2 --global"
+            )
+            .unwrap(),
+            Command::SaveNamedQuery {
+                name: "user_search".to_string(),
+                query: "SELECT * FROM users WHERE name = '$1' AND age > $2".to_string(),
+                global: true,
+                postgres: false,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+
+        // Query with SQL comment containing flag-like text (trailing)
+        assert_eq!(
+            CommandParser::parse("\\ns myquery SELECT 1 -- this is a comment --postgres").unwrap(),
+            Command::SaveNamedQuery {
+                name: "myquery".to_string(),
+                query: "SELECT 1 -- this is a comment".to_string(),
+                global: false,
+                postgres: true,
+                mysql: false,
+                sqlite: false,
+            }
+        );
+    }
+
+    #[test]
     fn test_database_specific_commands() {
         assert_eq!(CommandParser::parse("\\du").unwrap(), Command::ListUsers);
         assert_eq!(CommandParser::parse("\\di").unwrap(), Command::ListIndexes);
@@ -3273,5 +3586,450 @@ mod tests {
                 indicator: ">".to_string()
             }
         );
+    }
+
+    #[test]
+    fn test_display_option_commands() {
+        assert_eq!(
+            CommandParser::parse("\\x").unwrap(),
+            Command::ToggleExpandedDisplay
+        );
+        assert_eq!(
+            CommandParser::parse("\\e").unwrap(),
+            Command::ToggleExplainMode
+        );
+        assert_eq!(
+            CommandParser::parse("\\ev").unwrap(),
+            Command::ToggleExplainTuiMode
+        );
+        assert_eq!(
+            CommandParser::parse("\\config").unwrap(),
+            Command::ShowConfig
+        );
+    }
+
+    #[test]
+    fn test_connection_history_commands() {
+        assert_eq!(
+            CommandParser::parse("\\r").unwrap(),
+            Command::ListRecentConnections
+        );
+        assert_eq!(
+            CommandParser::parse("\\rc").unwrap(),
+            Command::ClearRecentConnections
+        );
+    }
+
+    #[test]
+    fn test_history_management_commands() {
+        assert_eq!(
+            CommandParser::parse("\\hc").unwrap(),
+            Command::ClearSessionHistory { session_hash: None }
+        );
+        assert_eq!(
+            CommandParser::parse("\\hc abc123").unwrap(),
+            Command::ClearSessionHistory {
+                session_hash: Some("abc123".to_string())
+            }
+        );
+    }
+
+    #[test]
+    fn test_toggle_commands() {
+        assert_eq!(
+            CommandParser::parse("\\pager").unwrap(),
+            Command::TogglePager
+        );
+        assert_eq!(
+            CommandParser::parse("\\banner").unwrap(),
+            Command::ToggleBanner
+        );
+        assert_eq!(
+            CommandParser::parse("\\serverinfo").unwrap(),
+            Command::ToggleServerInfo
+        );
+        assert_eq!(
+            CommandParser::parse("\\a").unwrap(),
+            Command::ToggleAutocomplete
+        );
+        assert_eq!(
+            CommandParser::parse("\\cs").unwrap(),
+            Command::ToggleColumnSelection
+        );
+        assert_eq!(
+            CommandParser::parse("\\clrcs").unwrap(),
+            Command::ClearColumnViews
+        );
+        assert_eq!(
+            CommandParser::parse("\\resetview").unwrap(),
+            Command::ResetView
+        );
+    }
+
+    #[test]
+    fn test_column_threshold_error() {
+        assert!(matches!(
+            CommandParser::parse("\\csthreshold abc"),
+            Err(CommandError::InvalidSyntax(_))
+        ));
+    }
+
+    #[test]
+    fn test_vector_display_commands() {
+        assert_eq!(
+            CommandParser::parse("\\vd full").unwrap(),
+            Command::SetVectorDisplayMode {
+                mode: "full".to_string()
+            }
+        );
+        assert_eq!(
+            CommandParser::parse("\\vdc").unwrap(),
+            Command::ShowVectorDisplayConfig
+        );
+        assert_eq!(
+            CommandParser::parse("\\vs").unwrap(),
+            Command::ToggleVectorStatistics
+        );
+    }
+
+    #[test]
+    fn test_pool_stats_command() {
+        assert_eq!(
+            CommandParser::parse("\\ps").unwrap(),
+            Command::ShowPoolStats
+        );
+    }
+
+    #[test]
+    fn test_complex_display_commands() {
+        assert_eq!(
+            CommandParser::parse("\\cd").unwrap(),
+            Command::ComplexDisplayMode { mode: None }
+        );
+        assert_eq!(
+            CommandParser::parse("\\cd table").unwrap(),
+            Command::ComplexDisplayMode {
+                mode: Some("table".to_string())
+            }
+        );
+        assert_eq!(
+            CommandParser::parse("\\cdj").unwrap(),
+            Command::ComplexDisplayJsonToggle
+        );
+    }
+
+    #[test]
+    fn test_vault_cache_commands() {
+        assert_eq!(
+            CommandParser::parse("\\vc").unwrap(),
+            Command::VaultCacheStatus
+        );
+        assert_eq!(
+            CommandParser::parse("\\vcc").unwrap(),
+            Command::VaultCacheClear
+        );
+        assert_eq!(
+            CommandParser::parse("\\vcr").unwrap(),
+            Command::VaultCacheRefresh { role: None }
+        );
+        assert_eq!(
+            CommandParser::parse("\\vcr myrole").unwrap(),
+            Command::VaultCacheRefresh {
+                role: Some("myrole".to_string())
+            }
+        );
+        assert_eq!(
+            CommandParser::parse("\\vce").unwrap(),
+            Command::VaultCacheExpired
+        );
+    }
+
+    #[test]
+    fn test_password_management_commands() {
+        assert_eq!(
+            CommandParser::parse("\\savepass").unwrap(),
+            Command::SavePassword {
+                db_type: None,
+                host: None,
+                port: None,
+                database: None,
+                username: None,
+                encrypt: true,
+            }
+        );
+        assert_eq!(
+            CommandParser::parse("\\listpass").unwrap(),
+            Command::ListPasswords
+        );
+        assert_eq!(
+            CommandParser::parse("\\deletepass").unwrap(),
+            Command::DeletePassword {
+                db_type: None,
+                host: None,
+                port: None,
+                database: None,
+                username: None,
+            }
+        );
+        assert_eq!(
+            CommandParser::parse("\\encryptpass").unwrap(),
+            Command::EncryptPasswords
+        );
+    }
+
+    #[test]
+    fn test_additional_database_specific_commands() {
+        assert_eq!(CommandParser::parse("\\dp").unwrap(), Command::ListPragmas);
+        assert_eq!(
+            CommandParser::parse("\\docker").unwrap(),
+            Command::ListDockerContainers
+        );
+    }
+
+    #[test]
+    fn test_mongodb_commands() {
+        // List collections
+        assert_eq!(
+            CommandParser::parse("\\collections").unwrap(),
+            Command::ListCollections
+        );
+
+        // Describe collection
+        assert_eq!(
+            CommandParser::parse("\\dc mycoll").unwrap(),
+            Command::DescribeCollection {
+                collection_name: "mycoll".to_string()
+            }
+        );
+
+        // List MongoDB indexes
+        assert_eq!(
+            CommandParser::parse("\\dmi").unwrap(),
+            Command::ListMongoIndexes
+        );
+
+        // Create index without type
+        assert_eq!(
+            CommandParser::parse("\\cmi users email").unwrap(),
+            Command::CreateMongoIndex {
+                collection: "users".to_string(),
+                field: "email".to_string(),
+                index_type: None,
+            }
+        );
+
+        // Create index with type
+        assert_eq!(
+            CommandParser::parse("\\cmi users email text").unwrap(),
+            Command::CreateMongoIndex {
+                collection: "users".to_string(),
+                field: "email".to_string(),
+                index_type: Some("text".to_string()),
+            }
+        );
+
+        // Drop index
+        assert_eq!(
+            CommandParser::parse("\\ddmi users idx_email").unwrap(),
+            Command::DropMongoIndex {
+                collection: "users".to_string(),
+                index_name: "idx_email".to_string(),
+            }
+        );
+
+        // Stats
+        assert_eq!(
+            CommandParser::parse("\\mstats").unwrap(),
+            Command::MongoStats
+        );
+
+        // Find with collection only
+        assert_eq!(
+            CommandParser::parse("\\find users").unwrap(),
+            Command::MongoFind {
+                collection: "users".to_string(),
+                filter: None,
+                projection: None,
+                limit: None,
+            }
+        );
+
+        // Find with filter
+        assert_eq!(
+            CommandParser::parse("\\find users {\"active\":true}").unwrap(),
+            Command::MongoFind {
+                collection: "users".to_string(),
+                filter: Some("{\"active\":true}".to_string()),
+                projection: None,
+                limit: None,
+            }
+        );
+
+        // Aggregate
+        assert_eq!(
+            CommandParser::parse("\\aggregate orders [{\"$group\":{\"_id\":\"$status\"}}]")
+                .unwrap(),
+            Command::MongoAggregate {
+                collection: "orders".to_string(),
+                pipeline: "[{\"$group\":{\"_id\":\"$status\"}}]".to_string(),
+            }
+        );
+
+        // Text search
+        assert_eq!(
+            CommandParser::parse("\\search products laptop computer").unwrap(),
+            Command::MongoTextSearch {
+                collection: "products".to_string(),
+                search_term: "laptop computer".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn test_mongodb_error_cases() {
+        // Missing collection name for describe
+        assert!(matches!(
+            CommandParser::parse("\\dc"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Missing collection and field for create index
+        assert!(matches!(
+            CommandParser::parse("\\cmi"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Missing field for create index (only collection)
+        assert!(matches!(
+            CommandParser::parse("\\cmi users"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Missing collection and index name for drop index
+        assert!(matches!(
+            CommandParser::parse("\\ddmi"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Missing index name (only collection)
+        assert!(matches!(
+            CommandParser::parse("\\ddmi users"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Missing collection for find
+        assert!(matches!(
+            CommandParser::parse("\\find"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Missing collection and pipeline for aggregate
+        assert!(matches!(
+            CommandParser::parse("\\aggregate"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Missing pipeline (only collection)
+        assert!(matches!(
+            CommandParser::parse("\\aggregate orders"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Missing collection and search term for search
+        assert!(matches!(
+            CommandParser::parse("\\search"),
+            Err(CommandError::MissingArgument(_))
+        ));
+
+        // Missing search term (only collection)
+        assert!(matches!(
+            CommandParser::parse("\\search products"),
+            Err(CommandError::MissingArgument(_))
+        ));
+    }
+
+    #[test]
+    fn test_explain_error_cases() {
+        assert!(matches!(
+            CommandParser::parse("\\er"),
+            Err(CommandError::MissingArgument(_))
+        ));
+        assert!(matches!(
+            CommandParser::parse("\\ef"),
+            Err(CommandError::MissingArgument(_))
+        ));
+        assert!(matches!(
+            CommandParser::parse("\\ex"),
+            Err(CommandError::MissingArgument(_))
+        ));
+        // \ex with query but no filename
+        assert!(matches!(
+            CommandParser::parse("\\ex SELECT_1"),
+            Err(CommandError::MissingArgument(_))
+        ));
+    }
+
+    #[test]
+    fn test_load_script_error_case() {
+        assert!(matches!(
+            CommandParser::parse("\\i"),
+            Err(CommandError::MissingArgument(_))
+        ));
+    }
+
+    #[test]
+    fn test_delete_session_error_case() {
+        assert!(matches!(
+            CommandParser::parse("\\sd"),
+            Err(CommandError::MissingArgument(_))
+        ));
+    }
+
+    #[test]
+    fn test_delete_named_query_error_case() {
+        assert!(matches!(
+            CommandParser::parse("\\nd"),
+            Err(CommandError::MissingArgument(_))
+        ));
+    }
+
+    #[test]
+    fn test_command_shortcut_completeness() {
+        // Verify ALL CommandShortcut variants have valid mappings
+        for shortcut in CommandShortcut::iter() {
+            let cmd = shortcut.command();
+            assert!(
+                cmd.starts_with('\\'),
+                "Shortcut {:?} command should start with \\, got: {}",
+                shortcut,
+                cmd
+            );
+            assert!(
+                !shortcut.description().is_empty(),
+                "Shortcut {:?} should have non-empty description",
+                shortcut
+            );
+
+            // Verify each shortcut's bare command can be parsed
+            // (some need arguments, so we just check it doesn't panic on UnknownCommand)
+            let result = CommandParser::parse(cmd);
+            match result {
+                Ok(_) => {}                                 // Command parsed successfully
+                Err(CommandError::MissingArgument(_)) => {} // Expected for commands needing args
+                Err(CommandError::InvalidSyntax(_)) => {}   // Possible for some edge cases
+                Err(CommandError::UnknownCommand(unknown)) => {
+                    panic!(
+                        "Shortcut {:?} maps to command '{}' which is unknown to the parser: {}",
+                        shortcut, cmd, unknown
+                    );
+                }
+                Err(e) => {
+                    panic!(
+                        "Shortcut {:?} maps to command '{}' which produced unexpected error: {}",
+                        shortcut, cmd, e
+                    );
+                }
+            }
+        }
     }
 }

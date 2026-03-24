@@ -126,3 +126,41 @@ impl Prompt for ContinuationPrompt {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reedline::Prompt;
+
+    #[test]
+    fn test_db_prompt_render_left() {
+        let prompt = DbPrompt::new("user".to_string(), "testdb".to_string());
+        assert_eq!(prompt.render_prompt_left(), "user@testdb=> ");
+    }
+
+    #[test]
+    fn test_db_prompt_with_config() {
+        let prompt =
+            DbPrompt::with_config("user".to_string(), "testdb".to_string(), "... ".to_string());
+        assert_eq!(prompt.render_prompt_multiline_indicator(), "... ");
+    }
+
+    #[test]
+    fn test_db_prompt_update_database() {
+        let mut prompt = DbPrompt::new("user".to_string(), "olddb".to_string());
+        prompt.update_database("newdb");
+        assert_eq!(prompt.render_prompt_left(), "user@newdb=> ");
+    }
+
+    #[test]
+    fn test_continuation_prompt_empty_indicator() {
+        let prompt = ContinuationPrompt::new(0, "");
+        assert_eq!(prompt.render_prompt_left(), "");
+    }
+
+    #[test]
+    fn test_continuation_prompt_custom_indicator() {
+        let prompt = ContinuationPrompt::new(0, "...");
+        assert_eq!(prompt.render_prompt_left(), "...");
+    }
+}

@@ -339,6 +339,7 @@ impl NamedQueryCompleter {
     fn get_scope_flags(&self) -> Vec<(&'static str, &'static str)> {
         vec![
             ("--global", "Save to global scope"),
+            ("-g", "Save to global scope (shorthand)"),
             ("--postgres", "Save to PostgreSQL scope"),
             ("--mysql", "Save to MySQL scope"),
             ("--sqlite", "Save to SQLite scope"),
@@ -380,24 +381,47 @@ impl CommandCompleter for NamedQueryCompleter {
                 let args_parts: Vec<&str> = args.split_whitespace().collect();
 
                 if args_parts.is_empty() || (args_parts.len() == 1 && pos <= args_parts[0].len()) {
-                    // First argument: complete with existing named query names for overwriting
-                    let queries = self.get_named_query_names();
-                    for query_name in queries {
-                        if query_name
-                            .to_lowercase()
-                            .starts_with(&current_word.to_lowercase())
-                        {
-                            suggestions.push(Suggestion {
-                                value: query_name,
-                                description: Some("Overwrite existing named query".to_string()),
-                                span: Span {
-                                    start: word_start,
-                                    end: pos,
-                                },
-                                append_whitespace: true,
-                                extra: None,
-                                style: None,
-                            });
+                    if current_word.starts_with('-') {
+                        // Suggest scope flags when user starts typing a flag
+                        let scope_flags = self.get_scope_flags();
+                        for (flag, description) in scope_flags {
+                            if flag
+                                .to_lowercase()
+                                .starts_with(&current_word.to_lowercase())
+                            {
+                                suggestions.push(Suggestion {
+                                    value: flag.to_string(),
+                                    description: Some(description.to_string()),
+                                    span: Span {
+                                        start: word_start,
+                                        end: pos,
+                                    },
+                                    append_whitespace: true,
+                                    extra: None,
+                                    style: None,
+                                });
+                            }
+                        }
+                    } else {
+                        // Complete with existing named query names for overwriting
+                        let queries = self.get_named_query_names();
+                        for query_name in queries {
+                            if query_name
+                                .to_lowercase()
+                                .starts_with(&current_word.to_lowercase())
+                            {
+                                suggestions.push(Suggestion {
+                                    value: query_name,
+                                    description: Some("Overwrite existing named query".to_string()),
+                                    span: Span {
+                                        start: word_start,
+                                        end: pos,
+                                    },
+                                    append_whitespace: true,
+                                    extra: None,
+                                    style: None,
+                                });
+                            }
                         }
                     }
                 } else {
