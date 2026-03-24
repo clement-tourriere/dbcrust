@@ -24,6 +24,7 @@ pub struct CliCore {
     pub config: DbCrustConfig,
     pub database: Option<Database>,
     pub connection_info: Option<ConnectionInfo>,
+    pub ai_conversation: crate::ai::conversation::AiConversation,
 }
 
 #[derive(Debug)]
@@ -122,10 +123,12 @@ impl Default for CliCore {
         // Initialize global vector config for formatters
         crate::vector_display::set_global_vector_config(config.vector_display.clone());
 
+        let ai_history_len = config.ai.history_length;
         Self {
             config,
             database: None,
             connection_info: None,
+            ai_conversation: crate::ai::conversation::AiConversation::new(ai_history_len),
         }
     }
 }
@@ -1183,6 +1186,25 @@ impl CliCore {
                         continue;
                     }
 
+                    // Handle AI text-to-SQL prefix (??)
+                    if let Some(nl) = line.strip_prefix("??") {
+                        let nl = nl.trim();
+                        if nl.is_empty() {
+                            eprintln!("Usage: ?? <describe what you want in natural language>");
+                            continue;
+                        }
+                        match self
+                            .handle_ai_text_to_sql(nl, &db_arc, &config_arc, &interrupt_flag)
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(e) => {
+                                eprintln!("AI error: {e}");
+                            }
+                        }
+                        continue;
+                    }
+
                     // Handle backslash commands
                     if line.starts_with('\\') {
                         match self
@@ -1348,7 +1370,19 @@ impl CliCore {
             Ok(CommandResult::Exit) => Ok(true),      // Signal exit
             Ok(CommandResult::Continue) => Ok(false), // Continue interactive loop
             Ok(CommandResult::Output(output)) => {
-                println!("{output}");
+                // Handle AI interactive commands that need special handling
+                if output == "__AI_SETUP__" {
+                    self.handle_ai_setup(config_arc).await;
+                } else if output == "__AI_CLEAR_HISTORY__" {
+                    self.ai_conversation.clear();
+                    println!("AI conversation history cleared.");
+                } else if let Some(arg) = output.strip_prefix("__AI_PROVIDER__") {
+                    self.handle_ai_select_provider(arg, config_arc).await;
+                } else if let Some(arg) = output.strip_prefix("__AI_MODEL__") {
+                    self.handle_ai_select_model(arg, config_arc, db_arc).await;
+                } else {
+                    println!("{output}");
+                }
                 Ok(false)
             }
             Ok(CommandResult::Error(error)) => {
@@ -1361,6 +1395,294 @@ impl CliCore {
             }
         }
     }
+
+    // ==================== AI Assistant Methods ====================
+
+    /// Handle ?? text-to-SQL generation
+    #[allow(clippy::await_holding_lock)]
+    async fn handle_ai_text_to_sql(
+        &mut self,
+        natural_language: &str,
+        db_arc: &Arc<Mutex<Database>>,
+        config_arc: &Arc<Mutex<DbCrustConfig>>,
+        interrupt_flag: &Arc<AtomicBool>,
+    ) -> Result<(), CliError> {
+        let config = config_arc.lock().unwrap().clone();
+
+        if !config.ai.enabled {
+            return Err(CliError::CommandError(
+                "AI assistant is disabled. Run \\ai on or \\ai setup to configure.".to_string(),
+            ));
+        }
+
+        // Build schema context
+        let schema_context = {
+            let mut db_guard = db_arc.lock().unwrap();
+            crate::ai::schema_context::build_schema_context(
+                &mut db_guard,
+                natural_language,
+                config.ai.max_schema_tables,
+            )
+            .await
+        };
+
+        // Build system prompt
+        let db_type = {
+            let db_guard = db_arc.lock().unwrap();
+            db_guard.get_database_type()
+        };
+        let system_prompt =
+            crate::ai::prompt_templates::build_system_prompt(&db_type, &schema_context);
+
+        // Build messages from conversation history
+        let messages = self.ai_conversation.to_messages(natural_language);
+
+        // Generate SQL. Provider/model handling is delegated to genai.
+        let sql = if config.ai.streaming {
+            // Streaming mode
+            let (tx, rx) = tokio::sync::mpsc::channel(100);
+            let ai_config = config.ai.clone();
+            let system_prompt_clone = system_prompt.clone();
+            let messages_clone = messages.clone();
+            let interrupt_clone = interrupt_flag.clone();
+
+            let generate_handle = tokio::spawn(async move {
+                crate::ai::generate_stream(&ai_config, &system_prompt_clone, &messages_clone, tx)
+                    .await
+            });
+
+            let response = crate::ai::streaming::stream_to_terminal(rx, &interrupt_clone)
+                .await
+                .map_err(|e| CliError::CommandError(format!("Streaming error: {e}")))?;
+
+            // Wait for generation to complete
+            if let Err(e) = generate_handle
+                .await
+                .map_err(|e| CliError::CommandError(format!("Generation task error: {e}")))?
+            {
+                return Err(CliError::CommandError(format!("AI generation error: {e}")));
+            }
+
+            crate::ai::streaming::extract_sql(&response)
+        } else {
+            // Non-streaming mode
+            let response = crate::ai::generate(&config.ai, &system_prompt, &messages)
+                .await
+                .map_err(|e| CliError::CommandError(format!("AI generation error: {e}")))?;
+
+            let sql = crate::ai::streaming::extract_sql(&response.content);
+
+            if config.ai.show_generated_sql {
+                println!("\x1b[2m{sql}\x1b[0m");
+            }
+
+            sql
+        };
+
+        if sql.is_empty() {
+            return Err(CliError::CommandError(
+                "AI returned empty response".to_string(),
+            ));
+        }
+
+        // Add to conversation history
+        self.ai_conversation.add_exchange(natural_language, &sql);
+
+        // Determine whether to execute
+        let should_execute = match config.ai.execution_mode {
+            crate::ai::config::AiExecutionMode::Confirm => {
+                inquire::Confirm::new("Execute this SQL?")
+                    .with_default(true)
+                    .prompt()
+                    .unwrap_or(false)
+            }
+            crate::ai::config::AiExecutionMode::AutoSelect => {
+                if crate::ai::streaming::is_select_query(&sql) {
+                    true
+                } else {
+                    inquire::Confirm::new("Execute this write query?")
+                        .with_default(false)
+                        .prompt()
+                        .unwrap_or(false)
+                }
+            }
+            crate::ai::config::AiExecutionMode::AutoExecute => true,
+        };
+
+        if should_execute {
+            self.execute_sql_interactive(&sql, db_arc, interrupt_flag)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Prompt for an API key and persist it for `adapter`. Returns false if cancelled.
+    fn configure_provider_key(adapter: genai::adapter::AdapterKind) -> bool {
+        use crate::ai::key_storage::{self, KeyStorageMethod, store_api_key};
+
+        if !key_storage::requires_api_key(adapter) {
+            println!("{} runs locally and does not require an API key.", adapter.as_str());
+            return true;
+        }
+
+        if let Some(env_name) = key_storage::env_var_name(adapter) {
+            println!(
+                "\nAPI key needed for {}. You can also set the {} environment variable.",
+                adapter.as_str(),
+                env_name
+            );
+        }
+
+        let api_key = match inquire::Password::new("Enter API key:")
+            .without_confirmation()
+            .prompt()
+        {
+            Ok(key) if !key.is_empty() => key,
+            _ => {
+                println!("Skipped API key configuration.");
+                return false;
+            }
+        };
+
+        let storage_options = vec![
+            "OS Keychain",
+            "Encrypted file",
+            "Environment variable (show command)",
+        ];
+        let method = match inquire::Select::new("How to store the API key?", storage_options).prompt() {
+            Ok("OS Keychain") => KeyStorageMethod::OsKeyring,
+            Ok("Encrypted file") => KeyStorageMethod::EncryptedFile,
+            Ok(_) => KeyStorageMethod::EnvVarHint,
+            Err(_) => return false,
+        };
+
+        match store_api_key(adapter, &api_key, &method) {
+            Ok(()) => {
+                if method != KeyStorageMethod::EnvVarHint {
+                    println!("API key stored successfully via {method}.");
+                }
+                true
+            }
+            Err(e) => {
+                eprintln!("Failed to store API key: {e}");
+                false
+            }
+        }
+    }
+
+    /// Interactively pick a provider from the curated wizard list. Returns None if cancelled.
+    fn select_provider(prompt: &str) -> Option<genai::adapter::AdapterKind> {
+        let providers = crate::ai::suggested_providers();
+        let names: Vec<String> = providers.iter().map(|p| p.as_str().to_string()).collect();
+        let names_ref: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
+        match inquire::Select::new(prompt, names_ref.clone()).prompt() {
+            Ok(choice) => Some(providers[names_ref.iter().position(|&n| n == choice).unwrap_or(0)]),
+            Err(_) => None,
+        }
+    }
+
+    /// Handle \ai setup - interactive setup wizard
+    async fn handle_ai_setup(&mut self, config_arc: &Arc<Mutex<DbCrustConfig>>) {
+        // Provider selection is a UX convenience — any genai model works.
+        let Some(adapter) = Self::select_provider("Select AI provider:") else {
+            println!("Setup cancelled.");
+            return;
+        };
+
+        Self::configure_provider_key(adapter);
+
+        // Model name (free text — the provider is inferred from it).
+        let current_model = config_arc.lock().unwrap().ai.model.clone();
+        let model = match inquire::Text::new("Model:")
+            .with_default(&current_model)
+            .with_help_message("e.g. claude-sonnet-4-6, gpt-4o, gemini-2.5-pro, ollama::llama3.1")
+            .prompt()
+        {
+            Ok(m) if !m.trim().is_empty() => m.trim().to_string(),
+            _ => current_model,
+        };
+
+        // Optional custom endpoint (self-hosted / OpenAI-compatible gateways).
+        let endpoint = match inquire::Text::new("Custom endpoint URL (optional):")
+            .with_default("")
+            .with_help_message("Leave empty to use the provider's default endpoint")
+            .prompt()
+        {
+            Ok(u) if !u.trim().is_empty() => Some(u.trim().to_string()),
+            _ => None,
+        };
+
+        {
+            let mut config = config_arc.lock().unwrap();
+            config.ai.enabled = true;
+            config.ai.model = model.clone();
+            config.ai.endpoint = endpoint;
+            config.save().ok();
+        }
+
+        println!(
+            "\nAI assistant configured (model: {model}). Use ?? to generate SQL from natural language."
+        );
+    }
+
+    /// Handle \ai provider [name] — configure the API key for a provider.
+    /// The *active* provider is inferred from the model (`\ai model`); this just
+    /// stores credentials so multiple providers can be configured.
+    async fn handle_ai_select_provider(
+        &mut self,
+        arg: &str,
+        _config_arc: &Arc<Mutex<DbCrustConfig>>,
+    ) {
+        let adapter = if arg.is_empty() {
+            match Self::select_provider("Configure API key for provider:") {
+                Some(a) => a,
+                None => return,
+            }
+        } else {
+            match genai::adapter::AdapterKind::from_lower_str(&arg.to_lowercase()) {
+                Some(a) => a,
+                None => {
+                    eprintln!(
+                        "Unknown provider: {arg}. The active provider is inferred from the model — use \\ai model <name>."
+                    );
+                    return;
+                }
+            }
+        };
+
+        Self::configure_provider_key(adapter);
+    }
+
+    /// Handle \ai model [name] — set the model (provider is inferred from it).
+    async fn handle_ai_select_model(
+        &mut self,
+        arg: &str,
+        config_arc: &Arc<Mutex<DbCrustConfig>>,
+        _db_arc: &Arc<Mutex<Database>>,
+    ) {
+        let model = if arg.is_empty() {
+            let current = config_arc.lock().unwrap().ai.model.clone();
+            match inquire::Text::new("Model:")
+                .with_default(&current)
+                .with_help_message("Any genai-supported model — e.g. claude-sonnet-4-6, gpt-4o, ollama::llama3.1")
+                .prompt()
+            {
+                Ok(m) if !m.trim().is_empty() => m.trim().to_string(),
+                _ => return,
+            }
+        } else {
+            arg.to_string()
+        };
+
+        let mut config = config_arc.lock().unwrap();
+        config.ai.model = model.clone();
+        config.save().ok();
+        let adapter = crate::ai::provider_for_model(&model);
+        println!("Model set to {model} (provider: {}).", adapter.as_str());
+    }
+
+    // ==================== End AI Assistant Methods ====================
 
     /// Execute SQL query in interactive mode
     #[allow(clippy::await_holding_lock)]

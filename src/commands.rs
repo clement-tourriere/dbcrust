@@ -195,6 +195,26 @@ pub enum Command {
         mode: Option<String>,
     },
     ComplexDisplayJsonToggle,
+
+    // Schema viewer
+    SchemaViewer,
+
+    // AI assistant commands
+    AiStatus,
+    AiSetup,
+    AiSelectProvider {
+        provider: Option<String>,
+    },
+    AiSelectModel {
+        model: Option<String>,
+    },
+    AiToggle {
+        state: Option<bool>,
+    },
+    AiClearHistory,
+    AiGenerateSql {
+        natural_language: String,
+    },
 }
 
 #[derive(Error, Debug)]
@@ -249,6 +269,7 @@ pub enum CommandCategory {
     DatabaseSpecific,
     VaultManagement,
     PasswordManagement,
+    AiAssistant,
     Advanced,
 }
 
@@ -326,6 +347,10 @@ pub enum CommandShortcut {
     // Complex display commands (minimal set)
     Cd,
     Cdj,
+    // Schema viewer
+    Sv,
+    // AI assistant
+    Ai,
 }
 
 impl CommandShortcut {
@@ -403,6 +428,10 @@ impl CommandShortcut {
             // Complex display commands (minimal set)
             CommandShortcut::Cd => "\\cd",
             CommandShortcut::Cdj => "\\cdj",
+            // Schema viewer
+            CommandShortcut::Sv => "\\sv",
+            // AI assistant
+            CommandShortcut::Ai => "\\ai",
         }
     }
 
@@ -480,6 +509,10 @@ impl CommandShortcut {
             // Complex display commands (minimal set)
             CommandShortcut::Cd => "Set complex data display mode",
             CommandShortcut::Cdj => "Toggle JSON pretty printing",
+            // Schema viewer
+            CommandShortcut::Sv => "Interactive schema viewer (TUI)",
+            // AI assistant
+            CommandShortcut::Ai => "AI assistant (setup|status|provider|model|toggle|clear)",
         }
     }
 
@@ -551,6 +584,10 @@ impl CommandShortcut {
             | CommandShortcut::Ps => CommandCategory::Advanced,
             // Complex display commands
             CommandShortcut::Cd | CommandShortcut::Cdj => CommandCategory::DisplayOptions,
+            // Schema viewer
+            CommandShortcut::Sv => CommandCategory::DatabaseNavigation,
+            // AI assistant
+            CommandShortcut::Ai => CommandCategory::AiAssistant,
         }
     }
 }
@@ -955,6 +992,46 @@ impl CommandParser {
             }
             "encryptpass" => Ok(Command::EncryptPasswords),
 
+            // Schema viewer
+            "sv" => Ok(Command::SchemaViewer),
+
+            // AI assistant commands
+            "ai" => {
+                if args.is_empty() {
+                    Ok(Command::AiStatus)
+                } else {
+                    let mut sub_parts = args.splitn(2, ' ');
+                    let subcmd = sub_parts.next().unwrap_or("");
+                    let sub_args = sub_parts.next().unwrap_or("").trim();
+
+                    match subcmd {
+                        "status" => Ok(Command::AiStatus),
+                        "setup" => Ok(Command::AiSetup),
+                        "provider" => Ok(Command::AiSelectProvider {
+                            provider: if sub_args.is_empty() {
+                                None
+                            } else {
+                                Some(sub_args.to_string())
+                            },
+                        }),
+                        "model" => Ok(Command::AiSelectModel {
+                            model: if sub_args.is_empty() {
+                                None
+                            } else {
+                                Some(sub_args.to_string())
+                            },
+                        }),
+                        "toggle" => Ok(Command::AiToggle { state: None }),
+                        "on" => Ok(Command::AiToggle { state: Some(true) }),
+                        "off" => Ok(Command::AiToggle { state: Some(false) }),
+                        "clear" => Ok(Command::AiClearHistory),
+                        _ => Err(CommandError::InvalidSyntax(format!(
+                            "Unknown \\ai subcommand: {subcmd}. Use: setup|status|provider|model|toggle|on|off|clear"
+                        ))),
+                    }
+                }
+            }
+
             // MongoDB-specific commands
             "collections" => Ok(Command::ListCollections),
             "dc" => {
@@ -1169,6 +1246,32 @@ impl CommandExecutor for Command {
             Command::ShowConfig => {
                 let output = format!("Configuration:\n{config:#?}");
                 Ok(CommandResult::Output(output))
+            }
+
+            Command::SchemaViewer => {
+                // Check if TUI can run
+                if !crate::explain_tui::can_run_tui() {
+                    if let Some(reason) = crate::explain_tui::tui_unavailable_reason() {
+                        return Ok(CommandResult::Error(format!(
+                            "Cannot launch schema viewer: {reason}"
+                        )));
+                    }
+                }
+
+                // Load schema metadata (fast: only names + FK relationships)
+                let mut db = database.lock().unwrap();
+                let schema_data = crate::schema_tui::load_schema_data(&mut db).await;
+                drop(db);
+
+                match schema_data {
+                    Ok(data) => match crate::schema_tui::run_schema_tui(data, database.clone()) {
+                        Ok(_) => Ok(CommandResult::Continue),
+                        Err(e) => Ok(CommandResult::Error(format!("Schema viewer error: {e}"))),
+                    },
+                    Err(e) => Ok(CommandResult::Error(format!(
+                        "Failed to load schema data: {e}"
+                    ))),
+                }
             }
 
             Command::ListDatabases => {
@@ -2722,6 +2825,93 @@ impl CommandExecutor for Command {
                     }
                 }
             }
+
+            // AI assistant commands
+            Command::AiStatus => {
+                let mut output = String::new();
+                let adapter = crate::ai::provider_for_model(&config.ai.model);
+                output.push_str("AI Assistant Status:\n");
+                output.push_str(&format!("  Enabled: {}\n", config.ai.enabled));
+                output.push_str(&format!("  Model: {}\n", config.ai.model));
+                output.push_str(&format!("  Provider: {} (inferred)\n", adapter.as_str()));
+                if let Some(ref endpoint) = config.ai.endpoint
+                    && !endpoint.is_empty()
+                {
+                    output.push_str(&format!("  Endpoint: {endpoint}\n"));
+                }
+                output.push_str(&format!("  Execution mode: {}\n", config.ai.execution_mode));
+                output.push_str(&format!("  Streaming: {}\n", config.ai.streaming));
+                output.push_str(&format!("  History length: {}\n", config.ai.history_length));
+
+                // Check key status
+                match crate::ai::key_storage::detect_key_storage(adapter) {
+                    Some(method) => output.push_str(&format!("  API key: stored via {method}\n")),
+                    None => {
+                        if crate::ai::key_storage::requires_api_key(adapter) {
+                            output.push_str("  API key: NOT SET (run \\ai setup)\n");
+                        } else {
+                            output.push_str("  API key: not required (local provider)\n");
+                        }
+                    }
+                }
+
+                output.push_str(
+                    "\nUsage: Type ?? followed by a natural language query to generate SQL",
+                );
+                Ok(CommandResult::Output(output))
+            }
+
+            Command::AiSetup => {
+                // This is handled interactively in cli_core.rs
+                // Return a marker that cli_core should handle
+                Ok(CommandResult::Output("__AI_SETUP__".to_string()))
+            }
+
+            Command::AiSelectProvider { provider } => {
+                // This is handled interactively in cli_core.rs
+                match provider {
+                    Some(p) => Ok(CommandResult::Output(format!("__AI_PROVIDER__{p}"))),
+                    None => Ok(CommandResult::Output("__AI_PROVIDER__".to_string())),
+                }
+            }
+
+            Command::AiSelectModel { model } => match model {
+                Some(m) => Ok(CommandResult::Output(format!("__AI_MODEL__{m}"))),
+                None => Ok(CommandResult::Output("__AI_MODEL__".to_string())),
+            },
+
+            Command::AiToggle { state } => match state {
+                Some(true) => {
+                    config.ai.enabled = true;
+                    config.save().ok();
+                    Ok(CommandResult::Output("AI assistant enabled.".to_string()))
+                }
+                Some(false) => {
+                    config.ai.enabled = false;
+                    config.save().ok();
+                    Ok(CommandResult::Output("AI assistant disabled.".to_string()))
+                }
+                None => {
+                    config.ai.enabled = !config.ai.enabled;
+                    config.save().ok();
+                    let status = if config.ai.enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    };
+                    Ok(CommandResult::Output(format!("AI assistant {status}.")))
+                }
+            },
+
+            Command::AiClearHistory => {
+                // Handled in cli_core.rs where conversation state lives
+                Ok(CommandResult::Output("__AI_CLEAR_HISTORY__".to_string()))
+            }
+
+            Command::AiGenerateSql { .. } => {
+                // Handled via ?? prefix in cli_core.rs REPL loop
+                Ok(CommandResult::Continue)
+            }
         }
     }
 
@@ -2802,6 +2992,16 @@ impl CommandExecutor for Command {
             Command::MongoFind { .. } => "Execute MongoDB find query",
             Command::MongoAggregate { .. } => "Execute MongoDB aggregation pipeline",
             Command::MongoTextSearch { .. } => "Execute MongoDB text search",
+            // Schema viewer
+            Command::SchemaViewer => "Interactive schema viewer (TUI)",
+            // AI assistant commands
+            Command::AiStatus => "Show AI assistant configuration and status",
+            Command::AiSetup => "Interactive AI assistant setup wizard",
+            Command::AiSelectProvider { .. } => "Select AI provider",
+            Command::AiSelectModel { .. } => "Select AI model",
+            Command::AiToggle { .. } => "Enable/disable AI assistant",
+            Command::AiClearHistory => "Clear AI conversation history",
+            Command::AiGenerateSql { .. } => "Generate SQL from natural language",
         }
     }
 
@@ -2880,6 +3080,16 @@ impl CommandExecutor for Command {
             Command::MongoFind { .. } => "\\find <collection> [filter] [projection] [limit]",
             Command::MongoAggregate { .. } => "\\aggregate <collection> <pipeline>",
             Command::MongoTextSearch { .. } => "\\search <collection> <search_term>",
+            // Schema viewer
+            Command::SchemaViewer => "\\sv",
+            // AI assistant commands
+            Command::AiStatus => "\\ai [status]",
+            Command::AiSetup => "\\ai setup",
+            Command::AiSelectProvider { .. } => "\\ai provider [name]",
+            Command::AiSelectModel { .. } => "\\ai model [name]",
+            Command::AiToggle { .. } => "\\ai toggle|on|off",
+            Command::AiClearHistory => "\\ai clear",
+            Command::AiGenerateSql { .. } => "?? <natural language query>",
         }
     }
 
@@ -2956,6 +3166,16 @@ impl CommandExecutor for Command {
             Command::MongoFind { .. } => CommandCategory::DatabaseSpecific,
             Command::MongoAggregate { .. } => CommandCategory::DatabaseSpecific,
             Command::MongoTextSearch { .. } => CommandCategory::DatabaseSpecific,
+            // Schema viewer
+            Command::SchemaViewer => CommandCategory::DatabaseNavigation,
+            // AI assistant commands
+            Command::AiStatus
+            | Command::AiSetup
+            | Command::AiSelectProvider { .. }
+            | Command::AiSelectModel { .. }
+            | Command::AiToggle { .. }
+            | Command::AiClearHistory
+            | Command::AiGenerateSql { .. } => CommandCategory::AiAssistant,
         }
     }
 }
@@ -4031,5 +4251,78 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_ai_commands() {
+        // \ai with no args → status
+        assert_eq!(CommandParser::parse("\\ai").unwrap(), Command::AiStatus);
+
+        // \ai status
+        assert_eq!(
+            CommandParser::parse("\\ai status").unwrap(),
+            Command::AiStatus
+        );
+
+        // \ai setup
+        assert_eq!(
+            CommandParser::parse("\\ai setup").unwrap(),
+            Command::AiSetup
+        );
+
+        // \ai provider
+        assert_eq!(
+            CommandParser::parse("\\ai provider").unwrap(),
+            Command::AiSelectProvider { provider: None }
+        );
+
+        // \ai provider anthropic
+        assert_eq!(
+            CommandParser::parse("\\ai provider anthropic").unwrap(),
+            Command::AiSelectProvider {
+                provider: Some("anthropic".to_string())
+            }
+        );
+
+        // \ai model
+        assert_eq!(
+            CommandParser::parse("\\ai model").unwrap(),
+            Command::AiSelectModel { model: None }
+        );
+
+        // \ai model gpt-4o
+        assert_eq!(
+            CommandParser::parse("\\ai model gpt-4o").unwrap(),
+            Command::AiSelectModel {
+                model: Some("gpt-4o".to_string())
+            }
+        );
+
+        // \ai toggle
+        assert_eq!(
+            CommandParser::parse("\\ai toggle").unwrap(),
+            Command::AiToggle { state: None }
+        );
+
+        // \ai on
+        assert_eq!(
+            CommandParser::parse("\\ai on").unwrap(),
+            Command::AiToggle { state: Some(true) }
+        );
+
+        // \ai off
+        assert_eq!(
+            CommandParser::parse("\\ai off").unwrap(),
+            Command::AiToggle { state: Some(false) }
+        );
+
+        // \ai clear
+        assert_eq!(
+            CommandParser::parse("\\ai clear").unwrap(),
+            Command::AiClearHistory
+        );
+
+        // \ai unknown → error
+        assert!(CommandParser::parse("\\ai unknown").is_err());
     }
 }

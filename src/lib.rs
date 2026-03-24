@@ -1,6 +1,7 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_local_definitions)]
 
+pub mod ai; // AI assistant integration (text-to-SQL, multi-provider)
 pub mod cli;
 pub mod cli_core; // New unified CLI core
 pub mod command_completion; // Trait-based command completion system
@@ -35,6 +36,7 @@ pub mod password_sanitizer;
 pub mod performance_analyzer; // Performance analysis for EXPLAIN queries
 pub mod pgpass;
 pub mod prompt;
+pub mod schema_tui;
 pub mod script;
 pub mod shell_completion; // Custom shell completion with URL schemes
 pub mod sql_context; // SQL context analysis for better autocompletion

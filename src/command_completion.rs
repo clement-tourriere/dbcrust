@@ -546,6 +546,28 @@ impl CommandCompleter for ConfigCompleter {
                 ];
                 self.build_suggestions_from_items(items, args, pos, true)
             }
+            "\\ai" => {
+                let items = vec![
+                    (
+                        "setup".to_string(),
+                        "Interactive AI setup wizard".to_string(),
+                    ),
+                    (
+                        "status".to_string(),
+                        "Show AI configuration status".to_string(),
+                    ),
+                    ("provider".to_string(), "Select AI provider".to_string()),
+                    ("model".to_string(), "Select AI model".to_string()),
+                    ("toggle".to_string(), "Toggle AI on/off".to_string()),
+                    ("on".to_string(), "Enable AI assistant".to_string()),
+                    ("off".to_string(), "Disable AI assistant".to_string()),
+                    (
+                        "clear".to_string(),
+                        "Clear conversation history".to_string(),
+                    ),
+                ];
+                self.build_suggestions_from_items(items, args, pos, true)
+            }
             _ => Vec::new(),
         };
 
@@ -553,7 +575,10 @@ impl CommandCompleter for ConfigCompleter {
     }
 
     fn handles_command(&self, command: &str) -> bool {
-        matches!(command, "\\setmulti" | "\\csthreshold" | "\\vd" | "\\cd")
+        matches!(
+            command,
+            "\\setmulti" | "\\csthreshold" | "\\vd" | "\\cd" | "\\ai"
+        )
     }
 
     fn name(&self) -> &'static str {

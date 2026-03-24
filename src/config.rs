@@ -636,6 +636,10 @@ pub struct Config {
     #[serde(default)]
     pub complex_display: crate::complex_display::ComplexDisplayConfig,
 
+    // AI assistant configuration
+    #[serde(default)]
+    pub ai: crate::ai::config::AiConfig,
+
     // Recent connections - not serialized with main config, stored separately
     #[serde(skip)]
     recent_connections_storage: RecentConnectionsStorage,
@@ -680,6 +684,7 @@ impl Default for Config {
             metadata_timeout_seconds: default_metadata_timeout(),
             vector_display: crate::vector_display::VectorDisplayConfig::default(),
             complex_display: crate::complex_display::ComplexDisplayConfig::default(),
+            ai: crate::ai::config::AiConfig::default(),
             recent_connections_storage: {
                 // For tests, use empty storage to avoid loading user data
                 let is_test = std::env::var("RUST_TEST_MODE").is_ok()
@@ -1646,6 +1651,56 @@ impl Config {
                 "show_dimensions = {}\n\n",
                 self.vector_display.show_dimensions
             ));
+
+            // AI Assistant Settings
+            content.push_str("# ================================================================================\n");
+            content.push_str("# AI ASSISTANT\n");
+            content.push_str("# Configure AI-powered text-to-SQL and query assistance\n");
+            content.push_str("# Prefix queries with ?? to generate SQL from natural language\n");
+            content.push_str("# ================================================================================\n\n");
+            content.push_str("[ai]\n");
+            content.push_str("# Enable AI assistant features (default: false — opt in with \\ai setup)\n");
+            content.push_str(&format!("enabled = {}\n\n", self.ai.enabled));
+            content.push_str("# Model identifier. The provider is inferred from the model name\n");
+            content.push_str("# (claude-* -> Anthropic, gpt-* -> OpenAI, gemini-* -> Gemini, ...),\n");
+            content.push_str("# or force it with provider::model syntax (e.g. groq::llama-3.1-70b).\n");
+            content.push_str("# Powered by the genai crate — 25+ providers, no hardcoded model lists.\n");
+            content.push_str(&format!("model = \"{}\"\n\n", self.ai.model));
+            content.push_str("# Optional custom endpoint base URL (self-hosted, Ollama, LM Studio,\n");
+            content.push_str("# or any OpenAI-compatible gateway). Empty uses the provider default.\n");
+            match &self.ai.endpoint {
+                Some(url) if !url.is_empty() => {
+                    content.push_str(&format!("endpoint = \"{url}\"\n\n"))
+                }
+                _ => content.push_str("# endpoint = \"http://localhost:11434\"\n\n"),
+            }
+            content.push_str("# Max output tokens (default: 4096)\n");
+            content.push_str(&format!("max_tokens = {}\n\n", self.ai.max_tokens));
+            content.push_str("# Sampling temperature, 0.0 = deterministic (default: 0.0)\n");
+            content.push_str(&format!("temperature = {}\n\n", self.ai.temperature));
+            content.push_str("# Enable streaming responses (default: true)\n");
+            content.push_str(&format!("streaming = {}\n\n", self.ai.streaming));
+            content.push_str("# Max tables to include in schema context (default: 50)\n");
+            content.push_str(&format!(
+                "max_schema_tables = {}\n\n",
+                self.ai.max_schema_tables
+            ));
+            content.push_str("# Show generated SQL before execution (default: true)\n");
+            content.push_str(&format!(
+                "show_generated_sql = {}\n\n",
+                self.ai.show_generated_sql
+            ));
+            content.push_str(
+                "# Execution mode after SQL generation: confirm, auto_select, auto_execute\n",
+            );
+            content.push_str(&format!(
+                "execution_mode = \"{}\"\n\n",
+                self.ai.execution_mode
+            ));
+            content.push_str(
+                "# Number of conversation exchanges to keep (0 = stateless) (default: 5)\n",
+            );
+            content.push_str(&format!("history_length = {}\n\n", self.ai.history_length));
 
             // Vault Settings
             content.push_str("# ================================================================================\n");
