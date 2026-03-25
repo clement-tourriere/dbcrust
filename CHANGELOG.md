@@ -1,3 +1,9 @@
+## v0.23.3 (2026-03-25)
+
+### Fix
+
+- auto-detect named query invocations in REPL and command mode
+
 ## v0.23.2 (2026-03-24)
 
 ### Fix
