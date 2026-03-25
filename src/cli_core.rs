@@ -1,8 +1,8 @@
 use crate::cli::Args;
-use crate::commands::{CommandExecutor, CommandParser, CommandResult};
+use crate::commands::{Command, CommandExecutor, CommandParser, CommandResult};
 use crate::completion::{NoopCompleter, SqlCompleter};
 use crate::config::Config as DbCrustConfig;
-use crate::database::{ConnectionInfo, DatabaseTypeExt};
+use crate::database::{ConnectionInfo, DatabaseType, DatabaseTypeExt};
 use crate::db::Database;
 use crate::format::{format_query_results_expanded, format_query_results_psql_with_info};
 use crate::history_manager::{SessionHistoryManager, SessionId};
@@ -129,6 +129,97 @@ impl Default for CliCore {
             connection_info: None,
         }
     }
+}
+
+/// SQL keywords that should never be intercepted as named query invocations.
+const SQL_KEYWORDS: &[&str] = &[
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "CREATE",
+    "ALTER",
+    "DROP",
+    "EXPLAIN",
+    "WITH",
+    "SHOW",
+    "SET",
+    "BEGIN",
+    "COMMIT",
+    "ROLLBACK",
+    "GRANT",
+    "REVOKE",
+    "TRUNCATE",
+    "COPY",
+    "VACUUM",
+    "ANALYZE",
+    "DO",
+    "CALL",
+    "EXECUTE",
+    "PREPARE",
+    "DEALLOCATE",
+    "DECLARE",
+    "FETCH",
+    "CLOSE",
+    "LISTEN",
+    "NOTIFY",
+    "UNLISTEN",
+    "LOAD",
+    "REINDEX",
+    "CLUSTER",
+    "COMMENT",
+    "LOCK",
+    "RESET",
+    "DISCARD",
+    "REFRESH",
+    "IMPORT",
+    "EXPORT",
+    "MERGE",
+    "REPLACE",
+    "UPSERT",
+    "DESCRIBE",
+    "USE",
+    "KILL",
+    "PRAGMA",
+    "ATTACH",
+    "DETACH",
+    "VALUES",
+    "TABLE",
+];
+
+/// Check if user input matches a named query invocation.
+/// Returns `Some((name, args))` if the first word matches a stored named query,
+/// or `None` if it looks like SQL or doesn't match any named query.
+fn resolve_named_query(
+    input: &str,
+    config: &DbCrustConfig,
+    db_type: Option<&DatabaseType>,
+    session_id: Option<&str>,
+) -> Option<(String, Vec<String>)> {
+    let first_word = input.split_whitespace().next()?;
+
+    // Reject SQL keywords to avoid false positives
+    if SQL_KEYWORDS
+        .iter()
+        .any(|kw| kw.eq_ignore_ascii_case(first_word))
+    {
+        return None;
+    }
+
+    // Check if first word matches a named query
+    if config
+        .get_available_named_query(first_word, db_type, session_id)
+        .is_some()
+    {
+        let args: Vec<String> = input
+            .split_whitespace()
+            .skip(1)
+            .map(|s| s.to_string())
+            .collect();
+        return Some((first_word.to_string(), args));
+    }
+
+    None
 }
 
 impl CliCore {
@@ -738,6 +829,11 @@ impl CliCore {
             if command_trimmed.starts_with('\\') {
                 // Handle backslash commands
                 self.execute_backslash_command(command_trimmed).await?;
+            } else if let Some((name, args)) =
+                self.resolve_named_query_for_command_mode(command_trimmed)
+            {
+                // Execute named query
+                self.execute_named_query_command_mode(name, args).await?;
             } else {
                 // Execute SQL command
                 let database = self
@@ -780,6 +876,78 @@ impl CliCore {
             }
         }
 
+        Ok(())
+    }
+
+    /// Check if input matches a named query in command mode (non-interactive).
+    fn resolve_named_query_for_command_mode(&self, input: &str) -> Option<(String, Vec<String>)> {
+        let database = self.database.as_ref()?;
+        let db_type = database
+            .get_connection_info()
+            .map(|info| info.database_type.clone());
+        let session_id = SessionId::from_database(database).map(|sid| sid.identifier);
+        resolve_named_query(input, &self.config, db_type.as_ref(), session_id.as_deref())
+    }
+
+    /// Execute a named query in command mode (non-interactive).
+    async fn execute_named_query_command_mode(
+        &mut self,
+        name: String,
+        args: Vec<String>,
+    ) -> Result<(), CliError> {
+        let command = Command::ExecuteNamedQuery { name, args };
+
+        let database = self
+            .database
+            .take()
+            .ok_or_else(|| CliError::CommandError("No database connection".to_string()))?;
+
+        let db_arc = Arc::new(Mutex::new(database));
+        let mut last_script = String::new();
+        let interrupt_flag = Arc::new(AtomicBool::new(false));
+
+        let (username, db_name) = {
+            let db_guard = db_arc.lock().unwrap();
+            (
+                db_guard.get_username().to_string(),
+                db_guard.get_current_db(),
+            )
+        };
+        let mut prompt = DbPrompt::with_config(
+            username,
+            db_name,
+            self.config.multiline_prompt_indicator.clone(),
+        );
+
+        match command
+            .execute(
+                &db_arc,
+                &mut self.config,
+                &mut last_script,
+                &interrupt_flag,
+                &mut prompt,
+            )
+            .await
+        {
+            Ok(CommandResult::Output(output)) => {
+                Self::page_or_print(&output, &self.config)?;
+            }
+            Ok(CommandResult::Error(error)) => {
+                eprintln!("Named query error: {error}");
+            }
+            Err(e) => {
+                eprintln!("Error executing named query: {e}");
+            }
+            _ => {}
+        }
+
+        // Restore database reference
+        let updated_db = Arc::try_unwrap(db_arc)
+            .map_err(|_| CliError::CommandError("Failed to unwrap database Arc".to_string()))?
+            .into_inner()
+            .map_err(|_| CliError::CommandError("Failed to unwrap database Mutex".to_string()))?;
+
+        self.database = Some(updated_db);
         Ok(())
     }
 
@@ -1040,6 +1208,54 @@ impl CliCore {
                             }
                         }
                         continue;
+                    }
+
+                    // Try named query auto-detection before SQL execution
+                    {
+                        let (db_type, session_id) = {
+                            let db = db_arc.lock().unwrap();
+                            let db_type = db
+                                .get_connection_info()
+                                .map(|info| info.database_type.clone());
+                            let session_id =
+                                SessionId::from_database(&db).map(|sid| sid.identifier);
+                            (db_type, session_id)
+                        };
+                        let resolved = {
+                            let config = config_arc.lock().unwrap();
+                            resolve_named_query(
+                                line,
+                                &config,
+                                db_type.as_ref(),
+                                session_id.as_deref(),
+                            )
+                        };
+                        if let Some((name, args)) = resolved {
+                            let command = Command::ExecuteNamedQuery { name, args };
+                            #[allow(clippy::await_holding_lock)]
+                            match command
+                                .execute(
+                                    &db_arc,
+                                    &mut config_arc.lock().unwrap(),
+                                    &mut last_script,
+                                    &interrupt_flag,
+                                    &mut prompt,
+                                )
+                                .await
+                            {
+                                Ok(CommandResult::Output(output)) => {
+                                    println!("{output}");
+                                }
+                                Ok(CommandResult::Error(error)) => {
+                                    eprintln!("Named query error: {error}");
+                                }
+                                Err(e) => {
+                                    eprintln!("Error executing named query: {e}");
+                                }
+                                _ => {}
+                            }
+                            continue;
+                        }
                     }
 
                     // Handle SQL queries (reedline handles multiline with Alt+Enter automatically)
@@ -1785,6 +2001,240 @@ impl CliCore {
             // Direct output
             print!("{output}");
             Ok(())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::NamedQueryScope;
+
+    fn make_test_config_with_query(
+        name: &str,
+        query: &str,
+        scope: NamedQueryScope,
+    ) -> DbCrustConfig {
+        let mut config = DbCrustConfig::default();
+        config
+            .add_named_query_with_scope(name, query, scope)
+            .unwrap();
+        config
+    }
+
+    #[test]
+    fn test_resolve_named_query_match_with_args() {
+        let config = make_test_config_with_query(
+            "check_migration",
+            "SELECT * FROM migrations WHERE app = '$1'",
+            NamedQueryScope::Global,
+        );
+        let result = resolve_named_query("check_migration auth", &config, None, None);
+        assert_eq!(
+            result,
+            Some(("check_migration".to_string(), vec!["auth".to_string()]))
+        );
+    }
+
+    #[test]
+    fn test_resolve_named_query_match_multiple_args() {
+        let config = make_test_config_with_query(
+            "is_migration_applied",
+            "SELECT applied FROM django_migrations WHERE app = '$1' AND name = '$2'",
+            NamedQueryScope::Global,
+        );
+        let result = resolve_named_query(
+            "is_migration_applied frontend_tools 0002_delete",
+            &config,
+            None,
+            None,
+        );
+        assert_eq!(
+            result,
+            Some((
+                "is_migration_applied".to_string(),
+                vec!["frontend_tools".to_string(), "0002_delete".to_string()]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_resolve_named_query_match_no_args() {
+        let config = make_test_config_with_query(
+            "show_users",
+            "SELECT * FROM users",
+            NamedQueryScope::Global,
+        );
+        let result = resolve_named_query("show_users", &config, None, None);
+        assert_eq!(result, Some(("show_users".to_string(), vec![])));
+    }
+
+    #[test]
+    fn test_resolve_named_query_no_match() {
+        let config = DbCrustConfig::default();
+        let result = resolve_named_query("nonexistent_query arg1", &config, None, None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_named_query_empty_input() {
+        let config = DbCrustConfig::default();
+        let result = resolve_named_query("", &config, None, None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_named_query_whitespace_only() {
+        let config = DbCrustConfig::default();
+        let result = resolve_named_query("   ", &config, None, None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_named_query_sql_keyword_select_rejected() {
+        let config = make_test_config_with_query("select", "SELECT 1", NamedQueryScope::Global);
+        let result = resolve_named_query("SELECT * FROM users", &config, None, None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_named_query_sql_keyword_case_insensitive() {
+        let config = make_test_config_with_query("select", "SELECT 1", NamedQueryScope::Global);
+        let result = resolve_named_query("select * FROM users", &config, None, None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_named_query_sql_keywords_all_rejected() {
+        let config =
+            make_test_config_with_query("placeholder", "SELECT 1", NamedQueryScope::Global);
+        for keyword in SQL_KEYWORDS {
+            let input = format!("{keyword} something");
+            let result = resolve_named_query(&input, &config, None, None);
+            assert_eq!(result, None, "SQL keyword '{keyword}' should be rejected");
+        }
+    }
+
+    #[test]
+    fn test_resolve_named_query_scoped_global() {
+        let config = make_test_config_with_query("my_query", "SELECT 1", NamedQueryScope::Global);
+        // Global queries should match regardless of db_type context
+        let result =
+            resolve_named_query("my_query", &config, Some(&DatabaseType::PostgreSQL), None);
+        assert_eq!(result, Some(("my_query".to_string(), vec![])));
+    }
+
+    #[test]
+    fn test_resolve_named_query_scoped_database_type() {
+        let config = make_test_config_with_query(
+            "pg_query",
+            "SELECT * FROM pg_tables",
+            NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL),
+        );
+
+        // Should match when db_type is PostgreSQL
+        let result =
+            resolve_named_query("pg_query", &config, Some(&DatabaseType::PostgreSQL), None);
+        assert_eq!(result, Some(("pg_query".to_string(), vec![])));
+
+        // Should NOT match when db_type is MySQL
+        let result = resolve_named_query("pg_query", &config, Some(&DatabaseType::MySQL), None);
+        assert_eq!(result, None);
+
+        // Should NOT match when no db_type context
+        let result = resolve_named_query("pg_query", &config, None, None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_named_query_scoped_session() {
+        let config = make_test_config_with_query(
+            "session_query",
+            "SELECT 1",
+            NamedQueryScope::Session("my_session_123".to_string()),
+        );
+
+        // Should match with correct session
+        let result = resolve_named_query("session_query", &config, None, Some("my_session_123"));
+        assert_eq!(result, Some(("session_query".to_string(), vec![])));
+
+        // Should NOT match with wrong session
+        let result = resolve_named_query("session_query", &config, None, Some("other_session"));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_named_query_scope_priority() {
+        let mut config = DbCrustConfig::default();
+        config
+            .add_named_query_with_scope("my_query", "SELECT 'global'", NamedQueryScope::Global)
+            .unwrap();
+        config
+            .add_named_query_with_scope(
+                "my_query",
+                "SELECT 'postgres'",
+                NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL),
+            )
+            .unwrap();
+
+        // With PostgreSQL context, should resolve (scope priority handled by find_by_name)
+        let result = resolve_named_query(
+            "my_query arg1",
+            &config,
+            Some(&DatabaseType::PostgreSQL),
+            None,
+        );
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0, "my_query");
+    }
+
+    #[test]
+    fn test_resolve_named_query_preserves_arg_order() {
+        let config =
+            make_test_config_with_query("multi_arg", "SELECT $1, $2, $3", NamedQueryScope::Global);
+        let result = resolve_named_query("multi_arg first second third", &config, None, None);
+        assert_eq!(
+            result,
+            Some((
+                "multi_arg".to_string(),
+                vec![
+                    "first".to_string(),
+                    "second".to_string(),
+                    "third".to_string()
+                ]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_resolve_named_query_extra_whitespace() {
+        let config = make_test_config_with_query("my_query", "SELECT $1", NamedQueryScope::Global);
+        let result = resolve_named_query("my_query   arg1   arg2", &config, None, None);
+        assert_eq!(
+            result,
+            Some((
+                "my_query".to_string(),
+                vec!["arg1".to_string(), "arg2".to_string()]
+            ))
+        );
+    }
+
+    #[test]
+    fn test_resolve_named_query_does_not_match_partial() {
+        let config = make_test_config_with_query("check", "SELECT 1", NamedQueryScope::Global);
+        // "check_migration" should NOT match "check"
+        let result = resolve_named_query("check_migration arg1", &config, None, None);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_sql_keywords_constant_is_uppercase() {
+        for keyword in SQL_KEYWORDS {
+            assert_eq!(
+                *keyword,
+                keyword.to_uppercase(),
+                "SQL keyword '{keyword}' should be uppercase in the constant"
+            );
         }
     }
 }
