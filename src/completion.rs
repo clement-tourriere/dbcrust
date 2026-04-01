@@ -338,6 +338,50 @@ impl SqlCompleter {
             || name.starts_with(char::is_numeric)
     }
 
+    /// Build table name suggestions filtered by a prefix, handling Elasticsearch quoting
+    fn build_table_suggestions(
+        &mut self,
+        lower_prefix: &str,
+        word_start: usize,
+        pos: usize,
+    ) -> Vec<Suggestion> {
+        let mut suggestions = Vec::new();
+        let tables = self.get_tables(None);
+        let database_type = self.get_database_type();
+
+        for table in tables {
+            if table.name.to_lowercase().starts_with(lower_prefix) {
+                let clean_name = if let Some(hint_pos) = table.name.find(" (use ") {
+                    &table.name[..hint_pos]
+                } else {
+                    &table.name
+                };
+
+                let value = if database_type == DatabaseType::Elasticsearch
+                    && self.elasticsearch_needs_quoting(clean_name)
+                {
+                    format!("\"{clean_name}\"")
+                } else {
+                    clean_name.to_string()
+                };
+
+                suggestions.push(Suggestion {
+                    value,
+                    description: Some("Table".to_string()),
+                    span: Span {
+                        start: word_start,
+                        end: pos,
+                    },
+                    append_whitespace: true,
+                    extra: None,
+                    style: Some(Style::new().fg(Color::Green)),
+                });
+            }
+        }
+
+        suggestions
+    }
+
     /// Check if a partial word could be a SQL keyword
     fn could_be_sql_keyword(&self, word: &str) -> bool {
         let upper_word = word.to_uppercase();
@@ -901,39 +945,8 @@ impl SqlCompleter {
                     FromClauseState::ExpectingTable | FromClauseState::TypingTable => {
                         // Only show tables, no keywords
                         debug!("[SqlCompleter] FROM clause: showing tables only");
-                        let tables = self.get_tables(None);
-                        for table in tables {
-                            if table.name.to_lowercase().starts_with(&lower_word) {
-                                // For Elasticsearch, clean the table name and auto-quote if needed
-                                let clean_name = if let Some(hint_pos) = table.name.find(" (use ") {
-                                    &table.name[..hint_pos]
-                                } else {
-                                    &table.name
-                                };
-
-                                // Auto-quote Elasticsearch table names with special characters
-                                let database_type = self.get_database_type();
-                                let value = if database_type == DatabaseType::Elasticsearch
-                                    && self.elasticsearch_needs_quoting(clean_name)
-                                {
-                                    format!("\"{clean_name}\"")
-                                } else {
-                                    clean_name.to_string()
-                                };
-
-                                suggestions.push(Suggestion {
-                                    value,
-                                    description: Some("Table".to_string()),
-                                    span: Span {
-                                        start: word_start,
-                                        end: pos,
-                                    },
-                                    append_whitespace: true,
-                                    extra: None,
-                                    style: Some(Style::new().fg(Color::Green)),
-                                });
-                            }
-                        }
+                        suggestions
+                            .extend(self.build_table_suggestions(&lower_word, word_start, pos));
                     }
                     FromClauseState::AfterTable | FromClauseState::TypingKeyword => {
                         // After table name, show JOIN/WHERE keywords only
@@ -1255,6 +1268,32 @@ impl SqlCompleter {
                     }
                 }
             }
+            SqlClause::Update | SqlClause::Delete => {
+                // UPDATE and DELETE expect a table name right after the keyword
+                debug!(
+                    "[SqlCompleter] {:?} clause: showing tables",
+                    context.base_context.current_clause
+                );
+                suggestions.extend(self.build_table_suggestions(&lower_word, word_start, pos));
+
+                // Also add contextual keywords (SET for UPDATE, FROM for DELETE)
+                let keywords = self.get_enhanced_contextual_keywords(context, parser);
+                for keyword in keywords {
+                    if keyword.to_lowercase().starts_with(&lower_word) && !keyword.is_empty() {
+                        suggestions.push(Suggestion {
+                            value: keyword.to_string(),
+                            description: Some("SQL Keyword".to_string()),
+                            span: Span {
+                                start: word_start,
+                                end: pos,
+                            },
+                            append_whitespace: true,
+                            extra: None,
+                            style: Some(Style::new().fg(Color::Blue)),
+                        });
+                    }
+                }
+            }
             _ => {
                 // For other clauses, add contextual keywords
                 let basic_keywords = self.get_enhanced_contextual_keywords(context, parser);
@@ -1280,40 +1319,9 @@ impl SqlCompleter {
         for expected in &context.base_context.expecting {
             match expected {
                 ExpectedElement::Table => {
-                    // Get all tables
-                    let tables = self.get_tables(None);
-                    for table in tables {
-                        if table.name.to_lowercase().starts_with(&lower_word) {
-                            // For Elasticsearch, clean the table name and auto-quote if needed
-                            let clean_name = if let Some(hint_pos) = table.name.find(" (use ") {
-                                &table.name[..hint_pos]
-                            } else {
-                                &table.name
-                            };
-
-                            // Auto-quote Elasticsearch table names with special characters
-                            let database_type = self.get_database_type();
-                            let value = if database_type == DatabaseType::Elasticsearch
-                                && self.elasticsearch_needs_quoting(clean_name)
-                            {
-                                format!("\"{clean_name}\"")
-                            } else {
-                                clean_name.to_string()
-                            };
-
-                            suggestions.push(Suggestion {
-                                value,
-                                description: Some("Table".to_string()),
-                                span: Span {
-                                    start: word_start,
-                                    end: pos,
-                                },
-                                append_whitespace: true,
-                                extra: None,
-                                style: Some(Style::new().fg(Color::Green)),
-                            });
-                        }
-                    }
+                    suggestions.extend(
+                        self.build_table_suggestions(&lower_word, word_start, pos),
+                    );
                 }
                 ExpectedElement::Column => {
                     // Skip if we already added columns for WHERE clause
@@ -2270,13 +2278,45 @@ mod tests {
         let (db, config) = create_test_database_and_config().await;
         let mut completer = SqlCompleter::new(db, config);
 
-        // Test UPDATE table name completion
-        let _suggestions = completer.complete("UPDATE ", 7);
-        // Should suggest tables
+        // Test UPDATE: should suggest SET keyword (and tables if available)
+        let suggestions = completer.complete("UPDATE ", 7);
+        assert!(
+            suggestions.iter().any(|s| s.value == "SET"),
+            "UPDATE clause should suggest SET keyword, got: {:?}",
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>()
+        );
 
         // Test SET clause
-        let _suggestions = completer.complete("UPDATE users SET ", 17);
-        // Should suggest columns
+        let suggestions = completer.complete("UPDATE users SET ", 17);
+        assert!(
+            suggestions.iter().all(|s| s.description.is_some()),
+            "All suggestions should have descriptions"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_delete_statement_completion() {
+        let (db, config) = create_test_database_and_config().await;
+        let mut completer = SqlCompleter::new(db, config);
+
+        // Test DELETE: should suggest FROM keyword (and tables if available)
+        let suggestions = completer.complete("DELETE ", 7);
+        assert!(
+            suggestions.iter().any(|s| s.value == "FROM"),
+            "DELETE clause should suggest FROM keyword, got: {:?}",
+            suggestions.iter().map(|s| &s.value).collect::<Vec<_>>()
+        );
+
+        // Test DELETE FROM: should suggest tables (same as SELECT FROM)
+        let suggestions = completer.complete("DELETE FROM ", 12);
+        assert!(
+            !suggestions.is_empty(),
+            "DELETE FROM should return suggestions"
+        );
+        assert!(
+            suggestions.iter().all(|s| s.description.is_some()),
+            "All suggestions should have descriptions"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

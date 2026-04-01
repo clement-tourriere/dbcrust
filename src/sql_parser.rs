@@ -650,6 +650,13 @@ impl SqlParser {
                 expectations.push(ExpectedElement::Value);
                 expectations.push(ExpectedElement::Function);
             }
+            SqlClause::Update => {
+                expectations.push(ExpectedElement::Table);
+            }
+            SqlClause::Delete => {
+                expectations.push(ExpectedElement::Table);
+                expectations.push(ExpectedElement::Keyword(vec!["FROM"]));
+            }
             SqlClause::OrderBy | SqlClause::GroupBy => {
                 expectations.push(ExpectedElement::Column);
             }
@@ -746,6 +753,70 @@ mod tests {
         assert!(context.expecting.contains(&ExpectedElement::Value));
         // Should have no future tables since cursor is at end
         assert_eq!(context.future_tables.len(), 0);
+    }
+
+    #[test]
+    fn test_update_expects_table() {
+        // Cursor right after "UPDATE " — should expect a table name
+        let sql = "UPDATE ";
+        let parser = SqlParser::new(sql.to_string());
+        let context = parser.parse_at_cursor(sql.len());
+
+        assert_eq!(context.statement_type, StatementType::Update);
+        assert_eq!(context.current_clause, SqlClause::Update);
+        assert!(
+            context.expecting.contains(&ExpectedElement::Table),
+            "UPDATE clause should expect a table, got: {:?}",
+            context.expecting
+        );
+    }
+
+    #[test]
+    fn test_update_with_partial_table() {
+        // Cursor mid-typing table name after UPDATE
+        let sql = "UPDATE us";
+        let parser = SqlParser::new(sql.to_string());
+        let context = parser.parse_at_cursor(sql.len());
+
+        assert_eq!(context.statement_type, StatementType::Update);
+        assert_eq!(context.current_clause, SqlClause::Update);
+        assert!(
+            context.expecting.contains(&ExpectedElement::Table),
+            "UPDATE clause with partial table should expect a table, got: {:?}",
+            context.expecting
+        );
+    }
+
+    #[test]
+    fn test_delete_expects_table() {
+        // Cursor right after "DELETE " — should expect FROM keyword and table
+        let sql = "DELETE ";
+        let parser = SqlParser::new(sql.to_string());
+        let context = parser.parse_at_cursor(sql.len());
+
+        assert_eq!(context.statement_type, StatementType::Delete);
+        assert_eq!(context.current_clause, SqlClause::Delete);
+        assert!(
+            context.expecting.contains(&ExpectedElement::Table),
+            "DELETE clause should expect a table, got: {:?}",
+            context.expecting
+        );
+    }
+
+    #[test]
+    fn test_delete_from_expects_table() {
+        // Cursor right after "DELETE FROM " — should be in From clause expecting table
+        let sql = "DELETE FROM ";
+        let parser = SqlParser::new(sql.to_string());
+        let context = parser.parse_at_cursor(sql.len());
+
+        assert_eq!(context.statement_type, StatementType::Delete);
+        assert_eq!(context.current_clause, SqlClause::From);
+        assert!(
+            context.expecting.contains(&ExpectedElement::Table),
+            "DELETE FROM clause should expect a table, got: {:?}",
+            context.expecting
+        );
     }
 
     #[test]
