@@ -338,7 +338,7 @@ impl SqlCompleter {
             || name.starts_with(char::is_numeric)
     }
 
-    /// Build table name suggestions filtered by a prefix, handling Elasticsearch quoting
+    /// Build table name suggestions filtered by substring match, handling Elasticsearch quoting
     fn build_table_suggestions(
         &mut self,
         lower_prefix: &str,
@@ -350,7 +350,7 @@ impl SqlCompleter {
         let database_type = self.get_database_type();
 
         for table in tables {
-            if table.name.to_lowercase().starts_with(lower_prefix) {
+            if lower_prefix.is_empty() || table.name.to_lowercase().contains(lower_prefix) {
                 let clean_name = if let Some(hint_pos) = table.name.find(" (use ") {
                     &table.name[..hint_pos]
                 } else {
@@ -808,7 +808,7 @@ impl SqlCompleter {
                                     // Check if matches partial input and not already added (avoid duplicates)
                                     if field_name
                                         .to_lowercase()
-                                        .starts_with(&child_filter.to_lowercase())
+                                        .contains(&child_filter.to_lowercase())
                                         && !suggestions
                                             .iter()
                                             .any(|s: &Suggestion| s.value == full_path)
@@ -863,7 +863,7 @@ impl SqlCompleter {
                                 for column in columns {
                                     if column
                                         .to_lowercase()
-                                        .starts_with(&column_prefix.to_lowercase())
+                                        .contains(&column_prefix.to_lowercase())
                                     {
                                         suggestions.push(Suggestion {
                                             value: format!("{table_prefix}.{column}"),
@@ -899,7 +899,7 @@ impl SqlCompleter {
                     let mut added_count = 0;
 
                     for column in columns {
-                        if lower_word.is_empty() || column.to_lowercase().starts_with(&lower_word) {
+                        if lower_word.is_empty() || column.to_lowercase().contains(&lower_word) {
                             let desc = if let Some(alias) = &table_ref.alias {
                                 format!("Column from {} ({})", alias, table_ref.table)
                             } else {
@@ -945,8 +945,11 @@ impl SqlCompleter {
                     FromClauseState::ExpectingTable | FromClauseState::TypingTable => {
                         // Only show tables, no keywords
                         debug!("[SqlCompleter] FROM clause: showing tables only");
-                        suggestions
-                            .extend(self.build_table_suggestions(&lower_word, word_start, pos));
+                        suggestions.extend(self.build_table_suggestions(
+                            &lower_word,
+                            word_start,
+                            pos,
+                        ));
                     }
                     FromClauseState::AfterTable | FromClauseState::TypingKeyword => {
                         // After table name, show JOIN/WHERE keywords only
@@ -1053,7 +1056,7 @@ impl SqlCompleter {
                                         // Check if matches partial input and not already added (avoid duplicates)
                                         if field_name
                                             .to_lowercase()
-                                            .starts_with(&child_filter.to_lowercase())
+                                            .contains(&child_filter.to_lowercase())
                                             && !suggestions
                                                 .iter()
                                                 .any(|s: &Suggestion| s.value == full_path)
@@ -1108,7 +1111,7 @@ impl SqlCompleter {
                                     for column in columns {
                                         if column
                                             .to_lowercase()
-                                            .starts_with(&column_prefix.to_lowercase())
+                                            .contains(&column_prefix.to_lowercase())
                                         {
                                             suggestions.push(Suggestion {
                                                 value: format!("{table_prefix}.{column}"),
@@ -1143,8 +1146,7 @@ impl SqlCompleter {
                         let mut added_count = 0;
 
                         for column in columns {
-                            if lower_word.is_empty()
-                                || column.to_lowercase().starts_with(&lower_word)
+                            if lower_word.is_empty() || column.to_lowercase().contains(&lower_word)
                             {
                                 let desc = if let Some(alias) = &table_ref.alias {
                                     format!(
@@ -1319,9 +1321,7 @@ impl SqlCompleter {
         for expected in &context.base_context.expecting {
             match expected {
                 ExpectedElement::Table => {
-                    suggestions.extend(
-                        self.build_table_suggestions(&lower_word, word_start, pos),
-                    );
+                    suggestions.extend(self.build_table_suggestions(&lower_word, word_start, pos));
                 }
                 ExpectedElement::Column => {
                     // Skip if we already added columns for WHERE clause
@@ -1385,7 +1385,7 @@ impl SqlCompleter {
                                             // Check if matches partial input and not already added (avoid duplicates)
                                             if field_name
                                                 .to_lowercase()
-                                                .starts_with(&child_filter.to_lowercase())
+                                                .contains(&child_filter.to_lowercase())
                                                 && !suggestions
                                                     .iter()
                                                     .any(|s: &Suggestion| s.value == full_path)
@@ -1440,7 +1440,7 @@ impl SqlCompleter {
                                         for column in columns {
                                             if column
                                                 .to_lowercase()
-                                                .starts_with(&column_prefix.to_lowercase())
+                                                .contains(&column_prefix.to_lowercase())
                                             {
                                                 suggestions.push(Suggestion {
                                                     value: format!("{table_prefix}.{column}"),
@@ -1484,7 +1484,7 @@ impl SqlCompleter {
 
                             for column in columns {
                                 if lower_word.is_empty()
-                                    || column.to_lowercase().starts_with(&lower_word)
+                                    || column.to_lowercase().contains(&lower_word)
                                 {
                                     let desc = if let Some(alias) = &table_ref.alias {
                                         format!("Column from {} ({})", alias, table_ref.table)
@@ -1540,7 +1540,7 @@ impl SqlCompleter {
                     // Use database-specific functions instead of hardcoded ones
                     let functions = parser.get_functions();
                     for func_name in functions {
-                        if func_name.to_lowercase().starts_with(&lower_word) {
+                        if func_name.to_lowercase().contains(&lower_word) {
                             let requires_parens = parser.database_type()
                                 != DatabaseType::PostgreSQL
                                 || !matches!(
@@ -1576,7 +1576,7 @@ impl SqlCompleter {
 
         // Convert hints to suggestions
         for hint in hints {
-            if hint.text.to_lowercase().starts_with(&lower_word) {
+            if hint.text.to_lowercase().contains(&lower_word) {
                 // Skip if we already have this suggestion
                 if suggestions.iter().any(|s| s.value == hint.text) {
                     continue;
@@ -1765,10 +1765,11 @@ impl SqlCompleter {
                 let tables = self.get_tables(None);
                 let mut suggestions = Vec::new();
                 for table in tables {
-                    if table
-                        .name
-                        .to_lowercase()
-                        .starts_with(&current_word.to_lowercase())
+                    if current_word.is_empty()
+                        || table
+                            .name
+                            .to_lowercase()
+                            .contains(&current_word.to_lowercase())
                     {
                         // For Elasticsearch, clean the table name and auto-quote if needed
                         let clean_name = if let Some(hint_pos) = table.name.find(" (use ") {
@@ -1830,9 +1831,10 @@ impl SqlCompleter {
                 let mut suggestions = Vec::new();
                 for db_row in databases {
                     if let Some(db_name) = db_row.first() {
-                        if db_name
-                            .to_lowercase()
-                            .starts_with(&current_word.to_lowercase())
+                        if current_word.is_empty()
+                            || db_name
+                                .to_lowercase()
+                                .contains(&current_word.to_lowercase())
                         {
                             suggestions.push(Suggestion {
                                 value: db_name.clone(),
@@ -1881,9 +1883,10 @@ impl SqlCompleter {
 
                 let mut suggestions = Vec::new();
                 for (query_name, _query_sql, scope) in available_queries {
-                    if query_name
-                        .to_lowercase()
-                        .starts_with(&current_word.to_lowercase())
+                    if current_word.is_empty()
+                        || query_name
+                            .to_lowercase()
+                            .contains(&current_word.to_lowercase())
                     {
                         let scope_str = match scope {
                             crate::config::NamedQueryScope::Global => "[global]",
@@ -1952,9 +1955,10 @@ impl SqlCompleter {
 
                 let mut suggestions = Vec::new();
                 for (query_name, _query_sql, scope) in available_queries {
-                    if query_name
-                        .to_lowercase()
-                        .starts_with(&current_word.to_lowercase())
+                    if current_word.is_empty()
+                        || query_name
+                            .to_lowercase()
+                            .contains(&current_word.to_lowercase())
                     {
                         let scope_str = match scope {
                             crate::config::NamedQueryScope::Global => "[global]",
@@ -2483,5 +2487,79 @@ mod tests {
                     .unwrap_or(&"No description".to_string())
             );
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_drop_completion_uses_prefix_matching() {
+        let (db, config) = create_test_database_and_config().await;
+        let mut completer = SqlCompleter::new(db, config);
+
+        // DROP object types should stay prefix-matched
+        let suggestions = completer.complete("DROP TAB", 8);
+        assert!(
+            suggestions.iter().any(|s| s.value == "TABLE"),
+            "DROP should suggest TABLE for prefix 'TAB'"
+        );
+
+        // "ABLE" is a substring of TABLE but not a prefix
+        let suggestions = completer.complete("DROP ABLE", 9);
+        assert!(
+            !suggestions.iter().any(|s| s.value == "TABLE"),
+            "DROP should NOT suggest TABLE for non-prefix 'ABLE'"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_create_completion_uses_prefix_matching() {
+        let (db, config) = create_test_database_and_config().await;
+        let mut completer = SqlCompleter::new(db, config);
+
+        // CREATE object types should stay prefix-matched
+        let suggestions = completer.complete("CREATE VIE", 10);
+        assert!(
+            suggestions.iter().any(|s| s.value == "VIEW"),
+            "CREATE should suggest VIEW for prefix 'VIE'"
+        );
+
+        let suggestions = completer.complete("CREATE IEW", 10);
+        assert!(
+            !suggestions.iter().any(|s| s.value == "VIEW"),
+            "CREATE should NOT suggest VIEW for non-prefix 'IEW'"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_alter_completion_uses_prefix_matching() {
+        let (db, config) = create_test_database_and_config().await;
+        let mut completer = SqlCompleter::new(db, config);
+
+        let suggestions = completer.complete("ALTER SEQ", 9);
+        assert!(
+            suggestions.iter().any(|s| s.value == "SEQUENCE"),
+            "ALTER should suggest SEQUENCE for prefix 'SEQ'"
+        );
+
+        let suggestions = completer.complete("ALTER EQUEN", 11);
+        assert!(
+            !suggestions.iter().any(|s| s.value == "SEQUENCE"),
+            "ALTER should NOT suggest SEQUENCE for non-prefix 'EQUEN'"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_backslash_command_completion_stays_prefix() {
+        let (db, config) = create_test_database_and_config().await;
+        let mut completer = SqlCompleter::new(db, config);
+
+        // Backslash commands should be prefix-matched
+        let suggestions = completer.complete("\\h", 2);
+        assert!(suggestions.iter().any(|s| s.value == "\\h"));
+
+        // "onfig" is a substring of "\config" but not a valid command prefix
+        let suggestions = completer.complete("\\onfig", 6);
+        assert!(
+            !suggestions.iter().any(|s| s.value == "\\config"),
+            "Backslash commands should use prefix matching"
+        );
     }
 }

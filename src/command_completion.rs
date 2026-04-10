@@ -31,6 +31,7 @@ pub trait CommandCompleter: Send + Sync {
 
     /// Helper method to build suggestions from a list of items
     /// This eliminates code duplication across all completers
+    /// Uses substring matching: items are matched if they contain the current word anywhere
     fn build_suggestions_from_items(
         &self,
         items: Vec<(String, String)>, // (value, description)
@@ -44,14 +45,14 @@ pub trait CommandCompleter: Send + Sync {
         let word_start = args[..pos.min(args.len())].rfind(' ').map_or(0, |i| i + 1);
         let current_word = &args[word_start..pos.min(args.len())];
 
-        // Filter items that start with the current word
+        // Filter items that contain the current word (substring matching)
         for (value, description) in items {
-            let matches = if case_sensitive {
-                value.starts_with(current_word)
+            let matches = if current_word.is_empty() {
+                true
+            } else if case_sensitive {
+                value.contains(current_word)
             } else {
-                value
-                    .to_lowercase()
-                    .starts_with(&current_word.to_lowercase())
+                value.to_lowercase().contains(&current_word.to_lowercase())
             };
 
             if matches {
@@ -403,12 +404,13 @@ impl CommandCompleter for NamedQueryCompleter {
                             }
                         }
                     } else {
-                        // Complete with existing named query names for overwriting
+                        // Complete with existing named query names for overwriting (substring match)
                         let queries = self.get_named_query_names();
                         for query_name in queries {
-                            if query_name
-                                .to_lowercase()
-                                .starts_with(&current_word.to_lowercase())
+                            if current_word.is_empty()
+                                || query_name
+                                    .to_lowercase()
+                                    .contains(&current_word.to_lowercase())
                             {
                                 suggestions.push(Suggestion {
                                     value: query_name,
@@ -713,5 +715,94 @@ mod tests {
             .unwrap();
 
         assert!(suggestions.iter().any(|s| s.value == "->"));
+    }
+
+    #[tokio::test]
+    async fn test_substring_matching_in_suggestions() {
+        let basic_completer = BasicCommandCompleter;
+
+        // Substring match: "runc" should match "truncated" (contains, not prefix)
+        let items = vec![
+            ("truncated".to_string(), "Truncated mode".to_string()),
+            ("full".to_string(), "Full mode".to_string()),
+            ("summary".to_string(), "Summary mode".to_string()),
+        ];
+        let suggestions = basic_completer.build_suggestions_from_items(items, "runc", 4, false);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].value, "truncated");
+    }
+
+    #[tokio::test]
+    async fn test_substring_matching_case_insensitive() {
+        let basic_completer = BasicCommandCompleter;
+
+        // Case-insensitive substring: "FULL" should match "full"
+        let items = vec![
+            ("full".to_string(), "Full mode".to_string()),
+            ("summary".to_string(), "Summary mode".to_string()),
+        ];
+        let suggestions = basic_completer.build_suggestions_from_items(items, "FUL", 3, false);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].value, "full");
+    }
+
+    #[tokio::test]
+    async fn test_substring_matching_case_sensitive() {
+        let basic_completer = BasicCommandCompleter;
+
+        // Case-sensitive substring: "Full" should NOT match "full"
+        let items = vec![
+            ("full".to_string(), "Full mode".to_string()),
+            ("Full_display".to_string(), "Full display".to_string()),
+        ];
+        let suggestions = basic_completer.build_suggestions_from_items(items, "Full", 4, true);
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].value, "Full_display");
+    }
+
+    #[tokio::test]
+    async fn test_substring_matching_empty_input_returns_all() {
+        let basic_completer = BasicCommandCompleter;
+
+        let items = vec![
+            ("alpha".to_string(), "A".to_string()),
+            ("beta".to_string(), "B".to_string()),
+            ("gamma".to_string(), "C".to_string()),
+        ];
+        let suggestions = basic_completer.build_suggestions_from_items(items, "", 0, false);
+        assert_eq!(suggestions.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_substring_matching_middle_of_word() {
+        let basic_completer = BasicCommandCompleter;
+
+        // "user" should match "auth_users_table" (middle substring)
+        let items = vec![
+            ("auth_users_table".to_string(), "Table".to_string()),
+            ("orders".to_string(), "Table".to_string()),
+            ("user_roles".to_string(), "Table".to_string()),
+        ];
+        let suggestions = basic_completer.build_suggestions_from_items(items, "user", 4, false);
+        assert_eq!(suggestions.len(), 2);
+        assert!(suggestions.iter().any(|s| s.value == "auth_users_table"));
+        assert!(suggestions.iter().any(|s| s.value == "user_roles"));
+    }
+
+    #[tokio::test]
+    async fn test_command_name_completion_stays_prefix() {
+        // Command names should still use prefix matching (not substring)
+        let manager = create_test_manager().await;
+
+        // "onfig" is a substring of "\config" but not a prefix starting with \
+        let suggestions = manager.get_command_completions("onfig", 0, 5);
+        assert!(
+            suggestions.is_empty(),
+            "Command name completion should be prefix-based, not substring"
+        );
+
+        // But "\\c" should match commands starting with \c
+        let suggestions = manager.get_command_completions("\\c", 0, 2);
+        assert!(!suggestions.is_empty());
     }
 }
