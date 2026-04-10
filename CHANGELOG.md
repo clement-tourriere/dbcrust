@@ -1,3 +1,13 @@
+## v0.24.0 (2026-04-10)
+
+### Feat
+
+- switch autocompletion from prefix to substring matching
+
+### Fix
+
+- add table suggestions for UPDATE and DELETE statements (#6)
+
 ## v0.23.3 (2026-03-25)
 
 ### Fix
