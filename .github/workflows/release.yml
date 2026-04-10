@@ -40,7 +40,7 @@ jobs:
             TAG="${{ github.event.release.tag_name }}"
             SHOULD_CREATE_RELEASE="false"
           fi
-          
+
           echo "plan={\"tag\": \"$TAG\"}" >> $GITHUB_OUTPUT
           echo "should_create_release=$SHOULD_CREATE_RELEASE" >> $GITHUB_OUTPUT
           echo "Tag: $TAG, Should create release: $SHOULD_CREATE_RELEASE"
@@ -73,22 +73,38 @@ jobs:
 
       - name: Generate release notes
         run: |
-          echo "## Release ${{ steps.extract_version.outputs.tag_name }}" > RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "🚀 **DBCrust ${{ steps.extract_version.outputs.version }}** is now available!" >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "### Installation" >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "#### Python/PyPI" >> RELEASE_NOTES.md
-          echo '```bash' >> RELEASE_NOTES.md
-          echo "# Quick run (no installation needed)" >> RELEASE_NOTES.md
-          echo "uvx dbcrust postgresql://user:pass@localhost/mydb" >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "# Install globally" >> RELEASE_NOTES.md
-          echo "uv tool install dbcrust" >> RELEASE_NOTES.md
-          echo '```' >> RELEASE_NOTES.md
-          echo "" >> RELEASE_NOTES.md
-          echo "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ steps.extract_version.outputs.tag_name }}/CHANGELOG.md) for detailed changes." >> RELEASE_NOTES.md
+          VERSION="${{ steps.extract_version.outputs.version }}"
+          TAG_NAME="${{ steps.extract_version.outputs.tag_name }}"
+          REPO="${{ github.repository }}"
+
+          # Extract changelog section for this version (between two ## v headers)
+          CHANGELOG=$(awk "/^## v${VERSION}/{found=1; next} /^## v/{if(found) exit} found" CHANGELOG.md)
+
+          {
+            echo "## What's Changed"
+            echo ""
+            if [ -n "$CHANGELOG" ]; then
+              echo "$CHANGELOG"
+            else
+              echo "No changelog entry found for this version."
+              echo ""
+            fi
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Installation"
+            echo ""
+            echo "### Python/PyPI"
+            echo '```bash'
+            echo "# Quick run (no installation needed)"
+            echo "uvx dbcrust postgresql://user:pass@localhost/mydb"
+            echo ""
+            echo "# Install globally"
+            echo "uv tool install dbcrust"
+            echo '```'
+            echo ""
+            echo "**Full changelog**: [CHANGELOG.md](https://github.com/${REPO}/blob/${TAG_NAME}/CHANGELOG.md)"
+          } > RELEASE_NOTES.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
