@@ -400,6 +400,11 @@ class TestAnalysisResult(unittest.TestCase):
 @patch('django.db.transaction')
 class TestDjangoAnalyzer(unittest.TestCase):
     """Test DjangoAnalyzer main functionality."""
+
+    def test_analyzer_default_transaction_safe(self, mock_transaction, mock_connections, mock_connection):
+        """The public analyzer API remains transaction-safe by default."""
+        analyzer = DjangoAnalyzer()
+        self.assertTrue(analyzer.transaction_safe)
     
     def test_analyzer_initialization(self, mock_transaction, mock_connections, mock_connection):
         """Test analyzer initialization."""

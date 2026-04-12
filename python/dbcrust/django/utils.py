@@ -7,7 +7,13 @@ to DBCrust-compatible connection URLs for seamless integration.
 
 import urllib.parse
 from typing import Dict, Any, Optional
-from django.conf import settings
+
+
+def _get_settings():
+    """Resolve Django settings lazily so callers can patch them in tests."""
+    from django.conf import settings
+
+    return settings
 
 
 class UnsupportedDatabaseError(Exception):
@@ -33,19 +39,22 @@ def get_database_config(database_alias: str = 'default') -> Dict[str, Any]:
     Raises:
         DatabaseConfigurationError: If database alias not found or invalid
     """
-    if not hasattr(settings, 'DATABASES'):
+    settings = _get_settings()
+    databases = getattr(settings, 'DATABASES', None)
+
+    if not isinstance(databases, dict):
         raise DatabaseConfigurationError("Django DATABASES setting not found")
-    
-    if not settings.DATABASES:
+
+    if not databases:
         raise DatabaseConfigurationError("Django DATABASES setting is empty")
-    
-    if database_alias not in settings.DATABASES:
-        available = ", ".join(settings.DATABASES.keys())
+
+    if database_alias not in databases:
+        available = ", ".join(databases.keys())
         raise DatabaseConfigurationError(
             f"Database alias '{database_alias}' not found. Available: {available}"
         )
-    
-    return settings.DATABASES[database_alias]
+
+    return databases[database_alias]
 
 
 def django_to_dbcrust_url(database_config: Dict[str, Any]) -> str:
@@ -126,7 +135,7 @@ def _build_postgresql_url(config: Dict[str, Any]) -> str:
     # Handle other common PostgreSQL options
     for key in ['connect_timeout', 'application_name', 'sslcert', 'sslkey', 'sslrootcert']:
         if key in options:
-            query_params.append(f"{key}={urllib.parse.quote(str(options[key]))}")
+            query_params.append(f"{key}={urllib.parse.quote(str(options[key]), safe='')}")
     
     if query_params:
         url += "?" + "&".join(query_params)
@@ -171,7 +180,7 @@ def _build_mysql_url(config: Dict[str, Any]) -> str:
         ssl_options = options['ssl']
         if isinstance(ssl_options, dict):
             for key, value in ssl_options.items():
-                query_params.append(f"ssl_{key}={urllib.parse.quote(str(value))}")
+                query_params.append(f"ssl_{key}={urllib.parse.quote(str(value), safe='')}")
         elif ssl_options:
             query_params.append("ssl=true")
     
@@ -183,7 +192,7 @@ def _build_mysql_url(config: Dict[str, Any]) -> str:
     # Handle other common MySQL options
     for key in ['connect_timeout', 'read_timeout', 'write_timeout', 'sql_mode']:
         if key in options:
-            query_params.append(f"{key}={urllib.parse.quote(str(options[key]))}")
+            query_params.append(f"{key}={urllib.parse.quote(str(options[key]), safe='')}")
     
     if query_params:
         url += "?" + "&".join(query_params)
@@ -206,6 +215,7 @@ def _build_sqlite_url(config: Dict[str, Any]) -> str:
     import os
     if not os.path.isabs(name):
         # Make it relative to Django's BASE_DIR if available
+        settings = _get_settings()
         if hasattr(settings, 'BASE_DIR'):
             name = os.path.join(settings.BASE_DIR, name)
         else:
@@ -244,12 +254,15 @@ def list_available_databases() -> Dict[str, str]:
     Returns:
         Dictionary mapping database alias to engine name
     """
-    if not hasattr(settings, 'DATABASES') or not settings.DATABASES:
+    settings = _get_settings()
+    databases = getattr(settings, 'DATABASES', None)
+
+    if not isinstance(databases, dict) or not databases:
         return {}
-    
+
     return {
         alias: config.get('ENGINE', 'Unknown')
-        for alias, config in settings.DATABASES.items()
+        for alias, config in databases.items()
     }
 
 
@@ -304,15 +317,24 @@ def get_database_info_summary(database_alias: str = 'default') -> Dict[str, Any]
         else:
             engine_type = 'Unknown'
         
+        if engine_type == 'SQLite':
+            host = 'N/A'
+            port = 'N/A'
+            user = 'N/A'
+        else:
+            host = config.get('HOST') or 'N/A'
+            port = config.get('PORT') or 'N/A'
+            user = config.get('USER') or 'N/A'
+
         # Build summary
         summary = {
             'alias': database_alias,
             'engine': engine,
             'engine_type': engine_type,
-            'host': config.get('HOST', 'N/A'),
-            'port': config.get('PORT', 'N/A'),
+            'host': host,
+            'port': port,
             'name': config.get('NAME', 'N/A'),
-            'user': config.get('USER', 'N/A'),
+            'user': user,
         }
         
         # Add password indicator (never show actual password)

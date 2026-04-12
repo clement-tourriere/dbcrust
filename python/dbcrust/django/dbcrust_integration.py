@@ -5,13 +5,14 @@ Provides EXPLAIN ANALYZE functionality and performance metrics
 using DBCrust's database connections and performance analyzer.
 """
 
-import asyncio
 import json
+import logging
 from typing import List, Dict, Any, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
-import threading
 
 from .query_collector import CapturedQuery
+
+logger = logging.getLogger("dbcrust.performance")
 
 # Import DBCrust components with error handling
 try:
@@ -69,10 +70,10 @@ class DBCrustIntegration:
             )
             
             self._connected = True
-            print(f"✅ Connected to database: {parsed.hostname}")
+            logger.debug("Connected to database: %s", parsed.hostname)
             
         except Exception as e:
-            print(f"❌ Failed to connect to database: {e}")
+            logger.debug("Failed to connect to database: %s", e)
             self._database = None
             self._connected = False
     
@@ -166,11 +167,11 @@ class DBCrustIntegration:
         if not analyzable_queries:
             return [{"info": "No queries suitable for EXPLAIN analysis"}]
         
-        print(f"🔍 Analyzing {len(analyzable_queries)} queries with EXPLAIN...")
+        logger.debug("Analyzing %d queries with EXPLAIN...", len(analyzable_queries))
         
         results = []
         for i, query in enumerate(analyzable_queries):
-            print(f"  Analyzing query {i+1}/{len(analyzable_queries)}...")
+            logger.debug("  Analyzing query %d/%d...", i + 1, len(analyzable_queries))
             result = self._analyze_query_sync(query)
             results.append(result)
             
@@ -372,7 +373,7 @@ class DBCrustIntegration:
         
         # PyDatabase handles connection cleanup automatically
         self._connected = False
-        print("🔌 Database connection cleaned up")
+        logger.debug("Database connection cleaned up")
 
 
 # Integration function for the main analyzer

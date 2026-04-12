@@ -123,7 +123,7 @@ class TestDatabaseUtils(unittest.TestCase):
         url = django_to_dbcrust_url(config)
         
         self.assertIn("postgres://test_user@localhost:5432/test_db", url)
-        self.assertNotIn(":", url.split("@")[0])  # No colon before @
+        self.assertNotIn("test_user:@", url)  # No empty password separator
     
     def test_postgresql_url_no_user(self):
         """Test PostgreSQL URL conversion without user."""
@@ -190,7 +190,7 @@ class TestDatabaseUtils(unittest.TestCase):
             
             url = django_to_dbcrust_url(config)
             
-            self.assertEqual(url, "sqlite:///project/root/db.sqlite3")
+            self.assertEqual(url, "sqlite:////project/root/db.sqlite3")
     
     def test_unsupported_database_engine(self):
         """Test error for unsupported database engine."""

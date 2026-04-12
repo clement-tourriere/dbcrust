@@ -1,29 +1,25 @@
 """
 Django management command to launch DBCrust with Django database configuration.
 
-This command works like Django's built-in 'dbshell' command but launches
-DBCrust instead of the default database shells, providing all the advanced
-features of DBCrust with automatic Django database configuration.
+This command works like Django's built-in ``dbshell`` command but launches
+DBCrust instead of the default database shell, using the configured Django
+database connection settings.
 """
 
+import os
+import shutil
+import subprocess
 import sys
-from django.conf import settings
-from django.core.management.base import BaseCommand, CommandError
-from typing import Optional
 
-# Import DBCrust Python bindings
-try:
-    from dbcrust import run_with_url
-except ImportError:
-    run_with_url = None
+from django.core.management.base import BaseCommand, CommandError
 
 from ...utils import (
-    get_dbcrust_url,
+    DatabaseConfigurationError,
+    UnsupportedDatabaseError,
     get_database_info_summary,
+    get_dbcrust_url,
     list_available_databases,
     validate_database_support,
-    UnsupportedDatabaseError,
-    DatabaseConfigurationError
 )
 
 
@@ -75,118 +71,115 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         """Main command handler."""
-
-        # Handle version flag
-        if options['dbcrust_version']:
-            self._show_version()
-            return
-
-        # Handle list databases flag
-        if options['list_databases']:
-            self._list_databases()
-            return
-
-        # Get database configuration
-        database_alias = options['database']
+        database_alias = options.get('database', 'default')
+        debug = options.get('debug', False)
 
         try:
-            # Validate database support
+            if options.get('dbcrust_version') or options.get('version'):
+                self._show_version()
+                return
+
+            if options.get('list_databases'):
+                self._list_databases()
+                return
+
             is_supported, message = validate_database_support(database_alias)
             if not is_supported:
                 raise CommandError(f"❌ {message}")
 
-            # Get database connection URL
             connection_url = get_dbcrust_url(database_alias)
 
-            # Handle show URL flag
-            if options['show_url']:
+            if options.get('show_url'):
                 self._show_connection_info(database_alias, connection_url)
                 return
 
-            # Check if DBCrust Python bindings are available
-            if run_with_url is None:
+            dbcrust_binary = self._find_dbcrust_binary()
+            if not dbcrust_binary:
                 raise CommandError(
-                    "❌ DBCrust Python bindings not found. Please ensure DBCrust is installed.\n"
-                    "Install with: pip install dbcrust\n"
-                    "Or with uv: uv add dbcrust"
+                    "❌ DBCrust binary not found. Please install with: pip install dbcrust"
                 )
 
-            # Build command arguments
-            cmd_args = self._build_command_args(connection_url, options)
+            cmd_args = self._build_command_args(dbcrust_binary, connection_url, options)
 
-            # Handle dry run
-            if options['dry_run']:
+            if options.get('dry_run'):
                 self._show_dry_run(cmd_args, database_alias)
                 return
 
-            # Show connection info if debug mode
-            if options['debug']:
-                self._show_connection_info(database_alias, connection_url, show_url=options['debug'])
-                self.stdout.write("")  # Empty line
+            if debug:
+                self._show_connection_info(database_alias, connection_url, show_url=True)
+                self.stdout.write("")
 
-            # Launch DBCrust using Python bindings
-            self._launch_dbcrust(cmd_args, database_alias, connection_url)
+            self._launch_dbcrust(cmd_args, database_alias)
 
         except (UnsupportedDatabaseError, DatabaseConfigurationError) as e:
             raise CommandError(f"❌ Database configuration error: {e}")
+        except CommandError:
+            raise
         except Exception as e:
-            if options['debug']:
+            if debug:
                 import traceback
+
                 traceback.print_exc()
             raise CommandError(f"❌ Unexpected error: {e}")
 
+    def _find_dbcrust_binary(self) -> str | None:
+        """Find the DBCrust executable on PATH."""
+        return shutil.which('dbcrust')
+
     def _show_version(self):
         """Show DBCrust version information."""
-        if run_with_url is None:
-            self.stdout.write(
-                self.style.ERROR("❌ DBCrust not found. Please install with: pip install dbcrust")
-            )
+        dbcrust_binary = self._find_dbcrust_binary()
+        if not dbcrust_binary:
+            self.stdout.write("❌ DBCrust not found. Please install with: pip install dbcrust")
             return
 
         try:
-            # Use Python bindings to get version
-            exit_code = run_with_url(None, ['--version'])
-            # Version is printed directly by run_with_url
-        except Exception as e:
-            self.stdout.write(
-                self.style.ERROR(f"❌ Error getting DBCrust version: {e}")
+            result = subprocess.run(
+                [dbcrust_binary, '--version'],
+                capture_output=True,
+                text=True,
+                timeout=10,
             )
+            self.stdout.write(result.stdout.strip())
+        except Exception as e:
+            self.stdout.write(f"❌ Error getting DBCrust version: {e}")
 
     def _list_databases(self):
         """List available database configurations."""
         databases = list_available_databases()
 
         if not databases:
-            self.stdout.write(
-                self.style.WARNING("⚠️  No database configurations found in Django settings.")
-            )
+            self.stdout.write("⚠️  No database configurations found in Django settings.")
             return
 
-        self.stdout.write(
-            self.style.SUCCESS("📊 Available Database Configurations:")
-        )
+        self.stdout.write("📊 Available Database Configurations:")
         self.stdout.write("")
 
-        for alias, engine in databases.items():
+        for alias, _engine in databases.items():
             summary = get_database_info_summary(alias)
 
             if 'error' in summary:
-                status = self.style.ERROR("❌ Error")
+                status = "❌ Error"
                 details = summary['error']
             else:
-                # Check if supported
                 is_supported, _ = validate_database_support(alias)
                 if is_supported:
-                    status = self.style.SUCCESS("✅ Supported")
+                    status = "✅ Supported"
                 else:
-                    status = self.style.WARNING("⚠️  Unsupported")
+                    status = "⚠️  Unsupported"
 
-                # Build details
                 if summary['engine_type'] == 'SQLite':
                     details = f"File: {summary['name']}"
                 else:
-                    host_info = f"{summary['host']}:{summary['port']}" if summary['port'] != 'N/A' else summary['host']
-                    details = f"Host: {host_info}, Database: {summary['name']}, User: {summary['user']}"
+                    host_info = (
+                        f"{summary['host']}:{summary['port']}"
+                        if summary['port'] != 'N/A'
+                        else summary['host']
+                    )
+                    details = (
+                        f"Host: {host_info}, Database: {summary['name']}, "
+                        f"User: {summary['user']}"
+                    )
 
             self.stdout.write(f"  🔹 {alias}")
             self.stdout.write(f"     Type: {summary.get('engine_type', 'Unknown')}")
@@ -198,14 +191,10 @@ class Command(BaseCommand):
         """Show database connection information."""
         summary = get_database_info_summary(database_alias)
 
-        self.stdout.write(
-            self.style.SUCCESS(f"🔗 Database Connection Info ({database_alias}):")
-        )
+        self.stdout.write(f"🔗 Database Connection Info ({database_alias}):")
 
         if 'error' in summary:
-            self.stdout.write(
-                self.style.ERROR(f"   ❌ Error: {summary['error']}")
-            )
+            self.stdout.write(f"   ❌ Error: {summary['error']}")
             return
 
         self.stdout.write(f"   Database Type: {summary['engine_type']}")
@@ -220,63 +209,54 @@ class Command(BaseCommand):
             self.stdout.write(f"   Password: {'Yes' if summary['has_password'] else 'No'}")
 
         if show_url:
-            # Sanitize URL for display (hide password)
             display_url = self._sanitize_url_for_display(connection_url)
             self.stdout.write(f"   Connection URL: {display_url}")
 
     def _sanitize_url_for_display(self, url: str) -> str:
         """Sanitize URL for safe display by hiding password."""
-        # Simple approach: replace password with ***
         import re
+
         return re.sub(r'://([^:]+):([^@]+)@', r'://\1:***@', url)
 
-    def _build_command_args(self, connection_url: str, options: dict) -> list[str]:
+    def _build_command_args(self, dbcrust_binary: str, connection_url: str, options: dict) -> list[str]:
         """Build the command arguments for launching DBCrust."""
-        cmd_args = []
+        cmd_args = [dbcrust_binary]
 
-        # Add debug flag if requested
         if options.get('debug'):
             cmd_args.append('--debug')
 
-        # Add additional DBCrust arguments
         if options.get('dbcrust_args'):
             cmd_args.extend(options['dbcrust_args'])
 
-        # Add connection URL last
         cmd_args.append(connection_url)
-
         return cmd_args
 
     def _show_dry_run(self, cmd_args: list[str], database_alias: str):
         """Show what command would be executed in dry run mode."""
-        # Sanitize connection URL (last argument)
         display_args = cmd_args[:-1] + [self._sanitize_url_for_display(cmd_args[-1])]
 
-        self.stdout.write(
-            self.style.SUCCESS(f"🔍 Dry Run - Command that would be executed for '{database_alias}':")
-        )
-        self.stdout.write(f"   dbcrust {' '.join(display_args)}")
+        self.stdout.write(f"🔍 Dry Run - Command that would be executed for '{database_alias}':")
+        self.stdout.write(f"   {' '.join(display_args)}")
 
-    def _launch_dbcrust(self, cmd_args: list[str], database_alias: str, connection_url: str):
-        """Launch DBCrust using Python bindings."""
-        self.stdout.write(
-            self.style.SUCCESS(f"🚀 Launching DBCrust for database '{database_alias}'...")
-        )
+    def _launch_dbcrust(self, cmd_args: list[str], database_alias: str):
+        """Launch DBCrust using execvp with subprocess fallback."""
+        self.stdout.write(f"🚀 Launching DBCrust for database '{database_alias}'...")
 
         try:
-            # Use DBCrust Python bindings directly  
-            # run_with_url expects (url, additional_args)
-            exit_code = run_with_url(connection_url, cmd_args[:-1])  # URL is separate from other args
-            sys.exit(exit_code)
-
-        except KeyboardInterrupt:
-            self.stdout.write(
-                self.style.SUCCESS("\n👋 DBCrust session ended.")
+            os.execvp(cmd_args[0], cmd_args)
+        except OSError:
+            self.stderr.write(
+                "⚠️  Could not replace process, falling back to subprocess"
             )
+            try:
+                result = subprocess.run(cmd_args)
+                sys.exit(result.returncode)
+            except KeyboardInterrupt:
+                self.stdout.write("\n👋 DBCrust session ended.")
+                sys.exit(0)
+        except KeyboardInterrupt:
+            self.stdout.write("\n👋 DBCrust session ended.")
             sys.exit(0)
-
-        except Exception as e:
-            raise CommandError(f"❌ Failed to launch DBCrust: {e}")
 
     def _get_help_text_additions(self):
         """Get additional help text to show available databases."""

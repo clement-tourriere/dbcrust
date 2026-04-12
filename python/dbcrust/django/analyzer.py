@@ -5,12 +5,14 @@ Main analyzer class that provides a context manager interface for
 analyzing Django ORM queries and providing optimization recommendations.
 """
 
-import asyncio
 import json
+import logging
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Dict, Optional, Any, Union
+
+logger = logging.getLogger("dbcrust.performance")
 
 try:
     from django.db import connection, connections, transaction
@@ -222,7 +224,7 @@ class DjangoAnalyzer:
                 from .code_analyzer import DjangoCodeAnalyzer
                 self.code_analyzer = DjangoCodeAnalyzer(project_root)
             except ImportError as e:
-                print(f"Warning: Could not initialize code analyzer: {e}")
+                logger.debug("Could not initialize code analyzer: %s", e)
     
     def analyze(self):
         """
@@ -240,8 +242,10 @@ class DjangoAnalyzer:
     
     def __enter__(self):
         """Enter the analysis context."""
+        from django.db import connections as django_connections, transaction as django_transaction
+
         # Get the Django database connection
-        self._connection = connections[self.database_alias]
+        self._connection = django_connections[self.database_alias]
         
         # Start query collection
         self.query_collector.start_collection()
@@ -252,7 +256,7 @@ class DjangoAnalyzer:
         
         # Start transaction if requested
         if self.transaction_safe:
-            self._transaction_ctx = transaction.atomic(using=self.database_alias)
+            self._transaction_ctx = django_transaction.atomic(using=self.database_alias)
             self._transaction_ctx.__enter__()
         
         return self
@@ -281,7 +285,7 @@ class DjangoAnalyzer:
                 
         except Exception as e:
             # Log the error but don't re-raise to avoid masking the original exception
-            print(f"Error during analysis cleanup: {e}")
+            logger.debug("Error during analysis cleanup: %s", e)
         
         return False  # Don't suppress exceptions
     
@@ -367,7 +371,7 @@ class DjangoAnalyzer:
             }
             
         except Exception as e:
-            print(f"DBCrust analysis failed: {e}")
+            logger.debug("DBCrust analysis failed: %s", e)
             return None
     
     def get_results(self) -> Optional[AnalysisResult]:
@@ -382,20 +386,20 @@ class DjangoAnalyzer:
             List of code issues found through AST analysis
         """
         if not self.code_analyzer:
-            print("Code analysis not enabled. Initialize with enable_code_analysis=True and project_root.")
+            logger.warning("Code analysis not enabled. Initialize with enable_code_analysis=True and project_root.")
             return None
         
-        print("🔍 Analyzing project code for Django ORM patterns...")
+        logger.info("Analyzing project code for Django ORM patterns...")
         
         try:
             # Analyze the Django project
             code_issues = self.code_analyzer.analyze_directory(self.project_root)
             
-            print(f"📋 Found {len(code_issues)} potential code issues")
+            logger.info("Found %d potential code issues", len(code_issues))
             return code_issues
             
         except Exception as e:
-            print(f"❌ Code analysis failed: {e}")
+            logger.error("Code analysis failed: %s", e)
             return None
     
     def analyze_project_models(self) -> Optional[List[Any]]:
@@ -406,10 +410,10 @@ class DjangoAnalyzer:
             List of model analysis results
         """
         if not self.project_root:
-            print("Project root not specified. Cannot analyze models.")
+            logger.warning("Project root not specified. Cannot analyze models.")
             return None
         
-        print("🏗️ Analyzing Django models...")
+        logger.info("Analyzing Django models...")
         
         try:
             from .project_analyzer import DjangoProjectAnalyzer
@@ -417,11 +421,11 @@ class DjangoAnalyzer:
             project_analyzer = DjangoProjectAnalyzer(self.project_root)
             models = project_analyzer.analyze_models_only()
             
-            print(f"📊 Analyzed {len(models)} Django models")
+            logger.info("Analyzed %d Django models", len(models))
             return models
             
         except Exception as e:
-            print(f"❌ Model analysis failed: {e}")
+            logger.error("Model analysis failed: %s", e)
             return None
     
     def get_comprehensive_analysis(self) -> Dict[str, Any]:
@@ -608,7 +612,7 @@ class DjangoAnalyzer:
         with open(filename, 'w') as f:
             json.dump(self.result.to_dict(), f, indent=2)
         
-        print(f"Results exported to {filename}")
+        logger.info("Results exported to %s", filename)
 
 
 # Convenience function for quick analysis
@@ -707,7 +711,7 @@ def create_enhanced_analyzer(dbcrust_url: Optional[str] = None,
                            project_root: Optional[str] = None,
                            database_instance: Optional[Any] = None,
                            enable_all_features: bool = True,
-                           transaction_safe: bool = True) -> DjangoAnalyzer:
+                            transaction_safe: bool = True) -> DjangoAnalyzer:
     """
     Create a fully-featured Django analyzer with all capabilities enabled.
     
