@@ -10,6 +10,108 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::debug;
+use url::Url;
+
+const VAULT_OPTION_KEYS: [&str; 3] = ["vault_mount", "vault_database", "vault_role"];
+
+fn is_vault_option_key(key: &str) -> bool {
+    VAULT_OPTION_KEYS.contains(&key)
+}
+
+fn append_connection_options(url: &str, options: &HashMap<String, String>) -> String {
+    let filtered_options: Vec<_> = options
+        .iter()
+        .filter(|(key, _)| !is_vault_option_key(key))
+        .collect();
+
+    if filtered_options.is_empty() {
+        return url.to_string();
+    }
+
+    let Ok(mut parsed_url) = Url::parse(url) else {
+        return url.to_string();
+    };
+
+    {
+        let mut query_pairs = parsed_url.query_pairs_mut();
+        for (key, value) in filtered_options {
+            query_pairs.append_pair(key, value);
+        }
+    }
+
+    parsed_url.to_string()
+}
+
+fn lookup_connection_password(
+    database_type: &DatabaseType,
+    host: &str,
+    port: u16,
+    dbname: &str,
+    user: &str,
+) -> Option<String> {
+    let dbcrust_password = match database_type {
+        DatabaseType::PostgreSQL => crate::dbcrust_pass::lookup_password(
+            crate::dbcrust_pass::DatabaseType::PostgreSQL,
+            host,
+            port,
+            dbname,
+            user,
+        )
+        .ok()
+        .flatten(),
+        DatabaseType::MySQL => crate::dbcrust_pass::lookup_password(
+            crate::dbcrust_pass::DatabaseType::MySQL,
+            host,
+            port,
+            dbname,
+            user,
+        )
+        .ok()
+        .flatten(),
+        DatabaseType::MongoDB => crate::dbcrust_pass::lookup_password(
+            crate::dbcrust_pass::DatabaseType::MongoDB,
+            host,
+            port,
+            dbname,
+            user,
+        )
+        .ok()
+        .flatten(),
+        DatabaseType::Elasticsearch => crate::dbcrust_pass::lookup_password(
+            crate::dbcrust_pass::DatabaseType::Elasticsearch,
+            host,
+            port,
+            dbname,
+            user,
+        )
+        .ok()
+        .flatten(),
+        DatabaseType::ClickHouse => crate::dbcrust_pass::lookup_password(
+            crate::dbcrust_pass::DatabaseType::ClickHouse,
+            host,
+            port,
+            dbname,
+            user,
+        )
+        .ok()
+        .flatten(),
+        DatabaseType::SQLite
+        | DatabaseType::Parquet
+        | DatabaseType::CSV
+        | DatabaseType::JSON
+        | DatabaseType::DuckDB => None,
+    };
+
+    if dbcrust_password.is_some() {
+        return dbcrust_password;
+    }
+
+    match database_type {
+        DatabaseType::PostgreSQL => crate::pgpass::lookup_password(host, port, dbname, user),
+        DatabaseType::MySQL => crate::myconf::lookup_mysql_password(host, port, dbname, user),
+        _ => None,
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SSHTunnelConfig {
@@ -44,6 +146,69 @@ pub struct RecentConnection {
     // Additional connection options (includes vault metadata for vault connections)
     #[serde(default)]
     pub options: HashMap<String, String>,
+}
+
+impl RecentConnection {
+    pub fn reconstruct_connection_url(&self) -> Result<String, String> {
+        let original_url = &self.connection_url;
+
+        if original_url.starts_with("docker://") {
+            return Ok(original_url.clone());
+        }
+
+        if original_url.starts_with("vault://") {
+            if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
+                self.options.get("vault_mount"),
+                self.options.get("vault_database"),
+                self.options.get("vault_role"),
+            ) {
+                return Ok(if vault_role.is_empty() {
+                    format!("vault://{vault_mount}/{vault_database}")
+                } else {
+                    format!("vault://{vault_role}@{vault_mount}/{vault_database}")
+                });
+            }
+
+            return Ok(original_url.clone());
+        }
+
+        if self.display_name.contains("Docker:")
+            && let Some(docker_part) = self.display_name.split("Docker:").nth(1)
+        {
+            let container_name = docker_part.trim().trim_end_matches(')');
+            return Ok(format!("docker://{container_name}"));
+        }
+
+        if self.database_type.is_file_based() {
+            return Ok(original_url.clone());
+        }
+
+        let mut parsed_url = Url::parse(original_url)
+            .map_err(|e| format!("Failed to parse recent connection URL '{original_url}': {e}"))?;
+
+        let host = parsed_url.host_str().unwrap_or("localhost").to_string();
+        let port = parsed_url.port().unwrap_or(match parsed_url.scheme() {
+            "postgres" | "postgresql" => 5432,
+            "mysql" => 3306,
+            _ => return Ok(original_url.clone()),
+        });
+        let username = parsed_url.username().to_string();
+        let database = parsed_url.path().trim_start_matches('/').to_string();
+
+        if let Some(password) =
+            lookup_connection_password(&self.database_type, &host, port, &database, &username)
+        {
+            parsed_url
+                .set_password(Some(&password))
+                .map_err(|_| format!("Failed to reconstruct credentials for '{original_url}'"))?;
+        } else if parsed_url.password().is_some() {
+            parsed_url.set_password(None).map_err(|_| {
+                format!("Failed to sanitize reconstructed URL for '{original_url}'")
+            })?;
+        }
+
+        Ok(parsed_url.to_string())
+    }
 }
 
 /// Recent connections storage - stored in a separate file
@@ -104,6 +269,89 @@ pub struct SavedSession {
     // Additional connection options (query parameters)
     #[serde(default)]
     pub options: HashMap<String, String>,
+}
+
+impl SavedSession {
+    pub fn reconnect_target(&self) -> String {
+        if self.host.starts_with("DOCKER:") {
+            let container_name = self.host.strip_prefix("DOCKER:").unwrap_or(&self.host);
+            return format!("Docker: {container_name}");
+        }
+
+        if self.database_type.is_file_based() {
+            return self
+                .file_path
+                .clone()
+                .unwrap_or_else(|| format!("{} (no path)", self.database_type.display_name()));
+        }
+
+        if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
+            self.options.get("vault_mount"),
+            self.options.get("vault_database"),
+            self.options.get("vault_role"),
+        ) {
+            return if vault_role.is_empty() {
+                format!("vault://{vault_mount}/{vault_database}")
+            } else {
+                format!("vault://{vault_role}@{vault_mount}/{vault_database}")
+            };
+        }
+
+        format!("{}@{}:{}/{}", self.user, self.host, self.port, self.dbname)
+    }
+
+    pub fn reconstruct_connection_url(&self) -> Result<String, String> {
+        if self.host.starts_with("DOCKER:") {
+            let container_name = self.host.strip_prefix("DOCKER:").unwrap_or(&self.host);
+            return Ok(format!("docker://{container_name}"));
+        }
+
+        if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
+            self.options.get("vault_mount"),
+            self.options.get("vault_database"),
+            self.options.get("vault_role"),
+        ) {
+            return Ok(if vault_role.is_empty() {
+                format!("vault://{vault_mount}/{vault_database}")
+            } else {
+                format!("vault://{vault_role}@{vault_mount}/{vault_database}")
+            });
+        }
+
+        if self.database_type.is_file_based() {
+            let file_path = self.file_path.as_ref().ok_or_else(|| {
+                format!(
+                    "{} session missing file path",
+                    self.database_type.display_name()
+                )
+            })?;
+            let url = format!("{}://{file_path}", self.database_type.url_scheme());
+            return Ok(append_connection_options(&url, &self.options));
+        }
+
+        let url_scheme = self.database_type.url_scheme();
+        let password = lookup_connection_password(
+            &self.database_type,
+            &self.host,
+            self.port,
+            &self.dbname,
+            &self.user,
+        );
+
+        let url = if let Some(password) = password {
+            format!(
+                "{url_scheme}://{}:{}@{}:{}/{}",
+                self.user, password, self.host, self.port, self.dbname
+            )
+        } else {
+            format!(
+                "{url_scheme}://{}@{}:{}/{}",
+                self.user, self.host, self.port, self.dbname
+            )
+        };
+
+        Ok(append_connection_options(&url, &self.options))
+    }
 }
 
 /// Scope for named queries
@@ -2328,6 +2576,14 @@ mod tests {
     use super::*;
     use crate::database::ConnectionInfo;
     use rstest::rstest;
+    use std::env;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::{Mutex, OnceLock};
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     // Test helper function to get a clean config for tests
     fn get_test_config() -> Config {
@@ -2341,6 +2597,38 @@ mod tests {
         );
 
         config
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct ScopedEnvVar {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl ScopedEnvVar {
+        fn set_path(key: &'static str, value: &Path) -> Self {
+            let original = env::var_os(key);
+            unsafe {
+                env::set_var(key, value);
+            }
+
+            Self { key, original }
+        }
+    }
+
+    impl Drop for ScopedEnvVar {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.original {
+                    Some(value) => env::set_var(self.key, value),
+                    None => env::remove_var(self.key),
+                }
+            }
+        }
     }
 
     #[rstest]
@@ -3116,6 +3404,192 @@ mod tests {
         assert_eq!(session.port, 5433);
         assert_eq!(session.user, "newuser");
         assert_eq!(session.dbname, "newdb");
+    }
+
+    #[rstest]
+    fn test_saved_session_reconstructs_postgres_url_with_pgpass_and_options() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pgpass_path = temp_dir.path().join("pgpass");
+        fs::write(
+            &pgpass_path,
+            "db.example.com:5432:analytics:dbuser:secretpass\n",
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        fs::set_permissions(&pgpass_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let _pgpass = ScopedEnvVar::set_path("PGPASSFILE", &pgpass_path);
+
+        let mut options = HashMap::new();
+        options.insert("sslmode".to_string(), "require".to_string());
+
+        let session = SavedSession {
+            host: "db.example.com".to_string(),
+            port: 5432,
+            user: "dbuser".to_string(),
+            dbname: "analytics".to_string(),
+            ssh_tunnel: None,
+            database_type: DatabaseType::PostgreSQL,
+            file_path: None,
+            options,
+        };
+
+        assert_eq!(
+            session.reconstruct_connection_url().unwrap(),
+            "postgres://dbuser:secretpass@db.example.com:5432/analytics?sslmode=require"
+        );
+    }
+
+    #[rstest]
+    fn test_recent_connection_reconstructs_redacted_postgres_url() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pgpass_path = temp_dir.path().join("pgpass");
+        fs::write(
+            &pgpass_path,
+            "db.example.com:5432:analytics:dbuser:secretpass\n",
+        )
+        .unwrap();
+
+        #[cfg(unix)]
+        fs::set_permissions(&pgpass_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let _pgpass = ScopedEnvVar::set_path("PGPASSFILE", &pgpass_path);
+
+        let recent = RecentConnection {
+            connection_url:
+                "postgres://dbuser:[REDACTED]@db.example.com:5432/analytics?sslmode=require"
+                    .to_string(),
+            display_name: "dbuser@db.example.com:5432/analytics".to_string(),
+            timestamp: Utc::now(),
+            database_type: DatabaseType::PostgreSQL,
+            success: true,
+            options: HashMap::new(),
+        };
+
+        assert_eq!(
+            recent.reconstruct_connection_url().unwrap(),
+            "postgres://dbuser:secretpass@db.example.com:5432/analytics?sslmode=require"
+        );
+    }
+
+    #[rstest]
+    fn test_saved_session_reconstructs_with_dbcrust_password() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dbcrust_pass_path = temp_dir.path().join("dbcrust-pass");
+        let _dbcrust_pass = ScopedEnvVar::set_path("DBCRUST_PASSFILE", &dbcrust_pass_path);
+
+        crate::dbcrust_pass::save_password(
+            crate::dbcrust_pass::DatabaseType::MySQL,
+            "mysql.example.com",
+            3306,
+            "analytics",
+            "dbuser",
+            "mysql-secret",
+            false,
+        )
+        .unwrap();
+
+        let session = SavedSession {
+            host: "mysql.example.com".to_string(),
+            port: 3306,
+            user: "dbuser".to_string(),
+            dbname: "analytics".to_string(),
+            ssh_tunnel: None,
+            database_type: DatabaseType::MySQL,
+            file_path: None,
+            options: HashMap::new(),
+        };
+
+        assert_eq!(
+            session.reconstruct_connection_url().unwrap(),
+            "mysql://dbuser:mysql-secret@mysql.example.com:3306/analytics"
+        );
+    }
+
+    #[rstest]
+    fn test_saved_session_reconstructs_docker_vault_and_file_targets() {
+        let docker_session = SavedSession {
+            host: "DOCKER:warehouse-postgres-1".to_string(),
+            port: 0,
+            user: "postgres".to_string(),
+            dbname: "warehouse".to_string(),
+            ssh_tunnel: None,
+            database_type: DatabaseType::PostgreSQL,
+            file_path: None,
+            options: HashMap::new(),
+        };
+        assert_eq!(
+            docker_session.reconstruct_connection_url().unwrap(),
+            "docker://warehouse-postgres-1"
+        );
+        assert_eq!(
+            docker_session.reconnect_target(),
+            "Docker: warehouse-postgres-1"
+        );
+
+        let mut vault_options = HashMap::new();
+        vault_options.insert("vault_mount".to_string(), "database".to_string());
+        vault_options.insert("vault_database".to_string(), "prod".to_string());
+        vault_options.insert("vault_role".to_string(), "readonly".to_string());
+
+        let vault_session = SavedSession {
+            host: "ignored".to_string(),
+            port: 5432,
+            user: "ignored".to_string(),
+            dbname: "ignored".to_string(),
+            ssh_tunnel: None,
+            database_type: DatabaseType::PostgreSQL,
+            file_path: None,
+            options: vault_options,
+        };
+        assert_eq!(
+            vault_session.reconstruct_connection_url().unwrap(),
+            "vault://readonly@database/prod"
+        );
+        assert_eq!(
+            vault_session.reconnect_target(),
+            "vault://readonly@database/prod"
+        );
+
+        let mut file_options = HashMap::new();
+        file_options.insert("access_mode".to_string(), "read_only".to_string());
+
+        let file_session = SavedSession {
+            host: String::new(),
+            port: 0,
+            user: String::new(),
+            dbname: String::new(),
+            ssh_tunnel: None,
+            database_type: DatabaseType::DuckDB,
+            file_path: Some("/tmp/warehouse.duckdb".to_string()),
+            options: file_options,
+        };
+        assert_eq!(
+            file_session.reconstruct_connection_url().unwrap(),
+            "duckdb:///tmp/warehouse.duckdb?access_mode=read_only"
+        );
+        assert_eq!(file_session.reconnect_target(), "/tmp/warehouse.duckdb");
+    }
+
+    #[rstest]
+    fn test_recent_connection_reconstructs_docker_url_from_display_name() {
+        let recent = RecentConnection {
+            connection_url: "postgres://postgres@localhost:5432/postgres".to_string(),
+            display_name: "postgres@localhost:5432/postgres (Docker: dev-postgres-1)".to_string(),
+            timestamp: Utc::now(),
+            database_type: DatabaseType::PostgreSQL,
+            success: true,
+            options: HashMap::new(),
+        };
+
+        assert_eq!(
+            recent.reconstruct_connection_url().unwrap(),
+            "docker://dev-postgres-1"
+        );
     }
 
     // ==================== Named Queries Storage Tests ====================

@@ -10,7 +10,7 @@ use tracing::debug;
 use url::Url;
 
 /// Supported database types
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::EnumIter)]
 pub enum DatabaseType {
     PostgreSQL,
     SQLite,
@@ -28,6 +28,14 @@ pub enum DatabaseType {
 impl fmt::Display for DatabaseType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.display_name())
+    }
+}
+
+impl DatabaseType {
+    pub fn supported_types() -> Vec<Self> {
+        use strum::IntoEnumIterator;
+
+        Self::iter().collect()
     }
 }
 
