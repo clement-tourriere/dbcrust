@@ -5,3 +5,111 @@ pkl = "latest"
 
 [env]
 _.python.venv = ".venv"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Core CLI Tasks
+# ══════════════════════════════════════════════════════════════════════════════
+
+[tasks."build"]
+description = "Build the CLI in release mode"
+run = "cargo build --release"
+
+[tasks."build:dev"]
+description = "Build the CLI in debug mode"
+run = "cargo build"
+
+[tasks."test"]
+description = "Run all tests"
+run = "cargo test"
+
+[tasks."lint"]
+description = "Run clippy linting"
+run = 'cargo clippy --lib --bins -- -D "clippy::correctness" -D "clippy::suspicious" -D "clippy::perf" -W "clippy::style" -W "clippy::complexity"'
+
+[tasks."fmt"]
+description = "Format all Rust code"
+run = "cargo fmt"
+
+[tasks."check"]
+description = "Run fmt + clippy + test"
+depends = ["fmt", "lint", "test"]
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GUI Tasks
+# ══════════════════════════════════════════════════════════════════════════════
+
+[tasks."gui:install"]
+description = "Install GUI frontend dependencies"
+run = "npm --prefix gui install"
+
+[tasks."gui:dev"]
+description = "Start GUI in development mode (frontend + Tauri)"
+depends = ["gui:install"]
+run = "npm --prefix gui run tauri dev"
+
+[tasks."gui:build"]
+description = "Build GUI for production"
+depends = ["gui:install"]
+run = "npm --prefix gui run tauri build"
+
+[tasks."gui:frontend"]
+description = "Start only the frontend dev server (no Tauri)"
+depends = ["gui:install"]
+run = "npm --prefix gui run dev"
+
+[tasks."gui:build-frontend"]
+description = "Build only the frontend"
+depends = ["gui:install"]
+run = "npm --prefix gui run build"
+
+[tasks."gui:build-rust"]
+description = "Build only the Tauri Rust backend"
+run = "cargo build -p dbcrust-gui"
+
+[tasks."gui:build-rust-release"]
+description = "Build the Tauri Rust backend in release mode"
+run = "cargo build -p dbcrust-gui --release"
+
+[tasks."gui:clean"]
+description = "Clean GUI build artifacts"
+run = """
+rm -rf gui/dist
+rm -rf gui/src-tauri/target
+rm -rf gui/node_modules
+"""
+
+[tasks."gui:lint"]
+description = "Lint the GUI Rust backend"
+run = 'cargo clippy -p dbcrust-gui -- -D "clippy::correctness" -D "clippy::suspicious"'
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Python Tasks
+# ══════════════════════════════════════════════════════════════════════════════
+
+[tasks."py:dev"]
+description = "Build Python package for development"
+run = "maturin develop"
+
+[tasks."py:build"]
+description = "Build Python wheel"
+run = "maturin build --release"
+
+[tasks."py:test"]
+description = "Run Python tests"
+run = "python -m pytest python/tests/"
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Combined Tasks
+# ══════════════════════════════════════════════════════════════════════════════
+
+[tasks."all:build"]
+description = "Build everything (CLI + GUI + Python)"
+depends = ["build", "gui:build", "py:build"]
+
+[tasks."all:clean"]
+description = "Clean all build artifacts"
+run = """
+cargo clean
+rm -rf gui/dist gui/node_modules gui/src-tauri/target
+rm -rf target
+"""

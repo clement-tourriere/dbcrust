@@ -149,3 +149,7 @@ codegen-units = 1 # Maximize performance
 [dev-dependencies]
 rstest = { version = "0.25.0", default-features = false }
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
+
+[workspace]
+members = ["gui/src-tauri"]
+default-members = ["."]
