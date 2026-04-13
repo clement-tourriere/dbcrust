@@ -11,11 +11,20 @@ DBCrust is a high-performance multi-database interactive client written in Rust 
 ### Core Build Commands
 
 ```bash
+# Install GUI frontend dependencies
+mise run gui:install
+
 # Build the project (development)
-cargo build
+mise run build:dev
 
 # Build optimized release version
-cargo build --release
+mise run build
+
+# Build GUI frontend only
+mise run gui:build-frontend
+
+# Build the Tauri GUI
+mise run gui:build
 
 # Run the CLI directly
 cargo run --release -- [CONNECTION_OPTIONS]
@@ -28,7 +37,7 @@ cargo run -- postgres://localhost/test
 # or any database URL to test tab completion in REPL mode
 
 # Run specific tests
-cargo test
+mise run test
 
 # Run tests with output
 cargo test -- --nocapture
@@ -44,15 +53,16 @@ cargo install --path .
 pip install -e ./python
 
 # Build with maturin (development)
-maturin develop
+mise run py:dev
 
 # Build Python wheel
-maturin build --release
+mise run py:build
 ```
 
 ### Development Tools
 
-- Uses `mise.toml` for tool management (Node.js, Python tools)
+- Uses `mise.toml` for tool and task management (`mise run ...` is the canonical workflow)
+- Uses Bun for GUI dependency installation and script execution
 - Pre-commit hooks via `pipx:pre-commit`
 - Commitizen for conventional commits
 - **Strum crate**: Essential for automatic enum iteration and synchronization - never remove this dependency

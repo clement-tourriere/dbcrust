@@ -6,17 +6,26 @@ This file provides guidance for agentic coding tools working with the DBCrust co
 
 ### Core Build Commands
 ```bash
+# Install Bun-managed GUI dependencies
+mise run gui:install
+
 # Build the project (development)
-cargo build
+mise run build:dev
 
 # Build optimized release version
-cargo build --release
+mise run build
+
+# Build GUI frontend only
+mise run gui:build-frontend
+
+# Build the Tauri GUI
+mise run gui:build
 
 # Build Python package (development)
-maturin develop
+mise run py:dev
 
 # Build Python wheel
-maturin build --release
+mise run py:build
 
 # Install Python package
 pip install -e ./python
@@ -25,7 +34,7 @@ pip install -e ./python
 ### Testing Commands
 ```bash
 # Run all tests
-cargo test
+mise run test
 
 # Run tests with output
 cargo test -- --nocapture
@@ -40,16 +49,19 @@ cargo test --lib module_name
 cargo test --test "*"
 
 # Run Python interface tests
-python -m pytest python/tests/
+mise run py:test
 ```
 
 ### Linting and Formatting
 ```bash
 # Format code
-cargo fmt
+mise run fmt
 
 # Lint with clippy (critical issues only)
-cargo clippy --lib --bins -- -D "clippy::correctness" -D "clippy::suspicious" -D "clippy::perf" -W "clippy::style" -W "clippy::complexity"
+mise run lint
+
+# Run the standard validation suite
+mise run check
 
 # Pre-commit hooks
 pre-commit run --all-files
@@ -124,7 +136,7 @@ pre-commit run --all-files
 2. **Implementation**: Core logic → CLI integration → backslash commands
 3. **Testing**: Unit tests → integration tests → edge cases
 4. **Documentation**: Code docs → user docs → examples
-5. **Validation**: `cargo test` → `cargo build` → `cargo clippy`
+5. **Validation**: `mise run test` → `mise run build:dev` → `mise run lint`
 
 ### Critical Patterns to Follow
 - **Enum/Traits for Lists**: Never use hardcoded arrays for commands/categories
@@ -134,9 +146,9 @@ pre-commit run --all-files
 - **Backward Compatibility**: Use `#[serde(default)]` for config changes
 
 ### Validation Checklist
-- [ ] All tests pass: `cargo test`
-- [ ] Code compiles: `cargo build`
-- [ ] Linting passes: `cargo clippy`
+- [ ] All tests pass: `mise run test`
+- [ ] Code compiles: `mise run build:dev`
+- [ ] Linting passes: `mise run lint`
 - [ ] Documentation updated
 - [ ] Error messages user-friendly
 - [ ] Performance impact acceptable

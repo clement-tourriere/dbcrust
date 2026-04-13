@@ -1,5 +1,5 @@
 [tools]
-node = "latest"
+bun = "1.2.10"
 hk = "latest"
 pkl = "latest"
 
@@ -40,27 +40,27 @@ depends = ["fmt", "lint", "test"]
 
 [tasks."gui:install"]
 description = "Install GUI frontend dependencies"
-run = "npm --prefix gui install"
+run = "bun install --cwd gui"
 
 [tasks."gui:dev"]
 description = "Start GUI in development mode (frontend + Tauri)"
 depends = ["gui:install"]
-run = "npm --prefix gui run tauri dev"
+run = "bun run --cwd gui tauri dev"
 
 [tasks."gui:build"]
 description = "Build GUI for production"
 depends = ["gui:install"]
-run = "npm --prefix gui run tauri build"
+run = "bun run --cwd gui tauri build"
 
 [tasks."gui:frontend"]
 description = "Start only the frontend dev server (no Tauri)"
 depends = ["gui:install"]
-run = "npm --prefix gui run dev"
+run = "bun run --cwd gui dev"
 
 [tasks."gui:build-frontend"]
 description = "Build only the frontend"
 depends = ["gui:install"]
-run = "npm --prefix gui run build"
+run = "bun run --cwd gui build"
 
 [tasks."gui:build-rust"]
 description = "Build only the Tauri Rust backend"

@@ -160,11 +160,15 @@ conda install -c conda-forge dbcrust
 
 - **Rust**: Install from [rustup.rs](https://rustup.rs/)
 - **Python 3.10+**: For Python bindings (optional)
+- **mise**: Recommended for managing Bun and the project task runner
 
 ```bash
 # Install Rust if you haven't already
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
+
+# Install mise for repo-managed tools
+curl https://mise.run | sh
 ```
 
 ### Clone and Build
@@ -174,8 +178,11 @@ source ~/.cargo/env
 git clone https://github.com/clement-tourriere/dbcrust.git
 cd dbcrust
 
+# Install repo-managed tools
+mise install
+
 # Build release version
-cargo build --release
+mise run build
 
 # Install to ~/.cargo/bin
 cargo install --path .
@@ -193,14 +200,20 @@ For contributing or testing latest features:
 git clone https://github.com/clement-tourriere/dbcrust.git
 cd dbcrust
 
+# Install repo-managed tools and Bun
+mise install
+
+# Install GUI dependencies if you plan to work on the Tauri app
+mise run gui:install
+
 # Development build (faster compilation)
-cargo build
+mise run build:dev
 
 # Run directly
 cargo run -- postgres://user:pass@localhost/mydb
 
 # Run tests
-cargo test
+mise run test
 ```
 
 ### Python Bindings
@@ -208,11 +221,11 @@ cargo test
 To build with Python integration:
 
 ```bash
-# Install maturin for Python bindings
-pip install maturin
+# Install repo-managed tools
+mise install
 
 # Build Python wheel
-maturin build --release
+mise run py:build
 
 # Install the wheel
 pip install target/wheels/dbcrust-*.whl

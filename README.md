@@ -137,6 +137,24 @@ tables = client.list_tables()
 - **[🐛 Issues & Support](https://github.com/clement-tourriere/dbcrust/issues)** - Bug reports and questions
 - **[📦 PyPI Package](https://pypi.org/project/dbcrust/)** - Python package information
 
+## Development
+
+```bash
+# Install repo-managed tools (includes Bun for the GUI)
+mise install
+
+# Install GUI dependencies
+mise run gui:install
+
+# Build the CLI, GUI, and Python targets
+mise run build:dev
+mise run gui:build-frontend
+mise run py:dev
+
+# Run the standard validation flow
+mise run check
+```
+
 ---
 
 **Built with ❤️ using [Rust](https://www.rust-lang.org/) • Modern database CLI • Security-first architecture**
