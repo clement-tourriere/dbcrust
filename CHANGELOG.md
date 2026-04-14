@@ -1,3 +1,9 @@
+## v0.27.1 (2026-04-14)
+
+### Fix
+
+- **gui**: inherit user shell PATH at startup and code-split frontend bundle
+
 ## v0.27.0 (2026-04-14)
 
 ### Feat
