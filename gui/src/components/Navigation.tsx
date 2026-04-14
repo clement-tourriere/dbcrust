@@ -36,6 +36,44 @@ interface NavItem {
   view: NavigationView;
   icon: React.ComponentType<{ className?: string }>;
   label: string;
+  shortLabel: string;
+}
+
+function NavButton({
+  active,
+  label,
+  shortLabel,
+  onClick,
+  children,
+  title,
+}: {
+  active: boolean;
+  label: string;
+  shortLabel: string;
+  onClick: () => void;
+  children: React.ReactNode;
+  title?: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`nav-item relative w-full rounded-xl px-2 py-2 transition-all
+        ${
+          active
+            ? "bg-accent/10 text-accent"
+            : "text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800/50"
+        }`}
+      title={title ?? label}
+    >
+      {active && (
+        <span className="absolute left-0 top-2 bottom-2 w-0.5 bg-accent rounded-r" />
+      )}
+      <div className="flex flex-col items-center gap-1.5 text-center">
+        {children}
+        <span className="text-[10px] font-medium leading-none">{shortLabel}</span>
+      </div>
+    </button>
+  );
 }
 
 export function Navigation({
@@ -46,112 +84,103 @@ export function Navigation({
   connectionType,
   tables,
 }: NavigationProps) {
-  // Detect Django framework
-  const hasDjango =
-    tables ? getVisibleDjangoPresetGroups(tables).length > 0 : false;
+  const hasDjango = tables ? getVisibleDjangoPresetGroups(tables).length > 0 : false;
 
   const connectionItems: NavItem[] = [
-    { view: "home", icon: Plug, label: "New Connection" },
-    { view: "saved", icon: Star, label: "Saved Connections" },
-    { view: "docker", icon: Boxes, label: "Docker Discovery" },
+    { view: "home", icon: Plug, label: "New Connection", shortLabel: "Connect" },
+    { view: "saved", icon: Star, label: "Saved Connections", shortLabel: "Saved" },
+    { view: "docker", icon: Boxes, label: "Docker Discovery", shortLabel: "Docker" },
   ];
 
   const databaseItems: NavItem[] = [
-    { view: "query", icon: Code2, label: "Query Editor" },
-    { view: "schema", icon: Table2, label: "Schema Explorer" },
-    { view: "settings", icon: Settings, label: "Settings" },
+    { view: "query", icon: Code2, label: "Query Workspace", shortLabel: "Query" },
+    { view: "schema", icon: Table2, label: "Schema Explorer", shortLabel: "Schema" },
+    { view: "settings", icon: Settings, label: "Settings", shortLabel: "Settings" },
   ];
 
   return (
-    <nav className="nav-rail w-12 h-full bg-surface-300 border-r border-zinc-800/50 flex flex-col items-center py-2 flex-shrink-0">
-      {/* Connection group */}
-      <div className="flex flex-col items-center gap-1 w-full px-1">
-        <span className="text-[8px] text-zinc-600 uppercase tracking-widest font-semibold mb-0.5 select-none">
-          Link
-        </span>
-        {connectionItems.map(({ view, icon: Icon, label }) => (
-          <button
+    <nav className="nav-rail w-20 h-full bg-surface-300 border-r border-zinc-800/50 flex flex-col items-center py-3 px-2 gap-3 flex-shrink-0">
+      <div className="w-full space-y-1">
+        <div className="px-2 text-[9px] text-zinc-600 uppercase tracking-[0.24em] font-semibold select-none">
+          Connect
+        </div>
+        {connectionItems.map(({ view, icon: Icon, label, shortLabel }) => (
+          <NavButton
             key={view}
+            active={activeView === view}
+            label={label}
+            shortLabel={shortLabel}
             onClick={() => onViewChange(view)}
-            className={`nav-item relative w-10 h-10 flex items-center justify-center rounded-lg transition-all
-              ${
-                activeView === view
-                  ? "text-accent bg-accent/10"
-                  : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50"
-              }`}
-            title={label}
           >
-            {activeView === view && (
-              <span className="absolute left-0 top-2 bottom-2 w-0.5 bg-accent rounded-r" />
-            )}
             <Icon className="w-[18px] h-[18px]" />
-          </button>
+          </NavButton>
         ))}
       </div>
 
-      {/* Separator */}
-      {connected && <div className="w-6 border-t border-zinc-700/50 my-2" />}
+      {connected && <div className="w-10 border-t border-zinc-700/50" />}
 
-      {/* Database group (only when connected) */}
       {connected && (
-        <div className="flex flex-col items-center gap-1 w-full px-1">
-          {/* DB type badge */}
-          <div
-            className="w-10 h-6 flex items-center justify-center text-sm select-none"
-            title={connectionType ?? "Database"}
-          >
-            {connectionType ? (DB_EMOJI[connectionType] ?? "🔗") : "🔗"}
+        <div className="w-full space-y-1">
+          <div className="px-2 text-[9px] text-zinc-600 uppercase tracking-[0.24em] font-semibold select-none">
+            Workspace
           </div>
 
-          {databaseItems.map(({ view, icon: Icon, label }) => (
-            <button
+          <div
+            className="mx-1 mb-1 rounded-xl border border-zinc-800 bg-surface-200 px-2 py-2 text-center"
+            title={connectionType ?? "Database"}
+          >
+            <div className="text-base leading-none">
+              {connectionType ? (DB_EMOJI[connectionType] ?? "🔗") : "🔗"}
+            </div>
+            <div className="mt-1 text-[10px] text-zinc-500 truncate">
+              {connectionType ?? "Database"}
+            </div>
+          </div>
+
+          {databaseItems.map(({ view, icon: Icon, label, shortLabel }) => (
+            <NavButton
               key={view}
+              active={activeView === view}
+              label={label}
+              shortLabel={shortLabel}
               onClick={() => onViewChange(view)}
-              className={`nav-item relative w-10 h-10 flex items-center justify-center rounded-lg transition-all
-                ${
-                  activeView === view
-                    ? "text-accent bg-accent/10"
-                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50"
-                }`}
               title={
                 view === "query" && hasDjango
-                  ? "Query Editor (Django toolkit available)"
+                  ? "Query Workspace (Django toolkit available)"
                   : label
               }
             >
-              {activeView === view && (
-                <span className="absolute left-0 top-2 bottom-2 w-0.5 bg-accent rounded-r" />
-              )}
-              <Icon className="w-[18px] h-[18px]" />
-              {/* Django indicator */}
-              {view === "query" && hasDjango && (
-                <span
-                  className="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 rounded-full bg-emerald-600 border border-surface-300 flex items-center justify-center text-[7px] text-white font-bold"
-                  title="Django toolkit available"
-                >
-                  D
-                </span>
-              )}
-            </button>
+              <div className="relative">
+                <Icon className="w-[18px] h-[18px]" />
+                {view === "query" && hasDjango && (
+                  <span
+                    className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-emerald-600 border border-surface-300 flex items-center justify-center text-[7px] text-white font-bold"
+                    title="Django toolkit available"
+                  >
+                    D
+                  </span>
+                )}
+              </div>
+            </NavButton>
           ))}
         </div>
       )}
 
       <div className="flex-1" />
 
-      {/* Disconnect */}
       {connected && (
         <button
-          onClick={() => {
-            if (window.confirm("Disconnect from the database?")) {
-              onDisconnect();
-            }
-          }}
-          className="group w-10 h-10 flex items-center justify-center rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-all relative"
+          onClick={onDisconnect}
+          className="w-full rounded-xl px-2 py-2 text-zinc-600 hover:text-red-400 hover:bg-red-500/10 transition-all"
           title="Disconnect from database"
         >
-          <LogOut className="w-4 h-4" />
-          <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-surface-300" />
+          <div className="flex flex-col items-center gap-1 text-center">
+            <div className="relative">
+              <LogOut className="w-4 h-4" />
+              <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-emerald-500 border border-surface-300" />
+            </div>
+            <span className="text-[10px] font-medium leading-none">Disconnect</span>
+          </div>
         </button>
       )}
     </nav>

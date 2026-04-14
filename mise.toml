@@ -120,6 +120,30 @@ description = "Install documentation dependencies"
 run = "bun install --cwd docs"
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Release Tasks
+# ══════════════════════════════════════════════════════════════════════════════
+
+[tasks."release"]
+description = "Run commitizen release bump"
+run = "cz bump --check-consistency"
+
+[tasks."release:dry-run"]
+description = "Preview the next commitizen release bump without changing files"
+run = "cz bump --dry-run --yes --check-consistency"
+
+[tasks."release:patch"]
+description = "Run a PATCH release bump with commitizen"
+run = "cz bump --increment PATCH --check-consistency"
+
+[tasks."release:minor"]
+description = "Run a MINOR release bump with commitizen"
+run = "cz bump --increment MINOR --check-consistency"
+
+[tasks."release:major"]
+description = "Run a MAJOR release bump with commitizen"
+run = "cz bump --increment MAJOR --check-consistency"
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Combined Tasks
 # ══════════════════════════════════════════════════════════════════════════════
 

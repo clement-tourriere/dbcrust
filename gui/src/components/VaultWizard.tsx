@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import {
   ChevronRight,
   ChevronLeft,
@@ -8,18 +8,25 @@ import {
   Database,
   Key,
   Check,
+  Server,
 } from "lucide-react";
 import * as cmd from "../commands";
 
 interface VaultWizardProps {
   /** Initial mount path typed by the user (from the URL input), e.g. "database" */
   initialMount: string;
-  onConnect: (url: string) => void;
+  onConnect: (url: string, vaultAddr?: string) => void;
   onCancel: () => void;
   connecting: boolean;
 }
 
 type Step = "databases" | "roles" | "confirm";
+const VAULT_ADDR_STORAGE_KEY = "dbcrust.vaultAddr";
+
+function loadStoredVaultAddr(): string {
+  if (typeof window === "undefined") return "";
+  return window.localStorage.getItem(VAULT_ADDR_STORAGE_KEY)?.trim() ?? "";
+}
 
 export function VaultWizard({
   initialMount,
@@ -29,6 +36,11 @@ export function VaultWizard({
 }: VaultWizardProps) {
   const [step, setStep] = useState<Step>("databases");
   const [mountPath, setMountPath] = useState(initialMount || "database");
+  const [vaultAddr, setVaultAddr] = useState(loadStoredVaultAddr);
+  const [vaultAddrSource, setVaultAddrSource] = useState<string | null>(null);
+  const [tokenAvailable, setTokenAvailable] = useState(true);
+  const [environmentReady, setEnvironmentReady] = useState(false);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [databases, setDatabases] = useState<string[]>([]);
   const [roles, setRoles] = useState<string[]>([]);
   const [selectedDb, setSelectedDb] = useState<string | null>(null);
@@ -36,21 +48,64 @@ export function VaultWizard({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    cmd
+      .getVaultEnvironment()
+      .then((environment) => {
+        if (cancelled) return;
+
+        if (!loadStoredVaultAddr() && environment.vault_addr) {
+          setVaultAddr(environment.vault_addr);
+        }
+        setVaultAddrSource(environment.source ?? null);
+        setTokenAvailable(environment.token_available);
+      })
+      .catch(() => {
+        /* ignore */
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setEnvironmentReady(true);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const effectiveVaultAddr = vaultAddr.trim() || undefined;
+
   // ── Step 1: Load databases ─────────────────────────────────────────────
   const loadDatabases = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setStep("databases");
+    setSelectedDb(null);
+    setSelectedRole(null);
+    setRoles([]);
+
     try {
-      const dbs = await cmd.listVaultDatabases(mountPath);
+      const dbs = await cmd.listVaultDatabases(mountPath, effectiveVaultAddr);
       setDatabases(dbs);
       if (dbs.length === 0) {
         setError("No accessible databases found in this Vault mount.");
       }
     } catch (e) {
       setError(String(e));
+      setDatabases([]);
     }
+
     setLoading(false);
-  }, [mountPath]);
+  }, [mountPath, effectiveVaultAddr]);
+
+  useEffect(() => {
+    if (!environmentReady || hasLoadedOnce) return;
+    setHasLoadedOnce(true);
+    void loadDatabases();
+  }, [environmentReady, hasLoadedOnce, loadDatabases]);
 
   // ── Step 2: Load roles ─────────────────────────────────────────────────
   const loadRoles = useCallback(
@@ -58,38 +113,41 @@ export function VaultWizard({
       setLoading(true);
       setError(null);
       setSelectedDb(dbName);
+      setSelectedRole(null);
       try {
-        const r = await cmd.listVaultRoles(mountPath, dbName);
-        setRoles(r);
-        if (r.length === 1) {
-          // Auto-select if only one role
-          setSelectedRole(r[0]);
+        const availableRoles = await cmd.listVaultRoles(
+          mountPath,
+          dbName,
+          effectiveVaultAddr,
+        );
+        setRoles(availableRoles);
+        if (availableRoles.length === 1) {
+          setSelectedRole(availableRoles[0]);
           setStep("confirm");
-        } else if (r.length === 0) {
+        } else if (availableRoles.length === 0) {
           setError(`No roles available for database '${dbName}'.`);
         } else {
           setStep("roles");
         }
       } catch (e) {
         setError(String(e));
+        setRoles([]);
       }
       setLoading(false);
     },
-    [mountPath],
+    [mountPath, effectiveVaultAddr],
   );
 
   const handleConfirm = useCallback(() => {
     if (!selectedDb || !selectedRole) return;
-    const url = `vault://${selectedRole}@${mountPath}/${selectedDb}`;
-    onConnect(url);
-  }, [selectedDb, selectedRole, mountPath, onConnect]);
 
-  // ── Start: load databases on first render or mount change ──────────────
-  const hasStarted = databases.length > 0 || loading || error;
-  if (!hasStarted) {
-    // Kick off loading
-    loadDatabases();
-  }
+    if (typeof window !== "undefined" && effectiveVaultAddr) {
+      window.localStorage.setItem(VAULT_ADDR_STORAGE_KEY, effectiveVaultAddr);
+    }
+
+    const url = `vault://${selectedRole}@${mountPath}/${selectedDb}`;
+    onConnect(url, effectiveVaultAddr);
+  }, [selectedDb, selectedRole, mountPath, effectiveVaultAddr, onConnect]);
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -103,10 +161,45 @@ export function VaultWizard({
             HashiCorp Vault Connection
           </h3>
           <p className="text-xxs text-zinc-500">
-            Select a database and role to obtain dynamic credentials
+            Detect the Vault address, browse database roles, and connect with
+            dynamic credentials
           </p>
         </div>
       </div>
+
+      {/* ── Vault address ─────────────────────────────────────────────── */}
+      <div>
+        <label className="text-xxs text-zinc-500 font-medium block mb-1">
+          Vault Address
+        </label>
+        <div className="relative">
+          <Server className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+          <input
+            type="text"
+            value={vaultAddr}
+            onChange={(e) => setVaultAddr(e.target.value)}
+            placeholder="https://vault.company.com:8200"
+            className="w-full bg-surface-300 border border-zinc-700 rounded-md pl-9 pr-3 py-1.5
+              text-sm text-zinc-200 font-mono placeholder-zinc-600
+              focus:outline-none focus:border-accent transition-colors"
+          />
+        </div>
+        <p className="mt-1 text-xxs text-zinc-600 leading-relaxed">
+          {vaultAddrSource
+            ? `Detected automatically from ${vaultAddrSource}. You can override it here if needed.`
+            : "No Vault address was detected from the current environment. Enter one here to make GUI discovery work reliably."}
+        </p>
+      </div>
+
+      {!tokenAvailable && (
+        <div className="flex items-start gap-2 text-xs bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-amber-300">
+          <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+          <span>
+            No Vault token was detected. Set <code>VAULT_TOKEN</code> or use
+            <code> ~/.vault-token</code> before connecting.
+          </span>
+        </div>
+      )}
 
       {/* ── Mount path ────────────────────────────────────────────────── */}
       <div>
@@ -124,7 +217,7 @@ export function VaultWizard({
               focus:outline-none focus:border-accent transition-colors"
           />
           <button
-            onClick={loadDatabases}
+            onClick={() => void loadDatabases()}
             disabled={loading || !mountPath.trim()}
             className="px-3 py-1.5 rounded-md text-xs font-medium bg-zinc-700
               hover:bg-zinc-600 text-zinc-300 disabled:opacity-40 transition-all"
@@ -140,27 +233,13 @@ export function VaultWizard({
 
       {/* ── Breadcrumbs ───────────────────────────────────────────────── */}
       <div className="flex items-center gap-1.5 text-xxs text-zinc-600">
-        <span
-          className={
-            step === "databases" ? "text-accent font-medium" : "text-zinc-400"
-          }
-        >
+        <span className={step === "databases" ? "text-accent font-medium" : "text-zinc-400"}>
           1. Database
         </span>
         <ChevronRight className="w-3 h-3" />
-        <span
-          className={
-            step === "roles" ? "text-accent font-medium" : ""
-          }
-        >
-          2. Role
-        </span>
+        <span className={step === "roles" ? "text-accent font-medium" : ""}>2. Role</span>
         <ChevronRight className="w-3 h-3" />
-        <span
-          className={
-            step === "confirm" ? "text-accent font-medium" : ""
-          }
-        >
+        <span className={step === "confirm" ? "text-accent font-medium" : ""}>
           3. Connect
         </span>
       </div>
@@ -179,7 +258,7 @@ export function VaultWizard({
           {databases.map((db) => (
             <button
               key={db}
-              onClick={() => loadRoles(db)}
+              onClick={() => void loadRoles(db)}
               className="w-full text-left px-3 py-2.5 rounded-lg text-sm hover:bg-zinc-800
                 transition-colors flex items-center justify-between group"
             >
@@ -211,9 +290,7 @@ export function VaultWizard({
             <span>·</span>
             <span>
               Database:{" "}
-              <span className="text-zinc-300 font-medium font-mono">
-                {selectedDb}
-              </span>
+              <span className="text-zinc-300 font-medium font-mono">{selectedDb}</span>
             </span>
           </div>
           <div className="space-y-1 max-h-48 overflow-y-auto">
@@ -255,6 +332,13 @@ export function VaultWizard({
           </div>
 
           <div className="bg-surface-300 border border-zinc-700 rounded-lg p-4 space-y-2">
+            {effectiveVaultAddr && (
+              <div className="flex items-center gap-2 text-xs">
+                <Server className="w-3.5 h-3.5 text-amber-400" />
+                <span className="text-zinc-500">Vault:</span>
+                <span className="text-zinc-200 font-mono break-all">{effectiveVaultAddr}</span>
+              </div>
+            )}
             <div className="flex items-center gap-2 text-xs">
               <Shield className="w-3.5 h-3.5 text-amber-400" />
               <span className="text-zinc-500">Mount:</span>
@@ -271,7 +355,7 @@ export function VaultWizard({
               <span className="text-zinc-200 font-mono">{selectedRole}</span>
             </div>
             <div className="pt-2 border-t border-zinc-700 mt-2">
-              <code className="text-xxs text-zinc-500 font-mono">
+              <code className="text-xxs text-zinc-500 font-mono break-all">
                 vault://{selectedRole}@{mountPath}/{selectedDb}
               </code>
             </div>

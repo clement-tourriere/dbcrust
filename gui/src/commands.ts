@@ -13,12 +13,16 @@ import type {
   AppConfig,
   DatabaseTypeInfo,
   DockerContainer,
+  VaultEnvironment,
 } from "./types";
 
 // ── Connection ───────────────────────────────────────────────────────────────
 
-export async function connectToDatabase(url: string): Promise<ConnectionState> {
-  return invoke<ConnectionState>("connect", { url });
+export async function connectToDatabase(
+  url: string,
+  vaultAddr?: string,
+): Promise<ConnectionState> {
+  return invoke<ConnectionState>("connect", { url, vaultAddr });
 }
 
 export async function disconnectFromDatabase(): Promise<void> {
@@ -77,14 +81,16 @@ export async function listSessions(): Promise<SavedSession[]> {
 
 export async function connectSavedSession(
   name: string,
+  vaultAddr?: string,
 ): Promise<ConnectionState> {
-  return invoke<ConnectionState>("connect_saved_session", { name });
+  return invoke<ConnectionState>("connect_saved_session", { name, vaultAddr });
 }
 
 export async function connectRecentConnection(
   index: number,
+  vaultAddr?: string,
 ): Promise<ConnectionState> {
-  return invoke<ConnectionState>("connect_recent_connection", { index });
+  return invoke<ConnectionState>("connect_recent_connection", { index, vaultAddr });
 }
 
 export async function saveSession(name: string): Promise<void> {
@@ -138,13 +144,25 @@ export async function discoverDockerContainers(): Promise<DockerContainer[]> {
 
 // ── Vault Discovery ───────────────────────────────────────────────────────────
 
-export async function listVaultDatabases(mountPath: string): Promise<string[]> {
-  return invoke<string[]>("list_vault_databases", { mountPath });
+export async function listVaultDatabases(
+  mountPath: string,
+  vaultAddr?: string,
+): Promise<string[]> {
+  return invoke<string[]>("list_vault_databases", { mountPath, vaultAddr });
 }
 
 export async function listVaultRoles(
   mountPath: string,
   databaseName: string,
+  vaultAddr?: string,
 ): Promise<string[]> {
-  return invoke<string[]>("list_vault_roles", { mountPath, databaseName });
+  return invoke<string[]>("list_vault_roles", {
+    mountPath,
+    databaseName,
+    vaultAddr,
+  });
+}
+
+export async function getVaultEnvironment(): Promise<VaultEnvironment> {
+  return invoke<VaultEnvironment>("get_vault_environment");
 }

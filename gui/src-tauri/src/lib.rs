@@ -9,6 +9,7 @@ use dbcrust::docker::DockerClient;
 use dbcrust::password_sanitizer::sanitize_connection_url;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tauri::menu::{
@@ -334,6 +335,90 @@ fn run_db<T: Send + 'static>(
     })
 }
 
+fn normalize_optional_text(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn command_stdout(program: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(program).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if stdout.is_empty() {
+        None
+    } else {
+        Some(stdout)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn detect_platform_vault_addr() -> Option<(String, String)> {
+    command_stdout("/bin/launchctl", &["getenv", "VAULT_ADDR"])
+        .map(|value| (value, "macOS launchctl user environment".to_string()))
+}
+
+#[cfg(target_os = "linux")]
+fn detect_platform_vault_addr() -> Option<(String, String)> {
+    let env_output = command_stdout("systemctl", &["--user", "show-environment"])?;
+    env_output.lines().find_map(|line| {
+        line.strip_prefix("VAULT_ADDR=").and_then(|value| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some((trimmed.to_string(), "systemd user environment".to_string()))
+            }
+        })
+    })
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn detect_platform_vault_addr() -> Option<(String, String)> {
+    None
+}
+
+fn format_vault_error(context: &str, error: impl Into<String>) -> String {
+    let error = error.into();
+
+    if error.contains("Vault address not set") {
+        return format!(
+            "{context}: no Vault address is configured.\n\nSet it in the Vault address field, or launch DBCrust with VAULT_ADDR exported before opening the GUI."
+        );
+    }
+
+    if error.contains("Vault token not found") || error.contains("Failed to read token file") {
+        return format!(
+            "{context}: no Vault token is available.\n\nSet VAULT_TOKEN or place a valid token in ~/.vault-token, then try again."
+        );
+    }
+
+    if error.contains("Failed to retrieve ACL permissions")
+        || error.contains("Failed to retrieve path capabilities")
+    {
+        return format!(
+            "{context}: Vault capability introspection is not available for this token.\n\nDBCrust uses Vault capability checks to hide databases and roles you cannot read. Ask for access to sys/capabilities-self, or connect with a fully specified vault://role@mount/database URL if you already know the exact role.\n\nDetails: {error}"
+        );
+    }
+
+    if error.contains("403 Forbidden") {
+        return format!(
+            "{context}: Vault returned 403 Forbidden.\n\nCheck that your token is valid and that it can list the mount and read the requested role paths.\n\nDetails: {error}"
+        );
+    }
+
+    if error.contains("config not found") || error.contains("mounted at") {
+        return format!(
+            "{context}: the Vault mount path could not be found.\n\nVerify the secrets engine mount path and make sure your token can list it.\n\nDetails: {error}"
+        );
+    }
+
+    error
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // API Response Types
 // ══════════════════════════════════════════════════════════════════════════════
@@ -448,6 +533,13 @@ pub struct DatabaseTypeInfo {
     pub placeholder: String,
 }
 
+#[derive(Serialize, Debug)]
+pub struct VaultEnvironmentResponse {
+    pub vault_addr: Option<String>,
+    pub source: Option<String>,
+    pub token_available: bool,
+}
+
 // ── Helper: build QueryResponse from Vec<Vec<String>> ────────────────────────
 fn to_query_response(results: Vec<Vec<String>>, elapsed: u128) -> QueryResponse {
     if results.is_empty() {
@@ -481,6 +573,23 @@ fn database_type_placeholder(database_type: &DatabaseType) -> &'static str {
         DatabaseType::CSV => "csv:///path/to/data.csv",
         DatabaseType::JSON => "json:///path/to/data.json",
         DatabaseType::DuckDB => "duckdb:///path/to/database.duckdb",
+    }
+}
+
+fn detect_vault_environment_response() -> VaultEnvironmentResponse {
+    let detected_addr = dbcrust::vault_client::detect_vault_addr()
+        .map(|detected| (detected.addr, detected.source))
+        .or_else(detect_platform_vault_addr);
+
+    let (vault_addr, source) = match detected_addr {
+        Some((vault_addr, source)) => (Some(vault_addr), Some(source)),
+        None => (None, None),
+    };
+
+    VaultEnvironmentResponse {
+        vault_addr,
+        source,
+        token_available: dbcrust::vault_client::get_vault_token().is_ok(),
     }
 }
 
@@ -549,8 +658,10 @@ fn connect_vault_database(
     url: &str,
     limit: usize,
     expanded: bool,
+    vault_addr_override: Option<String>,
 ) -> Result<(Database, Option<ConnectionInfo>), String> {
     let url = url.to_string();
+    let vault_addr_override = normalize_optional_text(vault_addr_override);
 
     db_thread
         .run(move |rt, local| {
@@ -566,20 +677,36 @@ fn connect_vault_database(
                     "Vault GUI connections require an explicit role name in the URL".to_string()
                 })?;
 
+                let vault_addr_override_ref = vault_addr_override.as_deref();
                 let mut vault_config = Config::load();
-                let (credentials, _) = dbcrust::vault_client::get_dynamic_credentials_with_caching(
+                let (credentials, _) =
+                    dbcrust::vault_client::get_dynamic_credentials_with_caching_with_addr(
+                        &mount_path,
+                        &db_name,
+                        &role_name,
+                        &mut vault_config,
+                        vault_addr_override_ref,
+                    )
+                    .await
+                    .map_err(|e| {
+                        format_vault_error(
+                            "Vault connection failed",
+                            format!("Failed to get Vault credentials: {e}"),
+                        )
+                    })?;
+
+                let db_config = dbcrust::vault_client::get_vault_database_config_with_addr(
                     &mount_path,
                     &db_name,
-                    &role_name,
-                    &mut vault_config,
+                    vault_addr_override_ref,
                 )
                 .await
-                .map_err(|e| format!("Failed to get Vault credentials: {e}"))?;
-
-                let db_config =
-                    dbcrust::vault_client::get_vault_database_config(&mount_path, &db_name)
-                        .await
-                        .map_err(|e| format!("Failed to get database config from Vault: {e}"))?;
+                .map_err(|e| {
+                    format_vault_error(
+                        "Vault connection failed",
+                        format!("Failed to get database config from Vault: {e}"),
+                    )
+                })?;
 
                 let connection_url_template = db_config
                     .connection_details
@@ -634,14 +761,18 @@ fn connect_vault_database(
         .map_err(|e| format!("Connection failed: {e}"))
 }
 
-fn connect_with_url(state: &AppState, url: String) -> Result<ConnectionResponse, String> {
+fn connect_with_url(
+    state: &AppState,
+    url: String,
+    vault_addr_override: Option<String>,
+) -> Result<ConnectionResponse, String> {
     let (limit, expanded) = {
         let config = state.config.lock().unwrap();
         (config.default_limit, config.expanded_display_default)
     };
 
     let (db, connection_info) = if url.starts_with("vault://") {
-        connect_vault_database(&state.db_thread, &url, limit, expanded)?
+        connect_vault_database(&state.db_thread, &url, limit, expanded, vault_addr_override)?
     } else if url.starts_with("docker://") {
         connect_docker_database(&state.db_thread, &url, limit, expanded)?
     } else {
@@ -707,11 +838,15 @@ fn connect_with_url(state: &AppState, url: String) -> Result<ConnectionResponse,
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-async fn connect(app: tauri::AppHandle, url: String) -> Result<ConnectionResponse, String> {
+async fn connect(
+    app: tauri::AppHandle,
+    url: String,
+    vault_addr: Option<String>,
+) -> Result<ConnectionResponse, String> {
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let _op = state.op_lock.lock().unwrap();
-        connect_with_url(state.inner(), url)
+        connect_with_url(state.inner(), url, normalize_optional_text(vault_addr))
     })
     .await
     .map_err(|e| format!("Connection task failed: {e}"))?
@@ -1011,6 +1146,7 @@ fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionResponse>, Str
 async fn connect_saved_session(
     app: tauri::AppHandle,
     name: String,
+    vault_addr: Option<String>,
 ) -> Result<ConnectionResponse, String> {
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
@@ -1024,7 +1160,7 @@ async fn connect_saved_session(
         };
 
         let url = session.reconstruct_connection_url()?;
-        connect_with_url(state.inner(), url)
+        connect_with_url(state.inner(), url, normalize_optional_text(vault_addr))
     })
     .await
     .map_err(|e| format!("Task failed: {e}"))?
@@ -1034,6 +1170,7 @@ async fn connect_saved_session(
 async fn connect_recent_connection(
     app: tauri::AppHandle,
     index: usize,
+    vault_addr: Option<String>,
 ) -> Result<ConnectionResponse, String> {
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
@@ -1048,7 +1185,7 @@ async fn connect_recent_connection(
         };
 
         let url = recent_connection.reconstruct_connection_url()?;
-        connect_with_url(state.inner(), url)
+        connect_with_url(state.inner(), url, normalize_optional_text(vault_addr))
     })
     .await
     .map_err(|e| format!("Task failed: {e}"))?
@@ -1240,7 +1377,17 @@ async fn discover_docker_containers() -> Result<Vec<DockerContainerResponse>, St
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-async fn list_vault_databases(mount_path: String) -> Result<Vec<String>, String> {
+fn get_vault_environment() -> VaultEnvironmentResponse {
+    detect_vault_environment_response()
+}
+
+#[tauri::command]
+async fn list_vault_databases(
+    mount_path: String,
+    vault_addr: Option<String>,
+) -> Result<Vec<String>, String> {
+    let vault_addr = normalize_optional_text(vault_addr);
+
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1248,13 +1395,27 @@ async fn list_vault_databases(mount_path: String) -> Result<Vec<String>, String>
             .unwrap();
         let local = tokio::task::LocalSet::new();
         local.block_on(&rt, async {
-            let all_databases = dbcrust::vault_client::list_vault_databases(&mount_path)
-                .await
-                .map_err(|e| format!("Failed to list Vault databases: {e}"))?;
+            let all_databases = dbcrust::vault_client::list_vault_databases_with_addr(
+                &mount_path,
+                vault_addr.as_deref(),
+            )
+            .await
+            .map_err(|e| format_vault_error("Vault discovery failed", format!("Failed to list Vault databases: {e}")))?;
 
-            dbcrust::vault_client::filter_databases_with_available_roles(&mount_path, all_databases)
-                .await
-                .map_err(|e| format!("Failed to filter accessible databases: {e}"))
+            let all_databases_len = all_databases.len();
+            let filtered_databases = dbcrust::vault_client::filter_databases_with_available_roles_with_addr(
+                &mount_path,
+                all_databases,
+                vault_addr.as_deref(),
+            )
+            .await
+            .map_err(|e| format_vault_error("Vault discovery failed", format!("Failed to filter accessible databases: {e}")))?;
+
+            if filtered_databases.is_empty() && all_databases_len > 0 {
+                Err("Found database configs in this Vault mount, but none expose a readable role for the current token.".to_string())
+            } else {
+                Ok(filtered_databases)
+            }
         })
     })
     .await
@@ -1265,7 +1426,10 @@ async fn list_vault_databases(mount_path: String) -> Result<Vec<String>, String>
 async fn list_vault_roles(
     mount_path: String,
     database_name: String,
+    vault_addr: Option<String>,
 ) -> Result<Vec<String>, String> {
+    let vault_addr = normalize_optional_text(vault_addr);
+
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1273,9 +1437,18 @@ async fn list_vault_roles(
             .unwrap();
         let local = tokio::task::LocalSet::new();
         local.block_on(&rt, async {
-            dbcrust::vault_client::get_available_roles_for_user(&mount_path, &database_name)
-                .await
-                .map_err(|e| format!("Failed to list Vault roles: {e}"))
+            dbcrust::vault_client::get_available_roles_for_user_with_addr(
+                &mount_path,
+                &database_name,
+                vault_addr.as_deref(),
+            )
+            .await
+            .map_err(|e| {
+                format_vault_error(
+                    "Vault role lookup failed",
+                    format!("Failed to list Vault roles: {e}"),
+                )
+            })
         })
     })
     .await
@@ -1549,6 +1722,7 @@ pub fn run() {
             list_users,
             list_indexes,
             discover_docker_containers,
+            get_vault_environment,
             list_vault_databases,
             list_vault_roles,
             list_recent_connections,

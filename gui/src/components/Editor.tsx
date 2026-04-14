@@ -1,16 +1,45 @@
-import { useEffect, useMemo, useRef } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import CodeMirror from "@uiw/react-codemirror";
-import { sql, PostgreSQL } from "@codemirror/lang-sql";
-import { keymap, EditorView } from "@codemirror/view";
+import { schemaCompletionSource } from "@codemirror/lang-sql";
+import {
+  acceptCompletion,
+  autocompletion,
+  completionStatus,
+  startCompletion,
+} from "@codemirror/autocomplete";
+import { keymap, EditorView, type ViewUpdate } from "@codemirror/view";
 import { Prec } from "@codemirror/state";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
+import {
+  buildKeywordCompletionSource,
+  createColumnCompletionSource,
+  createSqlCompletionConfig,
+  getSqlDialect,
+} from "../sqlAutocomplete";
+import {
+  resolveSqlExecutionTarget,
+  type SqlExecutionTarget,
+} from "../sqlExecution";
+
+export interface EditorHandle {
+  getExecutionTarget: () => SqlExecutionTarget | null;
+}
 
 interface EditorProps {
   sql: string;
+  tables: string[];
+  databaseType?: string;
   onChange: (sql: string) => void;
-  onRun: () => void;
-  onExplain: () => void;
+  onRun: (sqlOverride?: string) => void;
+  onExplain: (sqlOverride?: string) => void;
   isRunning: boolean;
 }
 
@@ -78,35 +107,130 @@ const darkThemeOverrides = EditorView.theme({
   },
 });
 
-export function Editor({
-  sql: value,
-  onChange,
-  onRun,
-  onExplain,
-  isRunning,
-}: EditorProps) {
+export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
+  {
+    sql: value,
+    tables,
+    databaseType,
+    onChange,
+    onRun,
+    onExplain,
+    isRunning,
+  },
+  ref,
+) {
+  const viewRef = useRef<EditorView | null>(null);
   const runRef = useRef(onRun);
   const explainRef = useRef(onExplain);
+  const [executionTarget, setExecutionTarget] = useState<SqlExecutionTarget | null>(
+    resolveSqlExecutionTarget(value, value.length, value.length),
+  );
 
   useEffect(() => {
     runRef.current = onRun;
     explainRef.current = onExplain;
   }, [onRun, onExplain]);
 
+  const updateExecutionTarget = (next: SqlExecutionTarget | null) => {
+    setExecutionTarget((previous) => {
+      if (
+        previous?.mode === next?.mode &&
+        previous?.label === next?.label &&
+        previous?.sql === next?.sql &&
+        previous?.statementIndex === next?.statementIndex &&
+        previous?.statementCount === next?.statementCount
+      ) {
+        return previous;
+      }
+      return next;
+    });
+  };
+
+  const getExecutionTarget = () => {
+    const view = viewRef.current;
+    if (!view) {
+      return resolveSqlExecutionTarget(value, value.length, value.length);
+    }
+
+    const selection = view.state.selection.main;
+    return resolveSqlExecutionTarget(
+      view.state.doc.toString(),
+      selection.from,
+      selection.to,
+    );
+  };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      getExecutionTarget,
+    }),
+    [value],
+  );
+
+  useEffect(() => {
+    if (!viewRef.current) {
+      updateExecutionTarget(resolveSqlExecutionTarget(value, value.length, value.length));
+    }
+  }, [value]);
+
+  const isMac =
+    typeof navigator !== "undefined" &&
+    /Mac|iPod|iPhone|iPad/.test(navigator.userAgent);
+  const modKey = isMac ? "⌘" : "Ctrl";
+
+  const sqlCompletionConfig = useMemo(
+    () => createSqlCompletionConfig(tables, databaseType),
+    [tables, databaseType],
+  );
+  const dialect = useMemo(() => getSqlDialect(databaseType), [databaseType]);
+  const columnCompletionSource = useMemo(
+    () => createColumnCompletionSource(tables),
+    [tables],
+  );
+  const schemaCompletion = useMemo(
+    () => schemaCompletionSource(sqlCompletionConfig),
+    [sqlCompletionConfig],
+  );
+  const keywordCompletion = useMemo(
+    () => buildKeywordCompletionSource(dialect),
+    [dialect],
+  );
+
   // Stable extensions — using refs for callbacks to avoid re-creating
   const extensions = useMemo(
     () => [
-      sql({ dialect: PostgreSQL }),
+      dialect.extension,
       syntaxHighlighting(darkSqlHighlighting),
       darkThemeOverrides,
+      autocompletion({
+        override: [columnCompletionSource, schemaCompletion, keywordCompletion],
+        activateOnTyping: true,
+        maxRenderedOptions: 200,
+      }),
       // High-priority keymap so it overrides basicSetup bindings
       Prec.highest(
         keymap.of([
           {
+            key: "Tab",
+            run: (view) => {
+              if (completionStatus(view.state) === "active") {
+                return acceptCompletion(view);
+              }
+
+              if (startCompletion(view)) {
+                return true;
+              }
+
+              return false;
+            },
+          },
+          {
             key: "Ctrl-Enter",
             mac: "Cmd-Enter",
             run: () => {
-              runRef.current();
+              const target = getExecutionTarget();
+              runRef.current(target?.sql);
               return true;
             },
           },
@@ -114,7 +238,8 @@ export function Editor({
             key: "Ctrl-Shift-Enter",
             mac: "Cmd-Shift-Enter",
             run: () => {
-              explainRef.current();
+              const target = getExecutionTarget();
+              explainRef.current(target?.sql);
               return true;
             },
           },
@@ -122,31 +247,58 @@ export function Editor({
       ),
       EditorView.lineWrapping,
     ],
-    [],
+    [columnCompletionSource, dialect.extension, keywordCompletion, schemaCompletion],
   );
 
-  const isMac =
-    typeof navigator !== "undefined" &&
-    /Mac|iPod|iPhone|iPad/.test(navigator.userAgent);
-  const modKey = isMac ? "⌘" : "Ctrl";
+  const handleUpdate = (update: ViewUpdate) => {
+    if (!update.docChanged && !update.selectionSet) return;
+
+    const selection = update.state.selection.main;
+    updateExecutionTarget(
+      resolveSqlExecutionTarget(
+        update.state.doc.toString(),
+        selection.from,
+        selection.to,
+      ),
+    );
+  };
 
   return (
     <div className="h-full flex flex-col bg-surface">
       {/* ── Hint Bar ──────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between px-3 py-1 border-b border-zinc-800/50 bg-surface-100">
-        <span className="text-xxs text-zinc-600 font-medium">SQL Editor</span>
-        <div className="flex items-center gap-3 text-xxs text-zinc-500">
+      <div className="flex items-center justify-between gap-3 px-3 py-1.5 border-b border-zinc-800/50 bg-surface-100">
+        <div className="min-w-0 flex items-center gap-2">
+          <span className="text-xxs text-zinc-600 font-medium">SQL Workspace</span>
+          {executionTarget && (
+            <span className="inline-flex items-center rounded-full border border-zinc-700 bg-surface-300 px-2 py-0.5 text-[10px] font-medium text-zinc-400 truncate max-w-[220px]">
+              {executionTarget.label}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3 text-xxs text-zinc-500 flex-wrap justify-end">
+          <span>
+            <kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono text-[10px]">
+              Tab
+            </kbd>{" "}
+            Autocomplete
+          </span>
+          <span>
+            <kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono text-[10px]">
+              {modKey}+F
+            </kbd>{" "}
+            Find
+          </span>
           <span>
             <kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono text-[10px]">
               {modKey}+↵
             </kbd>{" "}
-            Run
+            Run current
           </span>
           <span>
             <kbd className="px-1 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono text-[10px]">
               {modKey}+⇧+↵
             </kbd>{" "}
-            Explain
+            Explain current
           </span>
         </div>
       </div>
@@ -156,6 +308,18 @@ export function Editor({
         <CodeMirror
           value={value}
           onChange={onChange}
+          onCreateEditor={(view) => {
+            viewRef.current = view;
+            const selection = view.state.selection.main;
+            updateExecutionTarget(
+              resolveSqlExecutionTarget(
+                view.state.doc.toString(),
+                selection.from,
+                selection.to,
+              ),
+            );
+          }}
+          onUpdate={handleUpdate}
           theme="dark"
           extensions={extensions}
           basicSetup={{
@@ -165,7 +329,7 @@ export function Editor({
             foldGutter: true,
             bracketMatching: true,
             closeBrackets: true,
-            autocompletion: true,
+            autocompletion: false,
             indentOnInput: true,
             tabSize: 2,
           }}
@@ -175,4 +339,4 @@ export function Editor({
       </div>
     </div>
   );
-}
+});

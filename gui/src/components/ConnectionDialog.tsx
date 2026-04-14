@@ -20,7 +20,7 @@ import type {
 import { VaultWizard } from "./VaultWizard";
 
 interface ConnectionDialogProps {
-  onConnectUrl: (url: string) => void;
+  onConnectUrl: (url: string, options?: { vaultAddr?: string }) => void;
   onConnectRecent: (index: number) => void;
   onConnectSession: (name: string) => void;
   connecting: boolean;
@@ -43,6 +43,19 @@ const DB_ICONS: Record<string, string> = {
 };
 
 type Tab = "new" | "saved" | "recent";
+
+function getVaultWizardMount(url: string): string {
+  const trimmed = url.trim();
+  if (!trimmed.startsWith("vault://")) return "database";
+
+  const withoutScheme = trimmed.slice("vault://".length);
+  const beforePath = withoutScheme.split("/")[0] ?? "";
+  const mountPath = beforePath.includes("@")
+    ? beforePath.split("@")[1]
+    : beforePath;
+
+  return mountPath?.trim() || "database";
+}
 
 export function ConnectionDialog({
   onConnectUrl,
@@ -266,10 +279,10 @@ export function ConnectionDialog({
               {showVaultWizard ? (
                 <div className="px-6 pb-5">
                   <VaultWizard
-                    initialMount="database"
-                    onConnect={(vaultUrl) => {
+                    initialMount={getVaultWizardMount(url)}
+                    onConnect={(vaultUrl, nextVaultAddr) => {
                       setShowVaultWizard(false);
-                      onConnectUrl(vaultUrl);
+                      onConnectUrl(vaultUrl, { vaultAddr: nextVaultAddr });
                     }}
                     onCancel={() => {
                       setShowVaultWizard(false);

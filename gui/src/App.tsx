@@ -9,6 +9,7 @@ import { SchemaExplorer } from "./components/SchemaExplorer";
 import { DockerDiscovery } from "./components/DockerDiscovery";
 import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
+import { extractTableNames } from "./tableMetadata";
 
 let tabCounter = 1;
 function newTab(): EditorTab {
@@ -23,6 +24,18 @@ function newTab(): EditorTab {
   };
 }
 
+interface ConnectOptions {
+  vaultAddr?: string;
+}
+
+const VAULT_ADDR_STORAGE_KEY = "dbcrust.vaultAddr";
+
+function loadStoredVaultAddr(): string | null {
+  if (typeof window === "undefined") return null;
+  const stored = window.localStorage.getItem(VAULT_ADDR_STORAGE_KEY)?.trim();
+  return stored || null;
+}
+
 export default function App() {
   const [view, setView] = useState<NavigationView>("home");
   const [connection, setConnection] = useState<ConnectionState | null>(null);
@@ -33,7 +46,32 @@ export default function App() {
   const [tables, setTables] = useState<string[]>([]);
   const [tablesError, setTablesError] = useState<string | null>(null);
   const [namedQueriesVersion, setNamedQueriesVersion] = useState(0);
+  const [vaultAddr, setVaultAddr] = useState<string | null>(() => loadStoredVaultAddr());
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
+
+  const rememberVaultAddr = useCallback((nextVaultAddr?: string | null) => {
+    const normalized = nextVaultAddr?.trim() || null;
+    setVaultAddr(normalized);
+
+    if (typeof window === "undefined") return;
+
+    if (normalized) {
+      window.localStorage.setItem(VAULT_ADDR_STORAGE_KEY, normalized);
+    } else {
+      window.localStorage.removeItem(VAULT_ADDR_STORAGE_KEY);
+    }
+  }, []);
+
+  const loadTablesForConnection = useCallback(async (databaseType?: string) => {
+    try {
+      const result = await cmd.listTables();
+      setTables(extractTableNames(result.rows, databaseType));
+      setTablesError(null);
+    } catch (error) {
+      setTables([]);
+      setTablesError(String(error));
+    }
+  }, []);
 
   // ── Redirect database views when not connected ────────────────────────
   useEffect(() => {
@@ -41,6 +79,27 @@ export default function App() {
       setView("home");
     }
   }, [connection, view]);
+
+  // ── Vault environment bootstrap ───────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    cmd
+      .getVaultEnvironment()
+      .then((environment) => {
+        if (cancelled) return;
+        if (!loadStoredVaultAddr() && environment.vault_addr) {
+          rememberVaultAddr(environment.vault_addr);
+        }
+      })
+      .catch(() => {
+        /* ignore */
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rememberVaultAddr]);
 
   // ── Connection ─────────────────────────────────────────────────────────
   const performConnect = useCallback(
@@ -51,47 +110,43 @@ export default function App() {
       try {
         const state = await connectFn();
         setConnection(state);
-        setView("query"); // Jump to editor after connecting
-        try {
-          const result = await cmd.listTables();
-          if (result.rows.length > 0) {
-            setTables(result.rows.map((r) => r[1])); // Column 1 = Name
-          } else {
-            setTables([]);
-          }
-          setTablesError(null);
-        } catch (e) {
-          setTables([]);
-          setTablesError(String(e));
-        }
-      } catch (e) {
-        setConnectError(String(e));
+        setView("query");
+        await loadTablesForConnection(state.database_type);
+      } catch (error) {
+        setConnectError(String(error));
       } finally {
         setConnecting(false);
       }
     },
-    [],
+    [loadTablesForConnection],
   );
 
   const handleConnect = useCallback(
-    async (url: string) => {
-      await performConnect(() => cmd.connectToDatabase(url));
+    async (url: string, options?: ConnectOptions) => {
+      const effectiveVaultAddr = options?.vaultAddr?.trim() || vaultAddr || undefined;
+      if (options?.vaultAddr) {
+        rememberVaultAddr(options.vaultAddr);
+      }
+
+      await performConnect(() => cmd.connectToDatabase(url, effectiveVaultAddr));
     },
-    [performConnect],
+    [performConnect, rememberVaultAddr, vaultAddr],
   );
 
   const handleConnectRecent = useCallback(
     async (index: number) => {
-      await performConnect(() => cmd.connectRecentConnection(index));
+      await performConnect(() =>
+        cmd.connectRecentConnection(index, vaultAddr || undefined),
+      );
     },
-    [performConnect],
+    [performConnect, vaultAddr],
   );
 
   const handleConnectSession = useCallback(
     async (name: string) => {
-      await performConnect(() => cmd.connectSavedSession(name));
+      await performConnect(() => cmd.connectSavedSession(name, vaultAddr || undefined));
     },
-    [performConnect],
+    [performConnect, vaultAddr],
   );
 
   const handleDisconnect = useCallback(async () => {
@@ -108,19 +163,19 @@ export default function App() {
 
   // ── Tabs ───────────────────────────────────────────────────────────────
   const addTab = useCallback(() => {
-    const t = newTab();
-    setTabs((prev) => [...prev, t]);
-    setActiveTabId(t.id);
+    const tab = newTab();
+    setTabs((prev) => [...prev, tab]);
+    setActiveTabId(tab.id);
   }, []);
 
   const closeTab = useCallback(
     (id: string) => {
       setTabs((prev) => {
-        const next = prev.filter((t) => t.id !== id);
+        const next = prev.filter((tab) => tab.id !== id);
         if (next.length === 0) {
-          const t = newTab();
-          setActiveTabId(t.id);
-          return [t];
+          const tab = newTab();
+          setActiveTabId(tab.id);
+          return [tab];
         }
         if (activeTabId === id) {
           setActiveTabId(next[next.length - 1].id);
@@ -132,16 +187,16 @@ export default function App() {
   );
 
   const updateTabSql = useCallback((id: string, sql: string) => {
-    setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, sql } : t)));
+    setTabs((prev) => prev.map((tab) => (tab.id === id ? { ...tab, sql } : tab)));
   }, []);
 
   const loadSnippet = useCallback(
     (title: string, sql: string) => {
       setTabs((prev) =>
-        prev.map((t) =>
-          t.id === activeTabId
-            ? { ...t, title, sql, error: null, results: null, isRunning: false }
-            : t,
+        prev.map((tab) =>
+          tab.id === activeTabId
+            ? { ...tab, title, sql, error: null, results: null, isRunning: false }
+            : tab,
         ),
       );
     },
@@ -150,29 +205,34 @@ export default function App() {
 
   // ── Query Execution ────────────────────────────────────────────────────
   const runQuery = useCallback(
-    async (id: string) => {
-      const tab = tabs.find((t) => t.id === id);
-      if (!tab || !tab.sql.trim()) return;
+    async (id: string, sqlOverride?: string) => {
+      const tab = tabs.find((entry) => entry.id === id);
+      const sqlToRun = (sqlOverride ?? tab?.sql ?? "").trim();
+      if (!tab || !sqlToRun) return;
 
       setTabs((prev) =>
-        prev.map((t) =>
-          t.id === id ? { ...t, isRunning: true, error: null, results: null } : t,
+        prev.map((entry) =>
+          entry.id === id
+            ? { ...entry, isRunning: true, error: null, results: null }
+            : entry,
         ),
       );
 
       try {
-        const result = await cmd.executeQuery(tab.sql);
+        const result = await cmd.executeQuery(sqlToRun);
         setTabs((prev) =>
-          prev.map((t) =>
-            t.id === id
-              ? { ...t, isRunning: false, results: result, error: null, isExplain: false }
-              : t,
+          prev.map((entry) =>
+            entry.id === id
+              ? { ...entry, isRunning: false, results: result, error: null, isExplain: false }
+              : entry,
           ),
         );
-      } catch (e) {
+      } catch (error) {
         setTabs((prev) =>
-          prev.map((t) =>
-            t.id === id ? { ...t, isRunning: false, error: String(e), results: null } : t,
+          prev.map((entry) =>
+            entry.id === id
+              ? { ...entry, isRunning: false, error: String(error), results: null }
+              : entry,
           ),
         );
       }
@@ -181,29 +241,34 @@ export default function App() {
   );
 
   const runExplain = useCallback(
-    async (id: string) => {
-      const tab = tabs.find((t) => t.id === id);
-      if (!tab || !tab.sql.trim()) return;
+    async (id: string, sqlOverride?: string) => {
+      const tab = tabs.find((entry) => entry.id === id);
+      const sqlToRun = (sqlOverride ?? tab?.sql ?? "").trim();
+      if (!tab || !sqlToRun) return;
 
       setTabs((prev) =>
-        prev.map((t) =>
-          t.id === id ? { ...t, isRunning: true, error: null, results: null } : t,
+        prev.map((entry) =>
+          entry.id === id
+            ? { ...entry, isRunning: true, error: null, results: null }
+            : entry,
         ),
       );
 
       try {
-        const result = await cmd.explainQuery(tab.sql);
+        const result = await cmd.explainQuery(sqlToRun);
         setTabs((prev) =>
-          prev.map((t) =>
-            t.id === id
-              ? { ...t, isRunning: false, results: result, error: null, isExplain: true }
-              : t,
+          prev.map((entry) =>
+            entry.id === id
+              ? { ...entry, isRunning: false, results: result, error: null, isExplain: true }
+              : entry,
           ),
         );
-      } catch (e) {
+      } catch (error) {
         setTabs((prev) =>
-          prev.map((t) =>
-            t.id === id ? { ...t, isRunning: false, error: String(e), results: null } : t,
+          prev.map((entry) =>
+            entry.id === id
+              ? { ...entry, isRunning: false, error: String(error), results: null }
+              : entry,
           ),
         );
       }
@@ -246,43 +311,39 @@ export default function App() {
     try {
       await cmd.saveNamedQuery(name, sql, false);
       setNamedQueriesVersion((version) => version + 1);
-    } catch (e) {
-      window.alert(`Failed to save preset: ${String(e)}`);
+    } catch (error) {
+      window.alert(`Failed to save preset: ${String(error)}`);
     }
   }, [activeTab]);
 
   const handleRefreshTables = useCallback(async () => {
-    try {
-      const result = await cmd.listTables();
-      if (result.rows.length > 0) {
-        setTables(result.rows.map((r) => r[1]));
-      } else {
-        setTables([]);
-      }
-      setTablesError(null);
-    } catch (e) {
-      setTables([]);
-      setTablesError(String(e));
-    }
-  }, []);
+    await loadTablesForConnection(connection?.database_type);
+  }, [connection?.database_type, loadTablesForConnection]);
 
   // ── Check for existing connection on mount ─────────────────────────────
   useEffect(() => {
+    let cancelled = false;
+
     cmd.getConnectionState().then((state) => {
-      if (state) {
-        setConnection(state);
-        setView("query");
-      }
+      if (!state || cancelled) return;
+      setConnection(state);
+      setView("query");
+      loadTablesForConnection(state.database_type).catch(() => {
+        /* ignore */
+      });
     });
-  }, []);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loadTablesForConnection]);
 
   // ── Listen for native menu events from Tauri ───────────────────────────
   useEffect(() => {
     const handler = (menuId: string) => {
-      // Handle dynamic tray events: connect_recent_N, connect_session_NAME
       if (menuId.startsWith("connect_recent_")) {
-        const idx = parseInt(menuId.slice("connect_recent_".length), 10);
-        if (!isNaN(idx)) handleConnectRecent(idx);
+        const index = parseInt(menuId.slice("connect_recent_".length), 10);
+        if (!isNaN(index)) handleConnectRecent(index);
         return;
       }
       if (menuId.startsWith("connect_session_")) {
@@ -333,17 +394,28 @@ export default function App() {
           break;
       }
     };
+
     (window as unknown as Record<string, unknown>).__DBCRUST_MENU__ = handler;
     return () => {
       delete (window as unknown as Record<string, unknown>).__DBCRUST_MENU__;
     };
-  }, [connection, activeTabId, addTab, closeTab, runQuery, runExplain, handleSaveCurrentPreset, handleDisconnect, handleConnectRecent, handleConnectSession]);
+  }, [
+    connection,
+    activeTabId,
+    addTab,
+    closeTab,
+    runQuery,
+    runExplain,
+    handleSaveCurrentPreset,
+    handleDisconnect,
+    handleConnectRecent,
+    handleConnectSession,
+  ]);
 
   // ── Render ─────────────────────────────────────────────────────────────
   return (
     <div className="h-screen flex flex-col bg-surface-300 animate-fade-in">
       <div className="flex-1 flex min-h-0">
-        {/* ── Navigation Rail ──────────────────────────────────────── */}
         <Navigation
           connected={!!connection}
           activeView={view}
@@ -353,10 +425,8 @@ export default function App() {
           tables={tables}
         />
 
-        {/* ── Main Content ─────────────────────────────────────────── */}
         <div className="flex-1 min-w-0 flex flex-col">
           <div className="flex-1 min-h-0">
-            {/* ── Connect (always available) ────────────────────────── */}
             {view === "home" && (
               <ConnectionDialog
                 onConnectUrl={handleConnect}
@@ -367,7 +437,6 @@ export default function App() {
               />
             )}
 
-            {/* ── Docker Discovery (always available) ───────────────── */}
             {view === "docker" && (
               <DockerDiscovery
                 onConnect={handleConnect}
@@ -377,7 +446,6 @@ export default function App() {
               />
             )}
 
-            {/* ── Saved Connections (always available) ───────────── */}
             {view === "saved" && (
               <SavedConnections
                 onConnectUrl={handleConnect}
@@ -387,7 +455,6 @@ export default function App() {
               />
             )}
 
-            {/* ── Query Editor (connected) ──────────────────────────── */}
             {view === "query" && connection && (
               <Layout
                 connection={connection}
@@ -410,7 +477,6 @@ export default function App() {
               />
             )}
 
-            {/* ── Schema Explorer (connected) ───────────────────────── */}
             {view === "schema" && connection && (
               <SchemaExplorer
                 connection={connection}
@@ -420,11 +486,9 @@ export default function App() {
               />
             )}
 
-            {/* ── Settings (connected) ──────────────────────────────── */}
             {view === "settings" && connection && <SettingsPage />}
           </div>
 
-          {/* ── Status Bar ────────────────────────────────────────── */}
           {connection && (
             <StatusBar connection={connection} activeTab={activeTab} currentView={view} />
           )}

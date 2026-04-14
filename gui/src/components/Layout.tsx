@@ -1,9 +1,8 @@
 import { useState, useRef, useCallback } from "react";
 import type { ConnectionState, EditorTab } from "../types";
 import { Sidebar } from "./Sidebar";
-import { Editor } from "./Editor";
+import { Editor, type EditorHandle } from "./Editor";
 import { ResultsPanel } from "./ResultsPanel";
-import { StatusBar } from "./StatusBar";
 import { Plus, X, Play, Zap, BookmarkPlus } from "lucide-react";
 
 interface LayoutProps {
@@ -18,8 +17,8 @@ interface LayoutProps {
   onTabClose: (id: string) => void;
   onTabAdd: () => void;
   onSqlChange: (id: string, sql: string) => void;
-  onRunQuery: (id: string) => void;
-  onRunExplain: (id: string) => void;
+  onRunQuery: (id: string, sqlOverride?: string) => void;
+  onRunExplain: (id: string, sqlOverride?: string) => void;
   onSaveCurrentPreset: () => void;
   onDisconnect: () => void;
   onTableSelect: (tableName: string) => void;
@@ -48,6 +47,9 @@ export function Layout({
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [editorHeight, setEditorHeight] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const editorRef = useRef<EditorHandle>(null);
+
+  const getRunnableSql = useCallback(() => editorRef.current?.getExecutionTarget()?.sql, []);
 
   // ── Sidebar Resize ─────────────────────────────────────────────────────
   const handleSidebarResize = useCallback(
@@ -101,7 +103,7 @@ export function Layout({
   );
 
   return (
-    <div className="h-screen flex flex-col bg-surface-300 animate-fade-in">
+    <div className="h-full flex flex-col bg-surface-300 animate-fade-in">
       {/* ── Main Content ──────────────────────────────────────────────── */}
       <div className="flex-1 flex min-h-0">
         {/* ── Sidebar ──────────────────────────────────────────────────── */}
@@ -175,26 +177,26 @@ export function Layout({
             {/* ── Run Buttons ───────────────────────────────────────────── */}
             <div className="flex items-center gap-1 px-2 border-l border-zinc-800">
               <button
-                onClick={() => onRunQuery(activeTabId)}
+                onClick={() => onRunQuery(activeTabId, getRunnableSql())}
                 disabled={activeTab.isRunning || !activeTab.sql.trim()}
                 className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded
                   bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40
                   disabled:cursor-not-allowed transition-all"
-                title="Run Query (Ctrl+Enter)"
+                title="Run selected SQL or the statement under the cursor (Ctrl+Enter)"
               >
                 <Play className="w-3 h-3" />
-                Run
+                Run Current
               </button>
               <button
-                onClick={() => onRunExplain(activeTabId)}
+                onClick={() => onRunExplain(activeTabId, getRunnableSql())}
                 disabled={activeTab.isRunning || !activeTab.sql.trim()}
                 className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium rounded
                   bg-zinc-700 hover:bg-zinc-600 text-zinc-300 disabled:opacity-40
                   disabled:cursor-not-allowed transition-all"
-                title="Explain Query"
+                title="Explain the selected SQL or the statement under the cursor"
               >
                 <Zap className="w-3 h-3" />
-                Explain
+                Explain Current
               </button>
               <button
                 onClick={onSaveCurrentPreset}
@@ -219,10 +221,13 @@ export function Layout({
             className="flex-shrink-0"
           >
             <Editor
+              ref={editorRef}
               sql={activeTab.sql}
+              tables={tables}
+              databaseType={connection.database_type}
               onChange={(sql) => onSqlChange(activeTabId, sql)}
-              onRun={() => onRunQuery(activeTabId)}
-              onExplain={() => onRunExplain(activeTabId)}
+              onRun={(sqlOverride) => onRunQuery(activeTabId, sqlOverride)}
+              onExplain={(sqlOverride) => onRunExplain(activeTabId, sqlOverride)}
               isRunning={activeTab.isRunning}
             />
           </div>
@@ -245,8 +250,6 @@ export function Layout({
         </div>
       </div>
 
-      {/* ── Status Bar ────────────────────────────────────────────────── */}
-      <StatusBar connection={connection} activeTab={activeTab} />
     </div>
   );
 }

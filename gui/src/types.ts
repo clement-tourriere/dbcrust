@@ -111,3 +111,9 @@ export interface DockerContainer {
   container_port: number | null;
   is_running: boolean;
 }
+
+export interface VaultEnvironment {
+  vault_addr: string | null;
+  source: string | null;
+  token_available: boolean;
+}
