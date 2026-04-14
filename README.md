@@ -1,160 +1,233 @@
 # DBCrust
 
-**A modern database CLI that speaks your language. DBCrust combines the speed of Rust with intelligent features like context-aware autocompletion, SSH tunneling, Vault integration, and powerful Django ORM analysis. Whether you're debugging production issues, analyzing data, or optimizing Django applications, DBCrust provides an unmatched developer experience.**
-
-*🤖 Proudly crafted with [Claude Code](https://claude.ai/code) — where AI meets thoughtful development.*
+**A fast, multi-database CLI and desktop app built in Rust.** Connect to PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, and Elasticsearch — or query Parquet, CSV, and JSON files with SQL. Includes SSH tunneling, Vault integration, Docker auto-discovery, and a Tauri-based GUI.
 
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg)](https://www.rust-lang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Documentation](https://img.shields.io/badge/docs-mkdocs-blue.svg)](https://clement-tourriere.github.io/dbcrust/)
 [![PyPI](https://img.shields.io/pypi/v/dbcrust.svg)](https://pypi.org/project/dbcrust/)
 
-## Why DBCrust?
+## Features
 
-DBCrust is a high-performance database CLI built for modern developers. Beyond standard database management, it provides context-aware autocompletion, SSH tunneling, HashiCorp Vault integration, and Docker support. Built in Rust for speed, with specialized features for Django developers including real-time ORM analysis and N+1 query detection.
+| Category | What you get |
+|----------|-------------|
+| **Databases** | PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch |
+| **File formats** | Parquet, CSV, JSON — queried with SQL via Apache DataFusion |
+| **Smart CLI** | Context-aware autocompletion, syntax highlighting, history search, external editor |
+| **Desktop GUI** | Tauri app with CodeMirror SQL editor, schema explorer, Docker panel, EXPLAIN viewer |
+| **Security** | SSH tunneling, HashiCorp Vault dynamic credentials, encrypted password storage |
+| **DevOps** | Docker container auto-discovery, saved sessions, recent connections |
+| **Performance** | EXPLAIN visualization (text + interactive TUI), query timing |
+| **Django** | ORM analyzer, N+1 detection, middleware, management commands |
+| **Python API** | `dbcrust.run_command()`, `dbcrust.run_cli()`, `PostgresClient` class |
 
-## 🚀 Key Features
-
-- **🐳 Multi-Database & File Format Support** - PostgreSQL, MySQL, SQLite, MongoDB, ClickHouse, Elasticsearch, plus Parquet, CSV, JSON files via Apache DataFusion
-- **⚡ Intelligent CLI** - Context-aware autocompletion, syntax highlighting, and external editor support
-- **🔐 Enterprise Ready** - SSH tunneling, HashiCorp Vault integration, and encrypted connections
-- **🔍 Smart Performance Analysis** - Built-in EXPLAIN visualization and query optimization tools
-- **🐍 Django ORM Analyzer** - Real-time N+1 query detection, performance monitoring, and optimization recommendations
-- **📊 Python Library** - Complete programmatic access with unified CLI and Python APIs
-
-## Quick Start
-
-### Installation
-
-```bash
-# Native install (fastest, recommended)
-curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh  # Unix
-# irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex  # Windows
-
-# Or via uv (Python package manager)
-uvx dbcrust postgres://user:pass@localhost/mydb  # Run immediately
-uv tool install dbcrust  # Install as isolated tool (recommended)
-```
-
-### Basic Usage
+## Install
 
 ```bash
-# Multi-database connections with intelligent autocompletion
-dbcrust postgres://user:pass@localhost/mydb   # PostgreSQL
-dbcrust mysql://user:pass@localhost/mydb      # MySQL
-dbcrust elasticsearch://localhost:9200        # Elasticsearch
-dbcrust mongodb://localhost:27017/mydb        # MongoDB
-dbcrust clickhouse://localhost:8123/default   # ClickHouse
-dbcrust docker://postgres-container           # Container auto-discovery
-dbcrust session://production_db               # Saved sessions
+# Pre-built binary (macOS / Linux)
+curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
 
-# File format connections (Parquet, CSV, JSON)
-dbcrust parquet:///data/sales_2024.parquet    # Parquet files
-dbcrust csv:///logs/*.csv?header=true         # CSV with glob patterns
-dbcrust json:///api_responses.json            # JSON/NDJSON files
+# Windows
+# irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
+
+# Python (via uv)
+uv tool install dbcrust        # install globally
+uvx dbcrust <connection-url>   # run without installing
+
+# From source
+cargo install --path .
 ```
 
-## Essential Commands
+## Connect
 
 ```bash
-# Multi-database connections
-dbcrust postgres://postgres:pass@localhost/myapp     # PostgreSQL
-dbcrust elasticsearch://localhost:9200               # Elasticsearch (no auth)
-dbcrust mongodb://user:pass@localhost:27017/mydb     # MongoDB
-dbcrust clickhouse://user:pass@localhost:8123/default # ClickHouse
-dbcrust docker://my-postgres-container               # Container auto-discovery
+# Relational databases
+dbcrust postgres://user:pass@localhost/mydb
+dbcrust mysql://root:pass@localhost:3306/mydb
+dbcrust sqlite:///path/to/db.sqlite
+dbcrust clickhouse://user:pass@localhost:8123/default
 
-# Interactive commands (once connected)
-\dt                               # List tables
-\d users                         # Describe table
-\e                               # Toggle EXPLAIN mode
-\cs                              # Column selection for wide results
-\ss production_db                # Save current connection
+# Document databases
+dbcrust mongodb://user:pass@localhost:27017/mydb
+dbcrust elasticsearch://localhost:9200
+
+# File formats (SQL via DataFusion)
+dbcrust parquet:///data/sales.parquet
+dbcrust csv:///logs/*.csv?header=true
+dbcrust json:///events.json
+
+# Docker auto-discovery
+dbcrust docker://                         # interactive picker
+dbcrust docker://my-postgres-container    # direct
+
+# Saved sessions & recent connections
+dbcrust session://production_db
+dbcrust recent://
+
+# Vault dynamic credentials
+dbcrust vault://readonly@database/postgres-prod
+
+# SSH tunneling
+dbcrust postgres://user@db.internal/app --ssh-tunnel jumphost.com
 ```
 
-## Advanced Features
+Both `dbcrust` and `dbc` (short alias) are available.
+
+## Interactive commands
+
+Once connected you get a REPL with 50+ backslash commands. Highlights:
+
+```
+\dt             list tables               \l        list databases
+\d <table>      describe table            \c <db>   switch database
+\e              toggle EXPLAIN mode       \ev       EXPLAIN TUI (interactive)
+\x              expanded display          \cs       column selection
+\ed             open $EDITOR              \w <f>    write last query to file
+\i <f>          execute SQL file          \n        list named queries
+\ns <n> <sql>   save named query          \ss <n>   save session
+\s              list sessions             \r        recent connections
+\savepass       save password             \vc       Vault cache status
+\docker         list Docker containers    \h        help
+\q              quit
+```
+
+Named queries support parameter substitution (`$1`, `$*`, `$@`) and scopes (`--global`, `--postgres`, `--mysql`, `--sqlite`, or session-local by default).
+
+## Desktop GUI
+
+DBCrust includes a Tauri-based desktop application with:
+
+- **SQL editor** — CodeMirror with syntax highlighting, `Cmd+Enter` / `Ctrl+Enter` to run
+- **EXPLAIN viewer** — visual query plan display
+- **Schema explorer** — browse tables, columns, indexes, foreign keys
+- **Docker discovery** — find and connect to running database containers
+- **Session manager** — saved connections, recent history
+- **Multi-tab** — work on multiple queries in parallel
+- **Settings** — view and toggle configuration
+- **System tray** — quick access, stays running in background
+
+### Run the GUI
 
 ```bash
-# EXPLAIN visualization - toggle with \e
-SELECT * FROM users WHERE email = 'user@example.com';
-# ○ Execution Time: 1.23 ms • Planning Time: 0.15 ms
-# Index Scan using email_idx (Cost: 4, Rows: 1)
+# Prerequisites: mise (installs Bun automatically)
+mise install
 
-# SSH tunneling for secure connections
-dbcrust postgres://user:pass@db.internal.com/myapp --ssh-tunnel jumphost.com
+# Development mode (hot-reload)
+mise run gui:dev
 
-# HashiCorp Vault integration
-dbcrust vault://app-role@database/postgres-prod
+# Production build (generates .app / .dmg / .msi)
+mise run gui:build
 ```
 
-## 🐍 Django & Python Integration
-
-### Django ORM Performance Analysis
-
-```python
-# Real-time ORM analysis with middleware (fastest setup)
-# settings.py
-MIDDLEWARE = ['dbcrust.django.PerformanceAnalysisMiddleware', ...]
-
-# Or manual analysis
-from dbcrust.django import analyzer
-with analyzer.analyze() as analysis:
-    books = Book.objects.all()
-    for book in books:
-        print(book.author.name)  # Detects N+1 automatically
-
-results = analysis.get_results()  # Get optimization recommendations
-```
-
-**Perfect for Django teams:** N+1 detection, performance monitoring, CI/CD integration, and real-time optimization suggestions.
-
-[**📖 Complete Django Integration Guide →**](https://clement-tourriere.github.io/dbcrust/django-analyzer/)
-
-## Python API
+## Python integration
 
 ```python
 import dbcrust
 
-# Direct command execution
-result = dbcrust.run_command("postgres://user:pass@localhost/mydb", "SELECT * FROM users LIMIT 10")
+# Execute a query
+result = dbcrust.run_command("postgres://user:pass@localhost/mydb", "SELECT * FROM users LIMIT 5")
 
-# Launch interactive CLI from Python
+# Launch interactive CLI
 dbcrust.run_cli("postgres://user:pass@localhost/mydb")
 
-# PostgresClient class for object-oriented usage
+# Object-oriented client
 from dbcrust import PostgresClient
 client = PostgresClient(host="localhost", user="postgres", dbname="myapp")
 tables = client.list_tables()
 ```
 
-[**📖 Complete Python API Documentation →**](https://clement-tourriere.github.io/dbcrust/python-api/)
+### Django ORM analyzer
 
-## Documentation & Support
+```python
+# settings.py — add the middleware
+MIDDLEWARE = ['dbcrust.django.PerformanceAnalysisMiddleware', ...]
 
-- **[📚 Complete Documentation](https://clement-tourriere.github.io/dbcrust/)** - Installation, usage guides, and API reference
-- **[🔧 Command Reference](https://clement-tourriere.github.io/dbcrust/reference/backslash-commands/)** - All 40+ interactive commands
-- **[🐍 Django Integration](https://clement-tourriere.github.io/dbcrust/django-analyzer/)** - ORM performance analysis
-- **[🐛 Issues & Support](https://github.com/clement-tourriere/dbcrust/issues)** - Bug reports and questions
-- **[📦 PyPI Package](https://pypi.org/project/dbcrust/)** - Python package information
+# Or analyze manually
+from dbcrust.django import analyzer
+with analyzer.analyze() as analysis:
+    for book in Book.objects.all():
+        print(book.author.name)  # N+1 detected
+
+results = analysis.get_results()
+```
+
+```bash
+# Connect using Django database settings
+python manage.py dbcrust
+```
 
 ## Development
 
+DBCrust uses **[mise](https://mise.jdx.dev/)** for tool management and task running. Mise automatically installs **Bun** (used for the GUI frontend), **commitizen**, and other dev tools.
+
 ```bash
-# Install repo-managed tools (includes Bun for the GUI)
-mise install
+# One-time setup
+mise install              # installs Bun, commitizen, pkl, etc.
+mise run gui:install      # install GUI npm dependencies via Bun
 
-# Install GUI dependencies
-mise run gui:install
+# CLI
+mise run build:dev        # debug build
+mise run build            # release build
+cargo run -- <url>        # run directly
 
-# Build the CLI, GUI, and Python targets
-mise run build:dev
-mise run gui:build-frontend
-mise run py:dev
+# GUI
+mise run gui:dev          # dev mode with hot-reload
+mise run gui:build        # production build
 
-# Run the standard validation flow
-mise run check
+# Python
+mise run py:dev           # maturin develop
+mise run py:build         # build wheel
+mise run py:test          # pytest
+
+# Quality
+mise run fmt              # cargo fmt
+mise run lint             # clippy
+mise run test             # cargo test
+mise run check            # fmt + lint + test
 ```
 
----
+### Project layout
 
-**Built with ❤️ using [Rust](https://www.rust-lang.org/) • Modern database CLI • Security-first architecture**
+```
+├── src/                   # Rust CLI + library
+│   ├── main.rs            # entry point
+│   ├── commands.rs        # backslash command system (enum + strum)
+│   ├── database_*.rs      # per-database implementations
+│   ├── completion.rs      # SQL autocompletion
+│   ├── explain_tui/       # interactive EXPLAIN visualizer (ratatui)
+│   └── ...
+├── gui/                   # Tauri desktop app
+│   ├── src/               # React + TypeScript frontend
+│   ├── src-tauri/         # Tauri Rust backend (bridges to dbcrust core)
+│   └── package.json       # Bun-managed dependencies
+├── python/                # Python bindings (PyO3 + maturin)
+├── docs/                  # MkDocs documentation source
+├── mise.toml              # task runner & tool config
+└── Cargo.toml             # workspace root
+```
+
+## Configuration
+
+Config lives in `~/.config/dbcrust/`:
+
+```
+config.toml               # settings (limits, display, SSH patterns, Vault, etc.)
+named_queries.toml         # saved queries with scopes
+recent.toml                # connection history
+vault_credentials.enc      # encrypted Vault credential cache
+history.txt                # command history
+```
+
+Show current config: `\config` inside the REPL.
+
+## Documentation
+
+- **[Full docs](https://clement-tourriere.github.io/dbcrust/)** — installation, user guide, reference
+- **[Quick start](https://clement-tourriere.github.io/dbcrust/quick-start/)** — get connected in 2 minutes
+- **[Command reference](https://clement-tourriere.github.io/dbcrust/reference/backslash-commands/)** — all 50+ commands
+- **[Django integration](https://clement-tourriere.github.io/dbcrust/django-analyzer/)** — ORM analysis
+- **[Python API](https://clement-tourriere.github.io/dbcrust/python-api/overview/)** — programmatic usage
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -1,0 +1,240 @@
+---
+title: Installation
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Pre-built binaries (recommended)
+
+<Tabs>
+  <TabItem label="macOS / Linux">
+    ```bash
+    curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
+    ```
+
+    Customise:
+
+    ```bash
+    # Specific version
+    DBCRUST_VERSION=v0.25.0 curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
+
+    # Custom directory
+    DBCRUST_INSTALL_DIR=/usr/local/bin curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
+    ```
+
+    Customise:
+
+    ```powershell
+    $env:DBCRUST_VERSION = "v0.25.0"; irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
+    ```
+  </TabItem>
+</Tabs>
+
+This installs two binaries: `dbcrust` (full name) and `dbc` (short alias).
+
+## Python package managers
+
+### uv (recommended)
+
+```bash
+uv tool install dbcrust          # global tool
+uvx dbcrust <url>                # run without installing
+uv add dbcrust                   # add to a project
+```
+
+### pip / pipx
+
+```bash
+pip install dbcrust
+# or
+pipx install dbcrust
+```
+
+## From source
+
+### Prerequisites
+
+- **Rust** stable — install from [rustup.rs](https://rustup.rs/)
+- **mise** (optional but recommended) — manages Bun and dev tools
+
+```bash
+git clone https://github.com/clement-tourriere/dbcrust.git
+cd dbcrust
+
+# Option A: with mise (recommended for development)
+mise install            # installs Bun, commitizen, etc.
+mise run build          # release build
+mise run build:dev      # debug build (faster)
+
+# Option B: cargo only (CLI only, no GUI)
+cargo install --path .
+```
+
+### Building the GUI
+
+The desktop GUI requires Bun (for the frontend) and Tauri prerequisites. Mise handles Bun automatically.
+
+```bash
+mise install              # installs Bun
+mise run gui:install      # install frontend deps
+mise run gui:dev          # development mode
+mise run gui:build        # production build
+```
+
+See [Desktop GUI](/dbcrust/user-guide/gui/) for details.
+
+### Python bindings
+
+```bash
+mise run py:dev           # maturin develop (editable install)
+mise run py:build         # build wheel
+# or
+pip install -e ./python
+```
+
+## Shell completion
+
+Enable tab-completion for URL schemes, container names, session names, and flags.
+
+<Tabs>
+  <TabItem label="Bash">
+    ```bash
+    mkdir -p ~/.local/share/bash-completion/completions
+    dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
+    dbc --completions bash > ~/.local/share/bash-completion/completions/dbc
+    source ~/.bashrc
+    ```
+  </TabItem>
+  <TabItem label="Zsh">
+    ```bash
+    mkdir -p ~/.zfunc
+    dbcrust --completions zsh > ~/.zfunc/_dbcrust
+    dbc --completions zsh > ~/.zfunc/_dbc
+    ```
+
+    Add to `~/.zshrc` (before `source $ZSH/oh-my-zsh.sh` if you use oh-my-zsh):
+
+    ```bash
+    fpath+=~/.zfunc
+    autoload -U compinit && compinit
+    ```
+  </TabItem>
+  <TabItem label="Fish">
+    ```bash
+    dbcrust --completions fish > ~/.config/fish/completions/dbcrust.fish
+    dbc --completions fish > ~/.config/fish/completions/dbc.fish
+    ```
+  </TabItem>
+  <TabItem label="PowerShell">
+    ```powershell
+    dbcrust --completions powershell > "$HOME\Documents\PowerShell\Completions\dbcrust.ps1"
+    ```
+  </TabItem>
+</Tabs>
+
+After setup:
+
+```bash
+dbc pos[TAB]            → postgres://
+dbc docker://[TAB]      → lists running containers
+dbc session://[TAB]     → lists saved sessions
+dbc --[TAB]             → shows flags
+```
+
+## Verify
+
+```bash
+dbcrust --version
+
+# Quick test (no external database needed)
+dbcrust sqlite://:memory: --query "SELECT 'Hello DBCrust!' as message"
+```
+
+## Supported databases
+
+| Database | Versions | URL scheme |
+|----------|----------|------------|
+| PostgreSQL | 9.6+ | `postgres://` |
+| MySQL | 5.7+ | `mysql://` |
+| SQLite | 3.6+ | `sqlite://` |
+| ClickHouse | 20.3+ | `clickhouse://` |
+| MongoDB | 4.0+ | `mongodb://`, `mongodb+srv://` |
+| Elasticsearch | 7.x+ | `elasticsearch://`, `es://` |
+
+File formats (via Apache DataFusion):
+
+| Format | URL scheme |
+|--------|------------|
+| Parquet | `parquet://` |
+| CSV | `csv://` |
+| JSON | `json://` |
+
+Special schemes:
+
+| Scheme | Purpose |
+|--------|---------|
+| `docker://` | Connect to database containers |
+| `session://` | Saved sessions |
+| `recent://` | Recent connections |
+| `vault://` | HashiCorp Vault credentials |
+
+## Updating
+
+```bash
+# Pre-built binary — just re-run the installer
+curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
+
+# uv
+uv tool upgrade dbcrust
+
+# pip
+pip install --upgrade dbcrust
+
+# From source
+git pull && cargo install --path .
+```
+
+## Uninstalling
+
+```bash
+# uv
+uv tool uninstall dbcrust
+
+# pip
+pip uninstall dbcrust
+
+# cargo
+cargo uninstall dbcrust
+
+# Remove config (optional)
+rm -rf ~/.config/dbcrust
+```
+
+## Troubleshooting
+
+:::danger[Command not found]
+Make sure the install directory is in your `PATH`:
+```bash
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+```
+:::
+
+:::danger[SSL errors]
+Update your CA certificates, or test with SSL disabled:
+```bash
+dbcrust postgres://user:pass@localhost/db?sslmode=disable
+```
+:::
+
+:::danger[GUI won't build]
+Make sure Bun is installed via mise:
+```bash
+mise install
+mise run gui:install
+```
+:::

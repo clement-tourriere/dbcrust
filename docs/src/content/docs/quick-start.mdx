@@ -1,0 +1,222 @@
+---
+title: Quick Start
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Get connected in under 2 minutes.
+
+## Install
+
+<Tabs>
+  <TabItem label="macOS / Linux">
+    ```bash
+    curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
+    ```
+  </TabItem>
+  <TabItem label="Windows">
+    ```powershell
+    irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
+    ```
+  </TabItem>
+  <TabItem label="Python (uv)">
+    ```bash
+    uv tool install dbcrust     # install globally
+    uvx dbcrust <url>           # or run without installing
+    ```
+  </TabItem>
+  <TabItem label="From source">
+    ```bash
+    git clone https://github.com/clement-tourriere/dbcrust.git
+    cd dbcrust && cargo install --path .
+    ```
+  </TabItem>
+</Tabs>
+
+Both `dbcrust` and `dbc` (short alias) are available after installation.
+
+See [Installation](/dbcrust/installation/) for all options including shell completion setup.
+
+## First connection
+
+```bash
+dbcrust postgres://user:pass@localhost:5432/mydb
+```
+
+Tab-complete the URL scheme:
+
+```bash
+dbc pos[TAB]        → postgres://
+dbc docker://[TAB]  → lists running containers
+dbc session://[TAB] → lists saved sessions
+```
+
+<Tabs>
+  <TabItem label="PostgreSQL">
+    ```bash
+    dbcrust postgres://user:pass@localhost:5432/mydb
+    ```
+  </TabItem>
+  <TabItem label="MySQL">
+    ```bash
+    dbcrust mysql://user:pass@localhost:3306/mydb
+    ```
+  </TabItem>
+  <TabItem label="SQLite">
+    ```bash
+    dbcrust sqlite:///path/to/db.sqlite
+    ```
+  </TabItem>
+  <TabItem label="ClickHouse">
+    ```bash
+    dbcrust clickhouse://user:pass@localhost:8123/default
+    ```
+  </TabItem>
+  <TabItem label="MongoDB">
+    ```bash
+    dbcrust mongodb://user:pass@localhost:27017/mydb
+    ```
+  </TabItem>
+  <TabItem label="Elasticsearch">
+    ```bash
+    dbcrust elasticsearch://localhost:9200
+    ```
+  </TabItem>
+  <TabItem label="Files">
+    ```bash
+    dbcrust parquet:///data/sales.parquet
+    dbcrust csv:///logs/*.csv?header=true
+    dbcrust json:///events.json
+    ```
+  </TabItem>
+  <TabItem label="Docker">
+    ```bash
+    dbcrust docker://                  # interactive picker
+    dbcrust docker://my-postgres       # direct
+    ```
+  </TabItem>
+  <TabItem label="Sessions">
+    ```bash
+    dbcrust session://production_db
+    dbcrust recent://                  # pick from history
+    ```
+  </TabItem>
+</Tabs>
+
+## Essential commands
+
+Once connected you get an interactive REPL:
+
+### Navigate
+
+```sql
+\l              -- list databases
+\dt             -- list tables
+\d users        -- describe table
+\c other_db     -- switch database
+```
+
+### Query
+
+SQL with tab-completion on table and column names:
+
+```sql
+SELECT id, na[TAB] FROM us[TAB] WHERE st[TAB] = 'active';
+--           ↓          ↓            ↓
+--          name       users        status
+```
+
+### Display
+
+```sql
+\x              -- toggle expanded (vertical) display
+\e              -- toggle EXPLAIN mode (shows query plans)
+\ev             -- interactive EXPLAIN TUI
+\cs             -- toggle column selection for wide results
+```
+
+### EXPLAIN visualization
+
+```sql
+\e
+SELECT u.name, COUNT(o.id) FROM users u LEFT JOIN orders o ON u.id = o.user_id GROUP BY u.name;
+```
+
+```
+○ Execution Time: 2.34 ms • Planning Time: 0.45 ms
+
+Hash Join
+│ ○ Duration: 1.89 ms • Cost: 156 • Rows: 42
+│   Hash Cond: (u.id = o.user_id)
+├─ Seq Scan on users u
+│  │ ○ Duration: 0.23 ms • Rows: 42
+└─ Hash → Seq Scan on orders o
+   │ ○ Duration: 0.34 ms • Rows: 234
+```
+
+### Save and reuse
+
+```sql
+-- Named queries with parameters
+\ns daily SELECT * FROM orders WHERE created_at >= current_date - interval '$1 days'
+daily 7
+
+-- Sessions
+\ss production_db
+\s
+
+-- Files
+\w query.sql
+\i setup.sql
+\ed                -- open $EDITOR
+```
+
+### Help
+
+```sql
+\h              -- show all commands
+\q              -- quit
+```
+
+## Desktop GUI
+
+```bash
+mise install && mise run gui:dev
+```
+
+See [Desktop GUI](/dbcrust/user-guide/gui/) for the full guide.
+
+## Shell completion
+
+<Tabs>
+  <TabItem label="Bash">
+    ```bash
+    dbcrust --completions bash > ~/.local/share/bash-completion/completions/dbcrust
+    ```
+  </TabItem>
+  <TabItem label="Zsh">
+    ```bash
+    mkdir -p ~/.zfunc
+    dbcrust --completions zsh > ~/.zfunc/_dbcrust
+    dbc --completions zsh > ~/.zfunc/_dbc
+    # Add to .zshrc (before oh-my-zsh if applicable):
+    # fpath+=~/.zfunc
+    # autoload -U compinit && compinit
+    ```
+  </TabItem>
+  <TabItem label="Fish">
+    ```bash
+    dbcrust --completions fish > ~/.config/fish/completions/dbcrust.fish
+    ```
+  </TabItem>
+</Tabs>
+
+## What's next
+
+- [Basic usage](/dbcrust/user-guide/basic-usage/) — full feature walkthrough
+- [Advanced features](/dbcrust/user-guide/advanced-features/) — named queries, sessions, column selection
+- [Desktop GUI](/dbcrust/user-guide/gui/) — the Tauri desktop app
+- [File formats](/dbcrust/user-guide/file-formats/) — Parquet, CSV, JSON
+- [Django integration](/dbcrust/django-analyzer/) — ORM analysis
+- [Python API](/dbcrust/python-api/overview/) — programmatic usage
+- [Command reference](/dbcrust/reference/backslash-commands/) — all 50+ commands

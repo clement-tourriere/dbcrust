@@ -1,0 +1,46 @@
+/* ── Accent colors ─────────────────────────────────────────────────── */
+:root {
+  --sl-color-accent-low:  #2e1065;   /* violet-950 */
+  --sl-color-accent:      #7c3aed;   /* violet-600 */
+  --sl-color-accent-high: #ddd6fe;   /* violet-200 */
+  --sl-font-system: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low:  #ede9fe;   /* violet-100 */
+  --sl-color-accent:      #7c3aed;
+  --sl-color-accent-high: #3b0764;   /* violet-950 */
+}
+
+/* ── Hero section polish ──────────────────────────────────────────── */
+.hero {
+  padding-block: 3rem;
+}
+.hero .tagline {
+  font-size: var(--sl-text-xl);
+  max-width: 44ch;
+}
+
+/* ── Card grid ────────────────────────────────────────────────────── */
+.sl-card-grid {
+  gap: 1rem;
+}
+.card {
+  border-radius: 0.75rem;
+  transition: box-shadow 0.15s ease;
+}
+.card:hover {
+  box-shadow: 0 4px 24px rgba(124, 58, 237, 0.12);
+}
+:root[data-theme='dark'] .card:hover {
+  box-shadow: 0 4px 24px rgba(124, 58, 237, 0.25);
+}
+
+/* ── Code blocks ──────────────────────────────────────────────────── */
+.expressive-code {
+  border-radius: 0.75rem;
+}
+
+/* ── Sidebar active item ──────────────────────────────────────────── */
+nav .sidebar-content a[aria-current="page"] {
+  font-weight: 600;
+}

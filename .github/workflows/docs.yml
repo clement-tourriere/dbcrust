@@ -6,53 +6,41 @@ on:
       - main
     paths:
       - 'docs/**'
-      - 'mkdocs.yml'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
-# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
 permissions:
   contents: read
   pages: write
   id-token: write
 
-# Allow only one concurrent deployment
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
-  # Build job
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
 
       - name: Install dependencies
-        run: |
-          uv sync --only-group docs
+        working-directory: docs
+        run: bun install --frozen-lockfile
 
       - name: Build documentation
-        run: |
-          uv run --only-group docs mkdocs build --clean --strict
-
-      - name: Copy install scripts to site root
-        run: |
-          cp docs/install.sh site/install.sh
-          cp docs/install.ps1 site/install.ps1
+        working-directory: docs
+        run: bun run build
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ./site
+          path: docs/dist
 
-  # Deployment job
   deploy:
     environment:
       name: github-pages

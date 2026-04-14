@@ -12,3 +12,9 @@ dist/
 __pycache__
 *.so
 dbcrust_data_analysis.txt
+
+# Docs (Starlight/Astro)
+docs/node_modules/
+docs/dist/
+docs/.astro/
+site/

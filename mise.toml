@@ -100,6 +100,26 @@ description = "Run Python tests"
 run = "python -m pytest python/tests/"
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Documentation Tasks
+# ══════════════════════════════════════════════════════════════════════════════
+
+[tasks."docs"]
+description = "Serve documentation locally with live-reload (http://localhost:4321)"
+run = "bun run --cwd docs dev"
+
+[tasks."docs:build"]
+description = "Build documentation site into docs/dist/"
+run = "bun run --cwd docs build"
+
+[tasks."docs:preview"]
+description = "Preview the built documentation site"
+run = "bun run --cwd docs preview"
+
+[tasks."docs:install"]
+description = "Install documentation dependencies"
+run = "bun install --cwd docs"
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Combined Tasks
 # ══════════════════════════════════════════════════════════════════════════════
 

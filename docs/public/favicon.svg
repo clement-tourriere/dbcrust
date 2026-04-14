@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="24" fill="#7c3aed"/>
+  <text x="50%" y="54%" dominant-baseline="central" text-anchor="middle"
+        font-family="system-ui, -apple-system, sans-serif" font-weight="800"
+        font-size="72" fill="#fff" letter-spacing="-4">db</text>
+</svg>

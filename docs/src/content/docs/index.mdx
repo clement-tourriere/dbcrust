@@ -1,0 +1,96 @@
+---
+title: DBCrust
+description: Fast multi-database CLI and desktop app built in Rust
+template: splash
+hero:
+  tagline: Connect to PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch — or query Parquet, CSV, and JSON files with SQL.
+  actions:
+    - text: Get Started
+      link: /dbcrust/quick-start/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/clement-tourriere/dbcrust
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="6 databases" icon="setting">
+    PostgreSQL · MySQL · SQLite · ClickHouse · MongoDB · Elasticsearch
+  </Card>
+  <Card title="File formats" icon="document">
+    Parquet · CSV · JSON — query with SQL via Apache DataFusion
+  </Card>
+  <Card title="Smart CLI" icon="rocket">
+    Autocompletion · syntax highlighting · EXPLAIN visualizer · 50+ commands
+  </Card>
+  <Card title="Desktop GUI" icon="laptop">
+    Tauri app — CodeMirror editor · schema explorer · Docker panel · multi-tab
+  </Card>
+  <Card title="Security" icon="approve-check-circle">
+    SSH tunneling · HashiCorp Vault · encrypted password storage
+  </Card>
+  <Card title="Python & Django" icon="open-book">
+    Library API · Django middleware · N+1 query detection
+  </Card>
+</CardGrid>
+
+## Connect to anything
+
+```bash
+dbcrust postgres://user:pass@localhost/mydb       # PostgreSQL
+dbcrust mysql://root:pass@localhost:3306/app       # MySQL
+dbcrust sqlite:///data/app.db                      # SQLite
+dbcrust clickhouse://user:pass@localhost:8123/db   # ClickHouse
+dbcrust mongodb://user:pass@localhost:27017/app    # MongoDB
+dbcrust elasticsearch://localhost:9200             # Elasticsearch
+
+dbcrust parquet:///data/sales.parquet              # Parquet
+dbcrust csv:///logs/*.csv?header=true              # CSV with globs
+dbcrust json:///events.json                        # JSON / NDJSON
+
+dbcrust docker://my-postgres                       # Docker container
+dbcrust session://production_db                    # Saved session
+dbcrust vault://readonly@database/postgres-prod    # Vault credentials
+```
+
+## Interactive CLI
+
+```sql
+\dt                    -- list tables
+\d users               -- describe table
+\e                     -- toggle EXPLAIN mode
+\ev                    -- interactive EXPLAIN TUI
+\cs                    -- column selection for wide results
+\ns --global daily SELECT * FROM orders WHERE created_at >= current_date - interval '$1 days'
+daily 7                -- run named query with parameter
+```
+
+## Desktop GUI
+
+A Tauri-based app with CodeMirror SQL editor, schema explorer, Docker discovery, EXPLAIN viewer, and multi-tab interface.
+
+```bash
+mise install && mise run gui:dev
+```
+
+[Learn more →](/dbcrust/user-guide/gui/)
+
+## Python & Django
+
+```python
+import dbcrust
+result = dbcrust.run_command("postgres://…/mydb", "SELECT count(*) FROM users")
+```
+
+```python
+from dbcrust.django import analyzer
+with analyzer.analyze() as a:
+    for book in Book.objects.all():
+        print(book.author.name)  # N+1 detected
+```
+
+[Python API →](/dbcrust/python-api/overview/) · [Django integration →](/dbcrust/django-analyzer/)
