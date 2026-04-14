@@ -335,3 +335,5 @@ export function SavedConnections({
     </div>
   );
 }
+
+export default SavedConnections;

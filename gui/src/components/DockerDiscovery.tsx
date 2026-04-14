@@ -248,3 +248,5 @@ export function DockerDiscovery({ onConnect, connecting, error: connectError }: 
     </div>
   );
 }
+
+export default DockerDiscovery;

@@ -1,15 +1,18 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, lazy, Suspense } from "react";
 import type { ConnectionState, EditorTab, NavigationView } from "./types";
 import * as cmd from "./commands";
 import { Navigation } from "./components/Navigation";
 import { ConnectionDialog } from "./components/ConnectionDialog";
-import { SavedConnections } from "./components/SavedConnections";
-import { Layout } from "./components/Layout";
-import { SchemaExplorer } from "./components/SchemaExplorer";
-import { DockerDiscovery } from "./components/DockerDiscovery";
-import { SettingsPage } from "./components/SettingsPage";
 import { StatusBar } from "./components/StatusBar";
 import { extractTableNames } from "./tableMetadata";
+
+// Lazy-loaded views — keeps the initial bundle small.
+// Layout is the heaviest (~450-520 KB) since it pulls in CodeMirror.
+const Layout = lazy(() => import("./components/Layout"));
+const SchemaExplorer = lazy(() => import("./components/SchemaExplorer"));
+const DockerDiscovery = lazy(() => import("./components/DockerDiscovery"));
+const SavedConnections = lazy(() => import("./components/SavedConnections"));
+const SettingsPage = lazy(() => import("./components/SettingsPage"));
 
 let tabCounter = 1;
 function newTab(): EditorTab {
@@ -413,6 +416,13 @@ export default function App() {
   ]);
 
   // ── Render ─────────────────────────────────────────────────────────────
+
+  const lazyFallback = (
+    <div className="flex-1 flex items-center justify-center text-text-secondary">
+      Loading…
+    </div>
+  );
+
   return (
     <div className="h-screen flex flex-col bg-surface-300 animate-fade-in">
       <div className="flex-1 flex min-h-0">
@@ -438,55 +448,67 @@ export default function App() {
             )}
 
             {view === "docker" && (
-              <DockerDiscovery
-                onConnect={handleConnect}
-                connected={!!connection}
-                connecting={connecting}
-                error={connectError}
-              />
+              <Suspense fallback={lazyFallback}>
+                <DockerDiscovery
+                  onConnect={handleConnect}
+                  connected={!!connection}
+                  connecting={connecting}
+                  error={connectError}
+                />
+              </Suspense>
             )}
 
             {view === "saved" && (
-              <SavedConnections
-                onConnectUrl={handleConnect}
-                onConnectRecent={handleConnectRecent}
-                onConnectSession={handleConnectSession}
-                connecting={connecting}
-              />
+              <Suspense fallback={lazyFallback}>
+                <SavedConnections
+                  onConnectUrl={handleConnect}
+                  onConnectRecent={handleConnectRecent}
+                  onConnectSession={handleConnectSession}
+                  connecting={connecting}
+                />
+              </Suspense>
             )}
 
             {view === "query" && connection && (
-              <Layout
-                connection={connection}
-                tables={tables}
-                tablesError={tablesError}
-                tabs={tabs}
-                activeTab={activeTab}
-                activeTabId={activeTabId}
-                namedQueriesVersion={namedQueriesVersion}
-                onTabSelect={setActiveTabId}
-                onTabClose={closeTab}
-                onTabAdd={addTab}
-                onSqlChange={updateTabSql}
-                onRunQuery={runQuery}
-                onRunExplain={runExplain}
-                onSaveCurrentPreset={handleSaveCurrentPreset}
-                onDisconnect={handleDisconnect}
-                onTableSelect={handleTableSelect}
-                onLoadSnippet={handleLoadSnippet}
-              />
+              <Suspense fallback={lazyFallback}>
+                <Layout
+                  connection={connection}
+                  tables={tables}
+                  tablesError={tablesError}
+                  tabs={tabs}
+                  activeTab={activeTab}
+                  activeTabId={activeTabId}
+                  namedQueriesVersion={namedQueriesVersion}
+                  onTabSelect={setActiveTabId}
+                  onTabClose={closeTab}
+                  onTabAdd={addTab}
+                  onSqlChange={updateTabSql}
+                  onRunQuery={runQuery}
+                  onRunExplain={runExplain}
+                  onSaveCurrentPreset={handleSaveCurrentPreset}
+                  onDisconnect={handleDisconnect}
+                  onTableSelect={handleTableSelect}
+                  onLoadSnippet={handleLoadSnippet}
+                />
+              </Suspense>
             )}
 
             {view === "schema" && connection && (
-              <SchemaExplorer
-                connection={connection}
-                tables={tables}
-                onRefreshTables={handleRefreshTables}
-                onTableSelect={handleTableSelect}
-              />
+              <Suspense fallback={lazyFallback}>
+                <SchemaExplorer
+                  connection={connection}
+                  tables={tables}
+                  onRefreshTables={handleRefreshTables}
+                  onTableSelect={handleTableSelect}
+                />
+              </Suspense>
             )}
 
-            {view === "settings" && connection && <SettingsPage />}
+            {view === "settings" && connection && (
+              <Suspense fallback={lazyFallback}>
+                <SettingsPage />
+              </Suspense>
+            )}
           </div>
 
           {connection && (

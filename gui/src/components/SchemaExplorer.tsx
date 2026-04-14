@@ -374,3 +374,5 @@ export function SchemaExplorer({
     </div>
   );
 }
+
+export default SchemaExplorer;

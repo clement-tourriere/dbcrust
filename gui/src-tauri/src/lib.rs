@@ -1476,11 +1476,83 @@ fn update_config(state: State<'_, AppState>, key: String, value: String) -> Resu
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// GUI Environment Fix
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// On macOS, GUI apps launched from Finder / Dock / Spotlight inherit a minimal
+// environment from launchd, not the user's shell.  This means PATH is typically
+// just "/usr/bin:/bin:/usr/sbin:/sbin" — tools installed via Homebrew, mise,
+// nix, or custom locations are invisible.  SSH tunnel patterns that use
+// backtick command substitution (e.g. `owl …`, `jq …`) will silently fail.
+//
+// On Linux, apps launched from a .desktop file may also have a reduced PATH
+// depending on the display manager / session type.
+//
+// We fix this once at startup, before any config is loaded or threads spawned,
+// by asking the user's login shell for the full PATH.
+
+/// Resolve the user's full PATH from their login shell and inject it into the
+/// current process environment.  Called once at startup before any threads.
+fn fix_gui_path_env() {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| default_shell().to_string());
+
+    // Fish shell stores PATH as a list (space-separated) rather than a
+    // colon-separated string.  We need `string join : $PATH` to get the
+    // POSIX-style representation that std::env expects.
+    let print_path_cmd = if shell.contains("fish") {
+        "string join : $PATH"
+    } else {
+        // printf avoids trailing-newline edge cases.
+        "printf '%s' \"$PATH\""
+    };
+
+    // The -l flag sources the user's login profile (~/.zprofile,
+    // ~/.bash_profile, ~/.config/fish/config.fish, …).
+    let output = std::process::Command::new(&shell)
+        .args(["-l", "-c", print_path_cmd])
+        .output();
+
+    if let Ok(output) = output {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                // SAFETY: called once at startup before any threads are spawned.
+                unsafe {
+                    std::env::set_var("PATH", &path);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn default_shell() -> &'static str {
+    "/bin/zsh"
+}
+
+#[cfg(target_os = "linux")]
+fn default_shell() -> &'static str {
+    "/bin/bash"
+}
+
+#[cfg(target_os = "windows")]
+fn default_shell() -> &'static str {
+    "cmd.exe"
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn default_shell() -> &'static str {
+    "/bin/sh"
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Application Entry Point
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    fix_gui_path_env();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::new())
