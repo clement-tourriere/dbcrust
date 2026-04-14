@@ -1,3 +1,11 @@
+## v0.25.0 (2026-04-14)
+
+### Feat
+
+- expand dbcrust desktop GUI experience
+- add GUI query presets and Django toolkit
+- add consolidated Django performance analysis reporting
+
 ## v0.24.0 (2026-04-10)
 
 ### Feat
