@@ -1,6 +1,7 @@
 [tools]
 bun = "1.2.10"
 hk = "latest"
+"pipx:commitizen" = "latest"
 pkl = "latest"
 
 [env]
