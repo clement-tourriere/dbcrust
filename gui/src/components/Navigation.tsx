@@ -5,6 +5,7 @@ import {
   Settings,
   LogOut,
   Plug,
+  Star,
 } from "lucide-react";
 import type { NavigationView } from "../types";
 import { getVisibleDjangoPresetGroups } from "../queryPresets";
@@ -50,7 +51,8 @@ export function Navigation({
     tables ? getVisibleDjangoPresetGroups(tables).length > 0 : false;
 
   const connectionItems: NavItem[] = [
-    { view: "home", icon: Plug, label: "Connect" },
+    { view: "home", icon: Plug, label: "New Connection" },
+    { view: "saved", icon: Star, label: "Saved Connections" },
     { view: "docker", icon: Boxes, label: "Docker Discovery" },
   ];
 

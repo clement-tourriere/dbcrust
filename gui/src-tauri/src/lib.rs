@@ -11,11 +11,8 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use tauri::menu::{
-    AboutMetadataBuilder, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem,
-    SubmenuBuilder,
-};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::menu::{AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::tray::TrayIconBuilder;
 use tauri::{image::Image, Manager, State, WindowEvent, Wry};
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -26,9 +23,7 @@ pub struct AppState {
     db: std::sync::Mutex<Option<Database>>,
     config: std::sync::Mutex<Config>,
     connection_url: std::sync::Mutex<Option<String>>,
-    /// Serializes database operations to prevent concurrent take_db/put_db races.
     op_lock: std::sync::Mutex<()>,
-    tray_toggle_item: std::sync::Mutex<Option<MenuItem<Wry>>>,
     quitting: AtomicBool,
 }
 
@@ -39,15 +34,30 @@ impl AppState {
             config: std::sync::Mutex::new(Config::load()),
             connection_url: std::sync::Mutex::new(None),
             op_lock: std::sync::Mutex::new(()),
-            tray_toggle_item: std::sync::Mutex::new(None),
             quitting: AtomicBool::new(false),
         }
     }
 }
 
 const MENU_QUIT_APP: &str = "quit_app";
-const MENU_TRAY_TOGGLE: &str = "tray_toggle";
 const MENU_TRAY_QUIT: &str = "tray_quit";
+const MENU_TRAY_DISCONNECT: &str = "tray_disconnect";
+
+fn db_type_emoji(db_type: &str) -> &'static str {
+    match db_type {
+        "PostgreSQL" => "🐘",
+        "MySQL" => "🐬",
+        "SQLite" => "📦",
+        "ClickHouse" => "⚡",
+        "MongoDB" => "🍃",
+        "Elasticsearch" => "🔍",
+        "Parquet" => "📊",
+        "CSV" => "📄",
+        "JSON" => "🧾",
+        "DuckDB" => "🦆",
+        _ => "🔗",
+    }
+}
 
 fn main_window<M: Manager<Wry>>(manager: &M) -> Option<tauri::WebviewWindow<Wry>> {
     manager
@@ -55,24 +65,149 @@ fn main_window<M: Manager<Wry>>(manager: &M) -> Option<tauri::WebviewWindow<Wry>
         .or_else(|| manager.webview_windows().into_values().next())
 }
 
-fn sync_tray_toggle_item<M: Manager<Wry>>(manager: &M) {
-    let is_visible = main_window(manager)
-        .and_then(|window| window.is_visible().ok())
-        .unwrap_or(false);
-    let text = if is_visible {
-        "Hide DBCrust"
-    } else {
-        "Show DBCrust"
+/// Rebuild the tray menu dynamically based on current connection state.
+fn rebuild_tray_menu<M: Manager<Wry>>(manager: &M) {
+    let state = manager.state::<AppState>();
+
+    let (is_connected, db_type, db_name) = {
+        let db_guard = state.db.lock().unwrap();
+        match db_guard.as_ref() {
+            Some(db) => (
+                true,
+                db.get_database_type().display_name().to_string(),
+                db.get_current_db(),
+            ),
+            None => (false, String::new(), String::new()),
+        }
     };
 
-    if let Some(item) = manager
-        .state::<AppState>()
-        .tray_toggle_item
-        .lock()
-        .unwrap()
-        .as_ref()
-    {
-        let _ = item.set_text(text);
+    let recent: Vec<(usize, String)> = {
+        let config = state.config.lock().unwrap();
+        config
+            .get_recent_connections()
+            .iter()
+            .take(10)
+            .enumerate()
+            .map(|(i, c)| {
+                let emoji = db_type_emoji(&c.database_type.display_name());
+                (i, format!("{} {}", emoji, c.display_name))
+            })
+            .collect()
+    };
+
+    let sessions: Vec<(String, String)> = {
+        let config = state.config.lock().unwrap();
+        let mut sess: Vec<_> = config
+            .list_sessions()
+            .iter()
+            .map(|(name, s)| {
+                let emoji = db_type_emoji(&s.database_type.display_name());
+                (name.clone(), format!("{} {}", emoji, name))
+            })
+            .collect();
+        sess.sort_by(|a, b| a.1.cmp(&b.1));
+        sess
+    };
+
+    let app_handle = manager.app_handle();
+    let Some(tray) = app_handle.tray_by_id("main-tray") else {
+        return;
+    };
+
+    let result: tauri::Result<()> = (|| {
+        let mut b = MenuBuilder::new(app_handle);
+
+        // -- Connection status
+        if is_connected {
+            let emoji = db_type_emoji(&db_type);
+            b = b
+                .item(
+                    &MenuItemBuilder::with_id(
+                        "_s",
+                        format!("{emoji} {db_name} \u{2014} {db_type}"),
+                    )
+                    .enabled(false)
+                    .build(app_handle)?,
+                )
+                .item(
+                    &MenuItemBuilder::with_id(MENU_TRAY_DISCONNECT, "Disconnect")
+                        .build(app_handle)?,
+                )
+                .separator();
+        } else {
+            b = b
+                .item(
+                    &MenuItemBuilder::with_id("_s", "Not connected")
+                        .enabled(false)
+                        .build(app_handle)?,
+                )
+                .separator();
+        }
+
+        // -- Navigation
+        b = b
+            .item(
+                &MenuItemBuilder::with_id("tray_view_connect", "New Connection")
+                    .build(app_handle)?,
+            )
+            .item(
+                &MenuItemBuilder::with_id("tray_view_saved", "Saved Connections")
+                    .build(app_handle)?,
+            )
+            .item(
+                &MenuItemBuilder::with_id("tray_view_docker", "Docker Discovery")
+                    .build(app_handle)?,
+            );
+
+        if is_connected {
+            b = b
+                .separator()
+                .item(
+                    &MenuItemBuilder::with_id("tray_view_query", "Query Editor")
+                        .build(app_handle)?,
+                )
+                .item(
+                    &MenuItemBuilder::with_id("tray_view_schema", "Schema Explorer")
+                        .build(app_handle)?,
+                );
+        }
+
+        // -- Recent submenu (last 10)
+        if !recent.is_empty() {
+            let mut recent_sub = SubmenuBuilder::with_id(app_handle, "_recent_sub", "Recent");
+            for (i, label) in &recent {
+                recent_sub = recent_sub.item(
+                    &MenuItemBuilder::with_id(format!("tray_recent_{i}"), label)
+                        .build(app_handle)?,
+                );
+            }
+            b = b.separator().item(&recent_sub.build()?);
+        }
+
+        // -- Saved submenu
+        if !sessions.is_empty() {
+            let mut saved_sub = SubmenuBuilder::with_id(app_handle, "_saved_sub", "Saved");
+            for (name, label) in &sessions {
+                saved_sub = saved_sub.item(
+                    &MenuItemBuilder::with_id(format!("tray_session_{name}"), label)
+                        .build(app_handle)?,
+                );
+            }
+            b = b.item(&saved_sub.build()?);
+        }
+
+        // -- Quit
+        b = b.separator().item(
+            &MenuItemBuilder::with_id(MENU_TRAY_QUIT, "Quit DBCrust").build(app_handle)?,
+        );
+
+        let menu = b.build()?;
+        tray.set_menu(Some(menu))?;
+        Ok(())
+    })();
+
+    if let Err(e) = result {
+        eprintln!("Failed to rebuild tray menu: {e}");
     }
 }
 
@@ -82,27 +217,16 @@ fn show_main_window<M: Manager<Wry>>(manager: &M) {
         let _ = window.show();
         let _ = window.set_focus();
     }
-    sync_tray_toggle_item(manager);
+    rebuild_tray_menu(manager);
 }
 
 fn hide_main_window<M: Manager<Wry>>(manager: &M) {
     if let Some(window) = main_window(manager) {
         let _ = window.hide();
     }
-    sync_tray_toggle_item(manager);
+    rebuild_tray_menu(manager);
 }
 
-fn toggle_main_window<M: Manager<Wry>>(manager: &M) {
-    let is_visible = main_window(manager)
-        .and_then(|window| window.is_visible().ok())
-        .unwrap_or(false);
-
-    if is_visible {
-        hide_main_window(manager);
-    } else {
-        show_main_window(manager);
-    }
-}
 
 fn apply_window_icon(app: &tauri::App<Wry>) {
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -1131,24 +1255,29 @@ pub fn run() {
 
             let view_submenu = SubmenuBuilder::new(app, "View")
                 .item(
-                    &MenuItemBuilder::with_id("view_connect", "Connect")
+                    &MenuItemBuilder::with_id("view_connect", "New Connection")
                         .accelerator("CmdOrCtrl+1")
                         .build(app)?,
                 )
                 .item(
-                    &MenuItemBuilder::with_id("view_docker", "Docker Discovery")
+                    &MenuItemBuilder::with_id("view_saved", "Saved Connections")
                         .accelerator("CmdOrCtrl+2")
+                        .build(app)?,
+                )
+                .item(
+                    &MenuItemBuilder::with_id("view_docker", "Docker Discovery")
+                        .accelerator("CmdOrCtrl+3")
                         .build(app)?,
                 )
                 .separator()
                 .item(
                     &MenuItemBuilder::with_id("view_query", "Query Editor")
-                        .accelerator("CmdOrCtrl+3")
+                        .accelerator("CmdOrCtrl+4")
                         .build(app)?,
                 )
                 .item(
                     &MenuItemBuilder::with_id("view_schema", "Schema Explorer")
-                        .accelerator("CmdOrCtrl+4")
+                        .accelerator("CmdOrCtrl+5")
                         .build(app)?,
                 )
                 .item(
@@ -1197,16 +1326,7 @@ pub fn run() {
 
             app.set_menu(menu)?;
 
-            let tray_toggle_item =
-                MenuItemBuilder::with_id(MENU_TRAY_TOGGLE, "Show DBCrust").build(app)?;
-            let tray_menu = MenuBuilder::new(app)
-                .item(&tray_toggle_item)
-                .separator()
-                .item(&MenuItemBuilder::with_id(MENU_TRAY_QUIT, "Quit DBCrust").build(app)?)
-                .build()?;
-
-            *app.state::<AppState>().tray_toggle_item.lock().unwrap() = Some(tray_toggle_item);
-
+            // Build initial tray (menu rebuilt dynamically on each open)
             let tray_icon = if cfg!(target_os = "macos") {
                 load_tray_icon()?
             } else {
@@ -1216,23 +1336,12 @@ pub fn run() {
             };
 
             TrayIconBuilder::with_id("main-tray")
-                .menu(&tray_menu)
                 .tooltip("DBCrust")
-                .show_menu_on_left_click(false)
+                .show_menu_on_left_click(true)
                 .icon(tray_icon)
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        show_main_window(tray.app_handle());
-                    }
-                })
                 .build(app)?;
 
-            sync_tray_toggle_item(app);
+            rebuild_tray_menu(app);
 
             Ok(())
         })
@@ -1247,8 +1356,49 @@ pub fn run() {
                     app.exit(0);
                     return;
                 }
-                MENU_TRAY_TOGGLE => {
-                    toggle_main_window(app);
+                MENU_TRAY_DISCONNECT => {
+                    show_main_window(app);
+                    if let Some(webview) = app.webview_windows().values().next() {
+                        let _ = webview.eval(
+                            "window.__DBCRUST_MENU__ && window.__DBCRUST_MENU__('disconnect')",
+                        );
+                    }
+                    return;
+                }
+                // Tray view shortcuts: show window + forward to frontend
+                id if id.starts_with("tray_view_") => {
+                    show_main_window(app);
+                    let view = id.strip_prefix("tray_view_").unwrap_or("home");
+                    if let Some(webview) = app.webview_windows().values().next() {
+                        let _ = webview.eval(&format!(
+                            "window.__DBCRUST_MENU__ && window.__DBCRUST_MENU__('view_{}')",
+                            view
+                        ));
+                    }
+                    return;
+                }
+                // Tray recent connection
+                id if id.starts_with("tray_recent_") => {
+                    show_main_window(app);
+                    let idx = id.strip_prefix("tray_recent_").unwrap_or("0");
+                    if let Some(webview) = app.webview_windows().values().next() {
+                        let _ = webview.eval(&format!(
+                            "window.__DBCRUST_MENU__ && window.__DBCRUST_MENU__('connect_recent_{}')",
+                            idx
+                        ));
+                    }
+                    return;
+                }
+                // Tray saved session
+                id if id.starts_with("tray_session_") => {
+                    show_main_window(app);
+                    let name = id.strip_prefix("tray_session_").unwrap_or("");
+                    if let Some(webview) = app.webview_windows().values().next() {
+                        let _ = webview.eval(&format!(
+                            "window.__DBCRUST_MENU__ && window.__DBCRUST_MENU__('connect_session_{}')",
+                            name
+                        ));
+                    }
                     return;
                 }
                 _ => {}
@@ -1269,7 +1419,7 @@ pub fn run() {
                 }
             }
             WindowEvent::Focused(_) | WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
-                sync_tray_toggle_item(window)
+                rebuild_tray_menu(window)
             }
             _ => {}
         })

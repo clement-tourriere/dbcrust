@@ -99,7 +99,7 @@ export interface EditorTab {
   isExplain?: boolean;
 }
 
-export type NavigationView = 'home' | 'query' | 'schema' | 'docker' | 'settings';
+export type NavigationView = 'home' | 'saved' | 'query' | 'schema' | 'docker' | 'settings';
 
 export interface DockerContainer {
   id: string;

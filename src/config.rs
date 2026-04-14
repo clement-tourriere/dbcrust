@@ -922,7 +922,7 @@ impl Config {
 
     /// Load recent connections from separate file
     fn load_recent_connections() -> RecentConnectionsStorage {
-        match Self::get_recent_connections_path() {
+        let mut storage = match Self::get_recent_connections_path() {
             Ok(path) => {
                 if path.exists() {
                     match fs::read_to_string(&path) {
@@ -961,7 +961,15 @@ impl Config {
                 eprintln!("Error getting recent connections path: {e}");
                 RecentConnectionsStorage::default()
             }
-        }
+        };
+
+        // Deduplicate: keep only the first (most recent) entry per connection_url
+        let mut seen = std::collections::HashSet::new();
+        storage
+            .connections
+            .retain(|c| seen.insert(c.connection_url.clone()));
+
+        storage
     }
 
     /// Save recent connections to separate file
@@ -2263,13 +2271,19 @@ impl Config {
         };
 
         let connection = RecentConnection {
-            connection_url: normalized_url,
+            connection_url: normalized_url.clone(),
             display_name,
             timestamp: Utc::now(),
-            database_type,
+            database_type: database_type.clone(),
             success,
             options: HashMap::new(),
         };
+
+        // Remove existing entries with the same URL to avoid duplicates.
+        // Different users on the same host have different URLs so they are preserved.
+        self.recent_connections_storage
+            .connections
+            .retain(|c| c.connection_url != normalized_url);
 
         // Add to the beginning of the list (most recent first)
         self.recent_connections_storage
@@ -2325,13 +2339,18 @@ impl Config {
         let display_name = Self::generate_display_name_from_url(&connection_url, &database_type);
 
         let connection = RecentConnection {
-            connection_url,
+            connection_url: connection_url.clone(),
             display_name,
             timestamp: Utc::now(),
             database_type,
             success,
             options,
         };
+
+        // Remove existing entries with the same URL to avoid duplicates
+        self.recent_connections_storage
+            .connections
+            .retain(|c| c.connection_url != connection_url);
 
         // Add to the beginning of the list (most recent first)
         self.recent_connections_storage

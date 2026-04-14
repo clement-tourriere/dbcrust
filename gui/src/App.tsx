@@ -3,6 +3,7 @@ import type { ConnectionState, EditorTab, NavigationView } from "./types";
 import * as cmd from "./commands";
 import { Navigation } from "./components/Navigation";
 import { ConnectionDialog } from "./components/ConnectionDialog";
+import { SavedConnections } from "./components/SavedConnections";
 import { Layout } from "./components/Layout";
 import { SchemaExplorer } from "./components/SchemaExplorer";
 import { DockerDiscovery } from "./components/DockerDiscovery";
@@ -267,9 +268,24 @@ export default function App() {
   // ── Listen for native menu events from Tauri ───────────────────────────
   useEffect(() => {
     const handler = (menuId: string) => {
+      // Handle dynamic tray events: connect_recent_N, connect_session_NAME
+      if (menuId.startsWith("connect_recent_")) {
+        const idx = parseInt(menuId.slice("connect_recent_".length), 10);
+        if (!isNaN(idx)) handleConnectRecent(idx);
+        return;
+      }
+      if (menuId.startsWith("connect_session_")) {
+        const name = menuId.slice("connect_session_".length);
+        if (name) handleConnectSession(name);
+        return;
+      }
+
       switch (menuId) {
         case "view_connect":
           setView("home");
+          break;
+        case "view_saved":
+          setView("saved");
           break;
         case "view_docker":
           setView("docker");
@@ -310,7 +326,7 @@ export default function App() {
     return () => {
       delete (window as unknown as Record<string, unknown>).__DBCRUST_MENU__;
     };
-  }, [connection, activeTabId, addTab, closeTab, runQuery, runExplain, handleSaveCurrentPreset, handleDisconnect]);
+  }, [connection, activeTabId, addTab, closeTab, runQuery, runExplain, handleSaveCurrentPreset, handleDisconnect, handleConnectRecent, handleConnectSession]);
 
   // ── Render ─────────────────────────────────────────────────────────────
   return (
@@ -343,6 +359,16 @@ export default function App() {
             {/* ── Docker Discovery (always available) ───────────────── */}
             {view === "docker" && (
               <DockerDiscovery onConnect={handleConnect} connected={!!connection} />
+            )}
+
+            {/* ── Saved Connections (always available) ───────────── */}
+            {view === "saved" && (
+              <SavedConnections
+                onConnectUrl={handleConnect}
+                onConnectRecent={handleConnectRecent}
+                onConnectSession={handleConnectSession}
+                connecting={connecting}
+              />
             )}
 
             {/* ── Query Editor (connected) ──────────────────────────── */}

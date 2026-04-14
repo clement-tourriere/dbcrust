@@ -7,6 +7,7 @@ import {
   Table2,
   Boxes,
   Settings,
+  Star,
 } from "lucide-react";
 import type { ConnectionState, EditorTab, NavigationView } from "../types";
 import { formatConnectionTarget } from "../connectionDisplay";
@@ -35,6 +36,7 @@ const VIEW_LABELS: Record<
   { icon: React.ComponentType<{ className?: string }>; label: string }
 > = {
   home: { icon: Home, label: "Dashboard" },
+  saved: { icon: Star, label: "Saved Connections" },
   query: { icon: Code2, label: "Query Editor" },
   schema: { icon: Table2, label: "Schema Explorer" },
   docker: { icon: Boxes, label: "Docker Discovery" },
