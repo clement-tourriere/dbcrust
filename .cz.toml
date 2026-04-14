@@ -1,6 +1,6 @@
 [tool.commitizen]
 name = "cz_conventional_commits"
-version = "0.26.1"
+version = "0.27.0"
 tag_format = "v$version"
 legacy_tag_formats = ["$version"]
 ignored_tag_formats = ["test-v$version"]

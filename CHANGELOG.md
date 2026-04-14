@@ -1,3 +1,9 @@
+## v0.27.0 (2026-04-14)
+
+### Feat
+
+- improve SQL workspace and Vault discovery UX
+
 ## v0.26.1 (2026-04-14)
 
 ### Fix
