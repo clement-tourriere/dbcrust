@@ -21,11 +21,13 @@ const DB_EMOJI: Record<string, string> = {
 };
 
 interface DockerDiscoveryProps {
-  onConnect: (url: string) => void;
+  onConnect: (url: string) => Promise<void>;
   connected: boolean;
+  connecting: boolean;
+  error: string | null;
 }
 
-export function DockerDiscovery({ onConnect }: DockerDiscoveryProps) {
+export function DockerDiscovery({ onConnect, connecting, error: connectError }: DockerDiscoveryProps) {
   const [containers, setContainers] = useState<DockerContainer[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -48,12 +50,22 @@ export function DockerDiscovery({ onConnect }: DockerDiscoveryProps) {
     refresh();
   }, [refresh]);
 
+  // Clear spinner when parent reports connection finished (success or error)
+  useEffect(() => {
+    if (!connecting && connectingId) {
+      setConnectingId(null);
+    }
+  }, [connecting, connectingId]);
+
   const handleConnect = useCallback(
-    (container: DockerContainer) => {
+    async (container: DockerContainer) => {
       setConnectingId(container.id);
-      // Build docker:// URL for the container
       const url = `docker://${container.name}`;
-      onConnect(url);
+      try {
+        await onConnect(url);
+      } finally {
+        setConnectingId(null);
+      }
     },
     [onConnect],
   );
@@ -198,7 +210,7 @@ export function DockerDiscovery({ onConnect }: DockerDiscoveryProps) {
                   {/* Connect Button */}
                   <button
                     onClick={() => handleConnect(container)}
-                    disabled={!container.is_running || connectingId === container.id}
+                    disabled={!container.is_running || connecting}
                     className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
                       bg-accent hover:bg-accent-hover text-white disabled:opacity-40
                       disabled:cursor-not-allowed transition-all flex-shrink-0"
@@ -213,6 +225,17 @@ export function DockerDiscovery({ onConnect }: DockerDiscoveryProps) {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Connection Error */}
+        {connectError && !connecting && (
+          <div className="mt-4 bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <h4 className="text-sm font-medium text-red-300">Connection failed</h4>
+              <p className="text-xs text-red-400/80 mt-1">{connectError}</p>
+            </div>
           </div>
         )}
 

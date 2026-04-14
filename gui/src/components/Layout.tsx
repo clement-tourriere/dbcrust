@@ -9,6 +9,7 @@ import { Plus, X, Play, Zap, BookmarkPlus } from "lucide-react";
 interface LayoutProps {
   connection: ConnectionState;
   tables: string[];
+  tablesError?: string | null;
   tabs: EditorTab[];
   activeTab: EditorTab;
   activeTabId: string;
@@ -28,6 +29,7 @@ interface LayoutProps {
 export function Layout({
   connection,
   tables,
+  tablesError,
   tabs,
   activeTab,
   activeTabId,
@@ -107,6 +109,7 @@ export function Layout({
           <Sidebar
             connection={connection}
             tables={tables}
+            tablesError={tablesError}
             onTableSelect={onTableSelect}
             onLoadSnippet={onLoadSnippet}
             namedQueriesVersion={namedQueriesVersion}

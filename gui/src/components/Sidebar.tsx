@@ -29,6 +29,7 @@ import {
 interface SidebarProps {
   connection: ConnectionState;
   tables: string[];
+  tablesError?: string | null;
   onTableSelect: (tableName: string) => void;
   onLoadSnippet: (title: string, sql: string) => void;
   namedQueriesVersion: number;
@@ -38,6 +39,7 @@ interface SidebarProps {
 export function Sidebar({
   connection,
   tables,
+  tablesError,
   onTableSelect,
   onLoadSnippet,
   namedQueriesVersion,
@@ -53,6 +55,8 @@ export function Sidebar({
   const [presetMessage, setPresetMessage] = useState<string | null>(null);
   const [savingPreset, setSavingPreset] = useState<string | null>(null);
   const [deletingPreset, setDeletingPreset] = useState<string | null>(null);
+  const [showSavedPresets, setShowSavedPresets] = useState(false);
+  const [showDjangoToolkit, setShowDjangoToolkit] = useState(false);
 
   useEffect(() => {
     setLocalTables(tables);
@@ -212,133 +216,167 @@ export function Sidebar({
         </div>
       </div>
 
-      <div className="border-b border-zinc-800 px-2 py-2 space-y-2">
-        <div className="px-1">
-          <div className="flex items-center gap-1.5 text-xxs font-semibold text-zinc-500 uppercase tracking-wider">
-            <Bookmark className="w-3 h-3" />
-            Saved Presets
+      <div className="border-b border-zinc-800 px-2 py-2">
+        <button
+          onClick={() => setShowSavedPresets((v) => !v)}
+          className="w-full px-1 flex items-start justify-between gap-2 text-left"
+        >
+          <div>
+            <div className="flex items-center gap-1.5 text-xxs font-semibold text-zinc-500 uppercase tracking-wider">
+              <Bookmark className="w-3 h-3" />
+              Saved Presets
+              <span className="text-zinc-700 normal-case">({namedQueries.length})</span>
+            </div>
+            <p className="mt-1 text-xxs text-zinc-600 leading-relaxed">
+              Reuse named queries across this workspace.
+            </p>
           </div>
-          <p className="mt-1 text-xxs text-zinc-600 leading-relaxed">
-            Reuse named queries across this workspace. Scoped presets stay tied to the current database family.
-          </p>
-        </div>
+          {showSavedPresets ? (
+            <ChevronDown className="w-3.5 h-3.5 text-zinc-600 mt-0.5 flex-shrink-0" />
+          ) : (
+            <ChevronRight className="w-3.5 h-3.5 text-zinc-600 mt-0.5 flex-shrink-0" />
+          )}
+        </button>
 
-        {presetMessage && (
-          <div className="mx-1 rounded-md border border-zinc-800 bg-surface-300 px-2 py-1.5 text-xxs text-zinc-500">
-            {presetMessage}
-          </div>
-        )}
-
-        {namedQueries.length === 0 ? (
-          <div className="mx-1 rounded-md border border-dashed border-zinc-800 px-2 py-2 text-xxs text-zinc-600">
-            No saved presets yet. Use Save Preset in the top bar or save a toolkit query below.
-          </div>
-        ) : (
-          <div className="space-y-1">
-            {namedQueries.map((preset) => (
-              <div
-                key={preset.key}
-                className="rounded-md border border-zinc-800 bg-surface-300 px-2 py-2"
-              >
-                <div className="flex items-start gap-2">
-                  <button
-                    onClick={() => onLoadSnippet(preset.name, preset.query)}
-                    className="flex-1 text-left min-w-0"
-                  >
-                    <div className="text-xs text-zinc-300 truncate">{preset.name}</div>
-                    <div className="mt-1 text-xxs text-zinc-600 truncate">
-                      {preset.scope}
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => handleDeletePreset(preset)}
-                    disabled={deletingPreset === preset.key}
-                    className="rounded p-1 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 disabled:opacity-40"
-                    title="Delete preset"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </div>
+        {showSavedPresets && (
+          <div className="mt-2 space-y-2 max-h-48 overflow-y-auto pr-1">
+            {presetMessage && (
+              <div className="mx-1 rounded-md border border-zinc-800 bg-surface-300 px-2 py-1.5 text-xxs text-zinc-500">
+                {presetMessage}
               </div>
-            ))}
+            )}
+
+            {namedQueries.length === 0 ? (
+              <div className="mx-1 rounded-md border border-dashed border-zinc-800 px-2 py-2 text-xxs text-zinc-600">
+                No saved presets yet. Use Save Preset in the top bar or save a toolkit query below.
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {namedQueries.map((preset) => (
+                  <div
+                    key={preset.key}
+                    className="rounded-md border border-zinc-800 bg-surface-300 px-2 py-2"
+                  >
+                    <div className="flex items-start gap-2">
+                      <button
+                        onClick={() => onLoadSnippet(preset.name, preset.query)}
+                        className="flex-1 text-left min-w-0"
+                      >
+                        <div className="text-xs text-zinc-300 truncate">{preset.name}</div>
+                        <div className="mt-1 text-xxs text-zinc-600 truncate">
+                          {preset.scope}
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => handleDeletePreset(preset)}
+                        disabled={deletingPreset === preset.key}
+                        className="rounded p-1 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 disabled:opacity-40"
+                        title="Delete preset"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
 
       {hasDjangoToolkit && (
-        <div className="border-b border-zinc-800 px-2 py-2 space-y-2">
-          <div className="px-1 flex items-start justify-between gap-2">
+        <div className="border-b border-zinc-800 px-2 py-2">
+          <button
+            onClick={() => setShowDjangoToolkit((v) => !v)}
+            className="w-full px-1 flex items-start justify-between gap-2 text-left"
+          >
             <div>
               <div className="flex items-center gap-1.5 text-xxs font-semibold text-zinc-500 uppercase tracking-wider">
                 <Code2 className="w-3 h-3" />
                 Django Toolkit
+                <span className="text-zinc-700 normal-case">({visibleDjangoPresets.length})</span>
               </div>
               <p className="mt-1 text-xxs text-zinc-600 leading-relaxed">
-                Schema-aware query packs for Django internals. Load them into the editor or save them as presets.
+                Schema-aware query packs for Django internals.
               </p>
             </div>
-            <button
-              onClick={() => void handleSaveAllDjangoPresets()}
-              disabled={savingPreset !== null}
-              className="flex items-center gap-1 rounded-md border border-zinc-800 px-2 py-1 text-xxs text-zinc-400 hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
-              title="Save all visible Django presets"
-            >
-              <BookmarkPlus className="w-3 h-3" />
-              Save All
-            </button>
-          </div>
+            {showDjangoToolkit ? (
+              <ChevronDown className="w-3.5 h-3.5 text-zinc-600 mt-0.5 flex-shrink-0" />
+            ) : (
+              <ChevronRight className="w-3.5 h-3.5 text-zinc-600 mt-0.5 flex-shrink-0" />
+            )}
+          </button>
 
-          {djangoPresetGroups.map((group) => {
-            const GroupIcon =
-              group.id === "models"
-                ? Boxes
-                : group.id === "migrations"
-                  ? GitBranch
-                  : Shield;
-
-            return (
-              <div
-                key={group.id}
-                className="rounded-md border border-zinc-800 bg-surface-300 px-2 py-2"
-              >
-                <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-300">
-                  <GroupIcon className="w-3.5 h-3.5 text-zinc-500" />
-                  {group.title}
-                </div>
-                <p className="mt-1 text-xxs text-zinc-600 leading-relaxed">
-                  {group.description}
+          {showDjangoToolkit && (
+            <div className="mt-2 space-y-2 max-h-64 overflow-y-auto pr-1">
+              <div className="px-1 flex items-start justify-between gap-2">
+                <p className="text-xxs text-zinc-600 leading-relaxed">
+                  Load them into the editor or save them as presets.
                 </p>
-                <div className="mt-2 space-y-1">
-                  {group.presets.map((preset) => (
-                    <div
-                      key={preset.name}
-                      className="rounded border border-zinc-800/70 bg-surface px-2 py-2"
-                    >
-                      <div className="flex items-start gap-2">
-                        <button
-                          onClick={() => onLoadSnippet(preset.label, preset.query)}
-                          className="flex-1 text-left min-w-0"
-                        >
-                          <div className="text-xs text-zinc-300">{preset.label}</div>
-                          <div className="mt-1 text-xxs text-zinc-600 leading-relaxed">
-                            {preset.description}
-                          </div>
-                        </button>
-                        <button
-                          onClick={() => void handleSavePreset(preset.name, preset.query)}
-                          disabled={savingPreset === preset.name}
-                          className="rounded p-1 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 disabled:opacity-40"
-                          title="Save as named preset"
-                        >
-                          <BookmarkPlus className="w-3 h-3" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <button
+                  onClick={() => void handleSaveAllDjangoPresets()}
+                  disabled={savingPreset !== null}
+                  className="flex items-center gap-1 rounded-md border border-zinc-800 px-2 py-1 text-xxs text-zinc-400 hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
+                  title="Save all visible Django presets"
+                >
+                  <BookmarkPlus className="w-3 h-3" />
+                  Save All
+                </button>
               </div>
-            );
-          })}
+
+              {djangoPresetGroups.map((group) => {
+                const GroupIcon =
+                  group.id === "models"
+                    ? Boxes
+                    : group.id === "migrations"
+                      ? GitBranch
+                      : Shield;
+
+                return (
+                  <div
+                    key={group.id}
+                    className="rounded-md border border-zinc-800 bg-surface-300 px-2 py-2"
+                  >
+                    <div className="flex items-center gap-1.5 text-xs font-medium text-zinc-300">
+                      <GroupIcon className="w-3.5 h-3.5 text-zinc-500" />
+                      {group.title}
+                    </div>
+                    <p className="mt-1 text-xxs text-zinc-600 leading-relaxed">
+                      {group.description}
+                    </p>
+                    <div className="mt-2 space-y-1">
+                      {group.presets.map((preset) => (
+                        <div
+                          key={preset.name}
+                          className="rounded border border-zinc-800/70 bg-surface px-2 py-2"
+                        >
+                          <div className="flex items-start gap-2">
+                            <button
+                              onClick={() => onLoadSnippet(preset.label, preset.query)}
+                              className="flex-1 text-left min-w-0"
+                            >
+                              <div className="text-xs text-zinc-300">{preset.label}</div>
+                              <div className="mt-1 text-xxs text-zinc-600 leading-relaxed">
+                                {preset.description}
+                              </div>
+                            </button>
+                            <button
+                              onClick={() => void handleSavePreset(preset.name, preset.query)}
+                              disabled={savingPreset === preset.name}
+                              className="rounded p-1 text-zinc-600 hover:bg-zinc-800 hover:text-zinc-300 disabled:opacity-40"
+                              title="Save as named preset"
+                            >
+                              <BookmarkPlus className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -381,8 +419,15 @@ export function Sidebar({
       {/* ── Table List ────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto px-1">
         {filteredTables.length === 0 ? (
-          <div className="px-3 py-8 text-center text-zinc-600 text-xs">
-            {search ? "No matching tables" : "No tables found"}
+          <div
+            className={`px-3 py-8 text-center text-xs ${tablesError && !search ? "text-red-400" : "text-zinc-600"}`}
+            title={tablesError ?? undefined}
+          >
+            {search
+              ? "No matching tables"
+              : tablesError
+                ? `Failed to load tables: ${tablesError}`
+                : "No tables found"}
           </div>
         ) : (
           <div className="space-y-px">

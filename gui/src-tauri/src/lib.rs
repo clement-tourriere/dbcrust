@@ -4,14 +4,16 @@
 
 use dbcrust::config::Config;
 use dbcrust::database::{ConnectionInfo, DatabaseType, DatabaseTypeExt};
-use dbcrust::db::Database;
+use dbcrust::db::{Database, FrontendMode};
 use dbcrust::docker::DockerClient;
 use dbcrust::password_sanitizer::sanitize_connection_url;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use tauri::menu::{AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder};
+use tauri::menu::{
+    AboutMetadataBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, SubmenuBuilder,
+};
 use tauri::tray::TrayIconBuilder;
 use tauri::{image::Image, Manager, State, WindowEvent, Wry};
 
@@ -25,6 +27,7 @@ pub struct AppState {
     connection_url: std::sync::Mutex<Option<String>>,
     op_lock: std::sync::Mutex<()>,
     quitting: AtomicBool,
+    db_thread: DbThread,
 }
 
 impl AppState {
@@ -35,7 +38,65 @@ impl AppState {
             connection_url: std::sync::Mutex::new(None),
             op_lock: std::sync::Mutex::new(()),
             quitting: AtomicBool::new(false),
+            db_thread: DbThread::new(),
         }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Dedicated Database Thread
+// ══════════════════════════════════════════════════════════════════════════════
+//
+// A single persistent background thread with its own tokio current-thread
+// runtime + LocalSet.  ALL database operations (connect **and** query) run
+// here so that sqlx pool connections stay on the same runtime that created
+// them.  The thread processes tasks one at a time (capacity-0 channel),
+// matching the op_lock serialisation on the Tauri side.
+
+type DbTask = Box<dyn FnOnce(&tokio::runtime::Runtime, &tokio::task::LocalSet) + Send>;
+
+pub struct DbThread {
+    tx: std::sync::mpsc::SyncSender<DbTask>,
+    _handle: std::thread::JoinHandle<()>,
+}
+
+impl DbThread {
+    fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<DbTask>(0);
+        let handle = std::thread::Builder::new()
+            .name("dbcrust-db".into())
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("failed to create db runtime");
+                let local = tokio::task::LocalSet::new();
+                while let Ok(task) = rx.recv() {
+                    task(&rt, &local);
+                }
+            })
+            .expect("failed to spawn db thread");
+        Self {
+            tx,
+            _handle: handle,
+        }
+    }
+
+    /// Execute a closure on the dedicated database thread and block until it
+    /// returns.  The closure receives the persistent runtime + LocalSet so it
+    /// can drive async / !Send futures.
+    fn run<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&tokio::runtime::Runtime, &tokio::task::LocalSet) -> T + Send + 'static,
+    ) -> T {
+        let (ret_tx, ret_rx) = std::sync::mpsc::sync_channel(1);
+        self.tx
+            .send(Box::new(move |rt, local| {
+                let val = f(rt, local);
+                let _ = ret_tx.send(val);
+            }))
+            .expect("db thread gone");
+        ret_rx.recv().expect("db thread task failed")
     }
 }
 
@@ -197,9 +258,9 @@ fn rebuild_tray_menu<M: Manager<Wry>>(manager: &M) {
         }
 
         // -- Quit
-        b = b.separator().item(
-            &MenuItemBuilder::with_id(MENU_TRAY_QUIT, "Quit DBCrust").build(app_handle)?,
-        );
+        b = b
+            .separator()
+            .item(&MenuItemBuilder::with_id(MENU_TRAY_QUIT, "Quit DBCrust").build(app_handle)?);
 
         let menu = b.build()?;
         tray.set_menu(Some(menu))?;
@@ -226,7 +287,6 @@ fn hide_main_window<M: Manager<Wry>>(manager: &M) {
     }
     rebuild_tray_menu(manager);
 }
-
 
 fn apply_window_icon(app: &tauri::App<Wry>) {
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -259,25 +319,19 @@ fn put_db(state: &AppState, db: Database) {
     *state.db.lock().unwrap() = Some(db);
 }
 
-/// Run an async database operation on a dedicated thread with LocalSet.
-/// This handles the !Send futures from dbcrust's async methods.
+/// Run an async database operation on the dedicated DbThread.
+/// This ensures the sqlx pool connections stay on the same runtime.
 fn run_db<T: Send + 'static>(
+    db_thread: &DbThread,
     mut db: Database,
     op: impl FnOnce(&mut Database) -> std::pin::Pin<Box<dyn std::future::Future<Output = T> + '_>>
         + Send
         + 'static,
 ) -> (Database, T) {
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let local = tokio::task::LocalSet::new();
-        let result = local.block_on(&rt, op(&mut db));
+    db_thread.run(move |rt, local| {
+        let result = local.block_on(rt, op(&mut db));
         (db, result)
     })
-    .join()
-    .expect("Database thread panicked")
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -447,136 +501,137 @@ fn complete_vault_url(connection_info: &ConnectionInfo, fallback_url: &str) -> S
 }
 
 fn connect_standard_database(
+    db_thread: &DbThread,
     url: &str,
     limit: usize,
     expanded: bool,
 ) -> Result<(Database, Option<ConnectionInfo>), String> {
     let url = url.to_string();
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async move {
-            Database::from_url(&url, Some(limit), Some(expanded))
-                .await
-                .map(|db| (db, None))
-                .map_err(|e| e.to_string())
+    db_thread
+        .run(move |rt, local| {
+            local.block_on(rt, async move {
+                Database::from_url_with_mode(&url, Some(limit), Some(expanded), FrontendMode::Gui)
+                    .await
+                    .map(|db| (db, None))
+                    .map_err(|e| e.to_string())
+            })
         })
-    })
-    .join()
-    .map_err(|_| "Connection thread panicked".to_string())?
-    .map_err(|e| format!("Connection failed: {e}"))
+        .map_err(|e| format!("Connection failed: {e}"))
 }
 
 fn connect_docker_database(
+    db_thread: &DbThread,
     url: &str,
     limit: usize,
     expanded: bool,
 ) -> Result<(Database, Option<ConnectionInfo>), String> {
     let url = url.to_string();
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async move {
-            Database::from_docker_url_with_tracking(&url, Some(limit), Some(expanded))
+    db_thread
+        .run(move |rt, local| {
+            local.block_on(rt, async move {
+                Database::from_docker_url_with_tracking_mode(
+                    &url,
+                    Some(limit),
+                    Some(expanded),
+                    FrontendMode::Gui,
+                )
                 .await
                 .map_err(|e| e.to_string())
+            })
         })
-    })
-    .join()
-    .map_err(|_| "Connection thread panicked".to_string())?
-    .map_err(|e| format!("Connection failed: {e}"))
+        .map_err(|e| format!("Connection failed: {e}"))
 }
 
 fn connect_vault_database(
+    db_thread: &DbThread,
     url: &str,
     limit: usize,
     expanded: bool,
 ) -> Result<(Database, Option<ConnectionInfo>), String> {
     let url = url.to_string();
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let local = tokio::task::LocalSet::new();
-        local.block_on(&rt, async move {
-            let (role, mount_path, database_name) = dbcrust::vault_client::parse_vault_url(&url)
-                .ok_or_else(|| format!("Invalid vault URL format: {url}"))?;
+    db_thread
+        .run(move |rt, local| {
+            local.block_on(rt, async move {
+                let (role, mount_path, database_name) =
+                    dbcrust::vault_client::parse_vault_url(&url)
+                        .ok_or_else(|| format!("Invalid vault URL format: {url}"))?;
 
-            let db_name = database_name.ok_or_else(|| {
-                "Vault GUI connections require an explicit database name in the URL".to_string()
-            })?;
-            let role_name = role.ok_or_else(|| {
-                "Vault GUI connections require an explicit role name in the URL".to_string()
-            })?;
+                let db_name = database_name.ok_or_else(|| {
+                    "Vault GUI connections require an explicit database name in the URL".to_string()
+                })?;
+                let role_name = role.ok_or_else(|| {
+                    "Vault GUI connections require an explicit role name in the URL".to_string()
+                })?;
 
-            let mut vault_config = Config::load();
-            let (credentials, _) = dbcrust::vault_client::get_dynamic_credentials_with_caching(
-                &mount_path,
-                &db_name,
-                &role_name,
-                &mut vault_config,
-            )
-            .await
-            .map_err(|e| format!("Failed to get Vault credentials: {e}"))?;
-
-            let db_config = dbcrust::vault_client::get_vault_database_config(&mount_path, &db_name)
+                let mut vault_config = Config::load();
+                let (credentials, _) = dbcrust::vault_client::get_dynamic_credentials_with_caching(
+                    &mount_path,
+                    &db_name,
+                    &role_name,
+                    &mut vault_config,
+                )
                 .await
-                .map_err(|e| format!("Failed to get database config from Vault: {e}"))?;
+                .map_err(|e| format!("Failed to get Vault credentials: {e}"))?;
 
-            let connection_url_template = db_config
-                .connection_details
-                .connection_url
-                .as_ref()
-                .ok_or_else(|| "No connection URL found in Vault database config".to_string())?;
+                let db_config =
+                    dbcrust::vault_client::get_vault_database_config(&mount_path, &db_name)
+                        .await
+                        .map_err(|e| format!("Failed to get database config from Vault: {e}"))?;
 
-            let postgres_url = dbcrust::vault_client::construct_postgres_url(
-                connection_url_template,
-                &credentials.username,
-                &credentials.password,
-            )
-            .map_err(|e| format!("Failed to construct connection URL: {e}"))?;
+                let connection_url_template = db_config
+                    .connection_details
+                    .connection_url
+                    .as_ref()
+                    .ok_or_else(|| {
+                        "No connection URL found in Vault database config".to_string()
+                    })?;
 
-            let mut database = Database::from_url(&postgres_url, Some(limit), Some(expanded))
+                let postgres_url = dbcrust::vault_client::construct_postgres_url(
+                    connection_url_template,
+                    &credentials.username,
+                    &credentials.password,
+                )
+                .map_err(|e| format!("Failed to construct connection URL: {e}"))?;
+
+                let mut database = Database::from_url_with_mode(
+                    &postgres_url,
+                    Some(limit),
+                    Some(expanded),
+                    FrontendMode::Gui,
+                )
                 .await
                 .map_err(|e| format!("Failed to connect with Vault credentials: {e}"))?;
 
-            let original_connection_info = ConnectionInfo::parse_url(connection_url_template)
-                .map_err(|e| format!("Failed to parse Vault connection URL template: {e}"))?;
+                let original_connection_info = ConnectionInfo::parse_url(connection_url_template)
+                    .map_err(|e| {
+                    format!("Failed to parse Vault connection URL template: {e}")
+                })?;
 
-            let mut options = HashMap::new();
-            options.insert("vault_mount".to_string(), mount_path.clone());
-            options.insert("vault_database".to_string(), db_name.clone());
-            options.insert("vault_role".to_string(), role_name.clone());
+                let mut options = HashMap::new();
+                options.insert("vault_mount".to_string(), mount_path.clone());
+                options.insert("vault_database".to_string(), db_name.clone());
+                options.insert("vault_role".to_string(), role_name.clone());
 
-            let connection_info = ConnectionInfo {
-                database_type: DatabaseType::PostgreSQL,
-                host: original_connection_info.host.clone(),
-                port: original_connection_info.port,
-                username: Some(credentials.username.clone()),
-                password: Some(credentials.password),
-                database: original_connection_info.database.clone(),
-                file_path: None,
-                options,
-                docker_container: None,
-            };
+                let connection_info = ConnectionInfo {
+                    database_type: DatabaseType::PostgreSQL,
+                    host: original_connection_info.host.clone(),
+                    port: original_connection_info.port,
+                    username: Some(credentials.username.clone()),
+                    password: Some(credentials.password),
+                    database: original_connection_info.database.clone(),
+                    file_path: None,
+                    options,
+                    docker_container: None,
+                };
 
-            database.set_connection_info_override(connection_info.clone());
-            Ok::<(Database, Option<ConnectionInfo>), String>((database, Some(connection_info)))
+                database.set_connection_info_override(connection_info.clone());
+                Ok::<(Database, Option<ConnectionInfo>), String>((database, Some(connection_info)))
+            })
         })
-    })
-    .join()
-    .map_err(|_| "Connection thread panicked".to_string())?
-    .map_err(|e| format!("Connection failed: {e}"))
+        .map_err(|e| format!("Connection failed: {e}"))
 }
 
 fn connect_with_url(state: &AppState, url: String) -> Result<ConnectionResponse, String> {
@@ -586,11 +641,11 @@ fn connect_with_url(state: &AppState, url: String) -> Result<ConnectionResponse,
     };
 
     let (db, connection_info) = if url.starts_with("vault://") {
-        connect_vault_database(&url, limit, expanded)?
+        connect_vault_database(&state.db_thread, &url, limit, expanded)?
     } else if url.starts_with("docker://") {
-        connect_docker_database(&url, limit, expanded)?
+        connect_docker_database(&state.db_thread, &url, limit, expanded)?
     } else {
-        connect_standard_database(&url, limit, expanded)?
+        connect_standard_database(&state.db_thread, &url, limit, expanded)?
     };
 
     let current_url = if url.starts_with("vault://") {
@@ -652,17 +707,27 @@ fn connect_with_url(state: &AppState, url: String) -> Result<ConnectionResponse,
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn connect(state: State<'_, AppState>, url: String) -> Result<ConnectionResponse, String> {
-    let _op = state.op_lock.lock().unwrap();
-    connect_with_url(state.inner(), url)
+async fn connect(app: tauri::AppHandle, url: String) -> Result<ConnectionResponse, String> {
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        connect_with_url(state.inner(), url)
+    })
+    .await
+    .map_err(|e| format!("Connection task failed: {e}"))?
 }
 
 #[tauri::command]
-fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
-    let _op = state.op_lock.lock().unwrap();
-    *state.db.lock().unwrap() = None;
-    *state.connection_url.lock().unwrap() = None;
-    Ok(())
+async fn disconnect(app: tauri::AppHandle) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        *state.db.lock().unwrap() = None;
+        *state.connection_url.lock().unwrap() = None;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -717,41 +782,51 @@ fn get_database_types() -> Vec<DatabaseTypeInfo> {
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn execute_query(state: State<'_, AppState>, sql: String) -> Result<QueryResponse, String> {
-    let _op = state.op_lock.lock().unwrap();
-    let db = take_db(&state)?;
-    let start = Instant::now();
+async fn execute_query(app: tauri::AppHandle, sql: String) -> Result<QueryResponse, String> {
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        let db = take_db(state.inner())?;
+        let start = Instant::now();
 
-    let (db, result) = run_db(db, move |db| {
-        Box::pin(async move {
-            db.execute_query(&sql)
-                .await
-                .map_err(|e| format!("Query error: {e}"))
-        })
-    });
+        let (db, result) = run_db(&state.db_thread, db, move |db| {
+            Box::pin(async move {
+                db.execute_query(&sql)
+                    .await
+                    .map_err(|e| format!("Query error: {e}"))
+            })
+        });
 
-    put_db(&state, db);
-    let results = result?;
-    Ok(to_query_response(results, start.elapsed().as_millis()))
+        put_db(state.inner(), db);
+        let results = result?;
+        Ok(to_query_response(results, start.elapsed().as_millis()))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-fn explain_query(state: State<'_, AppState>, sql: String) -> Result<QueryResponse, String> {
-    let _op = state.op_lock.lock().unwrap();
-    let db = take_db(&state)?;
-    let start = Instant::now();
+async fn explain_query(app: tauri::AppHandle, sql: String) -> Result<QueryResponse, String> {
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        let db = take_db(state.inner())?;
+        let start = Instant::now();
 
-    let (db, result) = run_db(db, move |db| {
-        Box::pin(async move {
-            db.execute_explain_query_raw(&sql)
-                .await
-                .map_err(|e| format!("Explain error: {e}"))
-        })
-    });
+        let (db, result) = run_db(&state.db_thread, db, move |db| {
+            Box::pin(async move {
+                db.execute_explain_query_raw(&sql)
+                    .await
+                    .map_err(|e| format!("Explain error: {e}"))
+            })
+        });
 
-    put_db(&state, db);
-    let results = result?;
-    Ok(to_query_response(results, start.elapsed().as_millis()))
+        put_db(state.inner(), db);
+        let results = result?;
+        Ok(to_query_response(results, start.elapsed().as_millis()))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -759,112 +834,137 @@ fn explain_query(state: State<'_, AppState>, sql: String) -> Result<QueryRespons
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn list_databases(state: State<'_, AppState>) -> Result<QueryResponse, String> {
-    let _op = state.op_lock.lock().unwrap();
-    let db = take_db(&state)?;
-    let start = Instant::now();
+async fn list_databases(app: tauri::AppHandle) -> Result<QueryResponse, String> {
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        let db = take_db(state.inner())?;
+        let start = Instant::now();
 
-    let (db, result) = run_db(db, |db| {
-        Box::pin(async { db.list_databases().await.map_err(|e| format!("{e}")) })
-    });
+        let (db, result) = run_db(&state.db_thread, db, |db| {
+            Box::pin(async { db.list_databases().await.map_err(|e| format!("{e}")) })
+        });
 
-    put_db(&state, db);
-    Ok(to_query_response(result?, start.elapsed().as_millis()))
+        put_db(state.inner(), db);
+        Ok(to_query_response(result?, start.elapsed().as_millis()))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-fn list_tables(state: State<'_, AppState>) -> Result<QueryResponse, String> {
-    let _op = state.op_lock.lock().unwrap();
-    let db = take_db(&state)?;
-    let start = Instant::now();
+async fn list_tables(app: tauri::AppHandle) -> Result<QueryResponse, String> {
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        let db = take_db(state.inner())?;
+        let start = Instant::now();
 
-    let (db, result) = run_db(db, |db| {
-        Box::pin(async { db.list_tables().await.map_err(|e| format!("{e}")) })
-    });
+        let (db, result) = run_db(&state.db_thread, db, |db| {
+            Box::pin(async { db.list_tables().await.map_err(|e| format!("{e}")) })
+        });
 
-    put_db(&state, db);
-    Ok(to_query_response(result?, start.elapsed().as_millis()))
+        put_db(state.inner(), db);
+        Ok(to_query_response(result?, start.elapsed().as_millis()))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-fn describe_table(
-    state: State<'_, AppState>,
+async fn describe_table(
+    app: tauri::AppHandle,
     table_name: String,
 ) -> Result<TableDetailResponse, String> {
-    let _op = state.op_lock.lock().unwrap();
-    let db = take_db(&state)?;
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        let db = take_db(state.inner())?;
 
-    let (db, result) = run_db(db, move |db| {
-        Box::pin(async move {
-            db.get_table_details(&table_name)
-                .await
-                .map_err(|e| format!("{e}"))
+        let (db, result) = run_db(&state.db_thread, db, move |db| {
+            Box::pin(async move {
+                db.get_table_details(&table_name)
+                    .await
+                    .map_err(|e| format!("{e}"))
+            })
+        });
+
+        put_db(state.inner(), db);
+        let details = result?;
+
+        Ok(TableDetailResponse {
+            name: details.name,
+            schema: details.schema,
+            columns: details
+                .columns
+                .iter()
+                .map(|c| ColumnDetailResponse {
+                    name: c.name.clone(),
+                    data_type: c.data_type.clone(),
+                    nullable: c.nullable,
+                    default_value: c.default_value.clone(),
+                })
+                .collect(),
+            indexes: details
+                .indexes
+                .iter()
+                .map(|i| IndexDetailResponse {
+                    name: i.name.clone(),
+                    index_type: i.index_type.clone(),
+                    is_primary: i.is_primary,
+                    is_unique: i.is_unique,
+                })
+                .collect(),
+            foreign_keys: details
+                .foreign_keys
+                .iter()
+                .map(|fk| ForeignKeyDetailResponse {
+                    name: fk.name.clone(),
+                    definition: fk.definition.clone(),
+                })
+                .collect(),
         })
-    });
-
-    put_db(&state, db);
-    let details = result?;
-
-    Ok(TableDetailResponse {
-        name: details.name,
-        schema: details.schema,
-        columns: details
-            .columns
-            .iter()
-            .map(|c| ColumnDetailResponse {
-                name: c.name.clone(),
-                data_type: c.data_type.clone(),
-                nullable: c.nullable,
-                default_value: c.default_value.clone(),
-            })
-            .collect(),
-        indexes: details
-            .indexes
-            .iter()
-            .map(|i| IndexDetailResponse {
-                name: i.name.clone(),
-                index_type: i.index_type.clone(),
-                is_primary: i.is_primary,
-                is_unique: i.is_unique,
-            })
-            .collect(),
-        foreign_keys: details
-            .foreign_keys
-            .iter()
-            .map(|fk| ForeignKeyDetailResponse {
-                name: fk.name.clone(),
-                definition: fk.definition.clone(),
-            })
-            .collect(),
     })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-fn list_users(state: State<'_, AppState>) -> Result<QueryResponse, String> {
-    let _op = state.op_lock.lock().unwrap();
-    let db = take_db(&state)?;
-    let start = Instant::now();
+async fn list_users(app: tauri::AppHandle) -> Result<QueryResponse, String> {
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        let db = take_db(state.inner())?;
+        let start = Instant::now();
 
-    let (db, result) = run_db(db, |db| {
-        Box::pin(async { db.list_users().await.map_err(|e| format!("{e}")) })
-    });
+        let (db, result) = run_db(&state.db_thread, db, |db| {
+            Box::pin(async { db.list_users().await.map_err(|e| format!("{e}")) })
+        });
 
-    put_db(&state, db);
-    Ok(to_query_response(result?, start.elapsed().as_millis()))
+        put_db(state.inner(), db);
+        Ok(to_query_response(result?, start.elapsed().as_millis()))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-fn list_indexes(state: State<'_, AppState>) -> Result<QueryResponse, String> {
-    let _op = state.op_lock.lock().unwrap();
-    let db = take_db(&state)?;
-    let start = Instant::now();
+async fn list_indexes(app: tauri::AppHandle) -> Result<QueryResponse, String> {
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        let db = take_db(state.inner())?;
+        let start = Instant::now();
 
-    let (db, result) = run_db(db, |db| {
-        Box::pin(async { db.list_indexes().await.map_err(|e| format!("{e}")) })
-    });
+        let (db, result) = run_db(&state.db_thread, db, |db| {
+            Box::pin(async { db.list_indexes().await.map_err(|e| format!("{e}")) })
+        });
 
-    put_db(&state, db);
-    Ok(to_query_response(result?, start.elapsed().as_millis()))
+        put_db(state.inner(), db);
+        Ok(to_query_response(result?, start.elapsed().as_millis()))
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -908,40 +1008,50 @@ fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionResponse>, Str
 }
 
 #[tauri::command]
-fn connect_saved_session(
-    state: State<'_, AppState>,
+async fn connect_saved_session(
+    app: tauri::AppHandle,
     name: String,
 ) -> Result<ConnectionResponse, String> {
-    let _op = state.op_lock.lock().unwrap();
-    let session = {
-        let config = state.config.lock().unwrap();
-        config
-            .get_session(&name)
-            .cloned()
-            .ok_or_else(|| format!("Session '{name}' not found"))?
-    };
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        let session = {
+            let config = state.config.lock().unwrap();
+            config
+                .get_session(&name)
+                .cloned()
+                .ok_or_else(|| format!("Session '{name}' not found"))?
+        };
 
-    let url = session.reconstruct_connection_url()?;
-    connect_with_url(state.inner(), url)
+        let url = session.reconstruct_connection_url()?;
+        connect_with_url(state.inner(), url)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
-fn connect_recent_connection(
-    state: State<'_, AppState>,
+async fn connect_recent_connection(
+    app: tauri::AppHandle,
     index: usize,
 ) -> Result<ConnectionResponse, String> {
-    let _op = state.op_lock.lock().unwrap();
-    let recent_connection = {
-        let config = state.config.lock().unwrap();
-        config
-            .get_recent_connections()
-            .get(index)
-            .cloned()
-            .ok_or_else(|| format!("Recent connection at index {index} not found"))?
-    };
+    tokio::task::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let _op = state.op_lock.lock().unwrap();
+        let recent_connection = {
+            let config = state.config.lock().unwrap();
+            config
+                .get_recent_connections()
+                .get(index)
+                .cloned()
+                .ok_or_else(|| format!("Recent connection at index {index} not found"))?
+        };
 
-    let url = recent_connection.reconstruct_connection_url()?;
-    connect_with_url(state.inner(), url)
+        let url = recent_connection.reconstruct_connection_url()?;
+        connect_with_url(state.inner(), url)
+    })
+    .await
+    .map_err(|e| format!("Task failed: {e}"))?
 }
 
 #[tauri::command]
@@ -1090,8 +1200,8 @@ fn get_config(state: State<'_, AppState>) -> Result<ConfigResponse, String> {
 }
 
 #[tauri::command]
-fn discover_docker_containers() -> Result<Vec<DockerContainerResponse>, String> {
-    std::thread::spawn(|| {
+async fn discover_docker_containers() -> Result<Vec<DockerContainerResponse>, String> {
+    tokio::task::spawn_blocking(|| {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1121,8 +1231,8 @@ fn discover_docker_containers() -> Result<Vec<DockerContainerResponse>, String> 
                 .collect())
         })
     })
-    .join()
-    .map_err(|_| "Docker discovery thread panicked".to_string())?
+    .await
+    .map_err(|e| format!("Docker discovery task failed: {e}"))?
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1130,8 +1240,8 @@ fn discover_docker_containers() -> Result<Vec<DockerContainerResponse>, String> 
 // ══════════════════════════════════════════════════════════════════════════════
 
 #[tauri::command]
-fn list_vault_databases(mount_path: String) -> Result<Vec<String>, String> {
-    std::thread::spawn(move || {
+async fn list_vault_databases(mount_path: String) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1147,13 +1257,16 @@ fn list_vault_databases(mount_path: String) -> Result<Vec<String>, String> {
                 .map_err(|e| format!("Failed to filter accessible databases: {e}"))
         })
     })
-    .join()
-    .map_err(|_| "Vault discovery thread panicked".to_string())?
+    .await
+    .map_err(|e| format!("Vault discovery task failed: {e}"))?
 }
 
 #[tauri::command]
-fn list_vault_roles(mount_path: String, database_name: String) -> Result<Vec<String>, String> {
-    std::thread::spawn(move || {
+async fn list_vault_roles(
+    mount_path: String,
+    database_name: String,
+) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1165,8 +1278,8 @@ fn list_vault_roles(mount_path: String, database_name: String) -> Result<Vec<Str
                 .map_err(|e| format!("Failed to list Vault roles: {e}"))
         })
     })
-    .join()
-    .map_err(|_| "Vault roles thread panicked".to_string())?
+    .await
+    .map_err(|e| format!("Vault roles task failed: {e}"))?
 }
 
 #[tauri::command]

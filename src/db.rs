@@ -63,6 +63,22 @@ pub struct QueryResultsWithInfo {
     pub column_info: Option<ColumnFilteringInfo>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrontendMode {
+    Cli,
+    Gui,
+}
+
+impl FrontendMode {
+    fn allows_interactive_terminal_ui(self) -> bool {
+        matches!(self, Self::Cli)
+    }
+
+    fn allows_stdout_status(self) -> bool {
+        matches!(self, Self::Cli)
+    }
+}
+
 pub struct Database {
     // Database abstraction layer client
     database_client: Option<Box<dyn DatabaseClient>>,
@@ -86,6 +102,7 @@ pub struct Database {
     column_views: HashMap<String, Vec<String>>, // Map of column view name -> selected columns
     last_view_key: Option<String>,
     last_json_plan: Option<String>, // Store the last EXPLAIN JSON plan for copying
+    frontend_mode: FrontendMode,
 }
 
 impl Database {
@@ -95,13 +112,33 @@ impl Database {
         default_limit: Option<usize>,
         expanded_display_default: Option<bool>,
     ) -> std::result::Result<Self, Box<dyn StdError>> {
+        Self::from_url_with_mode(
+            url,
+            default_limit,
+            expanded_display_default,
+            FrontendMode::Cli,
+        )
+        .await
+    }
+
+    pub async fn from_url_with_mode(
+        url: &str,
+        default_limit: Option<usize>,
+        expanded_display_default: Option<bool>,
+        frontend_mode: FrontendMode,
+    ) -> std::result::Result<Self, Box<dyn StdError>> {
         debug!("[Database::from_url] Creating database from URL");
         let step_start = std::time::Instant::now();
 
         // Handle Docker URLs specially
         if url.starts_with("docker://") {
-            let (database, _) =
-                Self::from_docker_url(url, default_limit, expanded_display_default).await?;
+            let (database, _) = Self::from_docker_url_with_mode(
+                url,
+                default_limit,
+                expanded_display_default,
+                frontend_mode,
+            )
+            .await?;
             return Ok(database);
         }
 
@@ -117,11 +154,12 @@ impl Database {
 
         // For SQLite, we don't need SSH tunneling
         if connection_info.database_type.is_file_based() {
-            return Self::from_connection_info(
+            return Self::from_connection_info_with_mode(
                 connection_info,
                 default_limit,
                 expanded_display_default,
                 None,
+                frontend_mode,
             )
             .await;
         }
@@ -139,7 +177,6 @@ impl Database {
         );
 
         if ssh_tunnel_config.is_some() {
-            // SSH tunnel info should always be shown (even in quiet mode)
             info!(
                 "✓ SSH tunnel pattern found for host: {:?}",
                 connection_info.host
@@ -157,11 +194,12 @@ impl Database {
 
         debug!("🔧 Creating database connection...");
         let conn_start = std::time::Instant::now();
-        let result = Self::from_connection_info(
+        let result = Self::from_connection_info_with_mode(
             connection_info,
             default_limit,
             expanded_display_default,
             ssh_tunnel_config,
+            frontend_mode,
         )
         .await;
         debug!(
@@ -177,6 +215,21 @@ impl Database {
         default_limit: Option<usize>,
         expanded_display_default: Option<bool>,
     ) -> std::result::Result<(Self, Option<ConnectionInfo>), Box<dyn StdError>> {
+        Self::from_docker_url_with_mode(
+            url,
+            default_limit,
+            expanded_display_default,
+            FrontendMode::Cli,
+        )
+        .await
+    }
+
+    pub async fn from_docker_url_with_mode(
+        url: &str,
+        default_limit: Option<usize>,
+        expanded_display_default: Option<bool>,
+        frontend_mode: FrontendMode,
+    ) -> std::result::Result<(Self, Option<ConnectionInfo>), Box<dyn StdError>> {
         debug!("[Database::from_docker_url] Creating database from Docker URL");
 
         // Parse Docker URL
@@ -190,6 +243,9 @@ impl Database {
 
         // If container name is empty, provide interactive selection
         if container_name.is_empty() {
+            if !frontend_mode.allows_interactive_terminal_ui() {
+                return Err("Interactive Docker container selection is not available in GUI mode. Provide an explicit container name.".into());
+            }
             let selected_container = Self::select_docker_container().await?;
 
             // Create Docker client
@@ -229,11 +285,12 @@ impl Database {
                 docker_container: Some(selected_container.clone()),
             };
 
-            let database = Self::from_connection_info(
+            let database = Self::from_connection_info_with_mode(
                 resolved_connection_info.clone(),
                 default_limit,
                 expanded_display_default,
                 None,
+                frontend_mode,
             )
             .await?;
             return Ok((database, Some(resolved_connection_info)));
@@ -281,11 +338,12 @@ impl Database {
         );
 
         // Create database connection using the resolved info
-        let database = Self::from_connection_info(
+        let database = Self::from_connection_info_with_mode(
             resolved_connection_info.clone(),
             default_limit,
             expanded_display_default,
             None,
+            frontend_mode,
         )
         .await?;
         Ok((database, Some(resolved_connection_info)))
@@ -405,7 +463,23 @@ impl Database {
         default_limit: Option<usize>,
         expanded_display_default: Option<bool>,
     ) -> std::result::Result<(Self, Option<ConnectionInfo>), Box<dyn StdError>> {
-        Self::from_docker_url(url, default_limit, expanded_display_default).await
+        Self::from_docker_url_with_tracking_mode(
+            url,
+            default_limit,
+            expanded_display_default,
+            FrontendMode::Cli,
+        )
+        .await
+    }
+
+    pub async fn from_docker_url_with_tracking_mode(
+        url: &str,
+        default_limit: Option<usize>,
+        expanded_display_default: Option<bool>,
+        frontend_mode: FrontendMode,
+    ) -> std::result::Result<(Self, Option<ConnectionInfo>), Box<dyn StdError>> {
+        Self::from_docker_url_with_mode(url, default_limit, expanded_display_default, frontend_mode)
+            .await
     }
 
     /// Create a new Database instance from ConnectionInfo
@@ -414,6 +488,23 @@ impl Database {
         default_limit: Option<usize>,
         expanded_display_default: Option<bool>,
         ssh_tunnel_config: Option<SSHTunnelConfig>,
+    ) -> std::result::Result<Self, Box<dyn StdError>> {
+        Self::from_connection_info_with_mode(
+            connection_info,
+            default_limit,
+            expanded_display_default,
+            ssh_tunnel_config,
+            FrontendMode::Cli,
+        )
+        .await
+    }
+
+    pub async fn from_connection_info_with_mode(
+        connection_info: ConnectionInfo,
+        default_limit: Option<usize>,
+        expanded_display_default: Option<bool>,
+        ssh_tunnel_config: Option<SSHTunnelConfig>,
+        frontend_mode: FrontendMode,
     ) -> std::result::Result<Self, Box<dyn StdError>> {
         debug!("[Database::from_connection_info] Creating database from connection info");
 
@@ -476,14 +567,15 @@ impl Database {
             column_views: HashMap::new(),
             last_view_key: None,
             last_json_plan: None,
+            frontend_mode,
         };
 
         // Validate the connection before returning
         debug!("[Database::from_connection_info] Validating connection");
         db.validate_connection().await?;
 
-        // Display server info if enabled in config
-        if config.show_server_info {
+        // Display server info if enabled in config and supported by this frontend.
+        if config.show_server_info && frontend_mode.allows_stdout_status() {
             db.display_server_info().await;
         }
 
@@ -1316,8 +1408,8 @@ impl Database {
         let column_count = results[0].len();
 
         // Check if we should apply column selection
-        let should_apply =
-            self.column_select_mode || self.should_auto_enable_column_selection(column_count);
+        let should_apply = self.frontend_mode.allows_interactive_terminal_ui()
+            && (self.column_select_mode || self.should_auto_enable_column_selection(column_count));
 
         if should_apply {
             debug!(
@@ -1332,7 +1424,7 @@ impl Database {
                 }
                 Err(e) => {
                     // For other errors, log and return original results
-                    eprintln!("Column selection error: {e}");
+                    debug!("Column selection error: {e}");
                     Ok(QueryResultsWithInfo {
                         data: results,
                         column_info: None,
@@ -1502,6 +1594,10 @@ impl Database {
 
     /// Display server information to the user (pgcli-style)
     pub async fn display_server_info(&self) {
+        if !self.frontend_mode.allows_stdout_status() {
+            return;
+        }
+
         if let Some(ref database_client) = self.database_client {
             match database_client.get_server_info().await {
                 Ok(server_info) => {
@@ -1684,6 +1780,7 @@ impl Database {
             column_views: HashMap::new(),
             last_view_key: None,
             last_json_plan: None,
+            frontend_mode: FrontendMode::Cli,
         }
     }
 

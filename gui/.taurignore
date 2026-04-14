@@ -1,0 +1,8 @@
+# Ignore generated frontend artifacts during `tauri dev`
+node_modules
+dist
+.vite-temp
+
+# Extra noisy/generated paths seen in dev logs
+node_modules/.bin
+dist/assets

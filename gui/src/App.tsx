@@ -31,6 +31,7 @@ export default function App() {
   const [tabs, setTabs] = useState<EditorTab[]>([newTab()]);
   const [activeTabId, setActiveTabId] = useState(tabs[0].id);
   const [tables, setTables] = useState<string[]>([]);
+  const [tablesError, setTablesError] = useState<string | null>(null);
   const [namedQueriesVersion, setNamedQueriesVersion] = useState(0);
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 
@@ -46,6 +47,7 @@ export default function App() {
     async (connectFn: () => Promise<ConnectionState>) => {
       setConnecting(true);
       setConnectError(null);
+      setTablesError(null);
       try {
         const state = await connectFn();
         setConnection(state);
@@ -54,9 +56,13 @@ export default function App() {
           const result = await cmd.listTables();
           if (result.rows.length > 0) {
             setTables(result.rows.map((r) => r[1])); // Column 1 = Name
+          } else {
+            setTables([]);
           }
-        } catch {
-          /* tables will be empty */
+          setTablesError(null);
+        } catch (e) {
+          setTables([]);
+          setTablesError(String(e));
         }
       } catch (e) {
         setConnectError(String(e));
@@ -96,6 +102,7 @@ export default function App() {
     }
     setConnection(null);
     setTables([]);
+    setTablesError(null);
     setView("home");
   }, []);
 
@@ -249,9 +256,13 @@ export default function App() {
       const result = await cmd.listTables();
       if (result.rows.length > 0) {
         setTables(result.rows.map((r) => r[1]));
+      } else {
+        setTables([]);
       }
-    } catch {
-      /* ignore */
+      setTablesError(null);
+    } catch (e) {
+      setTables([]);
+      setTablesError(String(e));
     }
   }, []);
 
@@ -358,7 +369,12 @@ export default function App() {
 
             {/* ── Docker Discovery (always available) ───────────────── */}
             {view === "docker" && (
-              <DockerDiscovery onConnect={handleConnect} connected={!!connection} />
+              <DockerDiscovery
+                onConnect={handleConnect}
+                connected={!!connection}
+                connecting={connecting}
+                error={connectError}
+              />
             )}
 
             {/* ── Saved Connections (always available) ───────────── */}
@@ -376,6 +392,7 @@ export default function App() {
               <Layout
                 connection={connection}
                 tables={tables}
+                tablesError={tablesError}
                 tabs={tabs}
                 activeTab={activeTab}
                 activeTabId={activeTabId}
