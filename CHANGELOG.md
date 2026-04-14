@@ -1,3 +1,13 @@
+## v0.26.0 (2026-04-14)
+
+### Feat
+
+- migrate docs from MkDocs to Starlight (Astro)
+
+### Fix
+
+- **ci**: generate release notes from CHANGELOG.md instead of static template
+
 ## v0.25.0 (2026-04-14)
 
 ### Feat
