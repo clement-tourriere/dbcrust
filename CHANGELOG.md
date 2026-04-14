@@ -1,3 +1,9 @@
+## v0.26.1 (2026-04-14)
+
+### Fix
+
+- **gui**: harden non-interactive database flows
+
 ## v0.26.0 (2026-04-14)
 
 ### Feat
