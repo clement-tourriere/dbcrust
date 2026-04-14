@@ -236,6 +236,7 @@ export function Layout({
               results={activeTab.results}
               error={activeTab.error}
               isRunning={activeTab.isRunning}
+              isExplain={activeTab.isExplain}
             />
           </div>
         </div>

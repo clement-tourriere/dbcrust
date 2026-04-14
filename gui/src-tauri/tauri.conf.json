@@ -1,9 +1,12 @@
 {
   "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-cli/schema.json",
-  "productName": "DBCrust",
+  "productName": "dbcrust",
+  "mainBinaryName": "dbcrust",
   "version": "0.1.0",
   "identifier": "com.dbcrust.gui",
   "build": {
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
   },
@@ -28,6 +31,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "macOS": {
+      "bundleName": "dbcrust"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

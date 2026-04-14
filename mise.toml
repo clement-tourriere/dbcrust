@@ -40,7 +40,7 @@ depends = ["fmt", "lint", "test"]
 
 [tasks."gui:install"]
 description = "Install GUI frontend dependencies"
-run = "bun install --cwd gui"
+run = "if [ -f gui/node_modules/.package-lock.json ]; then rm -rf gui/node_modules; fi && bun install --cwd gui"
 
 [tasks."gui:dev"]
 description = "Start GUI in development mode (frontend + Tauri)"

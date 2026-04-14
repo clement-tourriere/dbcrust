@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">DBCrust tray icon</title>
+  <desc id="desc">A white geometric crust ring around a database core.</desc>
+  <path
+    fill="#fff"
+    fill-rule="evenodd"
+    d="M256 44 388 78 468 162 468 350 388 434 256 468 124 434 44 350 44 162 124 78ZM256 144 338 164 392 218 392 294 338 348 256 368 174 348 120 294 120 218 174 164Z"
+    clip-rule="evenodd"
+  />
+  <rect x="166" y="180" width="180" height="34" rx="8" fill="#fff"/>
+  <rect x="142" y="239" width="228" height="34" rx="8" fill="#fff"/>
+  <rect x="166" y="298" width="180" height="34" rx="8" fill="#fff"/>
+</svg>

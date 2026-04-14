@@ -134,7 +134,7 @@ export function Sidebar({
     try {
       const result = await cmd.listTables();
       if (result.rows.length > 0) {
-        setLocalTables(result.rows.map((r) => r[0]));
+        setLocalTables(result.rows.map((r) => r[1]));
       }
     } catch {
       /* ignore */

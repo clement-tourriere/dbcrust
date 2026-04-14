@@ -10,17 +10,24 @@ import {
   Check,
 } from "lucide-react";
 import type { QueryResult } from "../types";
+import { ExplainView } from "./ExplainView";
 
 interface ResultsPanelProps {
   results: QueryResult | null;
   error: string | null;
   isRunning: boolean;
+  isExplain?: boolean;
 }
 
 type ViewMode = "table" | "json";
 type SortConfig = { column: number; direction: "asc" | "desc" } | null;
 
-export function ResultsPanel({ results, error, isRunning }: ResultsPanelProps) {
+export function ResultsPanel({
+  results,
+  error,
+  isRunning,
+  isExplain,
+}: ResultsPanelProps) {
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [sortConfig, setSortConfig] = useState<SortConfig>(null);
   const [copied, setCopied] = useState(false);
@@ -32,7 +39,6 @@ export function ResultsPanel({ results, error, isRunning }: ResultsPanelProps) {
     return [...results.rows].sort((a, b) => {
       const va = a[column] ?? "";
       const vb = b[column] ?? "";
-      // Try numeric sort
       const na = Number(va);
       const nb = Number(vb);
       if (!isNaN(na) && !isNaN(nb)) {
@@ -71,7 +77,9 @@ export function ResultsPanel({ results, error, isRunning }: ResultsPanelProps) {
       <div className="h-full flex items-center justify-center bg-surface text-zinc-500">
         <div className="flex items-center gap-3">
           <Loader2 className="w-5 h-5 animate-spin text-accent" />
-          <span className="text-sm">Executing query…</span>
+          <span className="text-sm">
+            {isExplain ? "Analyzing query plan…" : "Executing query…"}
+          </span>
         </div>
       </div>
     );
@@ -98,19 +106,27 @@ export function ResultsPanel({ results, error, isRunning }: ResultsPanelProps) {
 
   // ── Empty State ────────────────────────────────────────────────────────
   if (!results) {
+    const isMac =
+      typeof navigator !== "undefined" &&
+      /Mac|iPod|iPhone|iPad/.test(navigator.userAgent);
+    const modKey = isMac ? "⌘" : "Ctrl";
+
     return (
       <div className="h-full flex items-center justify-center bg-surface text-zinc-600">
         <div className="text-center">
           <FileSpreadsheet className="w-8 h-8 mx-auto mb-3 text-zinc-700" />
-          <p className="text-sm">
-            Run a query to see results
-          </p>
+          <p className="text-sm">Run a query to see results</p>
           <p className="text-xs text-zinc-700 mt-1">
-            Press ⌘+Enter to execute
+            Press {modKey}+Enter to execute
           </p>
         </div>
       </div>
     );
+  }
+
+  // ── Explain View ───────────────────────────────────────────────────────
+  if (isExplain) {
+    return <ExplainView results={results} />;
   }
 
   // ── Results View ───────────────────────────────────────────────────────

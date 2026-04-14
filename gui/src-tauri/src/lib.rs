@@ -5,11 +5,18 @@
 use dbcrust::config::Config;
 use dbcrust::database::{ConnectionInfo, DatabaseType, DatabaseTypeExt};
 use dbcrust::db::Database;
+use dbcrust::docker::DockerClient;
 use dbcrust::password_sanitizer::sanitize_connection_url;
 use serde::Serialize;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
-use tauri::State;
+use tauri::menu::{
+    AboutMetadataBuilder, MenuBuilder, MenuItem, MenuItemBuilder, PredefinedMenuItem,
+    SubmenuBuilder,
+};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{image::Image, Manager, State, WindowEvent, Wry};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Application State
@@ -19,6 +26,10 @@ pub struct AppState {
     db: std::sync::Mutex<Option<Database>>,
     config: std::sync::Mutex<Config>,
     connection_url: std::sync::Mutex<Option<String>>,
+    /// Serializes database operations to prevent concurrent take_db/put_db races.
+    op_lock: std::sync::Mutex<()>,
+    tray_toggle_item: std::sync::Mutex<Option<MenuItem<Wry>>>,
+    quitting: AtomicBool,
 }
 
 impl AppState {
@@ -27,8 +38,86 @@ impl AppState {
             db: std::sync::Mutex::new(None),
             config: std::sync::Mutex::new(Config::load()),
             connection_url: std::sync::Mutex::new(None),
+            op_lock: std::sync::Mutex::new(()),
+            tray_toggle_item: std::sync::Mutex::new(None),
+            quitting: AtomicBool::new(false),
         }
     }
+}
+
+const MENU_QUIT_APP: &str = "quit_app";
+const MENU_TRAY_TOGGLE: &str = "tray_toggle";
+const MENU_TRAY_QUIT: &str = "tray_quit";
+
+fn main_window<M: Manager<Wry>>(manager: &M) -> Option<tauri::WebviewWindow<Wry>> {
+    manager
+        .get_webview_window("main")
+        .or_else(|| manager.webview_windows().into_values().next())
+}
+
+fn sync_tray_toggle_item<M: Manager<Wry>>(manager: &M) {
+    let is_visible = main_window(manager)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    let text = if is_visible {
+        "Hide DBCrust"
+    } else {
+        "Show DBCrust"
+    };
+
+    if let Some(item) = manager
+        .state::<AppState>()
+        .tray_toggle_item
+        .lock()
+        .unwrap()
+        .as_ref()
+    {
+        let _ = item.set_text(text);
+    }
+}
+
+fn show_main_window<M: Manager<Wry>>(manager: &M) {
+    if let Some(window) = main_window(manager) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+    sync_tray_toggle_item(manager);
+}
+
+fn hide_main_window<M: Manager<Wry>>(manager: &M) {
+    if let Some(window) = main_window(manager) {
+        let _ = window.hide();
+    }
+    sync_tray_toggle_item(manager);
+}
+
+fn toggle_main_window<M: Manager<Wry>>(manager: &M) {
+    let is_visible = main_window(manager)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+
+    if is_visible {
+        hide_main_window(manager);
+    } else {
+        show_main_window(manager);
+    }
+}
+
+fn apply_window_icon(app: &tauri::App<Wry>) {
+    if let Some(icon) = app.default_window_icon().cloned() {
+        for window in app.webview_windows().into_values() {
+            let _ = window.set_icon(icon.clone());
+        }
+    }
+}
+
+fn load_tray_icon() -> tauri::Result<Image<'static>> {
+    Image::from_bytes(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/branding/dbcrust-icon-tray-32.png"
+    )))
+    .map(|image| image.to_owned())
 }
 
 /// Take the Database out of state (brief lock). Returns it for use on a dedicated thread.
@@ -159,6 +248,18 @@ pub struct ConfigResponse {
     pub pager_enabled: bool,
     pub query_timeout_seconds: u64,
     pub explain_mode: bool,
+}
+
+#[derive(Serialize, Debug)]
+pub struct DockerContainerResponse {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub status: String,
+    pub database_type: Option<String>,
+    pub host_port: Option<u16>,
+    pub container_port: Option<u16>,
+    pub is_running: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -428,11 +529,13 @@ fn connect_with_url(state: &AppState, url: String) -> Result<ConnectionResponse,
 
 #[tauri::command]
 fn connect(state: State<'_, AppState>, url: String) -> Result<ConnectionResponse, String> {
+    let _op = state.op_lock.lock().unwrap();
     connect_with_url(state.inner(), url)
 }
 
 #[tauri::command]
 fn disconnect(state: State<'_, AppState>) -> Result<(), String> {
+    let _op = state.op_lock.lock().unwrap();
     *state.db.lock().unwrap() = None;
     *state.connection_url.lock().unwrap() = None;
     Ok(())
@@ -491,6 +594,7 @@ fn get_database_types() -> Vec<DatabaseTypeInfo> {
 
 #[tauri::command]
 fn execute_query(state: State<'_, AppState>, sql: String) -> Result<QueryResponse, String> {
+    let _op = state.op_lock.lock().unwrap();
     let db = take_db(&state)?;
     let start = Instant::now();
 
@@ -509,12 +613,13 @@ fn execute_query(state: State<'_, AppState>, sql: String) -> Result<QueryRespons
 
 #[tauri::command]
 fn explain_query(state: State<'_, AppState>, sql: String) -> Result<QueryResponse, String> {
+    let _op = state.op_lock.lock().unwrap();
     let db = take_db(&state)?;
     let start = Instant::now();
 
     let (db, result) = run_db(db, move |db| {
         Box::pin(async move {
-            db.execute_explain_query(&sql)
+            db.execute_explain_query_raw(&sql)
                 .await
                 .map_err(|e| format!("Explain error: {e}"))
         })
@@ -531,6 +636,7 @@ fn explain_query(state: State<'_, AppState>, sql: String) -> Result<QueryRespons
 
 #[tauri::command]
 fn list_databases(state: State<'_, AppState>) -> Result<QueryResponse, String> {
+    let _op = state.op_lock.lock().unwrap();
     let db = take_db(&state)?;
     let start = Instant::now();
 
@@ -544,6 +650,7 @@ fn list_databases(state: State<'_, AppState>) -> Result<QueryResponse, String> {
 
 #[tauri::command]
 fn list_tables(state: State<'_, AppState>) -> Result<QueryResponse, String> {
+    let _op = state.op_lock.lock().unwrap();
     let db = take_db(&state)?;
     let start = Instant::now();
 
@@ -560,6 +667,7 @@ fn describe_table(
     state: State<'_, AppState>,
     table_name: String,
 ) -> Result<TableDetailResponse, String> {
+    let _op = state.op_lock.lock().unwrap();
     let db = take_db(&state)?;
 
     let (db, result) = run_db(db, move |db| {
@@ -609,6 +717,7 @@ fn describe_table(
 
 #[tauri::command]
 fn list_users(state: State<'_, AppState>) -> Result<QueryResponse, String> {
+    let _op = state.op_lock.lock().unwrap();
     let db = take_db(&state)?;
     let start = Instant::now();
 
@@ -622,6 +731,7 @@ fn list_users(state: State<'_, AppState>) -> Result<QueryResponse, String> {
 
 #[tauri::command]
 fn list_indexes(state: State<'_, AppState>) -> Result<QueryResponse, String> {
+    let _op = state.op_lock.lock().unwrap();
     let db = take_db(&state)?;
     let start = Instant::now();
 
@@ -678,6 +788,7 @@ fn connect_saved_session(
     state: State<'_, AppState>,
     name: String,
 ) -> Result<ConnectionResponse, String> {
+    let _op = state.op_lock.lock().unwrap();
     let session = {
         let config = state.config.lock().unwrap();
         config
@@ -695,6 +806,7 @@ fn connect_recent_connection(
     state: State<'_, AppState>,
     index: usize,
 ) -> Result<ConnectionResponse, String> {
+    let _op = state.op_lock.lock().unwrap();
     let recent_connection = {
         let config = state.config.lock().unwrap();
         config
@@ -854,6 +966,86 @@ fn get_config(state: State<'_, AppState>) -> Result<ConfigResponse, String> {
 }
 
 #[tauri::command]
+fn discover_docker_containers() -> Result<Vec<DockerContainerResponse>, String> {
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let client = DockerClient::new().map_err(|e| format!("Docker not available: {e}"))?;
+            let containers = client
+                .list_database_containers()
+                .await
+                .map_err(|e| format!("{e}"))?;
+            Ok(containers
+                .into_iter()
+                .map(|c| {
+                    let is_running = c.status.contains("running") || c.status.contains("Up");
+                    DockerContainerResponse {
+                        id: c.id,
+                        name: c.name,
+                        image: c.image,
+                        status: c.status,
+                        database_type: c.database_type.map(|dt| dt.display_name().to_string()),
+                        host_port: c.host_port,
+                        container_port: c.container_port,
+                        is_running,
+                    }
+                })
+                .collect())
+        })
+    })
+    .join()
+    .map_err(|_| "Docker discovery thread panicked".to_string())?
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Vault Discovery Commands
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[tauri::command]
+fn list_vault_databases(mount_path: String) -> Result<Vec<String>, String> {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            let all_databases = dbcrust::vault_client::list_vault_databases(&mount_path)
+                .await
+                .map_err(|e| format!("Failed to list Vault databases: {e}"))?;
+
+            dbcrust::vault_client::filter_databases_with_available_roles(&mount_path, all_databases)
+                .await
+                .map_err(|e| format!("Failed to filter accessible databases: {e}"))
+        })
+    })
+    .join()
+    .map_err(|_| "Vault discovery thread panicked".to_string())?
+}
+
+#[tauri::command]
+fn list_vault_roles(mount_path: String, database_name: String) -> Result<Vec<String>, String> {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let local = tokio::task::LocalSet::new();
+        local.block_on(&rt, async {
+            dbcrust::vault_client::get_available_roles_for_user(&mount_path, &database_name)
+                .await
+                .map_err(|e| format!("Failed to list Vault roles: {e}"))
+        })
+    })
+    .join()
+    .map_err(|_| "Vault roles thread panicked".to_string())?
+}
+
+#[tauri::command]
 fn update_config(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
     let mut config = state.config.lock().unwrap();
     match key.as_str() {
@@ -882,6 +1074,205 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::new())
+        .setup(|app| {
+            apply_window_icon(app);
+
+            // ── Custom application menu ──────────────────────────────
+            let about_metadata = AboutMetadataBuilder::new()
+                .name(Some("DBCrust"))
+                .version(Some("0.1.0"))
+                .comments(Some("A modern database management tool"))
+                .build();
+
+            let app_submenu = SubmenuBuilder::new(app, "DBCrust")
+                .about(Some(about_metadata))
+                .separator()
+                .services()
+                .separator()
+                .hide()
+                .hide_others()
+                .show_all()
+                .separator()
+                .item(
+                    &MenuItemBuilder::with_id(MENU_QUIT_APP, "Quit DBCrust")
+                        .accelerator("CmdOrCtrl+Q")
+                        .build(app)?,
+                )
+                .build()?;
+
+            let file_submenu = SubmenuBuilder::new(app, "File")
+                .item(
+                    &MenuItemBuilder::with_id("new_tab", "New Query Tab")
+                        .accelerator("CmdOrCtrl+T")
+                        .build(app)?,
+                )
+                .item(
+                    &MenuItemBuilder::with_id("close_tab", "Close Tab")
+                        .accelerator("CmdOrCtrl+W")
+                        .build(app)?,
+                )
+                .separator()
+                .item(
+                    &MenuItemBuilder::with_id("disconnect", "Disconnect")
+                        .accelerator("CmdOrCtrl+Shift+D")
+                        .build(app)?,
+                )
+                .build()?;
+
+            let edit_submenu = SubmenuBuilder::new(app, "Edit")
+                .undo()
+                .redo()
+                .separator()
+                .cut()
+                .copy()
+                .paste()
+                .select_all()
+                .build()?;
+
+            let view_submenu = SubmenuBuilder::new(app, "View")
+                .item(
+                    &MenuItemBuilder::with_id("view_connect", "Connect")
+                        .accelerator("CmdOrCtrl+1")
+                        .build(app)?,
+                )
+                .item(
+                    &MenuItemBuilder::with_id("view_docker", "Docker Discovery")
+                        .accelerator("CmdOrCtrl+2")
+                        .build(app)?,
+                )
+                .separator()
+                .item(
+                    &MenuItemBuilder::with_id("view_query", "Query Editor")
+                        .accelerator("CmdOrCtrl+3")
+                        .build(app)?,
+                )
+                .item(
+                    &MenuItemBuilder::with_id("view_schema", "Schema Explorer")
+                        .accelerator("CmdOrCtrl+4")
+                        .build(app)?,
+                )
+                .item(
+                    &MenuItemBuilder::with_id("view_settings", "Settings")
+                        .accelerator("CmdOrCtrl+,")
+                        .build(app)?,
+                )
+                .separator()
+                .item(&PredefinedMenuItem::fullscreen(app, None)?)
+                .build()?;
+
+            let query_submenu = SubmenuBuilder::new(app, "Query")
+                .item(
+                    &MenuItemBuilder::with_id("run_query", "Run Query")
+                        .accelerator("CmdOrCtrl+Return")
+                        .build(app)?,
+                )
+                .item(
+                    &MenuItemBuilder::with_id("explain_query", "Explain Query")
+                        .accelerator("CmdOrCtrl+Shift+Return")
+                        .build(app)?,
+                )
+                .separator()
+                .item(
+                    &MenuItemBuilder::with_id("save_preset", "Save as Preset…")
+                        .accelerator("CmdOrCtrl+S")
+                        .build(app)?,
+                )
+                .build()?;
+
+            let window_submenu = SubmenuBuilder::new(app, "Window")
+                .minimize()
+                .maximize()
+                .separator()
+                .close_window()
+                .build()?;
+
+            let menu = MenuBuilder::new(app)
+                .item(&app_submenu)
+                .item(&file_submenu)
+                .item(&edit_submenu)
+                .item(&view_submenu)
+                .item(&query_submenu)
+                .item(&window_submenu)
+                .build()?;
+
+            app.set_menu(menu)?;
+
+            let tray_toggle_item =
+                MenuItemBuilder::with_id(MENU_TRAY_TOGGLE, "Show DBCrust").build(app)?;
+            let tray_menu = MenuBuilder::new(app)
+                .item(&tray_toggle_item)
+                .separator()
+                .item(&MenuItemBuilder::with_id(MENU_TRAY_QUIT, "Quit DBCrust").build(app)?)
+                .build()?;
+
+            *app.state::<AppState>().tray_toggle_item.lock().unwrap() = Some(tray_toggle_item);
+
+            let tray_icon = if cfg!(target_os = "macos") {
+                load_tray_icon()?
+            } else {
+                app.default_window_icon()
+                    .cloned()
+                    .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?
+            };
+
+            TrayIconBuilder::with_id("main-tray")
+                .menu(&tray_menu)
+                .tooltip("DBCrust")
+                .show_menu_on_left_click(false)
+                .icon(tray_icon)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+
+            sync_tray_toggle_item(app);
+
+            Ok(())
+        })
+        .on_menu_event(|app, event| {
+            let id = event.id().as_ref();
+
+            match id {
+                MENU_QUIT_APP | MENU_TRAY_QUIT => {
+                    app.state::<AppState>()
+                        .quitting
+                        .store(true, Ordering::Relaxed);
+                    app.exit(0);
+                    return;
+                }
+                MENU_TRAY_TOGGLE => {
+                    toggle_main_window(app);
+                    return;
+                }
+                _ => {}
+            }
+
+            if let Some(webview) = app.webview_windows().values().next() {
+                let _ = webview.eval(&format!(
+                    "window.__DBCRUST_MENU__ && window.__DBCRUST_MENU__('{}')",
+                    id
+                ));
+            }
+        })
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                if !window.state::<AppState>().quitting.load(Ordering::Relaxed) {
+                    api.prevent_close();
+                    hide_main_window(window);
+                }
+            }
+            WindowEvent::Focused(_) | WindowEvent::Resized(_) | WindowEvent::Moved(_) => {
+                sync_tray_toggle_item(window)
+            }
+            _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
             connect,
             disconnect,
@@ -894,6 +1285,9 @@ pub fn run() {
             describe_table,
             list_users,
             list_indexes,
+            discover_docker_containers,
+            list_vault_databases,
+            list_vault_roles,
             list_recent_connections,
             list_sessions,
             connect_saved_session,

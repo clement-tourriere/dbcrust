@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import {
   Database,
   Clock,
@@ -14,6 +14,7 @@ import type {
   SavedSession,
   DatabaseTypeInfo,
 } from "../types";
+import { VaultWizard } from "./VaultWizard";
 
 interface ConnectionDialogProps {
   onConnectUrl: (url: string) => void;
@@ -35,6 +36,7 @@ const DB_ICONS: Record<string, string> = {
   JSON: "🧾",
   DuckDB: "🦆",
   Docker: "🐳",
+  Vault: "🔐",
 };
 
 export function ConnectionDialog({
@@ -51,6 +53,7 @@ export function ConnectionDialog({
   const [sessions, setSessions] = useState<SavedSession[]>([]);
   const [dbTypes, setDbTypes] = useState<DatabaseTypeInfo[]>([]);
   const [selectedType, setSelectedType] = useState<string | null>(null);
+  const [showVaultWizard, setShowVaultWizard] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -60,17 +63,58 @@ export function ConnectionDialog({
     cmd.getDatabaseTypes().then(setDbTypes).catch(() => {});
   }, []);
 
+  // Add Vault to the type list if not already present
+  const allTypes = useMemo(() => {
+    const types = [...dbTypes];
+    if (!types.some((t) => t.name === "Vault")) {
+      types.push({
+        name: "Vault",
+        scheme: "vault",
+        default_port: null,
+        placeholder: "vault://role@database/db_name",
+      });
+    }
+    return types;
+  }, [dbTypes]);
+
   const placeholder =
-    dbTypes.find((t) => t.scheme === selectedType)?.placeholder ??
+    allTypes.find((t) => t.scheme === selectedType)?.placeholder ??
     "postgres://user:pass@localhost:5432/mydb";
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (url.trim()) onConnectUrl(url.trim());
+    const trimmed = url.trim();
+    if (!trimmed) return;
+
+    // If it's a bare vault:// URL without database+role, open the wizard
+    if (trimmed.startsWith("vault://")) {
+      const afterScheme = trimmed.slice("vault://".length);
+      // Full URL has role@mount/db — check if it's complete
+      const hasRole = afterScheme.includes("@");
+      const hasDb = afterScheme.includes("/") && afterScheme.split("/").filter(Boolean).length >= 2;
+      if (!hasRole || !hasDb) {
+        // Incomplete vault URL → open wizard
+        setShowVaultWizard(true);
+        return;
+      }
+    }
+    onConnectUrl(trimmed);
+  };
+
+  const handleTypeSelect = (scheme: string) => {
+    if (scheme === "vault") {
+      setSelectedType("vault");
+      setShowVaultWizard(true);
+      return;
+    }
+    setShowVaultWizard(false);
+    setSelectedType(selectedType === scheme ? null : scheme);
+    const dt = allTypes.find((t) => t.scheme === scheme);
+    if (!url && dt?.placeholder) setUrl(dt.placeholder);
   };
 
   return (
-    <div className="min-h-screen bg-surface-300 flex items-center justify-center p-4 animate-fade-in">
+    <div className="min-h-full bg-surface-300 flex items-center justify-center p-4 animate-fade-in overflow-auto">
       <div className="w-full max-w-2xl">
         {/* ── Header ──────────────────────────────────────────────────── */}
         <div className="text-center mb-10">
@@ -93,16 +137,10 @@ export function ConnectionDialog({
           {/* Database Type Selector */}
           <div className="px-6 pt-5 pb-3">
             <div className="flex flex-wrap gap-2 mb-4">
-              {dbTypes.map((dt) => (
+              {allTypes.map((dt) => (
                 <button
                   key={dt.scheme}
-                  onClick={() => {
-                    setSelectedType(
-                      selectedType === dt.scheme ? null : dt.scheme,
-                    );
-                    if (!url && dt.placeholder)
-                      setUrl(dt.placeholder);
-                  }}
+                  onClick={() => handleTypeSelect(dt.scheme)}
                   className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                     selectedType === dt.scheme
                       ? "bg-accent text-white"
@@ -118,45 +156,68 @@ export function ConnectionDialog({
             </div>
           </div>
 
-          {/* URL Input */}
-          <form onSubmit={handleSubmit} className="px-6 pb-5">
-            <div className="relative">
-              <input
-                ref={inputRef}
-                type="text"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder={placeholder}
-                disabled={connecting}
-                className="w-full bg-surface-300 border border-zinc-700 rounded-lg px-4 py-3 text-zinc-100
-                  placeholder-zinc-600 font-mono text-sm focus:outline-none focus:border-accent
-                  focus:ring-1 focus:ring-accent/50 disabled:opacity-50 transition-all"
-                autoComplete="off"
-                spellCheck={false}
+          {/* Vault Wizard OR URL Input */}
+          {showVaultWizard ? (
+            <div className="px-6 pb-5">
+              <VaultWizard
+                initialMount="database"
+                onConnect={(vaultUrl) => {
+                  setShowVaultWizard(false);
+                  onConnectUrl(vaultUrl);
+                }}
+                onCancel={() => {
+                  setShowVaultWizard(false);
+                  setSelectedType(null);
+                }}
+                connecting={connecting}
               />
-              <button
-                type="submit"
-                disabled={connecting || !url.trim()}
-                className="absolute right-2 top-1/2 -translate-y-1/2 px-4 py-1.5 rounded-md text-sm font-medium
-                  bg-accent hover:bg-accent-hover text-white disabled:opacity-40
-                  disabled:cursor-not-allowed transition-all flex items-center gap-2"
-              >
-                {connecting ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <ChevronRight className="w-4 h-4" />
-                )}
-                Connect
-              </button>
+              {error && (
+                <div className="mt-3 flex items-start gap-2 text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+                  <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                  <span className="break-all">{error}</span>
+                </div>
+              )}
             </div>
-
-            {error && (
-              <div className="mt-3 flex items-start gap-2 text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg p-3">
-                <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
-                <span className="break-all">{error}</span>
+          ) : (
+            <form onSubmit={handleSubmit} className="px-6 pb-5">
+              <div className="relative">
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder={placeholder}
+                  disabled={connecting}
+                  className="w-full bg-surface-300 border border-zinc-700 rounded-lg px-4 py-3 text-zinc-100
+                    placeholder-zinc-600 font-mono text-sm focus:outline-none focus:border-accent
+                    focus:ring-1 focus:ring-accent/50 disabled:opacity-50 transition-all"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                <button
+                  type="submit"
+                  disabled={connecting || !url.trim()}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 px-4 py-1.5 rounded-md text-sm font-medium
+                    bg-accent hover:bg-accent-hover text-white disabled:opacity-40
+                    disabled:cursor-not-allowed transition-all flex items-center gap-2"
+                >
+                  {connecting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4" />
+                  )}
+                  Connect
+                </button>
               </div>
-            )}
-          </form>
+
+              {error && (
+                <div className="mt-3 flex items-start gap-2 text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+                  <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+                  <span className="break-all">{error}</span>
+                </div>
+              )}
+            </form>
+          )}
 
           {/* ── Recent Connections ──────────────────────────────────────── */}
           {recentConnections.length > 0 && (

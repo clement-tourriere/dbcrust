@@ -120,6 +120,15 @@
   transition: color 0.1s, background-color 0.1s, border-color 0.1s;
 }
 
+/* ── Navigation Rail ──────────────────────────────────────────────────────── */
+.nav-rail {
+  -webkit-app-region: drag;
+}
+.nav-rail button,
+.nav-rail .nav-item {
+  -webkit-app-region: no-drag;
+}
+
 /* ── Data Grid ────────────────────────────────────────────────────────────── */
 .data-grid {
   font-family: "JetBrains Mono", monospace;

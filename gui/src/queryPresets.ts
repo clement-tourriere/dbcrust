@@ -185,6 +185,144 @@ ORDER BY u.username, c.app_label, c.model, p.codename;`,
       },
     ],
   },
+  {
+    id: "sessions",
+    title: "Sessions & Activity",
+    description: "Monitor active sessions, admin activity logs, and site configuration.",
+    presets: [
+      {
+        name: "django_active_sessions",
+        label: "Active sessions",
+        description: "List stored sessions with expiry dates. Helps spot stale sessions.",
+        query: `SELECT session_key,
+       expire_date,
+       CASE WHEN expire_date > CURRENT_TIMESTAMP THEN 'active' ELSE 'expired' END AS status
+FROM django_session
+ORDER BY expire_date DESC
+LIMIT 100;`,
+        requiredTables: ["django_session"],
+      },
+      {
+        name: "django_session_stats",
+        label: "Session statistics",
+        description: "Count active vs expired sessions to gauge cleanup health.",
+        query: `SELECT
+  COUNT(*) AS total_sessions,
+  SUM(CASE WHEN expire_date > CURRENT_TIMESTAMP THEN 1 ELSE 0 END) AS active,
+  SUM(CASE WHEN expire_date <= CURRENT_TIMESTAMP THEN 1 ELSE 0 END) AS expired
+FROM django_session;`,
+        requiredTables: ["django_session"],
+      },
+      {
+        name: "django_admin_log_recent",
+        label: "Recent admin actions",
+        description: "Audit trail of the latest admin panel actions.",
+        query: `SELECT l.action_time,
+       u.username,
+       c.app_label || '.' || c.model AS object_type,
+       l.object_repr,
+       CASE l.action_flag
+         WHEN 1 THEN 'Add'
+         WHEN 2 THEN 'Change'
+         WHEN 3 THEN 'Delete'
+       END AS action,
+       l.change_message
+FROM django_admin_log AS l
+JOIN auth_user AS u ON u.id = l.user_id
+LEFT JOIN django_content_type AS c ON c.id = l.content_type_id
+ORDER BY l.action_time DESC
+LIMIT 50;`,
+        requiredTables: ["django_admin_log", "auth_user", "django_content_type"],
+      },
+      {
+        name: "django_admin_log_by_user",
+        label: "Admin actions per user",
+        description: "Count admin actions grouped by user to see who is most active.",
+        query: `SELECT u.username,
+       COUNT(*) AS total_actions,
+       SUM(CASE WHEN l.action_flag = 1 THEN 1 ELSE 0 END) AS adds,
+       SUM(CASE WHEN l.action_flag = 2 THEN 1 ELSE 0 END) AS changes,
+       SUM(CASE WHEN l.action_flag = 3 THEN 1 ELSE 0 END) AS deletes,
+       MAX(l.action_time) AS last_action
+FROM django_admin_log AS l
+JOIN auth_user AS u ON u.id = l.user_id
+GROUP BY u.username
+ORDER BY total_actions DESC;`,
+        requiredTables: ["django_admin_log", "auth_user"],
+      },
+      {
+        name: "django_sites",
+        label: "Sites configuration",
+        description: "View Django sites framework entries (domain and name).",
+        query: `SELECT id, domain, name
+FROM django_site
+ORDER BY id;`,
+        requiredTables: ["django_site"],
+      },
+    ],
+  },
+  {
+    id: "diagnostics",
+    title: "Project Diagnostics",
+    description: "Detect stale data, orphaned records, and framework health indicators.",
+    presets: [
+      {
+        name: "django_stale_content_types",
+        label: "Stale content types",
+        description: "Find content types with zero permissions — may indicate removed models.",
+        query: `SELECT c.app_label,
+       c.model,
+       c.id AS content_type_id
+FROM django_content_type AS c
+LEFT JOIN auth_permission AS p ON p.content_type_id = c.id
+WHERE p.id IS NULL
+ORDER BY c.app_label, c.model;`,
+        requiredTables: ["django_content_type", "auth_permission"],
+      },
+      {
+        name: "django_superusers",
+        label: "Superuser audit",
+        description: "List all superusers — review for security compliance.",
+        query: `SELECT id, username, email, is_active, last_login, date_joined
+FROM auth_user
+WHERE is_superuser = 1
+ORDER BY date_joined;`,
+        requiredTables: ["auth_user"],
+      },
+      {
+        name: "django_inactive_staff",
+        label: "Inactive staff accounts",
+        description: "Find staff users that are deactivated — potential cleanup targets.",
+        query: `SELECT id, username, email, last_login, date_joined
+FROM auth_user
+WHERE is_staff = 1 AND is_active = 0
+ORDER BY last_login DESC;`,
+        requiredTables: ["auth_user"],
+      },
+      {
+        name: "django_users_never_logged_in",
+        label: "Users never logged in",
+        description: "Find user accounts that were created but never used.",
+        query: `SELECT id, username, email, date_joined
+FROM auth_user
+WHERE last_login IS NULL
+ORDER BY date_joined DESC;`,
+        requiredTables: ["auth_user"],
+      },
+      {
+        name: "django_table_row_counts",
+        label: "Django table sizes",
+        description: "Quick row count for all core Django tables to assess database size.",
+        query: `SELECT 'auth_user' AS table_name, COUNT(*) AS row_count FROM auth_user
+UNION ALL SELECT 'auth_group', COUNT(*) FROM auth_group
+UNION ALL SELECT 'auth_permission', COUNT(*) FROM auth_permission
+UNION ALL SELECT 'django_content_type', COUNT(*) FROM django_content_type
+UNION ALL SELECT 'django_migrations', COUNT(*) FROM django_migrations
+ORDER BY row_count DESC;`,
+        requiredTables: ["auth_user", "auth_group", "auth_permission", "django_content_type", "django_migrations"],
+      },
+    ],
+  },
 ];
 
 export function getVisibleDjangoPresetGroups(

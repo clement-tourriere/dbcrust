@@ -96,4 +96,18 @@ export interface EditorTab {
   results: QueryResult | null;
   error: string | null;
   isRunning: boolean;
+  isExplain?: boolean;
+}
+
+export type NavigationView = 'home' | 'query' | 'schema' | 'docker' | 'settings';
+
+export interface DockerContainer {
+  id: string;
+  name: string;
+  image: string;
+  status: string;
+  database_type: string | null;
+  host_port: number | null;
+  container_port: number | null;
+  is_running: boolean;
 }

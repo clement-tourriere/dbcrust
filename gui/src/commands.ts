@@ -12,6 +12,7 @@ import type {
   NamedQuery,
   AppConfig,
   DatabaseTypeInfo,
+  DockerContainer,
 } from "./types";
 
 // ── Connection ───────────────────────────────────────────────────────────────
@@ -127,4 +128,23 @@ export async function updateConfig(
   value: string,
 ): Promise<void> {
   return invoke("update_config", { key, value });
+}
+
+// ── Docker Discovery ─────────────────────────────────────────────────────────
+
+export async function discoverDockerContainers(): Promise<DockerContainer[]> {
+  return invoke<DockerContainer[]>("discover_docker_containers");
+}
+
+// ── Vault Discovery ───────────────────────────────────────────────────────────
+
+export async function listVaultDatabases(mountPath: string): Promise<string[]> {
+  return invoke<string[]>("list_vault_databases", { mountPath });
+}
+
+export async function listVaultRoles(
+  mountPath: string,
+  databaseName: string,
+): Promise<string[]> {
+  return invoke<string[]>("list_vault_roles", { mountPath, databaseName });
 }
