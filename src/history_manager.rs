@@ -100,7 +100,9 @@ impl SessionId {
         let mut hasher = Sha256::new();
         hasher.update(self.identifier.as_bytes());
         let result = hasher.finalize();
-        format!("{result:x}")[..16].to_string() // Use first 16 chars for brevity
+        // Encode as hex manually (sha2 0.11 GenericArray doesn't impl LowerHex)
+        let hex_str: String = result.iter().map(|b| format!("{b:02x}")).collect();
+        hex_str[..16].to_string() // Use first 16 chars for brevity
     }
 
     /// Get the history filename for this session

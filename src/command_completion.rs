@@ -66,6 +66,7 @@ pub trait CommandCompleter: Send + Sync {
                     append_whitespace: true,
                     extra: None,
                     style: None,
+                    ..Default::default()
                 });
             }
         }
@@ -400,6 +401,7 @@ impl CommandCompleter for NamedQueryCompleter {
                                     append_whitespace: true,
                                     extra: None,
                                     style: None,
+                                    ..Default::default()
                                 });
                             }
                         }
@@ -422,6 +424,7 @@ impl CommandCompleter for NamedQueryCompleter {
                                     append_whitespace: true,
                                     extra: None,
                                     style: None,
+                                    ..Default::default()
                                 });
                             }
                         }
@@ -445,6 +448,7 @@ impl CommandCompleter for NamedQueryCompleter {
                                     append_whitespace: true,
                                     extra: None,
                                     style: None,
+                                    ..Default::default()
                                 });
                             }
                         }
@@ -600,6 +604,7 @@ impl CommandCompletionManager {
                         append_whitespace: true,
                         extra: None,
                         style: None,
+                        ..Default::default()
                     });
                 }
             }
@@ -642,10 +647,10 @@ impl CommandCompletionManager {
         }
 
         // Find the end of the command name (first space or end of line)
-        let command_end = line[1..].find(' ').map_or(line.len() - 1, |i| i + 1);
-        let command = &line[..command_end + 1]; // Include the backslash but not the space
+        let command_end = line[1..].find(' ').map_or(line.len(), |i| i + 1);
+        let command = &line[..command_end]; // Include the backslash and command name, not the space
 
-        if command_end + 1 >= line.len() {
+        if command_end >= line.len() {
             // No arguments yet
             return Some((command.to_string(), String::new(), 0));
         }

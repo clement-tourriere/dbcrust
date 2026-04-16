@@ -375,6 +375,7 @@ impl SqlCompleter {
                     append_whitespace: true,
                     extra: None,
                     style: Some(Style::new().fg(Color::Green)),
+                    ..Default::default()
                 });
             }
         }
@@ -825,6 +826,7 @@ impl SqlCompleter {
                                             append_whitespace: false,
                                             extra: None,
                                             style: Some(Style::new().fg(Color::Magenta)), // Different color for nested fields
+                                            ..Default::default()
                                         });
                                         added_count += 1;
                                         columns_added = true;
@@ -878,6 +880,7 @@ impl SqlCompleter {
                                             append_whitespace: false,
                                             extra: None,
                                             style: Some(Style::new().fg(Color::Cyan)),
+                                            ..Default::default()
                                         });
                                         added_count += 1;
                                         columns_added = true;
@@ -920,6 +923,7 @@ impl SqlCompleter {
                                 append_whitespace: false,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Cyan)),
+                                ..Default::default()
                             });
                             added_count += 1;
                             columns_added = true;
@@ -970,6 +974,7 @@ impl SqlCompleter {
                                     append_whitespace: true,
                                     extra: None,
                                     style: Some(Style::new().fg(Color::Blue)),
+                                    ..Default::default()
                                 });
                             }
                         }
@@ -995,6 +1000,7 @@ impl SqlCompleter {
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Blue)),
+                            ..Default::default()
                         });
                     }
                 }
@@ -1073,6 +1079,7 @@ impl SqlCompleter {
                                                 append_whitespace: false,
                                                 extra: None,
                                                 style: Some(Style::new().fg(Color::Magenta)),
+                                                ..Default::default()
                                             });
                                             added_count += 1;
                                             columns_added = true;
@@ -1126,6 +1133,7 @@ impl SqlCompleter {
                                                 append_whitespace: false,
                                                 extra: None,
                                                 style: Some(Style::new().fg(Color::Cyan)),
+                                                ..Default::default()
                                             });
                                             added_count += 1;
                                         }
@@ -1171,6 +1179,7 @@ impl SqlCompleter {
                                     append_whitespace: false,
                                     extra: None,
                                     style: Some(Style::new().fg(Color::Cyan)),
+                                    ..Default::default()
                                 });
                                 added_count += 1;
                                 columns_added = true;
@@ -1223,6 +1232,7 @@ impl SqlCompleter {
                                 append_whitespace: true,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Blue)),
+                                ..Default::default()
                             });
                         }
                     }
@@ -1266,6 +1276,7 @@ impl SqlCompleter {
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Blue)),
+                            ..Default::default()
                         });
                     }
                 }
@@ -1292,6 +1303,7 @@ impl SqlCompleter {
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Blue)),
+                            ..Default::default()
                         });
                     }
                 }
@@ -1311,6 +1323,7 @@ impl SqlCompleter {
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Blue)),
+                            ..Default::default()
                         });
                     }
                 }
@@ -1402,6 +1415,7 @@ impl SqlCompleter {
                                                     append_whitespace: false,
                                                     extra: None,
                                                     style: Some(Style::new().fg(Color::Magenta)),
+                                                    ..Default::default()
                                                 });
                                                 added_count += 1;
                                                 columns_added = true;
@@ -1455,6 +1469,7 @@ impl SqlCompleter {
                                                     append_whitespace: false,
                                                     extra: None,
                                                     style: Some(Style::new().fg(Color::Cyan)),
+                                                    ..Default::default()
                                                 });
                                                 added_count += 1;
                                             }
@@ -1506,6 +1521,7 @@ impl SqlCompleter {
                                         append_whitespace: false,
                                         extra: None,
                                         style: Some(Style::new().fg(Color::Cyan)),
+                                        ..Default::default()
                                     });
                                     added_count += 1;
                                 } else {
@@ -1532,6 +1548,7 @@ impl SqlCompleter {
                                 append_whitespace: true,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Blue)),
+                                ..Default::default()
                             });
                         }
                     }
@@ -1563,6 +1580,7 @@ impl SqlCompleter {
                                 append_whitespace: !requires_parens,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Magenta)),
+                                ..Default::default()
                             });
                         }
                     }
@@ -1601,6 +1619,7 @@ impl SqlCompleter {
                     append_whitespace: !hint.requires_parentheses,
                     extra: None,
                     style,
+                    ..Default::default()
                 });
             }
         }
@@ -1619,6 +1638,7 @@ impl SqlCompleter {
                     append_whitespace: true,
                     extra: None,
                     style: Some(Style::new().fg(Color::Cyan)),
+                    ..Default::default()
                 });
             }
         }
@@ -1798,6 +1818,7 @@ impl SqlCompleter {
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Green)),
+                            ..Default::default()
                         });
                     }
                 }
@@ -1846,6 +1867,7 @@ impl SqlCompleter {
                                 append_whitespace: true,
                                 extra: None,
                                 style: Some(Style::new().fg(Color::Blue)),
+                                ..Default::default()
                             });
                         }
                     }
@@ -1919,6 +1941,7 @@ impl SqlCompleter {
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Magenta)),
+                            ..Default::default()
                         });
                     }
                 }
@@ -1991,6 +2014,7 @@ impl SqlCompleter {
                             append_whitespace: true,
                             extra: None,
                             style: Some(Style::new().fg(Color::Red)),
+                            ..Default::default()
                         });
                     }
                 }
@@ -2077,6 +2101,7 @@ impl SqlCompleter {
                         append_whitespace: true,
                         extra: None,
                         style: Some(Style::new().fg(Color::Blue)),
+                        ..Default::default()
                     });
                 }
             }
@@ -2120,6 +2145,7 @@ impl SqlCompleter {
                         append_whitespace: true,
                         extra: None,
                         style: Some(Style::new().fg(Color::Blue)),
+                        ..Default::default()
                     });
                 }
             }
@@ -2162,6 +2188,7 @@ impl SqlCompleter {
                         append_whitespace: true,
                         extra: None,
                         style: Some(Style::new().fg(Color::Blue)),
+                        ..Default::default()
                     });
                 }
             }

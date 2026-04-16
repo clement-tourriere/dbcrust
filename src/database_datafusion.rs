@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::DataType;
 use datafusion::datasource::file_format::options::{
-    CsvReadOptions, NdJsonReadOptions, ParquetReadOptions,
+    CsvReadOptions, JsonReadOptions, ParquetReadOptions,
 };
 use datafusion::execution::context::SessionContext;
 use std::sync::Arc;
@@ -192,7 +192,7 @@ impl DataFusionClient {
                             .register_json(
                                 &table_name,
                                 temp_path.to_str().unwrap(),
-                                NdJsonReadOptions::default(),
+                                JsonReadOptions::default(),
                             )
                             .await
                             .map_err(|e| {
@@ -205,7 +205,7 @@ impl DataFusionClient {
                             .register_json(
                                 &table_name,
                                 &register_path,
-                                NdJsonReadOptions::default(),
+                                JsonReadOptions::default(),
                             )
                             .await
                             .map_err(|e| {
@@ -217,7 +217,7 @@ impl DataFusionClient {
                 } else {
                     // Regular JSON file - try NDJSON first (fast path), then convert if needed
                     let result = Arc::as_ref(&self.ctx)
-                        .register_json(&table_name, &register_path, NdJsonReadOptions::default())
+                        .register_json(&table_name, &register_path, JsonReadOptions::default())
                         .await;
 
                     // If that fails, try converting regular JSON to NDJSON
@@ -260,7 +260,7 @@ impl DataFusionClient {
                         // Register the temporary NDJSON file
                         let temp_path = temp_file.path().to_str().unwrap().to_string();
                         Arc::as_ref(&self.ctx)
-                            .register_json(&table_name, &temp_path, NdJsonReadOptions::default())
+                            .register_json(&table_name, &temp_path, JsonReadOptions::default())
                             .await
                             .map_err(|e| {
                                 DatabaseError::ConnectionError(format!(

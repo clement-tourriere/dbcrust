@@ -2169,8 +2169,7 @@ impl CommandExecutor for Command {
             // Password management commands
             Command::SavePassword { .. } => {
                 use crate::dbcrust_pass::{DatabaseType, save_password};
-                use inquire::{Select, Text};
-                use std::io::Write;
+                use inquire::{Password, Select, Text};
 
                 // Interactive prompts for all parameters
                 let database_types = vec![
@@ -2216,11 +2215,10 @@ impl CommandExecutor for Command {
                     .prompt()
                     .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
 
-                print!("Password: ");
-                std::io::stdout().flush().unwrap();
-                let password = rpassword::read_password().map_err(|e| {
-                    CommandError::InvalidSyntax(format!("Password input error: {e}"))
-                })?;
+                let password = Password::new("Password:")
+                    .without_confirmation()
+                    .prompt()
+                    .map_err(|e| CommandError::InvalidSyntax(format!("Password input error: {e}")))?;
 
                 // Always encrypt passwords by default (no confirmation prompt)
                 let encrypt = true;

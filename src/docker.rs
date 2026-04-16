@@ -224,14 +224,7 @@ impl DockerClient {
     /// Extract IP address from container inspection
     fn extract_ip_address(&self, container: &ContainerInspectResponse) -> Option<String> {
         if let Some(network_settings) = &container.network_settings {
-            // Try to get IP address from the default bridge network first
-            if let Some(ip_address) = &network_settings.ip_address {
-                if !ip_address.is_empty() {
-                    return Some(ip_address.clone());
-                }
-            }
-
-            // If no IP in default network, try to get from any network
+            // Get IP address from any connected network
             if let Some(networks) = &network_settings.networks {
                 for network in networks.values() {
                     if let Some(ip_address) = &network.ip_address {

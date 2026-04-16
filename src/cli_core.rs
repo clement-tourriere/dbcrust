@@ -16,7 +16,6 @@ use std::error::Error as StdError;
 use std::io;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use terminal_size;
 use tracing::debug;
 use url;
 
@@ -335,8 +334,8 @@ impl CliCore {
         debug!("Architecture: {}", std::env::consts::ARCH);
         debug!("CLI Arguments: {args:?}");
 
-        if let Some(terminal_size) = terminal_size::terminal_size() {
-            debug!("Terminal size: {}x{}", terminal_size.0.0, terminal_size.1.0);
+        if let Ok((width, height)) = crossterm::terminal::size() {
+            debug!("Terminal size: {width}x{height}");
         }
 
         if let Ok(user) = std::env::var("USER") {
@@ -501,7 +500,6 @@ impl CliCore {
     ) -> Result<(crate::db::Database, Option<ConnectionInfo>), CliError> {
         use crate::database::ConnectionInfo;
         use crate::dbcrust_pass::{DatabaseType, lookup_password, save_password};
-        use std::io::Write;
 
         debug!(
             "🔐 Starting connection with password management for URL: {}",
@@ -614,10 +612,10 @@ impl CliCore {
             }
         }
 
-        // Prompt for password interactively using rpassword for clean positioning
-        print!("🔐 Password: ");
-        std::io::stdout().flush().unwrap();
-        let prompted_password = rpassword::read_password()
+        // Prompt for password interactively using inquire
+        let prompted_password = inquire::Password::new("🔐 Password:")
+            .without_confirmation()
+            .prompt()
             .map_err(|e| CliError::ConnectionError(format!("Password input error: {e}")))?;
 
         // Try connection with prompted password
@@ -1279,6 +1277,10 @@ impl CliCore {
                     println!("Goodbye!");
                     break;
                 }
+                _ => {
+                    // Handle any other signals (e.g., ExternalBreak)
+                    continue;
+                }
             }
         }
 
@@ -1794,8 +1796,8 @@ impl CliCore {
         // Get the threshold
         let threshold = if config.pager_threshold_lines == 0 {
             // Use terminal height if available, otherwise default to 25
-            if let Some(terminal_size) = terminal_size::terminal_size() {
-                terminal_size.1.0 as usize
+            if let Ok((_, height)) = crossterm::terminal::size() {
+                height as usize
             } else {
                 25 // Fallback default
             }
