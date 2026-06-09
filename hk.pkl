@@ -8,8 +8,8 @@ local linters = new Mapping<String, Step> {
     ["cargo-fmt"] {
         glob = "**/*.rs"
         exclude = "python/**"
-        check = "cargo fmt -- --check"
-        fix = "cargo fmt"
+        check = "rustfmt --check"
+        fix = "rustfmt"
     }
     ["cargo-clippy"] {
         glob = "**/*.rs"
