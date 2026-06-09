@@ -1733,6 +1733,7 @@ impl CliCore {
             file_path: None,
             options,
             docker_container: None,
+            use_tls: original_connection_info.use_tls,
         };
 
         // Set the connection info in the database so it's accessible via get_connection_info()

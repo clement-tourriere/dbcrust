@@ -202,11 +202,7 @@ impl DataFusionClient {
                             })?;
                     } else {
                         Arc::as_ref(&self.ctx)
-                            .register_json(
-                                &table_name,
-                                &register_path,
-                                JsonReadOptions::default(),
-                            )
+                            .register_json(&table_name, &register_path, JsonReadOptions::default())
                             .await
                             .map_err(|e| {
                                 DatabaseError::ConnectionError(format!(

@@ -606,6 +606,7 @@ pub struct ConnectionInfo {
     pub file_path: Option<String>,        // For SQLite
     pub options: HashMap<String, String>, // Query parameters
     pub docker_container: Option<String>, // For Docker containers
+    pub use_tls: bool,                    // Use TLS/SSL for the connection
 }
 
 /// Server information returned by database connections
@@ -777,6 +778,7 @@ impl ConnectionInfo {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         // Handle Docker URLs first
@@ -873,6 +875,44 @@ impl ConnectionInfo {
                 .insert(key.to_string(), value.to_string());
         }
 
+        // Detect TLS from query parameters (ssl, sslmode, tls, secure)
+        let mut tls_option_seen = false;
+        let mut tls_requested_by_option = false;
+        for (key, value) in &connection_info.options {
+            let key = key.to_ascii_lowercase();
+            let value = value.to_ascii_lowercase();
+
+            match key.as_str() {
+                "ssl" | "tls" | "secure" => {
+                    tls_option_seen = true;
+                    if matches!(value.as_str(), "true" | "1" | "yes" | "on") {
+                        tls_requested_by_option = true;
+                    }
+                }
+                "sslmode" => {
+                    tls_option_seen = true;
+                    if matches!(value.as_str(), "require" | "verify-ca" | "verify-full") {
+                        tls_requested_by_option = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if tls_requested_by_option {
+            connection_info.use_tls = true;
+        }
+
+        // Auto-enable TLS for ClickHouse on the HTTPS HTTP interface port unless
+        // the URL explicitly configured TLS itself (e.g. ssl=false).
+        // Note: 9440 is ClickHouse's native TLS port for clickhouse-client, not HTTPS.
+        if connection_info.database_type == DatabaseType::ClickHouse
+            && connection_info.port == Some(8443)
+            && !tls_option_seen
+        {
+            connection_info.use_tls = true;
+        }
+
         debug!(
             "[ConnectionInfo::parse_url] Parsed connection info for {}",
             database_type
@@ -909,6 +949,7 @@ impl ConnectionInfo {
                 && self.port == other.port
                 && self.username == other.username
                 && self.database == other.database
+                && self.use_tls == other.use_tls
         }
     }
 
@@ -939,6 +980,11 @@ impl ConnectionInfo {
             if let Some(ref database) = self.database {
                 url.push('/');
                 url.push_str(database);
+            }
+
+            // Add TLS query parameter if enabled
+            if self.use_tls {
+                url.push_str("?ssl=true");
             }
 
             // Add docker container info as a comment-like suffix if present
@@ -1041,6 +1087,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let url = conn_info.to_url();
@@ -1060,6 +1107,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: Some("myapp-postgres".to_string()),
+            use_tls: false,
         };
 
         let url = conn_info.to_url();
@@ -1082,6 +1130,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let url = conn_info.to_url();
@@ -1101,6 +1150,7 @@ mod tests {
             file_path: Some("/path/to/database.db".to_string()),
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let url = conn_info.to_url();
@@ -1196,5 +1246,40 @@ mod tests {
         // Verify that %3A was decoded to :
         assert_eq!(conn_info.database.as_deref(), Some("tt2:main"));
         assert_eq!(conn_info.username.as_deref(), Some("user"));
+    }
+
+    #[rstest]
+    #[case("clickhouse://user@host:8123/mydb", false)]
+    #[case("clickhouse://user@host:8443/mydb", true)] // Auto TLS on HTTPS HTTP port
+    #[case("clickhouse://user@host:8443/mydb?ssl=false", false)] // Explicit override
+    #[case("clickhouse://user@host:9440/mydb", false)] // Native TLS port, not HTTPS
+    #[case("clickhouse://user@host:9440/mydb?ssl=true", true)] // Explicit custom HTTPS attempt
+    #[case("clickhouse://user@host:8123/mydb?ssl=true", true)]
+    #[case("clickhouse://user@host:8123/mydb?sslmode=require", true)]
+    #[case("clickhouse://user@host:8123/mydb?tls=true", true)]
+    #[case("clickhouse://user@host:8123/mydb?secure=true", true)]
+    fn test_clickhouse_tls_detection(#[case] url: &str, #[case] expected_tls: bool) {
+        let conn_info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(conn_info.database_type, DatabaseType::ClickHouse);
+        assert_eq!(conn_info.use_tls, expected_tls);
+    }
+
+    #[test]
+    fn test_connection_info_to_url_with_tls() {
+        let conn_info = ConnectionInfo {
+            database_type: DatabaseType::ClickHouse,
+            host: Some("host".to_string()),
+            port: Some(8443),
+            username: Some("user".to_string()),
+            password: None,
+            database: Some("mydb".to_string()),
+            file_path: None,
+            options: HashMap::new(),
+            docker_container: None,
+            use_tls: true,
+        };
+
+        let url = conn_info.to_url();
+        assert_eq!(url, "clickhouse://user@host:8443/mydb?ssl=true");
     }
 }

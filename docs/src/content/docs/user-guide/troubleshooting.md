@@ -90,7 +90,7 @@ cat ~/.my.cnf                   # MySQL configuration
 2. **Check .pgpass/.my.cnf:** Verify credential file format
 3. **Database permissions:** Grant user access to specific database
 4. **SSL requirements:** Add `?sslmode=require` if needed
-5. **ClickHouse authentication:** 
+5. **ClickHouse authentication:**
    - Check if `CLICKHOUSE_SKIP_USER_SETUP=1` is set (no password needed)
    - Verify ClickHouse user configuration in `users.xml`
    - Test with default user if no custom users configured
@@ -203,6 +203,35 @@ clickhouse-client --host localhost --port 9000 --user username --password passwo
 2. **HTTP vs Native ports:** DBCrust uses HTTP interface (port 8123), not native client port (9000)
 3. **Database parameter:** ClickHouse uses database parameter, not URL path: `clickhouse://localhost:8123/default`
 4. **Authentication:** Check `users.xml` or environment variables for user configuration
+
+**Problem: ClickHouse reports `Port 9000 is for clickhouse-client` or TLS/SSL connection errors**
+
+DBCrust uses ClickHouse's HTTP(S) interface. ClickHouse native ports are for `clickhouse-client` and are not compatible with DBCrust's HTTP driver:
+
+- `9000` = native TCP (`clickhouse-client`)
+- `9440` = native TLS (`clickhouse-client --secure`)
+- `8123` = HTTP
+- `8443` = HTTPS HTTP (when enabled)
+
+```bash
+# HTTP interface
+dbcrust clickhouse://user:pass@clickhouse.example.com:8123/default
+
+# HTTPS HTTP interface (TLS auto-detected on standard port 8443)
+dbcrust clickhouse://user:pass@clickhouse.example.com:8443/default
+
+# For a custom HTTPS HTTP port, explicitly enable TLS:
+dbcrust clickhouse://user:pass@clickhouse.example.com:9443/default?ssl=true
+
+# Supported TLS query parameters:
+# ?ssl=true, ?sslmode=require, ?tls=true, ?secure=true
+```
+
+**Solutions:**
+1. **Do not use port 9440 with DBCrust:** it is ClickHouse's native TLS port, not HTTPS.
+2. **Use the HTTP(S) endpoint:** try `8123` for HTTP or `8443` with TLS if your server exposes HTTPS.
+3. **Verify with curl:** test the exact HTTP endpoint, e.g. `curl -u user:pass https://host:8443/`.
+4. **If only 9000/9440 are exposed:** enable ClickHouse HTTP/HTTPS or connect with `clickhouse-client` instead.
 
 **Problem: ClickHouse queries return "Query executed successfully" instead of data**
 

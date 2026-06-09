@@ -1444,6 +1444,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         // This test validates the connection info parsing without actual connection

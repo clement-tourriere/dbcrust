@@ -258,6 +258,36 @@ pub struct ClickHouseClient {
 }
 
 impl ClickHouseClient {
+    fn connection_error_with_http_hint(
+        port: u16,
+        use_tls: bool,
+        source_error: impl ToString,
+    ) -> DatabaseError {
+        let source_error = source_error.to_string();
+        let lower_error = source_error.to_ascii_lowercase();
+        let native_port_response =
+            lower_error.contains("clickhouse-client") && lower_error.contains("must use port 8123");
+
+        if matches!(port, 9000 | 9440) || native_port_response {
+            let attempted_protocol = if use_tls { "HTTPS" } else { "HTTP" };
+            let endpoint_note = match port {
+                9000 => "Port 9000 is ClickHouse's native TCP port for clickhouse-client.",
+                9440 => {
+                    "Port 9440 is ClickHouse's native TLS port for clickhouse-client, not its HTTPS port."
+                }
+                _ => {
+                    "The server responded like a native ClickHouse endpoint rather than an HTTP endpoint."
+                }
+            };
+
+            return DatabaseError::ConnectionError(format!(
+                "Failed to connect to ClickHouse over {attempted_protocol} on port {port}. {endpoint_note} DBCrust uses ClickHouse's HTTP(S) interface; use the HTTP port (usually 8123) or the HTTPS HTTP port (usually 8443 with ?ssl=true) instead. Original error: {source_error}"
+            ));
+        }
+
+        DatabaseError::ConnectionError(format!("Failed to connect to ClickHouse: {source_error}"))
+    }
+
     pub async fn new(connection_info: ConnectionInfo) -> Result<Self, DatabaseError> {
         debug!("[ClickHouseClient::new] Creating ClickHouse client");
 
@@ -280,34 +310,42 @@ impl ClickHouseClient {
             };
 
         let port = connection_info.port.unwrap_or(8123);
-        let username = connection_info.username.as_deref().unwrap_or("");
         let database = connection_info
             .database
             .clone()
             .unwrap_or_else(|| "default".to_string());
 
-        // ClickHouse HTTP interface doesn't use database in URL path
-        // Database is specified via query parameter or USE statement
-        let database_url = if let Some(password) = &connection_info.password {
-            if username.is_empty() {
-                format!("http://{connection_host}:{port}")
-            } else {
-                format!("http://{username}:{password}@{connection_host}:{port}")
-            }
-        } else if username.is_empty() {
-            format!("http://{connection_host}:{port}")
+        // Use HTTPS when TLS is enabled (e.g. ClickHouse HTTP TLS port 8443).
+        // ClickHouse native TLS port 9440 is not an HTTP endpoint.
+        let protocol = if connection_info.use_tls {
+            "https"
         } else {
-            format!("http://{username}@{connection_host}:{port}")
+            "http"
         };
 
+        // ClickHouse HTTP interface doesn't use database in URL path.
+        // Database is specified via query parameter or USE statement.
+        // Do not put credentials in the URL: the clickhouse crate ignores URL
+        // userinfo and uses explicit X-ClickHouse-* auth headers instead.
+        let database_url = format!("{protocol}://{connection_host}:{port}");
+
         debug!(
-            "[ClickHouseClient::new] Connecting to: {}",
-            crate::password_sanitizer::sanitize_connection_url(&database_url)
+            "[ClickHouseClient::new] Connecting to: {} as user: {:?}, has password: {}",
+            database_url,
+            &connection_info.username,
+            connection_info.password.is_some()
         );
 
         let mut client = Client::default()
             .with_url(database_url)
             .with_database(&database);
+
+        if let Some(username) = &connection_info.username {
+            client = client.with_user(username);
+        }
+        if let Some(password) = &connection_info.password {
+            client = client.with_password(password);
+        }
 
         // If we resolved a *.localhost domain, add the original hostname as a header
         // for proxy routing (but exclude plain "localhost")
@@ -323,9 +361,7 @@ impl ClickHouseClient {
             .query("SELECT 1 as test")
             .fetch_one::<u8>()
             .await
-            .map_err(|e| {
-                DatabaseError::ConnectionError(format!("Failed to connect to ClickHouse: {e}"))
-            })?;
+            .map_err(|e| Self::connection_error_with_http_hint(port, connection_info.use_tls, e))?;
 
         let metadata_provider = ClickHouseMetadataProvider::new(client.clone());
 
@@ -337,12 +373,33 @@ impl ClickHouseClient {
         })
     }
 
+    fn add_clickhouse_auth_headers(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
+        let mut request = request;
+
+        if let Some(username) = &self.connection_info.username {
+            request = request.header("X-ClickHouse-User", username.as_str());
+        }
+        if let Some(password) = &self.connection_info.password {
+            request = request.header("X-ClickHouse-Key", password.as_str());
+        }
+
+        request
+    }
+
     /// Execute HTTP query via ClickHouse HTTP interface
     async fn execute_http_user_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         // Build HTTP URL
         let host = self.connection_info.host.as_deref().unwrap_or("localhost");
         let port = self.connection_info.port.unwrap_or(8123);
-        let url = format!("http://{host}:{port}");
+        let protocol = if self.connection_info.use_tls {
+            "https"
+        } else {
+            "http"
+        };
+        let url = format!("{protocol}://{host}:{port}");
 
         debug!(
             "[ClickHouseClient::execute_http_user_query] Executing HTTP query: {}",
@@ -367,22 +424,8 @@ impl ClickHouseClient {
         // Build request
         let mut request = client.post(&url);
 
-        // Add authentication if needed
-        if let Some(username) = &self.connection_info.username {
-            if let Some(password) = &self.connection_info.password {
-                debug!(
-                    "[ClickHouseClient::execute_http_user_query] Adding basic auth with username '{}' and password",
-                    username
-                );
-                request = request.basic_auth(username, Some(password));
-            } else {
-                debug!(
-                    "[ClickHouseClient::execute_http_user_query] Adding basic auth with username '{}' and no password",
-                    username
-                );
-                request = request.basic_auth(username, None::<&str>);
-            }
-        }
+        // Add ClickHouse authentication headers if needed.
+        request = self.add_clickhouse_auth_headers(request);
 
         // Add database parameter
         if let Some(database) = &self.connection_info.database {
@@ -455,14 +498,8 @@ impl ClickHouseClient {
 
             let mut request = client.post(&url);
 
-            // Add authentication if needed
-            if let Some(username) = &self.connection_info.username {
-                if let Some(password) = &self.connection_info.password {
-                    request = request.basic_auth(username, Some(password));
-                } else {
-                    request = request.basic_auth(username, None::<&str>);
-                }
-            }
+            // Add ClickHouse authentication headers if needed.
+            request = self.add_clickhouse_auth_headers(request);
 
             // Add database parameter
             if let Some(database) = &self.connection_info.database {
@@ -745,5 +782,83 @@ impl DatabaseClient for ClickHouseClient {
         server_info.supports_roles = true; // ClickHouse supports role-based access control
 
         Ok(server_info)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_client_with_auth(username: Option<&str>, password: Option<&str>) -> ClickHouseClient {
+        let connection_info = ConnectionInfo {
+            database_type: crate::database::DatabaseType::ClickHouse,
+            host: Some("localhost".to_string()),
+            port: Some(8123),
+            username: username.map(str::to_string),
+            password: password.map(str::to_string),
+            database: Some("default".to_string()),
+            file_path: None,
+            options: std::collections::HashMap::new(),
+            docker_container: None,
+            use_tls: false,
+        };
+        let client = Client::default().with_url("http://localhost:8123");
+
+        ClickHouseClient {
+            client: client.clone(),
+            connection_info,
+            current_database: "default".to_string(),
+            metadata_provider: ClickHouseMetadataProvider::new(client),
+        }
+    }
+
+    #[test]
+    fn clickhouse_http_auth_uses_clickhouse_headers() {
+        let clickhouse_client = test_client_with_auth(Some("alice"), Some("secret"));
+        let reqwest_client = reqwest::Client::new();
+
+        let request = clickhouse_client
+            .add_clickhouse_auth_headers(reqwest_client.post("http://localhost:8123"))
+            .build()
+            .unwrap();
+
+        assert_eq!(request.headers()["X-ClickHouse-User"], "alice");
+        assert_eq!(request.headers()["X-ClickHouse-Key"], "secret");
+        assert!(!request.headers().contains_key("Authorization"));
+    }
+
+    #[test]
+    fn native_tls_port_error_explains_http_endpoint_requirement() {
+        let error = ClickHouseClient::connection_error_with_http_hint(
+            9440,
+            true,
+            "bad response: Port 9000 is for clickhouse-client program\nYou must use port 8123 for HTTP.",
+        );
+
+        match error {
+            DatabaseError::ConnectionError(message) => {
+                assert!(message.contains("Port 9440 is ClickHouse's native TLS port"));
+                assert!(message.contains("HTTP(S) interface"));
+                assert!(message.contains("8123"));
+                assert!(message.contains("8443"));
+            }
+            other => panic!("expected connection error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ordinary_clickhouse_connection_error_is_preserved() {
+        let error =
+            ClickHouseClient::connection_error_with_http_hint(8123, false, "connection refused");
+
+        match error {
+            DatabaseError::ConnectionError(message) => {
+                assert_eq!(
+                    message,
+                    "Failed to connect to ClickHouse: connection refused"
+                );
+            }
+            other => panic!("expected connection error, got {other:?}"),
+        }
     }
 }

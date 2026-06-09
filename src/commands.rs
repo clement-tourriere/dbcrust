@@ -2218,7 +2218,9 @@ impl CommandExecutor for Command {
                 let password = Password::new("Password:")
                     .without_confirmation()
                     .prompt()
-                    .map_err(|e| CommandError::InvalidSyntax(format!("Password input error: {e}")))?;
+                    .map_err(|e| {
+                        CommandError::InvalidSyntax(format!("Password input error: {e}"))
+                    })?;
 
                 // Always encrypt passwords by default (no confirmation prompt)
                 let encrypt = true;

@@ -977,6 +977,7 @@ mod tests {
             file_path: Some(test_db_path.to_string_lossy().to_string()),
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         match SqliteClient::new(connection_info).await {
@@ -1067,6 +1068,7 @@ mod tests {
             file_path: Some(test_db_path.to_string_lossy().to_string()),
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let client = SqliteClient::new(connection_info).await.unwrap();

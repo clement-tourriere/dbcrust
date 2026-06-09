@@ -2090,6 +2090,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         // This test will fail if no PostgreSQL server is running, which is expected
@@ -2431,6 +2432,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         // Parse the URL to create a proper client
@@ -2617,6 +2619,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let pool = PgPoolOptions::new()

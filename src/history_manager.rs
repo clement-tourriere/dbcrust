@@ -333,6 +333,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let session_id = SessionId::from_connection_info(&connection_info);
@@ -357,6 +358,7 @@ mod tests {
             file_path: Some("/path/to/db.sqlite".to_string()),
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let session_id = SessionId::from_connection_info(&connection_info);
@@ -376,6 +378,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: Some("my-postgres-container".to_string()),
+            use_tls: false,
         };
 
         let session_id = SessionId::from_connection_info(&connection_info);
@@ -398,6 +401,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         connection_info
@@ -430,6 +434,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let session_id1 = SessionId::from_connection_info(&connection_info);

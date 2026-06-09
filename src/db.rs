@@ -283,6 +283,7 @@ impl Database {
                 file_path: None,
                 options: connection_info.options,
                 docker_container: Some(selected_container.clone()),
+                use_tls: connection_info.use_tls,
             };
 
             let database = Self::from_connection_info_with_mode(
@@ -327,6 +328,7 @@ impl Database {
             file_path: None,
             options: connection_info.options,
             docker_container: Some(container_name.clone()),
+            use_tls: connection_info.use_tls,
         };
 
         debug!(
@@ -610,6 +612,7 @@ impl Database {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         Self::from_connection_info(

@@ -69,7 +69,16 @@ dbc session://[TAB] → lists saved sessions
   </TabItem>
   <TabItem label="ClickHouse">
     ```bash
+    # HTTP (default port 8123)
     dbcrust clickhouse://user:pass@localhost:8123/default
+
+    # HTTPS (ClickHouse HTTP TLS port, usually 8443)
+    dbcrust clickhouse://user:pass@host:8443/default
+
+    # HTTPS on a custom HTTP port (explicit TLS via query parameter)
+    dbcrust clickhouse://user:pass@host:9443/default?ssl=true
+
+    # Note: port 9440 is the native clickhouse-client TLS port, not HTTP(S)
     ```
   </TabItem>
   <TabItem label="MongoDB">

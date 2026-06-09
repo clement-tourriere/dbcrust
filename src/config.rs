@@ -2665,6 +2665,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         // Save session
@@ -2702,6 +2703,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
         config
             .save_session_from_connection_info("test_session", &connection_info)
@@ -2997,6 +2999,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let result = config.save_session_from_connection_info("pg_session", &pg_connection_info);
@@ -3013,6 +3016,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let result =
@@ -3030,6 +3034,7 @@ mod tests {
             file_path: Some("/path/to/db.sqlite".to_string()),
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let result =
@@ -3079,6 +3084,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let result =
@@ -3128,6 +3134,7 @@ mod tests {
             file_path: Some("test.db".to_string()),
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let result = config
@@ -3153,6 +3160,7 @@ mod tests {
             file_path: Some(abs_path_str.clone()),
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let result = config
@@ -3229,6 +3237,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let result =
@@ -3390,6 +3399,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         let result =
@@ -3407,6 +3417,7 @@ mod tests {
             file_path: None,
             options: HashMap::new(),
             docker_container: None,
+            use_tls: false,
         };
 
         // Save session with same name (should update)

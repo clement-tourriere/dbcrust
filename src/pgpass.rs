@@ -112,14 +112,23 @@ fn parse_pgpass_line(line: &str) -> Option<PgPassEntry> {
 #[allow(dead_code)]
 pub fn lookup_password(host: &str, port: u16, dbname: &str, username: &str) -> Option<String> {
     let pgpass_path = get_pgpass_path()?;
+    lookup_password_at_path(&pgpass_path, host, port, dbname, username)
+}
 
+fn lookup_password_at_path(
+    path: &Path,
+    host: &str,
+    port: u16,
+    dbname: &str,
+    username: &str,
+) -> Option<String> {
     // Skip if file doesn't exist
-    if !pgpass_path.exists() {
+    if !path.exists() {
         return None;
     }
 
     // Check file permissions on Unix
-    if !has_correct_permissions(&pgpass_path) {
+    if !has_correct_permissions(path) {
         eprintln!(
             "Warning: .pgpass file has incorrect permissions. It should be 0600 (readable/writable only by owner)."
         );
@@ -127,7 +136,7 @@ pub fn lookup_password(host: &str, port: u16, dbname: &str, username: &str) -> O
     }
 
     // Open and read the file
-    let file = match File::open(&pgpass_path) {
+    let file = match File::open(path) {
         Ok(file) => file,
         Err(_) => return None,
     };
@@ -173,7 +182,17 @@ pub fn save_password(
             "Could not determine .pgpass file location",
         )
     })?;
+    save_password_to_path(&pgpass_path, host, port, dbname, username, password)
+}
 
+fn save_password_to_path(
+    pgpass_path: &Path,
+    host: &str,
+    port: u16,
+    dbname: &str,
+    username: &str,
+    password: &str,
+) -> Result<(), std::io::Error> {
     /// Helper function to escape colons and backslashes in .pgpass fields
     fn escape_field(field: &str) -> String {
         field.replace('\\', "\\\\").replace(':', "\\:")
@@ -302,73 +321,29 @@ mod tests {
 
         // Add a password entry to the test file
         fn add_entry(&self, host: &str, port: u16, dbname: &str, username: &str, password: &str) {
-            // Ensure the directory exists
-            if let Some(parent) = self.path.parent()
-                && !parent.exists()
-            {
-                fs::create_dir_all(parent).unwrap_or_else(|e| {
-                    eprintln!("Warning: Could not create parent directory: {e}");
+            // Call directly with the path to avoid mutating the process env var,
+            // which would race with config tests that hold env_lock.
+            save_password_to_path(&self.path, host, port, dbname, username, password)
+                .unwrap_or_else(|e| {
+                    eprintln!("Warning: Failed to save password in test: {e}");
                 });
-            }
 
-            // Setup a temporary environment to redirect PGPASSFILE to our test file
-            let orig_var = env::var_os("PGPASSFILE");
-            unsafe {
-                env::set_var("PGPASSFILE", &self.path);
-            }
-
-            // Use the real save_password function
-            save_password(host, port, dbname, username, password).unwrap_or_else(|e| {
-                eprintln!("Warning: Failed to save password in test: {e}");
-            });
-
-            // Ensure the file was written
             assert!(
                 self.path.exists(),
                 "Failed to create pgpass file at {:?}",
                 self.path
             );
 
-            // Force a file flush and sync
             if let Ok(file) = File::options().append(true).open(&self.path) {
-                let _ = file.sync_all(); // Ensure file is written to disk
-            }
-
-            // Restore the original environment
-            unsafe {
-                match orig_var {
-                    Some(val) => env::set_var("PGPASSFILE", val),
-                    None => env::remove_var("PGPASSFILE"),
-                }
+                let _ = file.sync_all();
             }
         }
 
         // Lookup password in this test file
         fn lookup(&self, host: &str, port: u16, dbname: &str, username: &str) -> Option<String> {
-            // Verify the file exists before lookup
-            if !self.path.exists() {
-                eprintln!("Warning: Test pgpass file doesn't exist during lookup");
-                return None;
-            }
-
-            // Setup a temporary environment to redirect PGPASSFILE to our test file
-            let orig_var = env::var_os("PGPASSFILE");
-            unsafe {
-                env::set_var("PGPASSFILE", &self.path);
-            }
-
-            // Use the real lookup_password function
-            let result = lookup_password(host, port, dbname, username);
-
-            // Restore the original environment
-            unsafe {
-                match orig_var {
-                    Some(val) => env::set_var("PGPASSFILE", val),
-                    None => env::remove_var("PGPASSFILE"),
-                }
-            }
-
-            result
+            // Call directly with the path to avoid mutating the process env var,
+            // which would race with config tests that hold env_lock.
+            lookup_password_at_path(&self.path, host, port, dbname, username)
         }
     }
 
