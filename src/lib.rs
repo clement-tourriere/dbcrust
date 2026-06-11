@@ -39,6 +39,7 @@ pub mod prompt;
 pub mod schema_tui;
 pub mod script;
 pub mod shell_completion; // Custom shell completion with URL schemes
+pub mod sql_buffer; // Multiline validation + statement splitting for the REPL
 pub mod sql_context; // SQL context analysis for better autocompletion
 pub mod sql_parser; // Enhanced SQL parser for autocompletion
 pub mod sql_parser_mysql; // MySQL-specific SQL parser

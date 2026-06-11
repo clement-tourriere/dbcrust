@@ -766,12 +766,41 @@ fn format_option_array_as_postgres<T: std::fmt::Display>(arr: &[Option<T>]) -> S
     format!("{{{}}}", elements.join(","))
 }
 
+/// State of the pinned per-session connection.
+///
+/// Interactive statements all run on ONE connection so that transactions
+/// (`BEGIN`/`COMMIT`), `SET`, and temp tables behave like psql — previously
+/// every statement grabbed a fresh pooled connection, silently scattering
+/// session state across backends. Metadata/autocomplete queries keep using
+/// the pool and never disturb the session.
+struct SessionState {
+    conn: Option<sqlx::pool::PoolConnection<sqlx::Postgres>>,
+    backend_pid: Option<i32>,
+    /// False while a statement is mid-flight. If a new statement starts and
+    /// this is still false, the previous future was dropped mid-protocol and
+    /// the connection must be discarded.
+    clean: bool,
+}
+
+impl SessionState {
+    fn discard(&mut self) {
+        self.conn = None;
+        self.backend_pid = None;
+    }
+}
+
+enum CancelReason {
+    Interrupted,
+    TimedOut(std::time::Duration),
+}
+
 /// PostgreSQL database client implementation
 pub struct PostgreSQLClient {
     pool: PgPool,
     connection_info: ConnectionInfo,
     current_database: String,
     metadata_provider: PostgreSQLMetadataProvider,
+    session: tokio::sync::Mutex<SessionState>,
 }
 
 impl PostgreSQLClient {
@@ -856,7 +885,151 @@ impl PostgreSQLClient {
             connection_info,
             current_database: database_name,
             metadata_provider,
+            session: tokio::sync::Mutex::new(SessionState {
+                conn: None,
+                backend_pid: None,
+                clean: true,
+            }),
         })
+    }
+
+    /// Run `sql` on the pinned session connection, cancelling it server-side
+    /// (`pg_cancel_backend`) when Ctrl-C is pressed or the configured query
+    /// timeout elapses. Server-side cancellation lets the in-flight future
+    /// complete normally (SQLSTATE 57014) instead of being dropped mid-
+    /// protocol, so the session connection stays usable.
+    async fn fetch_all_session(
+        &self,
+        sql: &str,
+    ) -> Result<Vec<sqlx::postgres::PgRow>, DatabaseError> {
+        let mut session = self.session.lock().await;
+
+        // Discard a connection whose previous statement never completed —
+        // its protocol state is unknown
+        if !session.clean {
+            debug!("[PostgreSQLClient] Discarding dirty session connection");
+            session.discard();
+        }
+
+        if session.conn.is_none() {
+            let mut conn = self
+                .pool
+                .acquire()
+                .await
+                .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?;
+            let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?;
+            debug!("[PostgreSQLClient] Pinned session connection (backend pid {pid})");
+            session.conn = Some(conn);
+            session.backend_pid = Some(pid);
+        }
+
+        let backend_pid = session.backend_pid.unwrap_or_default();
+        // Take the connection out for the duration of the statement; it is
+        // only put back once the statement completes with a synchronized
+        // protocol state. clean=false marks the in-flight window.
+        session.clean = false;
+        let mut conn = session.conn.take().ok_or_else(|| {
+            DatabaseError::ConnectionError("session connection unavailable".to_string())
+        })?;
+
+        let interrupt = crate::database::interrupt_flag();
+        let timeout = crate::database::query_timeout();
+        let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
+
+        let mut cancel_reason: Option<CancelReason> = None;
+        let mut grace_deadline: Option<tokio::time::Instant> = None;
+        let mut cancel_expired = false;
+
+        let result = {
+            let query_fut = sqlx::query(sql).fetch_all(&mut *conn);
+            tokio::pin!(query_fut);
+
+            loop {
+                tokio::select! {
+                    res = &mut query_fut => break res,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                        let now = tokio::time::Instant::now();
+                        if let Some(grace) = grace_deadline {
+                            if now >= grace {
+                                // The cancel request was ignored; abandon the
+                                // statement (conn is dropped below instead of
+                                // being put back)
+                                cancel_expired = true;
+                                break Err(sqlx::Error::WorkerCrashed);
+                            }
+                            continue;
+                        }
+                        let interrupted =
+                            interrupt.load(std::sync::atomic::Ordering::Relaxed);
+                        let timed_out = deadline.is_some_and(|d| now >= d);
+                        if interrupted || timed_out {
+                            cancel_reason = Some(if interrupted {
+                                CancelReason::Interrupted
+                            } else {
+                                CancelReason::TimedOut(timeout.unwrap_or_default())
+                            });
+                            // Best-effort server-side cancel from a separate
+                            // pool connection; the pinned query then completes
+                            // with SQLSTATE 57014 and the protocol stays clean
+                            let _ = sqlx::query("SELECT pg_cancel_backend($1)")
+                                .bind(backend_pid)
+                                .execute(&self.pool)
+                                .await;
+                            grace_deadline =
+                                Some(now + std::time::Duration::from_secs(5));
+                        }
+                    }
+                }
+            }
+        };
+
+        if cancel_expired {
+            // conn is dropped here in unknown protocol state; the next
+            // statement pins a fresh one
+            return Err(DatabaseError::QueryError(
+                "Query did not respond to cancellation; the session connection was discarded"
+                    .to_string(),
+            ));
+        }
+
+        match result {
+            Ok(rows) => {
+                session.clean = true;
+                session.conn = Some(conn);
+                Ok(rows)
+            }
+            Err(e) => {
+                // A server-reported error leaves the protocol synchronized so
+                // the connection can be reused; io/protocol-level failures
+                // mean it must be discarded
+                if matches!(e, sqlx::Error::Database(_)) {
+                    session.clean = true;
+                    session.conn = Some(conn);
+                } else {
+                    session.discard();
+                }
+
+                let was_cancelled = matches!(
+                    &e,
+                    sqlx::Error::Database(db) if db.code().as_deref() == Some("57014")
+                );
+                match (was_cancelled, cancel_reason) {
+                    (true, Some(CancelReason::Interrupted)) => {
+                        Err(DatabaseError::QueryError("Query cancelled".to_string()))
+                    }
+                    (true, Some(CancelReason::TimedOut(t))) => {
+                        Err(DatabaseError::QueryError(format!(
+                            "Query timed out after {} seconds (query_timeout_seconds)",
+                            t.as_secs()
+                        )))
+                    }
+                    _ => Err(DatabaseError::QueryError(e.to_string())),
+                }
+            }
+        }
     }
 
     /// Format PostgreSQL EXPLAIN JSON output for better readability
@@ -960,24 +1133,9 @@ impl PostgreSQLClient {
     async fn execute_query_raw_json(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[PostgreSQLClient::execute_query_raw_json] Executing query for raw JSON");
 
-        // Timeout from config (query_timeout_seconds, 0 = disabled)
-        let rows = match crate::database::query_timeout() {
-            Some(timeout_duration) => {
-                match tokio::time::timeout(timeout_duration, sqlx::query(sql).fetch_all(&self.pool))
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(_) => {
-                        return Err(DatabaseError::QueryError(format!(
-                            "Query timed out after {} seconds (query_timeout_seconds)",
-                            timeout_duration.as_secs()
-                        )));
-                    }
-                }
-            }
-            None => sqlx::query(sql).fetch_all(&self.pool).await,
-        }
-        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+        // Session connection (EXPLAIN must observe the session's SET state)
+        // with Ctrl-C/timeout cancellation
+        let rows = self.fetch_all_session(sql).await?;
 
         if rows.is_empty() {
             return Ok(vec![]);
@@ -1017,24 +1175,9 @@ impl DatabaseClient for PostgreSQLClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[PostgreSQLClient::execute_query] Executing query");
 
-        // Timeout from config (query_timeout_seconds, 0 = disabled)
-        let rows = match crate::database::query_timeout() {
-            Some(timeout_duration) => {
-                match tokio::time::timeout(timeout_duration, sqlx::query(sql).fetch_all(&self.pool))
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(_) => {
-                        return Err(DatabaseError::QueryError(format!(
-                            "Query timed out after {} seconds (query_timeout_seconds)",
-                            timeout_duration.as_secs()
-                        )));
-                    }
-                }
-            }
-            None => sqlx::query(sql).fetch_all(&self.pool).await,
-        }
-        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
+        // Pinned session connection (transactions/SET/temp tables persist
+        // across statements) with Ctrl-C/timeout cancellation
+        let rows = self.fetch_all_session(sql).await?;
 
         if rows.is_empty() {
             return Ok(vec![]);
@@ -2464,6 +2607,11 @@ mod tests {
             connection_info,
             current_database: "test".to_string(),
             metadata_provider,
+            session: tokio::sync::Mutex::new(SessionState {
+                conn: None,
+                backend_pid: None,
+                clean: true,
+            }),
         };
 
         // Comprehensive type query - tests ALL scalar and array types using SELECT with casts
@@ -2650,6 +2798,11 @@ mod tests {
             connection_info,
             current_database: "test".to_string(),
             metadata_provider,
+            session: tokio::sync::Mutex::new(SessionState {
+                conn: None,
+                backend_pid: None,
+                clean: true,
+            }),
         };
 
         // Test ARRAY_AGG over NULL values - this is the exact scenario from the user's bug

@@ -36,6 +36,8 @@ pub enum AiError {
     NotConfigured,
     #[error("Key storage error: {0}")]
     KeyStorageError(String),
+    #[error("generation cancelled")]
+    Cancelled,
 }
 
 #[derive(Debug, Clone)]

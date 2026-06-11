@@ -22,14 +22,23 @@ pub async fn stream_to_terminal(
     let _ = handle.flush();
 
     loop {
-        // Check for interrupt
+        // Check for interrupt. Returning Err (never the partial text!) is
+        // essential: a truncated UPDATE/DELETE offered for execution would
+        // be worse than no SQL at all.
         if interrupt_flag.load(Ordering::Relaxed) {
             let _ = writeln!(handle, "\x1b[0m");
             let _ = handle.flush();
-            return Ok(full_response);
+            return Err(AiError::Cancelled);
         }
 
-        match rx.recv().await {
+        // The periodic tick re-checks the flag even when the provider has
+        // stalled and no events arrive
+        let event = tokio::select! {
+            event = rx.recv() => event,
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => continue,
+        };
+
+        match event {
             Some(AiStreamEvent::TextDelta(text)) => {
                 full_response.push_str(&text);
                 let _ = write!(handle, "{text}");

@@ -27,6 +27,15 @@ pub fn query_timeout() -> Option<std::time::Duration> {
     }
 }
 
+/// Process-wide interrupt flag. Set by the interactive Ctrl-C handler while a
+/// query is running; database clients poll it to cancel server-side. One
+/// shared flag is correct for a CLI: there is a single foreground query.
+pub fn interrupt_flag() -> &'static std::sync::Arc<std::sync::atomic::AtomicBool> {
+    static FLAG: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+        std::sync::OnceLock::new();
+    FLAG.get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+}
+
 /// Escape a value for interpolation into a single-quoted SQL string literal.
 /// Metadata queries interpolate user-controlled table/schema names; a name
 /// containing `'` would otherwise break the statement (and is an injection

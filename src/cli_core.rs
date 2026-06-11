@@ -852,43 +852,66 @@ impl CliCore {
                     failed = true;
                 }
             } else {
-                // Execute SQL command
+                // Execute SQL — psql-style: a single -c argument may carry
+                // several semicolon-separated statements
                 let database = self
                     .database
-                    .as_mut()
+                    .as_ref()
                     .ok_or_else(|| CliError::CommandError("No database connection".to_string()))?;
+                let splittable = !matches!(
+                    database
+                        .get_connection_info()
+                        .map(|info| info.database_type.clone()),
+                    Some(
+                        crate::database::DatabaseType::MongoDB
+                            | crate::database::DatabaseType::Elasticsearch
+                    )
+                );
+                let statements = if splittable {
+                    crate::sql_buffer::split_statements(command_trimmed)
+                } else {
+                    vec![command_trimmed.to_string()]
+                };
 
-                match database
-                    .execute_query_with_info_no_column_selection(command_trimmed)
-                    .await
-                {
-                    Ok(results_with_info) => {
-                        if !results_with_info.data.is_empty() {
-                            let is_expanded = database.is_expanded_display();
-                            if is_expanded {
-                                let tables = format_query_results_expanded(&results_with_info.data);
-                                let mut combined_output = String::new();
-                                for table in tables {
-                                    combined_output.push_str(&format!("{table}\n"));
+                'statements: for statement in &statements {
+                    let database = self.database.as_mut().ok_or_else(|| {
+                        CliError::CommandError("No database connection".to_string())
+                    })?;
+                    match database
+                        .execute_query_with_info_no_column_selection(statement)
+                        .await
+                    {
+                        Ok(results_with_info) => {
+                            if !results_with_info.data.is_empty() {
+                                let is_expanded = database.is_expanded_display();
+                                if is_expanded {
+                                    let tables =
+                                        format_query_results_expanded(&results_with_info.data);
+                                    let mut combined_output = String::new();
+                                    for table in tables {
+                                        combined_output.push_str(&format!("{table}\n"));
+                                    }
+                                    Self::page_or_print(&combined_output, &self.config)?;
+                                } else {
+                                    let formatted_output = format_query_results_psql_with_info(
+                                        &results_with_info.data,
+                                        results_with_info.column_info.as_ref(),
+                                    );
+                                    Self::page_or_print(&formatted_output, &self.config)?;
                                 }
-                                Self::page_or_print(&combined_output, &self.config)?;
-                            } else {
-                                let formatted_output = format_query_results_psql_with_info(
-                                    &results_with_info.data,
-                                    results_with_info.column_info.as_ref(),
-                                );
-                                Self::page_or_print(&formatted_output, &self.config)?;
                             }
                         }
-                    }
-                    Err(e) => {
-                        // Check if this is a column selection abort
-                        if e.to_string().contains("Column selection aborted") {
-                            // User-initiated abort: stop without an error
-                            return Ok(if failed { 1 } else { 0 });
+                        Err(e) => {
+                            // Check if this is a column selection abort
+                            if e.to_string().contains("Column selection aborted") {
+                                // User-initiated abort: stop without an error
+                                return Ok(if failed { 1 } else { 0 });
+                            }
+                            eprintln!("Error executing query: {e}");
+                            failed = true;
+                            // Stop the batch at the first failing statement
+                            break 'statements;
                         }
-                        eprintln!("Error executing query: {e}");
-                        failed = true;
                     }
                 }
             }
@@ -1044,6 +1067,28 @@ impl CliCore {
     }
 
     /// Run interactive mode - core interactive logic
+    /// Install a process-wide SIGINT handler that flags query cancellation
+    /// instead of killing the CLI. At the prompt, reedline owns the terminal
+    /// in raw mode, so Ctrl-C arrives as a key event and never reaches this
+    /// handler; while a query is executing (cooked mode) it lands here and
+    /// the database clients cancel server-side.
+    fn install_interrupt_handler() {
+        static INSTALLED: AtomicBool = AtomicBool::new(false);
+        if INSTALLED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let flag = crate::database::interrupt_flag().clone();
+        tokio::spawn(async move {
+            loop {
+                if tokio::signal::ctrl_c().await.is_err() {
+                    break;
+                }
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                eprintln!("\nCancel request sent…");
+            }
+        });
+    }
+
     // The std-Mutex config guard is intentionally held across command
     // execution awaits (Command::execute needs &mut Config); the REPL is
     // single-task so this cannot deadlock across tasks.
@@ -1065,7 +1110,11 @@ impl CliCore {
         let db_arc = Arc::new(Mutex::new(database));
         let config_arc = Arc::new(Mutex::new(self.config.clone()));
         let mut last_script = String::new();
-        let interrupt_flag = Arc::new(AtomicBool::new(false));
+        // The process-wide flag: the Ctrl-C handler sets it, the database
+        // clients poll it to cancel the running statement server-side
+        let interrupt_flag = crate::database::interrupt_flag().clone();
+        interrupt_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+        Self::install_interrupt_handler();
 
         // Create prompt
         let (username, db_name) = {
@@ -1180,6 +1229,9 @@ impl CliCore {
             .with_menu(ReedlineMenu::EngineCompleter(completion_menu))
             .with_hinter(hinter)
             .with_highlighter(Box::new(highlighter))
+            // Enter inserts a newline instead of submitting while a string,
+            // dollar-quote, or block comment is still open
+            .with_validator(Box::new(crate::sql_buffer::SqlValidator))
             .with_history(history);
 
         println!("Connected! Type \\h for help or \\q to quit.");
@@ -1456,6 +1508,9 @@ impl CliCore {
             ));
         }
 
+        // Fresh cancellation state (a previous Ctrl-C must not abort us)
+        interrupt_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+
         // Build schema context
         let schema_context = {
             let mut db_guard = db_arc.lock().unwrap();
@@ -1492,9 +1547,20 @@ impl CliCore {
                     .await
             });
 
-            let response = crate::ai::streaming::stream_to_terminal(rx, &interrupt_clone)
-                .await
-                .map_err(|e| CliError::CommandError(format!("Streaming error: {e}")))?;
+            let response =
+                match crate::ai::streaming::stream_to_terminal(rx, &interrupt_clone).await {
+                    Ok(response) => response,
+                    Err(crate::ai::AiError::Cancelled) => {
+                        // Stop the provider request too — without the abort,
+                        // "cancel" would still wait out the full generation
+                        generate_handle.abort();
+                        eprintln!("AI generation cancelled.");
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        return Err(CliError::CommandError(format!("Streaming error: {e}")));
+                    }
+                };
 
             // Wait for generation to complete
             if let Err(e) = generate_handle
@@ -1506,10 +1572,25 @@ impl CliCore {
 
             crate::ai::streaming::extract_sql(&response)
         } else {
-            // Non-streaming mode
-            let response = crate::ai::generate(&config.ai, &system_prompt, &messages)
-                .await
-                .map_err(|e| CliError::CommandError(format!("AI generation error: {e}")))?;
+            // Non-streaming mode, raced against Ctrl-C (dropping the future
+            // aborts the underlying request)
+            let gen_fut = crate::ai::generate(&config.ai, &system_prompt, &messages);
+            tokio::pin!(gen_fut);
+            let response = loop {
+                tokio::select! {
+                    res = &mut gen_fut => {
+                        break res.map_err(|e| {
+                            CliError::CommandError(format!("AI generation error: {e}"))
+                        })?;
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                        if interrupt_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                            eprintln!("AI generation cancelled.");
+                            return Ok(());
+                        }
+                    }
+                }
+            };
 
             let sql = crate::ai::streaming::extract_sql(&response.content);
 
@@ -1746,7 +1827,71 @@ impl CliCore {
 
     /// Execute SQL query in interactive mode
     #[allow(clippy::await_holding_lock)]
+    /// Execute a (possibly multi-statement) SQL buffer, statement by
+    /// statement. Multi-statement buffers (pasted scripts, `\i` files)
+    /// previously went to the driver as one string and failed in the
+    /// prepared-statement path.
     async fn execute_sql_interactive(
+        &mut self,
+        sql: &str,
+        db_arc: &Arc<Mutex<Database>>,
+        interrupt_flag: &Arc<AtomicBool>,
+    ) -> Result<(), CliError> {
+        // Mongo/ES "queries" aren't SQL — never split those on semicolons
+        let splittable = {
+            let db_guard = db_arc.lock().unwrap();
+            !matches!(
+                db_guard
+                    .get_connection_info()
+                    .map(|info| info.database_type.clone()),
+                Some(
+                    crate::database::DatabaseType::MongoDB
+                        | crate::database::DatabaseType::Elasticsearch
+                )
+            )
+        };
+
+        let statements = if splittable {
+            crate::sql_buffer::split_statements(sql)
+        } else {
+            vec![sql.to_string()]
+        };
+
+        let total = statements.len();
+        for (idx, statement) in statements.iter().enumerate() {
+            // Fresh cancellation state for each statement
+            interrupt_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+
+            if let Err(e) = self
+                .execute_single_statement_interactive(statement, db_arc, interrupt_flag)
+                .await
+            {
+                // Stop the batch at the first failure and say where
+                if total > 1 {
+                    return Err(CliError::CommandError(format!(
+                        "statement {} of {}: {}",
+                        idx + 1,
+                        total,
+                        e
+                    )));
+                }
+                return Err(e);
+            }
+
+            // A cancelled statement also cancels the rest of the batch
+            if interrupt_flag.load(std::sync::atomic::Ordering::SeqCst) && idx + 1 < total {
+                eprintln!("Skipping {} remaining statement(s)", total - idx - 1);
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    // Lock intentionally held across the await: the REPL is single-task and
+    // query execution needs exclusive Database access for its duration
+    #[allow(clippy::await_holding_lock)]
+    async fn execute_single_statement_interactive(
         &mut self,
         sql: &str,
         db_arc: &Arc<Mutex<Database>>,
