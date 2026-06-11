@@ -121,36 +121,28 @@ all before), `cargo clippy`, and `tsc`.
 
 ### A. CLI/REPL — the gap to "psql replacement"
 
-1. **[P1] Ctrl-C kills the whole CLI mid-query; the interrupt plumbing is dead
-   code.** `interrupt_flag` is threaded through every API but *nothing ever
-   sets it* — no `ctrlc`/`tokio::signal` handler exists anywhere
-   (`src/cli_core.rs:1040`). The same flag is decorative for AI streaming
-   (`src/ai/streaming.rs`), so cancelling generation also kills the process
-   and leaves the terminal in dim mode.
-   *Fix sketch*: install `tokio::signal::ctrl_c()` once at REPL start; race
-   query futures via `tokio::select!`; on interrupt, issue a server-side
-   cancel (sqlx exposes the PG backend PID — `SELECT pg_cancel_backend($1)`
-   on a second pool connection). For AI: `generate_handle.abort()` + treat
-   partial output as cancelled (never offer it for execution —
-   `src/cli_core.rs:1449-1466` currently would, with default Yes).
+1. ✅ **FIXED — Ctrl-C now cancels the query, not the CLI.** A
+   `tokio::signal::ctrl_c()` handler sets the process-wide interrupt flag;
+   the PostgreSQL client polls it and cancels server-side via
+   `pg_cancel_backend` (the in-flight future completes with SQLSTATE 57014,
+   keeping the protocol clean). AI generation aborts the provider request
+   and never offers partial SQL. Smoke-tested via the timeout path (same
+   mechanism).
 
-2. **[P1] Interactive transactions/`SET` are unreliable: every statement runs
-   on a fresh pooled connection** (`database_postgresql.rs` `fetch_all(&self.pool)`,
-   pool of 8). `BEGIN`/`INSERT`/`COMMIT` can land on three different backends;
-   completion metadata queries share the pool and can run inside a user's
-   open transaction. No transaction state in the prompt.
-   *Fix sketch*: pin one dedicated `PoolConnection` for the REPL session
-   (metadata keeps the pool); render `=*>`/`=!>` prompt states. This is the
-   single highest-leverage CLI architecture change.
+2. ✅ **FIXED (PostgreSQL) — pinned session connection.** Interactive
+   statements run on one dedicated connection: `BEGIN`/`COMMIT`, `SET`, and
+   temp tables persist across statements; metadata/autocomplete stay on the
+   pool. Dirty connections (dropped mid-protocol) are discarded and
+   re-pinned. *Still open*: transaction state in the prompt (`=*>`/`=!>`),
+   and the same pinning for MySQL.
 
-3. **[P1] No multiline continuation and no multi-statement execution.** No
-   reedline `Validator`, so Enter submits incomplete SQL; multi-statement
-   buffers fail in sqlx's prepared path ("cannot insert multiple commands");
-   `\i` only loads the buffer (docs say it executes).
-   *Fix sketch*: implement `Validator` signalling Incomplete until a
-   statement-terminating `;` outside strings/comments/dollar-quotes (the
-   sql_parser modules already exist); split statements and execute
-   sequentially; make `\i` run statement-by-statement.
+3. ✅ **FIXED — multiline validation + statement splitting.** A reedline
+   `Validator` keeps the buffer open while a string/dollar-quote/block
+   comment is unterminated; `sql_buffer::split_statements` executes pasted
+   scripts, `\i` + Enter, and multi-statement `-c` arguments statement by
+   statement (first failure stops the batch; exit code reflects it).
+   Mongo/ES input is never split. *Still open*: `\i` executing immediately
+   instead of loading the buffer.
 
 4. **[P1] `\s <name>` is a stub** — prints "Session found" instead of
    connecting (`commands.rs:1492`); docs claim it connects. There is no
@@ -388,22 +380,23 @@ single-source backend reusing the dbcrust core. It fails on trust, not looks.
   (≈2.5:1, far below AA), real SVG DB icons instead of emoji, bundle fonts
   locally.
 
-### 3. CLI session model (the "psql-credible" core, est. ~1 week)
+### 3. CLI session model — ✅ LANDED (PostgreSQL)
 
-One design change unlocks several open P1s: a **dedicated session
-connection** owned by the REPL (pool reserved for metadata), plus a SIGINT
-handler driving server-side cancellation, plus a reedline `Validator` with
-statement splitting. Items A1–A3 above are one coherent project, and most of
-the remaining daily-driver gaps (`\watch`, `\timing`, `\o`/CSV output,
-transaction state in the prompt) become straightforward once it lands.
+Implemented: dedicated session connection (pool reserved for metadata),
+SIGINT-driven server-side cancellation shared with the query timeout, and a
+reedline `Validator` with statement splitting. Smoke-tested end-to-end
+against a disposable PostgreSQL 18 container (transaction + temp-table
+batches, SET persistence, batch exit codes, timeout cancellation).
+Follow-ups now unblocked and straightforward: transaction state in the
+prompt, MySQL session pinning, `\watch`, `\timing`, `\o`/CSV output.
 
 ---
 
 ## Suggested sequencing
 
-1. **Land this pass** (all fixes verified green) and let the new CI gate
-   `main`.
-2. **CLI session model** (rework 3) — biggest daily-driver payoff.
+1. ✅ **Audit fix pass landed** (`da424a6`) with CI gating in place.
+2. ✅ **CLI session model landed** (`e82997b`) — pinned connection, Ctrl-C
+   cancellation, multiline/multi-statement.
 3. **Django EXPLAIN-through-Django + detector consolidation** (rework 1) —
    it's the product's stated identity ("engineered for Django developers").
 4. **GUI M1** reliability pass.
