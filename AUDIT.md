@@ -211,31 +211,32 @@ all before), `cargo clippy`, and `tsc`.
 
 ### C. Django toolkit (remaining — see rework plan)
 
-18. **[P1] The EXPLAIN pipeline is dead end-to-end** (the feature the package
-    is named for): (a) `query.sql` contains raw `%s` placeholders — EXPLAIN
-    is a syntax error for any parameterized query; (b) for placeholder-free
-    queries `rows[0][0]` is the header row "QUERY PLAN" → `json.loads` fails;
-    (c) failures are logged at DEBUG so nobody sees them
-    (`dbcrust_integration.py:87-139`). `query_plan_analyzer.py` (560 lines)
-    is unreachable. *Fix direction is in the rework plan below: run EXPLAIN
-    through Django's own connection with bound params.*
+18. ✅ **FIXED — EXPLAIN runs on Django's own connection**
+    (`django_explain.py`): captured params are bound by the driver, the
+    alias/session match the app's, failures log at WARNING, and PostgreSQL /
+    MySQL / SQLite are all supported (`EXPLAIN_ANALYZE` opt-in re-executes
+    slow SELECTs for actuals; plans-only by default). `query_plan_analyzer`
+    is reachable again; the dead `dbcrust_integration.py` was deleted.
+    Verified by real EXPLAIN integration tests against the in-memory
+    test database.
 19. **[P1] PyO3 surface holds the GIL across every blocking call** (no
     `py.allow_threads` anywhere in `src/lib.rs`) — one slow query stalls all
     Python threads; per-object Tokio runtimes; `close()` never closes;
     `PyCursor` stringifies all values. Wrap `block_on` in `allow_threads`,
     share a lazy global runtime, implement real `close()`.
-20. **[P1] Factually wrong advice still shipped** in `recommendations.py`:
-    `'MAX_CONNS'/'MIN_CONNS'` (invalid psycopg options — copying them breaks
-    the app), `select_for_update(of=['balance'])` (FieldError), bare
-    `.distinct('field')` without order_by (ProgrammingError),
-    `cache.delete_pattern` (django-redis-only), ORDER-BY index advice that
-    extracts the *table* name as the field. Delete/correct each.
-21. **[P2] Per-query `traceback.extract_stack()` with no cap** (50–200ms
-    middleware overhead on query-heavy pages; unbounded `self.queries`).
-    Depth-limit + cap with truncation flag.
-22. **[P2] Duplicate detection ignores params** (N+1 loops are reported as
-    "duplicates" with caching advice; `get_normalized_sql` is literally
-    `pass`). Key on (sql, params).
+20. ✅ **FIXED — wrong advice corrected** in `recommendations.py` /
+    `pattern_detector.py`: `MAX_CONNS`/`MIN_CONNS` → Django 5.1 `'pool': True`,
+    `select_for_update(of=['balance'])` → `of=('self',)` with the correct
+    semantics, `.distinct('field')` now shown with the required `order_by`,
+    `cache.delete_pattern` → versioned cache keys, the mutable-default
+    permission cache removed, ORDER-BY index advice captures the column
+    instead of the table.
+21. ✅ **FIXED — collector overhead capped**: stack capture depth-limited
+    (30 frames), queries capped at 2000 with a `truncated` flag, exceptions
+    stored as `repr` instead of pinning full tracebacks.
+22. ✅ **FIXED — duplicates keyed on (sql, params)** in both copies; N+1
+    loops no longer masquerade as "duplicates: cache the result". The dead
+    `get_normalized_sql` stub was removed.
 
 ### D. GUI (remaining — see rework plan)
 
@@ -328,33 +329,28 @@ all before), `cargo clippy`, and `tsc`.
 
 ## Rework proposals
 
-### 1. Django toolkit — redesign the core, keep the shell (est. 1–2 weeks)
+### 1. Django toolkit — ✅ MOSTLY LANDED
 
-Roughly a third of the 14k LoC is dead, demo, or misleading. The shape that
-fits what Django developers actually expect (debug-toolbar/silk/nplusone
-users):
+Landed across the audit pass and the Django rework commit:
 
-- **Collector**: `contextvars.ContextVar`-based `QueryCollector` (works under
-  threads *and* ASGI), per-request analyzer (done in this pass), opt-in
-  stack capture with depth limit, query cap.
-- **Detectors**: replace the 19 regex heuristics with 4–5 high-precision
-  ones: N+1 grouped by (normalized SQL + stack origin + distinct param sets),
-  duplicate-with-params, slow query, large-result, missing-index *only* via
-  real EXPLAIN. Delete count-only/exists/select_for_update heuristics (they
-  cannot be inferred from SQL).
-- **EXPLAIN through Django's own connection**: `connection.cursor()` +
-  `cursor.execute("EXPLAIN (ANALYZE, FORMAT JSON) " + sql, params)` — the
-  driver binds params, multi-DB aliases work, no second native client, no
-  LIMIT injection. This single change resurrects `query_plan_analyzer.py`.
-- **CI story**: a pytest plugin exposing `assert_max_queries(n)` /
-  "raise on N+1" mode — nplusone's killer feature, and the reason teams adopt
-  these tools.
-- **Keep**: consolidated report/grading UX, settings→URL conversion in
-  `utils.py`, the AST code analyzer.
-- **Drop**: `query_plan_analyzer`'s dead path (until EXPLAIN works),
-  `debug_logging.py`, `troubleshoot_logging.py`, demo files (already excluded
-  from the wheel), one of the two duplicated `dbcrust.py` management commands
-  (the `dbcrust/management/` one is the live one today).
+- ✅ Per-request analyzer + idempotent exits (audit pass); collector depth
+  limit, query cap, duplicate-with-params.
+- ✅ **EXPLAIN through Django's own connection** (`django_explain.py`) for
+  PostgreSQL/MySQL/SQLite with bound params — resurrects
+  `query_plan_analyzer`; `dbcrust_integration.py` deleted.
+- ✅ **CI story**: `dbcrust.django.testing` (`assert_max_queries`,
+  `assert_no_n_plus_one`) + auto-registered pytest fixture `dbcrust` —
+  verified by integration tests against a real database.
+- ✅ Worst false-positive detectors constrained; factually wrong advice
+  corrected; middleware docs page rewritten to the real config surface.
+
+Still open from the original plan:
+- `contextvars`-based collector (full ASGI-native capture; per-request
+  isolation already prevents corruption).
+- Detector consolidation to the 4–5 high-precision core (count-only/exists/
+  select_for_update heuristics are constrained but still regex-based).
+- Drop `debug_logging.py`/`troubleshoot_logging.py` and the stale duplicated
+  `dbcrust.py` management command (excluded from wheels already).
 
 ### 2. GUI — reliability pass, then depth; no visual rewrite (3 milestones)
 
@@ -397,8 +393,9 @@ prompt, MySQL session pinning, `\watch`, `\timing`, `\o`/CSV output.
 1. ✅ **Audit fix pass landed** (`da424a6`) with CI gating in place.
 2. ✅ **CLI session model landed** (`e82997b`) — pinned connection, Ctrl-C
    cancellation, multiline/multi-statement.
-3. **Django EXPLAIN-through-Django + detector consolidation** (rework 1) —
-   it's the product's stated identity ("engineered for Django developers").
+3. ✅ **Django EXPLAIN-through-Django + query-budget test helpers landed** —
+   real plans with bound params on PG/MySQL/SQLite, pytest `dbcrust`
+   fixture, advice corrections (detector consolidation remains open).
 4. **GUI M1** reliability pass.
 5. **Docs generation** from strum/`save_with_documentation` (kills the two
    worst drift sources mechanically), plus an AI-assistant docs page before

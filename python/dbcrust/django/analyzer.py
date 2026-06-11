@@ -359,34 +359,68 @@ class DjangoAnalyzer:
         )
 
     def _run_dbcrust_analysis(self, queries: List[CapturedQuery]) -> Optional[Dict[str, Any]]:
-        """Run DBCrust EXPLAIN analysis on captured queries."""
+        """EXPLAIN the slowest SELECTs on Django's own connection.
+
+        Historical name kept for API stability. The old implementation sent
+        the raw, un-parameterized SQL to a second native connection — the
+        ``%s`` placeholders made every interesting query a syntax error, so
+        it never produced output. Django's own connection binds the captured
+        params and matches the app's alias/session.
+        """
         try:
-            from .dbcrust_integration import enhance_analysis_with_dbcrust
+            from .django_explain import run_explain
+            from .query_plan_analyzer import analyze_explain_output
 
-            # Run DBCrust analysis with enhanced integration
-            results, report = enhance_analysis_with_dbcrust(
-                queries=queries,
-                connection_url=self.dbcrust_url,
-                database_instance=self.database_instance,
-                max_queries=10  # Analyze top 10 slowest queries
-            )
+            selects = [q for q in queries if q.query_type == "SELECT"]
+            selects.sort(key=lambda q: q.duration, reverse=True)
 
-            # Extract optimization suggestions from DBCrust results
+            detailed_results = []
             all_suggestions = []
-            for result in results:
-                if "optimization_suggestions" in result:
-                    all_suggestions.extend(result["optimization_suggestions"])
+            for query in selects[:10]:  # Analyze top 10 slowest queries
+                result = run_explain(query, using=self.database_alias)
+                if not result:
+                    continue
+
+                entry: Dict[str, Any] = {
+                    "query": query.sql,
+                    "execution_time": query.duration * 1000,
+                    "vendor": result["vendor"],
+                    "explain_plan": result["plan"],
+                }
+                if result["vendor"] == "postgresql":
+                    suggestions, summary = analyze_explain_output(result["plan"])
+                    entry["optimization_suggestions"] = [
+                        {
+                            "priority": s.priority,
+                            "category": s.category,
+                            "title": s.title,
+                            "description": s.description,
+                            "django_suggestion": s.django_suggestion,
+                            "sql_suggestion": s.sql_suggestion,
+                            "estimated_improvement": s.estimated_improvement,
+                        }
+                        for s in suggestions
+                    ]
+                    entry["plan_summary"] = summary
+                    all_suggestions.extend(entry["optimization_suggestions"])
+                detailed_results.append(entry)
+
+            if not detailed_results:
+                return None
 
             return {
-                "analyzed_queries": len(results),
-                "performance_report": report,
-                "detailed_results": results,
+                "analyzed_queries": len(detailed_results),
+                "performance_report": (
+                    f"EXPLAIN collected for {len(detailed_results)} queries "
+                    f"via Django connection '{self.database_alias}'"
+                ),
+                "detailed_results": detailed_results,
                 "optimization_suggestions": all_suggestions,
-                "explain_enabled": True
+                "explain_enabled": True,
             }
 
         except Exception as e:
-            logger.debug("DBCrust analysis failed: %s", e)
+            logger.debug("EXPLAIN analysis failed: %s", e)
             return None
 
     def get_results(self) -> Optional[AnalysisResult]:

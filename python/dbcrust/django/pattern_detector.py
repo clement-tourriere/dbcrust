@@ -1006,9 +1006,16 @@ class PatternDetector:
 
             sql_upper = query.sql.upper()
 
-            # Check for WHERE clauses on non-id fields (likely need indexes)
-            where_fields = re.findall(r'WHERE\s+["\']?(\w+)["\']?\s*=', sql_upper)
-            order_fields = re.findall(r'ORDER\s+BY\s+["\']?(\w+)["\']?', sql_upper)
+            # Check for WHERE clauses on non-id fields (likely need indexes).
+            # Django emits table-qualified columns ("app_post"."created_at");
+            # the optional qualifier group keeps the capture on the COLUMN —
+            # the old regex captured the table name and suggested indexing it
+            where_fields = re.findall(
+                r'WHERE\s+(?:["\'`]?\w+["\'`]?\.)?["\'`]?(\w+)["\'`]?\s*=', sql_upper
+            )
+            order_fields = re.findall(
+                r'ORDER\s+BY\s+(?:["\'`]?\w+["\'`]?\.)?["\'`]?(\w+)["\'`]?', sql_upper
+            )
 
             fields_needing_index = []
             for field in where_fields + order_fields:
@@ -1221,7 +1228,7 @@ class PatternDetector:
                 description=f"{len(rapid_queries)} queries executing rapidly - risk of connection pool exhaustion",
                 affected_queries=rapid_queries[:10],  # Sample
                 recommendation="Consider connection pooling configuration and query batching",
-                code_suggestion="# In settings.py:\nDATABASES = {\n    'default': {\n        'CONN_MAX_AGE': 600,  # Persistent connections\n        'OPTIONS': {\n            'MAX_CONNS': 50,  # Max pool size\n        }\n    }\n}",
+                code_suggestion="# In settings.py:\nDATABASES = {\n    'default': {\n        'CONN_MAX_AGE': 600,  # Persistent connections\n        # Django 5.1+ with psycopg 3: native connection pooling\n        'OPTIONS': {'pool': True},\n    }\n}",
                 estimated_impact="Prevent connection pool exhaustion and improve stability",
                 code_locations=self._extract_code_locations(rapid_queries[:3])
             ))
@@ -1330,19 +1337,22 @@ class PatternDetector:
                     query_examples=[queries[0].sql]
                 ))
 
-    def get_duplicate_queries(self) -> Dict[str, List[CapturedQuery]]:
-        """Get completely duplicate queries."""
+    def get_duplicate_queries(self) -> Dict[Tuple[str, str], List[CapturedQuery]]:
+        """Get completely duplicate queries (same SQL **and** params).
+
+        Same-SQL-different-params is the N+1/similar bucket, not a duplicate.
+        """
         seen = {}
         duplicates = defaultdict(list)
 
         for query in self.queries:
-            sql_normalized = query.sql.strip()
-            if sql_normalized in seen:
-                if sql_normalized not in duplicates:
-                    duplicates[sql_normalized] = [seen[sql_normalized]]
-                duplicates[sql_normalized].append(query)
+            key = (query.sql.strip(), repr(query.params))
+            if key in seen:
+                if key not in duplicates:
+                    duplicates[key] = [seen[key]]
+                duplicates[key].append(query)
             else:
-                seen[sql_normalized] = query
+                seen[key] = query
 
         return dict(duplicates)
 

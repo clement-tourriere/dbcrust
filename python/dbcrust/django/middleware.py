@@ -48,7 +48,6 @@ Configuration:
 import logging
 import time
 from typing import Optional, Dict, Any
-from urllib.parse import urlparse
 
 from django.conf import settings
 from django.utils.deprecation import MiddlewareMixin
@@ -59,7 +58,8 @@ from .report_formatter import (
     build_report_from_analysis,
     format_performance_report,
 )
-from .slow_query_analyzer import SlowQueryAnalyzer, SlowQueryThresholds, get_django_db_url
+from .django_explain import explain_supported
+from .slow_query_analyzer import SlowQueryAnalyzer, SlowQueryThresholds
 
 # Dedicated logger for performance analysis
 logger = logging.getLogger('dbcrust.performance')
@@ -98,7 +98,8 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
         self.analyzer: Optional[DjangoAnalyzer] = None
         self.config = self._load_config()
         self._slow_query_analyzer: Optional[SlowQueryAnalyzer] = None
-        self._db_url: Optional[str] = None
+        # Django database alias EXPLAIN runs on (None = heuristics only)
+        self._explain_using: Optional[str] = None
 
         if self._is_enabled():
             self._initialize_analyzer()
@@ -127,6 +128,10 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
             'EXPLAIN_ENABLED': True,
             'EXPLAIN_SLOW_THRESHOLD_MS': 100,
             'EXPLAIN_MAX_QUERIES': 5,
+            # Re-execute slow SELECTs with EXPLAIN ANALYZE for actual
+            # rows/timings. Off by default: plans are still collected, but
+            # the statement is only planned, never re-run.
+            'EXPLAIN_ANALYZE': False,
 
             # Display
             'INCLUDE_HEADERS': True,
@@ -236,22 +241,21 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
                 )
             )
 
-            # Auto-detect the DB URL from Django settings for EXPLAIN
+            # EXPLAIN runs on Django's own connection — only the vendor
+            # needs to be supported, no URL detection or second client
             if self.config['EXPLAIN_ENABLED']:
-                detected_db_url = get_django_db_url()
-                if detected_db_url and self._supports_explain_db_url(detected_db_url):
-                    self._db_url = detected_db_url
-                    logger.info("DBCrust EXPLAIN enabled (auto-detected DB URL)")
-                elif detected_db_url:
-                    logger.debug(
-                        "DBCrust EXPLAIN disabled: backend %r is not supported; "
-                        "heuristic-only analysis will be used",
-                        urlparse(detected_db_url).scheme,
+                vendor = explain_supported('default')
+                if vendor:
+                    self._explain_using = 'default'
+                    logger.info(
+                        "DBCrust EXPLAIN enabled (vendor: %s%s)",
+                        vendor,
+                        ", ANALYZE" if self.config['EXPLAIN_ANALYZE'] else "",
                     )
                 else:
                     logger.debug(
-                        "DBCrust EXPLAIN: could not auto-detect DB URL "
-                        "(heuristic-only analysis will be used)"
+                        "DBCrust EXPLAIN disabled: database vendor not "
+                        "supported; heuristic-only analysis will be used"
                     )
 
             logger.info(
@@ -259,7 +263,7 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
                 "(threshold: >%d queries or >%dms, EXPLAIN: %s)",
                 self.config['QUERY_THRESHOLD'],
                 self.config['TIME_THRESHOLD'],
-                "on" if self._db_url else "heuristic",
+                "on" if self._explain_using else "heuristic",
             )
 
         except Exception as e:
@@ -389,11 +393,12 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
                 total_db_time=results.total_duration,
             )
             if slow_raw:
-                db_url = self._db_url if self.config['EXPLAIN_ENABLED'] else None
+                using = self._explain_using if self.config['EXPLAIN_ENABLED'] else None
                 slow_query_infos = self._slow_query_analyzer.analyze(
                     slow_raw,
-                    db_url=db_url,
+                    using=using,
                     max_explain=self.config['EXPLAIN_MAX_QUERIES'],
+                    analyze_execution=self.config['EXPLAIN_ANALYZE'],
                 )
 
         # -- build report --------------------------------------------------
@@ -498,13 +503,6 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
             pass
         return None
 
-    @staticmethod
-    def _supports_explain_db_url(db_url: str) -> bool:
-        """Return whether this auto-detected URL can be EXPLAINed by DBCrust."""
-        try:
-            return urlparse(db_url).scheme in {'postgres', 'postgresql'}
-        except Exception:
-            return False
 
 
 # ---------------------------------------------------------------------------

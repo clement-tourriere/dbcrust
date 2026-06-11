@@ -81,5 +81,9 @@ exclude = [
 dbc = "dbcrust.__main__:main"
 dbcrust = "dbcrust.__main__:main"
 
+[project.entry-points.pytest11]
+# Query-budget fixtures (dbcrust.django.testing); inert without Django
+dbcrust = "dbcrust.pytest_plugin"
+
 [tool.pytest.ini_options]
 testpaths = ["python/dbcrust/django/tests"]

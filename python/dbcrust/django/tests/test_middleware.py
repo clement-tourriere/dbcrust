@@ -149,20 +149,35 @@ class TestPerformanceAnalysisMiddleware(TestCase):
         )
 
     @override_settings(DEBUG=True)
-    @patch('dbcrust.django.middleware.get_django_db_url', return_value='sqlite://:memory:')
+    @patch('dbcrust.django.middleware.explain_supported', return_value=None)
     @patch('dbcrust.django.middleware.create_enhanced_analyzer')
-    def test_non_postgres_auto_detected_db_url_uses_heuristics_only(
+    def test_unsupported_vendor_uses_heuristics_only(
         self,
         mock_create_analyzer,
-        mock_get_django_db_url,
+        mock_explain_supported,
     ):
-        """Auto-detected non-Postgres URLs should not enable EXPLAIN mode."""
+        """Unsupported database vendors should not enable EXPLAIN mode."""
         mock_create_analyzer.return_value = Mock()
 
         middleware = PerformanceAnalysisMiddleware(self.get_response)
 
-        mock_get_django_db_url.assert_called_once_with()
-        self.assertIsNone(middleware._db_url)
+        mock_explain_supported.assert_called_once_with('default')
+        self.assertIsNone(middleware._explain_using)
+
+    @override_settings(DEBUG=True)
+    @patch('dbcrust.django.middleware.explain_supported', return_value='sqlite')
+    @patch('dbcrust.django.middleware.create_enhanced_analyzer')
+    def test_supported_vendor_enables_explain(
+        self,
+        mock_create_analyzer,
+        mock_explain_supported,
+    ):
+        """Supported vendors enable EXPLAIN on Django's own connection."""
+        mock_create_analyzer.return_value = Mock()
+
+        middleware = PerformanceAnalysisMiddleware(self.get_response)
+
+        self.assertEqual(middleware._explain_using, 'default')
 
     @override_settings(DEBUG=True)
     @patch('dbcrust.django.middleware.create_enhanced_analyzer')

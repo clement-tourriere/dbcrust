@@ -150,27 +150,38 @@ class SlowQueryAnalyzer:
         slow_queries: List[CapturedQuery],
         db_url: Optional[str] = None,
         max_explain: int = 3,
+        using: Optional[str] = None,
+        analyze_execution: bool = False,
     ) -> List[SlowQueryInfo]:
         """
         Produce ``SlowQueryInfo`` objects for each slow query.
 
-        If *db_url* is provided, the first *max_explain* queries are
-        enriched with real ``EXPLAIN ANALYZE`` data.  Otherwise only
+        If *using* names a Django database alias, the first *max_explain*
+        queries are enriched with real EXPLAIN data executed on **Django's
+        own connection** (parameters bound by the driver). Otherwise only
         heuristic analysis is applied.
 
         Args:
             slow_queries: Queries identified by :meth:`identify_slow_queries`.
-            db_url: DBCrust-compatible connection URL (auto-detected when
-                    used from the middleware).
+            db_url: Deprecated. The URL was always derived from Django's own
+                    settings, so a truthy value is treated as ``using='default'``.
             max_explain: Cap on the number of EXPLAIN calls per request.
+            using: Django database alias to EXPLAIN on.
+            analyze_execution: Re-execute slow SELECTs with EXPLAIN ANALYZE
+                    for actual rows/timings (off by default — plans only).
 
         Returns:
             List of :class:`SlowQueryInfo` (same order as input).
         """
+        if using is None and db_url:
+            using = "default"
+
         explain_map: Dict[int, Dict[str, Any]] = {}
-        if db_url and slow_queries:
+        if using and slow_queries:
             explain_map = self._run_explain_batch(
-                slow_queries[:max_explain], db_url
+                slow_queries[:max_explain],
+                using=using,
+                analyze_execution=analyze_execution,
             )
 
         results: list[SlowQueryInfo] = []
@@ -207,85 +218,38 @@ class SlowQueryAnalyzer:
     def _run_explain_batch(
         self,
         queries: List[CapturedQuery],
-        db_url: str,
+        using: str = "default",
+        analyze_execution: bool = False,
     ) -> Dict[int, Dict[str, Any]]:
-        """Run ``EXPLAIN (ANALYZE, FORMAT JSON)`` for a batch of queries.
+        """EXPLAIN a batch of queries on Django's own connection.
 
-        Only SELECT queries are sent to EXPLAIN ANALYZE.  Mutating
-        statements (INSERT/UPDATE/DELETE) are silently skipped to
-        prevent accidental data modification.
+        Only SELECT queries are sent to EXPLAIN.  Mutating statements
+        (INSERT/UPDATE/DELETE) are skipped: with ``analyze_execution``
+        EXPLAIN ANALYZE would actually execute the mutation.
         """
         results: dict[int, dict[str, Any]] = {}
 
-        try:
-            from .dbcrust_integration import DBCrustIntegration
+        from .django_explain import summarize_for_slow_query
 
-            integration = DBCrustIntegration(db_url)
-            integration.connect()
+        for query in queries:
+            # CRITICAL: Only EXPLAIN SELECT statements (see docstring)
+            if not self._SAFE_EXPLAIN_PREFIX.match(query.sql):
+                logger.debug(
+                    "Skipping EXPLAIN for non-SELECT query: %.60s...",
+                    query.sql,
+                )
+                continue
 
             try:
-                for query in queries:
-                    # CRITICAL: Only EXPLAIN SELECT statements.  Running
-                    # EXPLAIN ANALYZE on INSERT/UPDATE/DELETE would actually
-                    # execute the mutation.
-                    if not self._SAFE_EXPLAIN_PREFIX.match(query.sql):
-                        logger.debug(
-                            "Skipping EXPLAIN for non-SELECT query: %.60s...",
-                            query.sql,
-                        )
-                        continue
+                summary = summarize_for_slow_query(
+                    query, using=using, analyze_execution=analyze_execution
+                )
+            except Exception as exc:  # noqa: BLE001 — never break the request
+                logger.warning("EXPLAIN failed for query: %s", exc)
+                continue
 
-                    try:
-                        raw = integration._analyze_query_sync(query)
-                        if "error" in raw:
-                            continue
-
-                        insights = raw.get("performance_insights", {})
-                        operations = insights.get("operations", [])
-
-                        plan_type = None
-                        rows_examined = 0
-
-                        for op in operations:
-                            op_type = op.get("type", "")
-                            if op_type == "Seq Scan":
-                                tbl = query.table_names[0] if query.table_names else "?"
-                                plan_type = f"Seq Scan on {tbl}"
-                                rows_examined = op.get("rows", 0)
-                            elif "Index" in op_type and plan_type is None:
-                                plan_type = op_type
-                                rows_examined = op.get("rows", 0)
-
-                        # best suggestion from query_plan_analyzer
-                        suggestion = None
-                        django_fix = None
-                        opt_sugg = raw.get("optimization_suggestions", [])
-                        if opt_sugg:
-                            top = opt_sugg[0]
-                            suggestion = top.get("description", "")
-                            django_fix = top.get("django_suggestion", "")
-                            if django_fix and "\n" in django_fix:
-                                django_fix = django_fix.split("\n")[0]
-
-                        # fallback to warnings
-                        if not suggestion:
-                            warnings = insights.get("warnings", [])
-                            if warnings:
-                                suggestion = warnings[0]
-
-                        results[id(query)] = {
-                            "plan_type": plan_type,
-                            "rows_examined": rows_examined or None,
-                            "suggestion": suggestion,
-                            "django_fix": django_fix,
-                        }
-                    except Exception as exc:  # noqa: BLE001
-                        logger.debug("EXPLAIN failed for query: %s", exc)
-            finally:
-                integration.cleanup()
-
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Could not initialise EXPLAIN analysis: %s", exc)
+            if summary:
+                results[id(query)] = summary
 
         return results
 

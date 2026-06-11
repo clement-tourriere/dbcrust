@@ -25,12 +25,12 @@ class Recommendation:
 
 class DjangoRecommendations:
     """Generate Django-specific optimization recommendations."""
-    
+
     @staticmethod
     def generate_recommendations(patterns: List[DetectedPattern]) -> List[Recommendation]:
         """Generate recommendations for detected patterns."""
         recommendations = []
-        
+
         for pattern in patterns:
             if pattern.pattern_type == "n_plus_one":
                 recommendations.extend(DjangoRecommendations._n_plus_one_recommendations(pattern))
@@ -46,7 +46,7 @@ class DjangoRecommendations:
                 recommendations.extend(DjangoRecommendations._pagination_recommendations(pattern))
             elif pattern.pattern_type == "unnecessary_ordering":
                 recommendations.extend(DjangoRecommendations._ordering_recommendations(pattern))
-            
+
             # New pattern recommendations
             elif pattern.pattern_type == "subqueries_in_loops":
                 recommendations.extend(DjangoRecommendations._subqueries_in_loops_recommendations(pattern))
@@ -72,14 +72,14 @@ class DjangoRecommendations:
                 recommendations.extend(DjangoRecommendations._redundant_queries_recommendations(pattern))
             elif pattern.pattern_type == "missing_query_caching":
                 recommendations.extend(DjangoRecommendations._query_caching_recommendations(pattern))
-        
+
         return recommendations
-    
+
     @staticmethod
     def _n_plus_one_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for N+1 query issues."""
         query_count = len(pattern.affected_queries)
-        
+
         return [
             Recommendation(
                 title="Fix N+1 Query Problem",
@@ -95,9 +95,9 @@ for book in Book.objects.select_related('author'):
 for author in Author.objects.prefetch_related('books'):
     for book in author.books.all():  # No additional queries
         print(book.title)""",
-                explanation="""The N+1 query problem occurs when you fetch a list of objects and then 
-access a related object for each one. This results in 1 query for the initial list 
-plus N queries for each related object. Using select_related() or prefetch_related() 
+                explanation="""The N+1 query problem occurs when you fetch a list of objects and then
+access a related object for each one. This results in 1 query for the initial list
+plus N queries for each related object. Using select_related() or prefetch_related()
 can fetch all the data in 1-2 queries instead.""",
                 references=[
                     "https://docs.djangoproject.com/en/stable/ref/models/querysets/#select-related",
@@ -107,7 +107,7 @@ can fetch all the data in 1-2 queries instead.""",
                 impact="critical" if query_count > 10 else "high"
             )
         ]
-    
+
     @staticmethod
     def _select_related_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for missing select_related."""
@@ -121,8 +121,8 @@ customer_name = order.customer.name      # Query 2""",
                 code_after="""# With select_related: 1 query
 order = Order.objects.select_related('customer').get(id=order_id)
 customer_name = order.customer.name  # No additional query""",
-                explanation="""select_related() works by creating an SQL join and including the fields 
-of the related object in the SELECT statement. This is perfect for ForeignKey and 
+                explanation="""select_related() works by creating an SQL join and including the fields
+of the related object in the SELECT statement. This is perfect for ForeignKey and
 OneToOne relationships where you know you'll need the related object.""",
                 references=[
                     "https://docs.djangoproject.com/en/stable/ref/models/querysets/#select-related"
@@ -131,7 +131,7 @@ OneToOne relationships where you know you'll need the related object.""",
                 impact="high"
             )
         ]
-        
+
         # Only add chained select_related recommendation if we detect multi-level relationships
         if pattern.specific_fields and any('__' in field for field in pattern.specific_fields):
             recommendations.append(Recommendation(
@@ -144,7 +144,7 @@ for order in Order.objects.all():
 orders = Order.objects.select_related('customer__address')
 for order in orders:
     print(order.customer.address.city)  # No additional queries""",
-                explanation="""You can follow foreign keys through multiple levels using double 
+                explanation="""You can follow foreign keys through multiple levels using double
 underscores. This creates more complex joins but eliminates multiple queries.""",
                 references=[
                     "https://docs.djangoproject.com/en/stable/topics/db/optimization/#use-select-related-and-prefetch-related"
@@ -152,9 +152,9 @@ underscores. This creates more complex joins but eliminates multiple queries."""
                 difficulty="medium",
                 impact="high"
             ))
-        
+
         return recommendations
-    
+
     @staticmethod
     def _prefetch_related_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for missing prefetch_related."""
@@ -169,8 +169,8 @@ for author in Author.objects.all():
 authors = Author.objects.prefetch_related('book_set')
 for author in authors:
     books = author.book_set.all()  # No additional query""",
-                explanation="""prefetch_related() does a separate lookup for each relationship and 
-joins the results in Python. This is ideal for ManyToMany fields and reverse 
+                explanation="""prefetch_related() does a separate lookup for each relationship and
+joins the results in Python. This is ideal for ManyToMany fields and reverse
 ForeignKey relationships where select_related() can't be used.""",
                 references=[
                     "https://docs.djangoproject.com/en/stable/ref/models/querysets/#prefetch-related"
@@ -191,12 +191,12 @@ recent_books = Book.objects.filter(
 ).select_related('publisher')
 
 authors = Author.objects.prefetch_related(
-    Prefetch('book_set', 
+    Prefetch('book_set',
              queryset=recent_books,
              to_attr='recent_books')
 )""",
-                explanation="""Prefetch objects allow you to customize the queryset used for 
-prefetching. This lets you filter, order, or apply select_related to the 
+                explanation="""Prefetch objects allow you to customize the queryset used for
+prefetching. This lets you filter, order, or apply select_related to the
 prefetched objects, significantly improving performance.""",
                 references=[
                     "https://docs.djangoproject.com/en/stable/ref/models/querysets/#prefetch-objects"
@@ -205,7 +205,7 @@ prefetched objects, significantly improving performance.""",
                 impact="high"
             )
         ]
-    
+
     @staticmethod
     def _count_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for inefficient count operations."""
@@ -225,8 +225,8 @@ total = Book.objects.count()
 # Better existence check
 if Book.objects.filter(author=author).exists():
     # do something""",
-                explanation="""Using .count() executes COUNT(*) in the database without loading 
-any objects into Python memory. Similarly, .exists() is more efficient than 
+                explanation="""Using .count() executes COUNT(*) in the database without loading
+any objects into Python memory. Similarly, .exists() is more efficient than
 checking length for existence tests.""",
                 references=[
                     "https://docs.djangoproject.com/en/stable/ref/models/querysets/#count",
@@ -236,7 +236,7 @@ checking length for existence tests.""",
                 impact="medium"
             )
         ]
-    
+
     @staticmethod
     def _only_defer_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for field optimization."""
@@ -256,8 +256,8 @@ users = User.objects.defer('bio', 'profile_image', 'preferences')
 
 # Option 3: values() for dictionaries
 usernames = User.objects.values_list('username', flat=True)""",
-                explanation="""When you only need specific fields, using only() or defer() can 
-significantly reduce data transfer and memory usage. The values() and values_list() 
+                explanation="""When you only need specific fields, using only() or defer() can
+significantly reduce data transfer and memory usage. The values() and values_list()
 methods are even more efficient when you don't need model instances.""",
                 references=[
                     "https://docs.djangoproject.com/en/stable/ref/models/querysets/#only",
@@ -267,7 +267,7 @@ methods are even more efficient when you don't need model instances.""",
                 impact="medium"
             )
         ]
-    
+
     @staticmethod
     def _pagination_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for large result sets."""
@@ -297,8 +297,8 @@ for order in Order.objects.all().iterator(chunk_size=1000):
 # Solution 3: Use slice notation
 for order in Order.objects.all()[:1000]:  # First 1000 only
     process_order(order)""",
-                explanation="""Large result sets can cause memory issues and slow performance. 
-Django's Paginator provides easy pagination, while iterator() streams results 
+                explanation="""Large result sets can cause memory issues and slow performance.
+Django's Paginator provides easy pagination, while iterator() streams results
 efficiently for large datasets that must be processed entirely.""",
                 references=[
                     "https://docs.djangoproject.com/en/stable/topics/pagination/",
@@ -308,7 +308,7 @@ efficiently for large datasets that must be processed entirely.""",
                 impact="high"
             )
         ]
-    
+
     @staticmethod
     def _ordering_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for ordering optimization."""
@@ -329,8 +329,8 @@ class Post(models.Model):
 
 # Query remains the same but runs much faster
 recent_posts = Post.objects.order_by('-created_at')[:10]""",
-                explanation="""Database indexes on ORDER BY fields can dramatically improve query 
-performance. For frequently used orderings, especially with LIMIT clauses, 
+                explanation="""Database indexes on ORDER BY fields can dramatically improve query
+performance. For frequently used orderings, especially with LIMIT clauses,
 appropriate indexes are essential.""",
                 references=[
                     "https://docs.djangoproject.com/en/stable/ref/models/options/#indexes",
@@ -340,7 +340,7 @@ appropriate indexes are essential.""",
                 impact="medium"
             )
         ]
-    
+
     @staticmethod
     def _subqueries_in_loops_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for subqueries in loops."""
@@ -368,7 +368,7 @@ items = Item.objects.filter(
 
 # Option 2: Use prefetch_related for relationships
 categories = Category.objects.prefetch_related(
-    Prefetch('items', 
+    Prefetch('items',
              queryset=Item.objects.filter(status__in=all_active_statuses))
 )""",
                 explanation="""Subqueries in loops often create exponentially growing query complexity.
@@ -382,13 +382,13 @@ data is being accumulated in loops rather than fetched efficiently.""",
                 impact="high"
             )
         ]
-    
+
     @staticmethod
     def _database_index_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for missing database indexes."""
         fields = pattern.specific_fields or ['field']
         fields_str = ', '.join(f"'{f}'" for f in fields)
-        
+
         return [
             Recommendation(
                 title="Add Database Index for Query Performance",
@@ -408,7 +408,7 @@ class Product(models.Model):
     category = models.CharField(max_length=50, db_index=True)  # Single field index
     price = models.DecimalField(max_digits=10, decimal_places=2)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
-    
+
     class Meta:
         indexes = [
             # Composite index for common query patterns
@@ -430,7 +430,7 @@ With proper indexes, lookups become logarithmic time complexity.""",
                 impact="critical"
             )
         ]
-    
+
     @staticmethod
     def _aggregation_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for inefficient aggregations."""
@@ -456,7 +456,7 @@ stats = Order.objects.aggregate(
     avg_order_value=Avg('total'),
     max_order=Max('total'),
     orders_this_month=Count(
-        'id', 
+        'id',
         filter=Q(created_at__month=timezone.now().month)
     )
 )
@@ -478,12 +478,12 @@ queries for each aggregation, especially on large datasets.""",
                 impact="high"
             )
         ]
-    
+
     @staticmethod
     def _bulk_operations_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for missing bulk operations."""
         operation_count = len(pattern.affected_queries)
-        
+
         return [
             Recommendation(
                 title="Use Bulk Operations for Multiple Database Changes",
@@ -539,7 +539,7 @@ bulk operations can process hundreds of records in a single query.""",
                 impact="critical"
             )
         ]
-    
+
     @staticmethod
     def _exists_check_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for inefficient exists checks."""
@@ -587,7 +587,7 @@ which is unnecessary when you only need to know if any records exist.""",
                 impact="medium"
             )
         ]
-    
+
     @staticmethod
     def _select_for_update_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for missing select_for_update."""
@@ -599,7 +599,7 @@ which is unnecessary when you only need to know if any records exist.""",
 def transfer_money(from_account_id, to_account_id, amount):
     from_account = Account.objects.get(id=from_account_id)
     to_account = Account.objects.get(id=to_account_id)
-    
+
     if from_account.balance >= amount:
         from_account.balance -= amount
         to_account.balance += amount
@@ -615,7 +615,7 @@ def transfer_money(from_account_id, to_account_id, amount):
         # Lock rows to prevent concurrent modifications
         from_account = Account.objects.select_for_update().get(id=from_account_id)
         to_account = Account.objects.select_for_update().get(id=to_account_id)
-        
+
         if from_account.balance >= amount:
             from_account.balance -= amount
             to_account.balance += amount
@@ -624,10 +624,15 @@ def transfer_money(from_account_id, to_account_id, amount):
         else:
             raise InsufficientFunds()
 
-# Alternative: select_for_update with specific fields
+# Alternative: when the query spans related tables, lock only this
+# model's rows (PostgreSQL). of= names relations ('self' or related
+# object names), never column names.
 with transaction.atomic():
-    # Only lock specific fields if using PostgreSQL
-    account = Account.objects.select_for_update(of=['balance']).get(id=account_id)
+    account = (
+        Account.objects.select_related('owner')
+        .select_for_update(of=('self',))
+        .get(id=account_id)
+    )
     account.balance += deposit_amount
     account.save()
 
@@ -650,12 +655,12 @@ commits. This prevents race conditions in read-modify-write operations.""",
                 impact="high"
             )
         ]
-    
+
     @staticmethod
     def _transaction_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for transaction issues."""
         operation_count = len(pattern.affected_queries)
-        
+
         return [
             Recommendation(
                 title="Wrap Related Database Operations in Transactions",
@@ -664,16 +669,16 @@ commits. This prevents race conditions in read-modify-write operations.""",
 def create_order_with_items(order_data, items_data):
     # If any of these fail, we get inconsistent state
     order = Order.objects.create(**order_data)
-    
+
     for item_data in items_data:
         OrderItem.objects.create(order=order, **item_data)
-    
+
     # Update inventory
     for item_data in items_data:
         product = Product.objects.get(id=item_data['product_id'])
         product.stock -= item_data['quantity']
         product.save()
-    
+
     # Send confirmation email
     send_order_confirmation(order)""",
                 code_after="""# With transaction: All-or-nothing guarantee
@@ -683,24 +688,24 @@ from django.db import transaction
 def create_order_with_items(order_data, items_data):
     # All operations succeed or all are rolled back
     order = Order.objects.create(**order_data)
-    
+
     # Bulk create items for better performance
     order_items = [
         OrderItem(order=order, **item_data)
         for item_data in items_data
     ]
     OrderItem.objects.bulk_create(order_items)
-    
+
     # Update inventory in bulk
     product_ids = [item['product_id'] for item in items_data]
     products = {p.id: p for p in Product.objects.select_for_update().filter(id__in=product_ids)}
-    
+
     for item_data in items_data:
         product = products[item_data['product_id']]
         product.stock -= item_data['quantity']
-    
+
     Product.objects.bulk_update(products.values(), ['stock'])
-    
+
     return order
 
 # Manual transaction control for complex logic
@@ -708,7 +713,7 @@ def complex_operation():
     with transaction.atomic():
         # Create savepoint for partial rollback
         savepoint = transaction.savepoint()
-        
+
         try:
             # Risky operation
             risky_database_operation()
@@ -729,7 +734,7 @@ your database in an inconsistent state.""",
                 impact="critical"
             )
         ]
-    
+
     @staticmethod
     def _connection_pool_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for connection pool issues."""
@@ -766,9 +771,9 @@ DATABASES = {
         'HOST': 'localhost',
         'PORT': '5432',
         'CONN_MAX_AGE': 600,  # Keep connections open for 10 minutes
+        # Django 5.1+ with psycopg 3: native server-side connection pool
         'OPTIONS': {
-            'MAX_CONNS': 20,  # Maximum connections in pool
-            'MIN_CONNS': 5,   # Minimum connections to maintain
+            'pool': True,
         },
     }
 }
@@ -780,13 +785,13 @@ def process_items_efficiently():
     for start in range(0, 1000, batch_size):
         end = start + batch_size
         items = Item.objects.filter(id__range=(start, end))
-        
+
         # Process batch with single connection
         for item in items:
             process_item(item)
 
-# Alternative: Use connection pooling library
-# pip install django-db-pool
+# Alternative: Use a connection pooling library
+# pip install django-db-connection-pool[postgresql]
 DATABASES = {
     'default': {
         'ENGINE': 'dj_db_conn_pool.backends.postgresql',
@@ -809,7 +814,7 @@ exhaustion under high load.""",
                 impact="high"
             )
         ]
-    
+
     @staticmethod
     def _distinct_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for inefficient distinct usage."""
@@ -828,8 +833,9 @@ results = Order.objects.select_related('customer', 'items__product').distinct()"
                 code_after="""# Efficient: DISTINCT on specific fields only
 categories = Product.objects.values_list('category', flat=True).distinct()
 
-# Better: Use distinct with specific fields (PostgreSQL)
-products = Product.objects.distinct('category')
+# Better: DISTINCT ON specific fields (PostgreSQL only — requires a
+# matching order_by, otherwise Django raises ProgrammingError)
+products = Product.objects.order_by('category').distinct('category')
 
 # Even better: Use aggregation when appropriate
 category_counts = Product.objects.values('category').annotate(
@@ -861,7 +867,7 @@ or to restructure queries to avoid the need for DISTINCT.""",
                 impact="medium"
             )
         ]
-    
+
     @staticmethod
     def _values_optimization_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for values() optimization."""
@@ -921,12 +927,12 @@ specific fields.""",
                 impact="medium"
             )
         ]
-    
+
     @staticmethod
     def _redundant_queries_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for redundant queries."""
         duplicate_count = len(pattern.affected_queries)
-        
+
         return [
             Recommendation(
                 title="Eliminate Redundant Database Queries",
@@ -938,33 +944,26 @@ def get_user_permissions(user_id):
 
 def view_function(request):
     user_id = request.user.id
-    
+
     # Each call makes the same database query
     perms1 = get_user_permissions(user_id)
     perms2 = get_user_permissions(user_id)  # Redundant!
     perms3 = get_user_permissions(user_id)  # Redundant!
-    
+
     # Process permissions
     return render(request, 'template.html', {
         'can_edit': 'edit' in perms1,
         'can_delete': 'delete' in perms2,
         'can_view': 'view' in perms3,
     })""",
-                code_after="""# Efficient: Cache the result
-def get_user_permissions(user_id, _cache={}):
-    if user_id not in _cache:
-        user = User.objects.get(id=user_id)
-        _cache[user_id] = user.user_permissions.all()
-    return _cache[user_id]
-
-# Better: Store in variable
+                code_after="""# Efficient: Store in a variable
 def view_function(request):
     user_id = request.user.id
-    
+
     # Query once, reuse result
     permissions = get_user_permissions(user_id)
     permission_names = set(permissions.values_list('codename', flat=True))
-    
+
     return render(request, 'template.html', {
         'can_edit': 'edit' in permission_names,
         'can_delete': 'delete' in permission_names,
@@ -977,12 +976,12 @@ from django.core.cache import cache
 def get_user_permissions_cached(user_id):
     cache_key = f'user_permissions_{user_id}'
     permissions = cache.get(cache_key)
-    
+
     if permissions is None:
         user = User.objects.get(id=user_id)
         permissions = list(user.user_permissions.values_list('codename', flat=True))
         cache.set(cache_key, permissions, timeout=300)  # Cache for 5 minutes
-    
+
     return permissions""",
                 explanation="""Redundant queries waste database resources and slow down your application.
 Caching query results, either in variables or using Django's cache framework,
@@ -995,7 +994,7 @@ eliminates unnecessary database calls.""",
                 impact="medium"
             )
         ]
-    
+
     @staticmethod
     def _query_caching_recommendations(pattern: DetectedPattern) -> List[Recommendation]:
         """Generate recommendations for query result caching."""
@@ -1016,7 +1015,7 @@ def get_popular_products():
 def homepage_view(request):
     popular = get_popular_products()  # Expensive query
     # ... other logic
-    
+
 def api_view(request):
     popular = get_popular_products()  # Same expensive query!
     # ... API logic""",
@@ -1028,10 +1027,10 @@ import hashlib
 def get_popular_products():
     # Create cache key based on query
     cache_key = 'popular_products_v1'
-    
+
     # Try to get from cache first
     popular = cache.get(cache_key)
-    
+
     if popular is None:
         # Cache miss - execute expensive query
         popular = Product.objects.annotate(
@@ -1041,40 +1040,50 @@ def get_popular_products():
             order_count__gt=100,
             avg_rating__gte=4.0
         ).order_by('-order_count')
-        
+
         # Convert to list to make it serializable
         popular = list(popular)
-        
+
         # Cache for 1 hour
         cache.set(cache_key, popular, timeout=3600)
-    
+
     return popular
 
 # Advanced: Cache with parameters
 def get_products_by_category(category_slug, min_rating=4.0):
     # Create unique cache key including parameters
     cache_key = f'products_{category_slug}_{min_rating}'
-    
+
     products = cache.get(cache_key)
     if products is None:
         products = list(Product.objects.filter(
             category__slug=category_slug,
             avg_rating__gte=min_rating
         ).select_related('category'))
-        
+
         cache.set(cache_key, products, timeout=1800)  # 30 minutes
-    
+
     return products
 
-# Cache invalidation when data changes
+# Cache invalidation when data changes — version the key namespace
+# (cache.delete_pattern is a django-redis extension, not a standard
+# cache-backend method)
 from django.db.models.signals import post_save, post_delete
 from django.dispatch import receiver
 
+PRODUCT_CACHE_VERSION_KEY = 'product_cache_version'
+
+def product_cache_key(suffix):
+    version = cache.get_or_set(PRODUCT_CACHE_VERSION_KEY, 1, timeout=None)
+    return f'products_v{version}_{suffix}'
+
 @receiver([post_save, post_delete], sender=Product)
 def invalidate_product_cache(sender, **kwargs):
-    # Clear related cache entries when products change
-    cache.delete_pattern('popular_products_*')
-    cache.delete_pattern('products_*')
+    # Bumping the version makes every old key unreachable at once
+    try:
+        cache.incr(PRODUCT_CACHE_VERSION_KEY)
+    except ValueError:
+        cache.set(PRODUCT_CACHE_VERSION_KEY, 1, timeout=None)
 
 # Using cache_page decorator for view-level caching
 from django.views.decorators.cache import cache_page
@@ -1094,39 +1103,39 @@ expensive but don't change frequently.""",
                 impact="critical"
             )
         ]
-    
+
     @staticmethod
     def format_recommendations_summary(recommendations: List[Recommendation]) -> str:
         """Format recommendations into a readable summary."""
         if not recommendations:
             return "No specific optimization recommendations."
-        
+
         # Group by impact
         critical = [r for r in recommendations if r.impact == "critical"]
         high = [r for r in recommendations if r.impact == "high"]
         medium = [r for r in recommendations if r.impact == "medium"]
         low = [r for r in recommendations if r.impact == "low"]
-        
+
         summary = []
-        
+
         if critical:
             summary.append(f"🚨 CRITICAL ({len(critical)} issues):")
             for rec in critical:
                 summary.append(f"   - {rec.title}")
-        
+
         if high:
             summary.append(f"⚠️  HIGH ({len(high)} issues):")
             for rec in high:
                 summary.append(f"   - {rec.title}")
-        
+
         if medium:
             summary.append(f"🔔 MEDIUM ({len(medium)} issues):")
             for rec in medium:
                 summary.append(f"   - {rec.title}")
-        
+
         if low:
             summary.append(f"💡 LOW ({len(low)} suggestions):")
             for rec in low:
                 summary.append(f"   - {rec.title}")
-        
+
         return "\n".join(summary)
