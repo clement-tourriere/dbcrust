@@ -637,7 +637,7 @@ impl Database {
                 .await
                 .map_err(|e| e.into());
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -649,7 +649,7 @@ impl Database {
             debug!("Using database abstraction layer for list_databases");
             return database_client.list_databases().await.map_err(|e| e.into());
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -1390,9 +1390,9 @@ impl Database {
             debug!("[database_client] Original query: {}", query);
             debug!("[database_client] Query with limit: {}", query_with_limit);
             let results = database_client.execute_query(&query_with_limit).await?;
-            return self.apply_column_selection_if_needed_with_info(results, interrupt_flag);
+            self.apply_column_selection_if_needed_with_info(results, interrupt_flag)
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -1525,7 +1525,7 @@ impl Database {
                 .await
                 .map_err(|e| e.into());
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -1541,7 +1541,7 @@ impl Database {
                 .await
                 .map_err(|e| e.into());
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -1576,9 +1576,9 @@ impl Database {
 
             // Then get the formatted output for display
             let results = database_client.explain_query(query).await?;
-            return Ok(results);
+            Ok(results)
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -1631,23 +1631,7 @@ impl Database {
     }
 
     pub fn maybe_add_limit(&self, query: &str) -> String {
-        // Add limit to query if default_limit is set and query doesn't already have LIMIT
-        let query_lower = query.to_lowercase();
-        if self.default_limit > 0
-            && !query_lower.contains("limit")
-            && (query_lower.contains("select") && !query_lower.contains("count("))
-        {
-            // Check if query ends with semicolon and insert LIMIT before it
-            let query_trimmed = query.trim_end();
-            if query_trimmed.ends_with(';') {
-                let without_semicolon = query_trimmed.trim_end_matches(';');
-                format!("{} LIMIT {};", without_semicolon, self.default_limit)
-            } else {
-                format!("{} LIMIT {}", query, self.default_limit)
-            }
-        } else {
-            query.to_string()
-        }
+        add_default_limit(query, self.default_limit)
     }
 
     pub fn is_autocomplete(&self) -> bool {
@@ -1754,14 +1738,14 @@ impl Database {
                 .get_table_details(table_name, None)
                 .await
             {
-                Ok(table_details) => return Ok(table_details),
+                Ok(table_details) => Ok(table_details),
                 Err(e) => {
                     debug!("Error using database client for get_table_details: {e}");
-                    return Err(Box::new(e));
+                    Err(Box::new(e))
                 }
             }
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -1799,9 +1783,9 @@ impl Database {
                 .skip(1)
                 .map(|row| row[0].clone())
                 .collect();
-            return Ok(names);
+            Ok(names)
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -1830,18 +1814,18 @@ impl Database {
                         tables.len(),
                         duration
                     );
-                    return Ok(tables);
+                    Ok(tables)
                 }
                 Err(e) => {
                     debug!(
                         "Error using database client for get_tables_and_views: {}",
                         e
                     );
-                    return Err(Box::new(e));
+                    Err(Box::new(e))
                 }
             }
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -1860,15 +1844,15 @@ impl Database {
                         schemas.len(),
                         duration
                     );
-                    return Ok(schemas);
+                    Ok(schemas)
                 }
                 Err(e) => {
                     debug!("Error using database client for get_schemas: {e}");
-                    return Err(Box::new(e));
+                    Err(Box::new(e))
                 }
             }
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -1882,9 +1866,9 @@ impl Database {
                 .get_metadata_provider()
                 .get_functions(schema_filter)
                 .await?;
-            return Ok(functions);
+            Ok(functions)
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -1899,9 +1883,9 @@ impl Database {
                 .get_metadata_provider()
                 .get_columns(table_name, schema)
                 .await?;
-            return Ok(columns);
+            Ok(columns)
         } else {
-            return Err("No database client available".into());
+            Err("No database client available".into())
         }
     }
 
@@ -2160,6 +2144,65 @@ fn is_query_explainable(query: &str) -> bool {
     query.starts_with("select") || query.starts_with("with")
 }
 
+/// First SQL keyword of a statement, lowercased, skipping leading whitespace
+/// and `--`/`/* */` comments.
+fn leading_sql_keyword(query: &str) -> Option<String> {
+    let mut rest = query;
+    loop {
+        rest = rest.trim_start();
+        if let Some(after) = rest.strip_prefix("--") {
+            rest = after.split_once('\n').map(|(_, tail)| tail).unwrap_or("");
+        } else if let Some(after) = rest.strip_prefix("/*") {
+            rest = after.split_once("*/").map(|(_, tail)| tail)?;
+        } else {
+            break;
+        }
+    }
+    let keyword: String = rest
+        .chars()
+        .take_while(|c| c.is_ascii_alphabetic())
+        .collect();
+    if keyword.is_empty() {
+        None
+    } else {
+        Some(keyword.to_lowercase())
+    }
+}
+
+/// Append `LIMIT n` only to statements whose leading keyword is SELECT.
+/// Anything that merely *contains* a SELECT (INSERT … SELECT, CREATE TABLE AS,
+/// DELETE/UPDATE with subqueries) must stay untouched: a trailing LIMIT there
+/// silently truncates writes or produces syntax errors.
+fn add_default_limit(query: &str, default_limit: usize) -> String {
+    if default_limit == 0 || leading_sql_keyword(query).as_deref() != Some("select") {
+        return query.to_string();
+    }
+    let query_lower = query.to_lowercase();
+    let has_limit_token = query_lower
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|token| token == "limit");
+    if has_limit_token || query_lower.contains("count(") {
+        return query.to_string();
+    }
+    let query_trimmed = query.trim_end();
+    if query_trimmed.ends_with(';') {
+        let without_semicolon = query_trimmed.trim_end_matches(';');
+        format!("{} LIMIT {};", without_semicolon, default_limit)
+    } else {
+        format!("{} LIMIT {}", query, default_limit)
+    }
+}
+
+impl Drop for Database {
+    fn drop(&mut self) {
+        if let Some(_ssh_tunnel) = &mut self.ssh_tunnel {
+            // The SSH tunnel will be automatically cleaned up when dropped
+            // due to its internal Drop implementation
+            debug!("Cleaning up SSH tunnel on Database drop");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2184,14 +2227,64 @@ mod tests {
         assert!(!is_query_explainable("ROLLBACK"));
         assert!(!is_query_explainable("-- comment only"));
     }
-}
 
-impl Drop for Database {
-    fn drop(&mut self) {
-        if let Some(_ssh_tunnel) = &mut self.ssh_tunnel {
-            // The SSH tunnel will be automatically cleaned up when dropped
-            // due to its internal Drop implementation
-            debug!("Cleaning up SSH tunnel on Database drop");
+    #[rstest]
+    fn test_leading_sql_keyword() {
+        assert_eq!(leading_sql_keyword("SELECT 1"), Some("select".into()));
+        assert_eq!(
+            leading_sql_keyword("  -- comment\n  select 1"),
+            Some("select".into())
+        );
+        assert_eq!(
+            leading_sql_keyword("/* block */ INSERT INTO t VALUES (1)"),
+            Some("insert".into())
+        );
+        assert_eq!(leading_sql_keyword("-- only a comment"), None);
+        assert_eq!(leading_sql_keyword("/* unterminated"), None);
+        assert_eq!(leading_sql_keyword(""), None);
+    }
+
+    #[rstest]
+    fn test_add_default_limit_only_touches_plain_selects() {
+        // Plain SELECTs get the limit
+        assert_eq!(
+            add_default_limit("SELECT * FROM users", 100),
+            "SELECT * FROM users LIMIT 100"
+        );
+        assert_eq!(
+            add_default_limit("SELECT * FROM users;", 100),
+            "SELECT * FROM users LIMIT 100;"
+        );
+        // Word-boundary check: identifiers containing "limit" don't suppress it
+        assert_eq!(
+            add_default_limit("SELECT rate_limit FROM quotas", 100),
+            "SELECT rate_limit FROM quotas LIMIT 100"
+        );
+
+        // Existing LIMIT, count(), or disabled limit leave the query alone
+        assert_eq!(
+            add_default_limit("SELECT * FROM users LIMIT 5", 100),
+            "SELECT * FROM users LIMIT 5"
+        );
+        assert_eq!(
+            add_default_limit("SELECT count(*) FROM users", 100),
+            "SELECT count(*) FROM users"
+        );
+        assert_eq!(
+            add_default_limit("SELECT * FROM users", 0),
+            "SELECT * FROM users"
+        );
+
+        // DML/DDL containing a SELECT must never be rewritten
+        for q in [
+            "INSERT INTO archive SELECT * FROM big_table",
+            "CREATE TABLE copy AS SELECT * FROM src",
+            "DELETE FROM t WHERE id IN (SELECT id FROM dead)",
+            "UPDATE t SET v = (SELECT max(v) FROM s)",
+            "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
+            "EXPLAIN SELECT * FROM users",
+        ] {
+            assert_eq!(add_default_limit(q, 100), q, "must not rewrite: {q}");
         }
     }
 }

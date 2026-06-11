@@ -540,74 +540,23 @@ impl DataFusionClient {
         array: &Arc<dyn datafusion::arrow::array::Array>,
         row_idx: usize,
     ) -> String {
-        use datafusion::arrow::array::*;
+        use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
 
         if array.is_null(row_idx) {
             return "NULL".to_string();
         }
 
-        // Handle different data types
-        match array.data_type() {
-            DataType::Int8 => {
-                let arr = array.as_any().downcast_ref::<Int8Array>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::Int16 => {
-                let arr = array.as_any().downcast_ref::<Int16Array>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::Int32 => {
-                let arr = array.as_any().downcast_ref::<Int32Array>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::Int64 => {
-                let arr = array.as_any().downcast_ref::<Int64Array>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::UInt8 => {
-                let arr = array.as_any().downcast_ref::<UInt8Array>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::UInt16 => {
-                let arr = array.as_any().downcast_ref::<UInt16Array>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::UInt32 => {
-                let arr = array.as_any().downcast_ref::<UInt32Array>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::UInt64 => {
-                let arr = array.as_any().downcast_ref::<UInt64Array>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::Float32 => {
-                let arr = array.as_any().downcast_ref::<Float32Array>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::Float64 => {
-                let arr = array.as_any().downcast_ref::<Float64Array>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::Boolean => {
-                let arr = array.as_any().downcast_ref::<BooleanArray>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::Utf8 => {
-                let arr = array.as_any().downcast_ref::<StringArray>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::Utf8View => {
-                let arr = array.as_any().downcast_ref::<StringViewArray>().unwrap();
-                arr.value(row_idx).to_string()
-            }
-            DataType::Date32 | DataType::Date64 | DataType::Timestamp(_, _) => {
-                // Format dates/timestamps
-                format!("{array:?}")
-            }
-            _ => {
-                // Fallback for other types
-                format!("{array:?}")
-            }
+        // Arrow's value formatter renders the single cell for every type
+        // (dates, timestamps, decimals, lists, structs, binary…). The old
+        // per-type match fell back to `format!("{array:?}")`, which printed
+        // the WHOLE column's debug dump into each cell for those types.
+        let options = FormatOptions::default().with_null("NULL");
+        match ArrayFormatter::try_new(array.as_ref(), &options) {
+            Ok(formatter) => formatter
+                .value(row_idx)
+                .try_to_string()
+                .unwrap_or_else(|e| format!("?{e}?")),
+            Err(e) => format!("?{e}?"),
         }
     }
 }
@@ -913,7 +862,7 @@ impl DatabaseClient for DataFusionClient {
                 .database_type
                 .display_name()
                 .to_string(),
-            "DataFusion 50.0.0".to_string(),
+            format!("DataFusion {}", datafusion::DATAFUSION_VERSION),
         ))
     }
 }

@@ -193,7 +193,8 @@ fn render_table_list(frame: &mut Frame, app: &SchemaTuiApp, area: Rect) {
     frame.render_stateful_widget(list, area, &mut list_state);
 
     // Scrollbar
-    if items_len > area.height as usize - 2 {
+    // saturating_sub: a pane squeezed below 2 rows underflowed here
+    if items_len > (area.height as usize).saturating_sub(2) {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("^"))
             .end_symbol(Some("v"));
@@ -605,7 +606,8 @@ fn render_relationships(frame: &mut Frame, app: &SchemaTuiApp, area: Rect) {
 
     frame.render_stateful_widget(list, area, &mut list_state);
 
-    if items_len > area.height as usize - 2 {
+    // saturating_sub: a pane squeezed below 2 rows underflowed here
+    if items_len > (area.height as usize).saturating_sub(2) {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(Some("^"))
             .end_symbol(Some("v"));

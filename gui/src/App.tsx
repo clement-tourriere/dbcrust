@@ -44,8 +44,11 @@ export default function App() {
   const [connection, setConnection] = useState<ConnectionState | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const [tabs, setTabs] = useState<EditorTab[]>([newTab()]);
-  const [activeTabId, setActiveTabId] = useState(tabs[0].id);
+  // Lazy initializer: `useState([newTab()])` evaluated newTab() on EVERY
+  // render, incrementing the module counter — new tabs got titles like
+  // "Query 53" after some typing
+  const [tabs, setTabs] = useState<EditorTab[]>(() => [newTab()]);
+  const [activeTabId, setActiveTabId] = useState(() => tabs[0].id);
   const [tables, setTables] = useState<string[]>([]);
   const [tablesError, setTablesError] = useState<string | null>(null);
   const [namedQueriesVersion, setNamedQueriesVersion] = useState(0);
@@ -212,6 +215,9 @@ export default function App() {
       const tab = tabs.find((entry) => entry.id === id);
       const sqlToRun = (sqlOverride ?? tab?.sql ?? "").trim();
       if (!tab || !sqlToRun) return;
+      // The menu accelerator bypasses the Run button's disabled state —
+      // without this guard a second Cmd+Enter stacks a concurrent execution
+      if (tab.isRunning) return;
 
       setTabs((prev) =>
         prev.map((entry) =>
@@ -248,6 +254,7 @@ export default function App() {
       const tab = tabs.find((entry) => entry.id === id);
       const sqlToRun = (sqlOverride ?? tab?.sql ?? "").trim();
       if (!tab || !sqlToRun) return;
+      if (tab.isRunning) return;
 
       setTabs((prev) =>
         prev.map((entry) =>
@@ -465,6 +472,7 @@ export default function App() {
                   onConnectRecent={handleConnectRecent}
                   onConnectSession={handleConnectSession}
                   connecting={connecting}
+                  error={connectError}
                 />
               </Suspense>
             )}
@@ -500,6 +508,7 @@ export default function App() {
                   tables={tables}
                   onRefreshTables={handleRefreshTables}
                   onTableSelect={handleTableSelect}
+                  onLoadSnippet={handleLoadSnippet}
                 />
               </Suspense>
             )}

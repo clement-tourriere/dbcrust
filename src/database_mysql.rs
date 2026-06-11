@@ -73,6 +73,7 @@ impl MetadataProvider for MySqlMetadataProvider {
         );
 
         let query = if let Some(schema_name) = schema {
+            let schema_name = crate::database::escape_sql_string(schema_name);
             format!(
                 r#"
                 SELECT TABLE_NAME
@@ -128,7 +129,9 @@ impl MetadataProvider for MySqlMetadataProvider {
             table, schema
         );
 
+        let table = crate::database::escape_sql_string(table);
         let query = if let Some(schema_name) = schema {
+            let schema_name = crate::database::escape_sql_string(schema_name);
             format!(
                 r#"
                 SELECT COLUMN_NAME
@@ -180,6 +183,7 @@ impl MetadataProvider for MySqlMetadataProvider {
 
         // MySQL built-in functions and user-defined functions
         let query = if let Some(schema_name) = schema {
+            let schema_name = crate::database::escape_sql_string(schema_name);
             format!(
                 r#"
                 SELECT ROUTINE_NAME as function_name
@@ -265,7 +269,13 @@ impl MetadataProvider for MySqlMetadataProvider {
             table
         );
 
-        let schema_name = schema.unwrap_or("DATABASE()");
+        // Escaped copies for interpolation into the '…' literal positions of
+        // the metadata queries below (names with quotes broke the statements)
+        let original_table = table.to_string();
+        let table = crate::database::escape_sql_string(table);
+        let schema_name = schema
+            .map(crate::database::escape_sql_string)
+            .unwrap_or_default();
 
         // First check if the table exists
         let table_exists_query = if schema.is_some() {
@@ -514,11 +524,11 @@ impl MetadataProvider for MySqlMetadataProvider {
 
         let table_details = TableDetails {
             schema: schema.unwrap_or("default").to_string(),
-            name: table.to_string(),
+            name: original_table.clone(),
             full_name: if let Some(s) = schema {
-                format!("{s}.{table}")
+                format!("{s}.{original_table}")
             } else {
-                table.to_string()
+                original_table.clone()
             },
             columns,
             indexes,

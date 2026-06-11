@@ -61,18 +61,13 @@ pub async fn stream_to_terminal(
 pub fn extract_sql(response: &str) -> String {
     let trimmed = response.trim();
 
-    // Strip markdown code fences
+    // Strip markdown code fences. Any fence language tag counts (```sql,
+    // ```postgresql, ```mysql, …) — keeping the fence line guaranteed a
+    // syntax error on execution.
     if trimmed.starts_with("```") {
         let lines: Vec<&str> = trimmed.lines().collect();
         if lines.len() >= 2 {
-            let start = if lines[0].starts_with("```sql")
-                || lines[0].starts_with("```SQL")
-                || lines[0] == "```"
-            {
-                1
-            } else {
-                0
-            };
+            let start = 1;
             let end = if lines.last().is_some_and(|l| l.trim() == "```") {
                 lines.len() - 1
             } else {
@@ -85,15 +80,40 @@ pub fn extract_sql(response: &str) -> String {
     trimmed.to_string()
 }
 
-/// Check if SQL is likely a read-only SELECT query
+/// Check if SQL is likely a read-only query, used to decide whether
+/// AI-generated SQL may run without confirmation.
+///
+/// A prefix check alone is NOT enough: `WITH d AS (DELETE FROM t RETURNING *)
+/// SELECT * FROM d` starts with WITH, and `SELECT 1; DROP TABLE t` starts
+/// with SELECT. Conservative by design — false negatives only cost an extra
+/// confirmation prompt.
 pub fn is_select_query(sql: &str) -> bool {
     let upper = sql.trim().to_uppercase();
-    upper.starts_with("SELECT")
+
+    let read_only_prefix = upper.starts_with("SELECT")
         || upper.starts_with("WITH")
         || upper.starts_with("EXPLAIN")
         || upper.starts_with("SHOW")
         || upper.starts_with("DESCRIBE")
-        || upper.starts_with("PRAGMA")
+        || upper.starts_with("PRAGMA");
+    if !read_only_prefix {
+        return false;
+    }
+
+    // Reject multi-statement strings: anything after a ';' could be DML
+    if upper.split(';').skip(1).any(|rest| !rest.trim().is_empty()) {
+        return false;
+    }
+
+    // Reject if any write keyword appears as a word anywhere (data-modifying
+    // CTEs, EXPLAIN ANALYZE on writes, …)
+    const WRITE_KEYWORDS: [&str; 10] = [
+        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE",
+        "MERGE",
+    ];
+    !upper
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .any(|token| WRITE_KEYWORDS.contains(&token))
 }
 
 #[cfg(test)]
@@ -121,11 +141,32 @@ mod tests {
     #[test]
     fn test_is_select_query() {
         assert!(is_select_query("SELECT * FROM users"));
-        assert!(is_select_query("WITH cte AS (...) SELECT ..."));
+        assert!(is_select_query("WITH cte AS (SELECT 1) SELECT * FROM cte"));
         assert!(is_select_query("EXPLAIN SELECT * FROM users"));
+        assert!(is_select_query("SELECT * FROM users;"));
         assert!(!is_select_query("INSERT INTO users VALUES (1)"));
         assert!(!is_select_query("DELETE FROM users WHERE id = 1"));
         assert!(!is_select_query("UPDATE users SET name = 'test'"));
         assert!(!is_select_query("DROP TABLE users"));
+    }
+
+    #[test]
+    fn test_is_select_query_rejects_disguised_writes() {
+        // Data-modifying CTE starts with WITH but writes
+        assert!(!is_select_query(
+            "WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d"
+        ));
+        // Multi-statement smuggling
+        assert!(!is_select_query("SELECT 1; DROP TABLE users"));
+        // EXPLAIN ANALYZE executes the statement
+        assert!(!is_select_query("EXPLAIN ANALYZE DELETE FROM users"));
+        // Identifiers merely containing a keyword are fine
+        assert!(is_select_query("SELECT updated_at FROM user_inserts"));
+    }
+
+    #[test]
+    fn test_extract_sql_strips_any_fence_tag() {
+        assert_eq!(extract_sql("```postgresql\nSELECT 1;\n```"), "SELECT 1;");
+        assert_eq!(extract_sql("```mysql\nSELECT 1;\n```"), "SELECT 1;");
     }
 }

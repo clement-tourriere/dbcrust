@@ -101,13 +101,12 @@ pub fn format_query_results_psql_with_info(
         Err(_panic_info) => {
             eprintln!("PANIC caught in format_query_results_psql!");
 
-            // Write detailed crash analysis
+            // Log the analysis instead of writing a file into the user's CWD:
+            // it contains actual row contents (data leak into arbitrary
+            // directories). It lands in the configured log sink only.
             let analysis = analyze_format_crash(data, "query_results_formatting");
-            if let Err(e) = std::fs::write("dbcrust_format_crash.txt", &analysis) {
-                eprintln!("Failed to write crash analysis: {e}");
-            } else {
-                eprintln!("Crash analysis written to dbcrust_format_crash.txt");
-            }
+            tracing::error!("Formatting crash analysis:\n{analysis}");
+            eprintln!("Enable [logging] in config.toml to capture crash details.");
 
             // Return a safe fallback representation
             if data.is_empty() {
@@ -132,7 +131,7 @@ pub fn format_query_results_psql_with_info(
                     fallback.push_str(&format!("Row {}: {:?}\n", row_idx + 1, row));
                 }
             }
-            fallback.push_str("See dbcrust_format_crash.txt for detailed analysis\n");
+            fallback.push_str("Enable debug logging for detailed analysis\n");
             fallback
         }
     }
@@ -169,12 +168,12 @@ fn format_query_results_psql_internal(
     }
 
     // Validate data consistency with the extended header
-    let mut has_inconsistencies = false;
+    let mut inconsistent_rows = 0usize;
     for (row_idx, row) in data.iter().enumerate() {
         if row.len() != max_cols && row.len() != header_cols {
-            has_inconsistencies = true;
-            eprintln!(
-                "Info: Row {} has {} columns, table has {} columns. Will pad/truncate as needed.",
+            inconsistent_rows += 1;
+            tracing::debug!(
+                "Row {} has {} columns, table has {} columns. Will pad/truncate as needed.",
                 row_idx,
                 row.len(),
                 max_cols
@@ -182,14 +181,16 @@ fn format_query_results_psql_internal(
         }
     }
 
-    // If we detect inconsistencies, write analysis to a file (but don't treat as error)
-    if has_inconsistencies {
-        let analysis = analyze_format_crash(data, "data_consistency_info");
-        if let Err(e) = std::fs::write("dbcrust_data_analysis.txt", &analysis) {
-            eprintln!("Failed to write data analysis file: {e}");
-        } else {
-            eprintln!("Data structure analysis written to dbcrust_data_analysis.txt");
-        }
+    // Log the analysis instead of dumping row contents into a file in the
+    // user's CWD (that leaked query data into arbitrary directories)
+    if inconsistent_rows > 0 {
+        eprintln!(
+            "Info: {inconsistent_rows} row(s) had a different column count than the header; padded/truncated as needed."
+        );
+        tracing::debug!(
+            "Data structure analysis:\n{}",
+            analyze_format_crash(data, "data_consistency_info")
+        );
     }
 
     // Find the maximum width needed for each column (using extended header)

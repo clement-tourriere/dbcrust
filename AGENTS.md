@@ -45,10 +45,7 @@ cargo test test_name
 # Run tests for specific module
 cargo test --lib module_name
 
-# Run integration tests only
-cargo test --test "*"
-
-# Run Python interface tests
+# Run Python interface tests (pure-Python Django toolkit suite)
 mise run py:test
 ```
 
@@ -63,8 +60,8 @@ mise run lint
 # Run the standard validation suite
 mise run check
 
-# Pre-commit hooks
-pre-commit run --all-files
+# Git hooks are managed by hk (config: hk.pkl)
+hk check --all
 ```
 
 ## Code Style Guidelines
@@ -99,14 +96,16 @@ pre-commit run --all-files
 - Use `serde` with `#[serde(default)]` for backward compatibility
 - **Dedicated Storage Pattern**: Separate user data from app settings
   - Main config: `~/.config/dbcrust/config.toml` (settings only)
-  - Sessions: `~/.config/dbcrust/saved_sessions.toml`
-  - Recent connections: `~/.config/dbcrust/recent_connections.toml`
+  - Sessions: `~/.config/dbcrust/sessions.toml`
+  - Recent connections: `~/.config/dbcrust/recent.toml`
+  - Named queries: `~/.config/dbcrust/named_queries.toml`
 - Update `save_with_documentation()` method when adding new config fields
 
 ### Testing Patterns
 - Use `rstest` for parameterized tests
 - Test isolation: Use temporary directories (`/tmp/dbcrust_test_{pid}/`)
-- Unit tests in individual modules, integration tests in `tests/` directory
+- All Rust tests live inline in `#[cfg(test)]` modules (there is no `tests/` directory)
+- DB-gated integration tests exist for PostgreSQL only (skip unless `DATABASE_URL` is set)
 - Test database operations with mock/test databases
 - **NEVER** use `cargo run` for testing
 

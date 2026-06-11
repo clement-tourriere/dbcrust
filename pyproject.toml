@@ -51,17 +51,35 @@ classifiers = [
 "Bug Tracker" = "https://github.com/clement-tourriere/dbcrust/issues"
 "Source Code" = "https://github.com/clement-tourriere/dbcrust"
 
+[project.optional-dependencies]
+# Django is only needed for the dbcrust.django analysis toolkit:
+# pip install "dbcrust[django]"
+django = ["Django>=4.2"]
+
+[dependency-groups]
+dev = ["pytest>=8", "Django>=4.2", "ruff"]
+
 [tool.maturin]
 bindings = "pyo3"
 module-name = "dbcrust._internal"
 strip = true
 python-source = "python"
 features = ["python"]
-console-scripts = ["dbcrust = dbcrust.__main__:main", "dbc = dbcrust.__main__:main"]
-
-[tool.maturin.dependencies]
-colorama = ">=0.4.4"
+# Keep demo/scratch/test files out of the shipped wheel
+exclude = [
+    "python/dbcrust/django/tests/**",
+    "python/dbcrust/django/test_enhanced_analyzer.py",
+    "python/dbcrust/django/test_middleware_demo.py",
+    "python/dbcrust/django/example.py",
+    "python/dbcrust/django/example_middleware_usage.py",
+    "python/dbcrust/django/debug_logging.py",
+    "python/dbcrust/django/troubleshoot_logging.py",
+    "python/example.py",
+]
 
 [project.scripts]
 dbc = "dbcrust.__main__:main"
 dbcrust = "dbcrust.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["python/dbcrust/django/tests"]

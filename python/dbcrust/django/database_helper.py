@@ -197,26 +197,27 @@ def connect_all_databases(
 @contextmanager
 def transaction(database: Optional[str] = None, **kwargs):
     """
-    Context manager for database transactions using Django database.
+    NOT SUPPORTED — raises immediately.
 
-    Args:
-        database: Database alias (default: 'default')
-        **kwargs: Additional connection parameters
+    DBCrust connections are autocommit-only: the underlying client never
+    issues BEGIN/COMMIT/ROLLBACK, so this helper could not honor its old
+    promise ("rolled back on error") — statements persisted one by one and
+    an exception mid-block silently kept earlier writes. Raising is the only
+    honest behavior until real transaction support lands in the native
+    client.
 
-    Example:
-        with transaction() as cursor:
-            cursor.execute("INSERT INTO users (name) VALUES (%s)", ("Alice",))
-            cursor.execute("INSERT INTO profiles (user_id) VALUES (%s)", (cursor.lastrowid,))
-            # Transaction automatically committed on success, rolled back on error
+    Use Django's own transaction management instead:
+
+        from django.db import transaction
+        with transaction.atomic():
+            ...
     """
-    with connect(database=database, auto_commit=False, **kwargs) as connection:
-        with connection.cursor() as cursor:
-            try:
-                yield cursor
-                connection.commit()
-            except Exception:
-                connection.rollback()
-                raise
+    raise NotImplementedError(
+        "dbcrust.django.transaction() is not supported: DBCrust connections "
+        "are autocommit-only and cannot roll back. Use "
+        "django.db.transaction.atomic() instead."
+    )
+    yield  # pragma: no cover — keeps this a generator for @contextmanager
 
 
 def get_database_info(database: Optional[str] = None) -> Dict[str, Any]:

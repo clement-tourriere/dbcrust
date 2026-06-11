@@ -119,12 +119,17 @@ export function ConnectionDialog({
 
   const filteredRecent = useMemo(
     () =>
-      recentConnections.filter(
-        (c) =>
-          !search ||
-          c.display_name.toLowerCase().includes(search.toLowerCase()) ||
-          c.database_type.toLowerCase().includes(search.toLowerCase()),
-      ),
+      recentConnections
+        // Keep each item's index in the FULL list: the backend resolves the
+        // connection by that index, so using the filtered position could
+        // silently connect to a different database
+        .map((c, originalIndex) => ({ ...c, originalIndex }))
+        .filter(
+          (c) =>
+            !search ||
+            c.display_name.toLowerCase().includes(search.toLowerCase()) ||
+            c.database_type.toLowerCase().includes(search.toLowerCase()),
+        ),
     [recentConnections, search],
   );
 
@@ -451,10 +456,10 @@ export function ConnectionDialog({
                   </div>
                 ) : (
                   <div className="space-y-1.5">
-                    {filteredRecent.map((c, i) => (
+                    {filteredRecent.map((c) => (
                       <button
-                        key={`${c.display_name}-${i}`}
-                        onClick={() => onConnectRecent(i)}
+                        key={`${c.display_name}-${c.originalIndex}`}
+                        onClick={() => onConnectRecent(c.originalIndex)}
                         disabled={connecting}
                         className="w-full text-left px-4 py-3 rounded-lg hover:bg-zinc-800
                           transition-colors flex items-center gap-3 group disabled:opacity-50

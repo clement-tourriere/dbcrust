@@ -9,6 +9,38 @@ use thiserror::Error;
 use tracing::debug;
 use url::Url;
 
+/// Process-wide query timeout in seconds (0 = no timeout). Initialized from
+/// `Config::query_timeout_seconds` at startup; database clients read it here
+/// because they are constructed without access to the Config (same pattern as
+/// the global complex-display config).
+static QUERY_TIMEOUT_SECONDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(30);
+
+pub fn set_query_timeout_seconds(seconds: u64) {
+    QUERY_TIMEOUT_SECONDS.store(seconds, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The configured query timeout, or None when timeouts are disabled (0).
+pub fn query_timeout() -> Option<std::time::Duration> {
+    match QUERY_TIMEOUT_SECONDS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        seconds => Some(std::time::Duration::from_secs(seconds)),
+    }
+}
+
+/// Escape a value for interpolation into a single-quoted SQL string literal.
+/// Metadata queries interpolate user-controlled table/schema names; a name
+/// containing `'` would otherwise break the statement (and is an injection
+/// foothold).
+pub fn escape_sql_string(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+/// Quote an identifier with double quotes (SQLite / standard SQL), escaping
+/// embedded quotes.
+pub fn quote_sql_ident(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
 /// Supported database types
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, strum::EnumIter)]
 pub enum DatabaseType {
@@ -820,34 +852,41 @@ impl ConnectionInfo {
             } else if path.starts_with("//") {
                 // sqlite:////absolute/path -> /absolute/path (absolute)
                 path[1..].to_string()
-            } else if path.starts_with("/") && path.len() > 1 {
-                // sqlite:///relative/path -> relative/path (treat as relative)
-                // Only make it absolute if it looks like a real absolute path
-                if path.starts_with("/home/")
-                    || path.starts_with("/Users/")
-                    || path.starts_with("/tmp/")
-                    || path.starts_with("/var/")
-                {
-                    path.to_string()
-                } else {
-                    path[1..].to_string()
-                }
             } else {
-                // sqlite:///path -> path or empty path
+                // sqlite:///absolute/path — a single leading slash is an
+                // absolute path (URI semantics, like file://), regardless of
+                // which directory it points into. Use sqlite://./path for
+                // relative paths.
                 path.to_string()
             };
+
+            // The url crate percent-encodes the path (e.g. spaces become %20)
+            let file_path = percent_encoding::percent_decode_str(&file_path)
+                .decode_utf8_lossy()
+                .into_owned();
 
             connection_info.file_path = Some(file_path);
         } else {
             // For network databases
             connection_info.host = url.host_str().map(|h| h.to_string());
             connection_info.port = url.port();
+            // url's accessors return the percent-encoded serialization, so a
+            // password typed as p%40ss (for p@ss) would otherwise be sent
+            // verbatim to the server — decode like the database name below.
             connection_info.username = if url.username().is_empty() {
                 None
             } else {
-                Some(url.username().to_string())
+                Some(
+                    percent_encoding::percent_decode_str(url.username())
+                        .decode_utf8_lossy()
+                        .into_owned(),
+                )
             };
-            connection_info.password = url.password().map(|p| p.to_string());
+            connection_info.password = url.password().map(|p| {
+                percent_encoding::percent_decode_str(p)
+                    .decode_utf8_lossy()
+                    .into_owned()
+            });
 
             // Database name is the path without leading slash - URL decode it
             if let Some(mut segments) = url.path_segments() {

@@ -130,27 +130,31 @@ impl MetadataProvider for MongoDBMetadataProvider {
             }
         }
 
-        // Get indexes for the collection
-        let index_cursor = self
-            .database
-            .collection::<Document>("system.indexes")
-            .find(doc! { "ns": format!("{}.{}", self.database.name(), collection) })
-            .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to get indexes: {e}")))?;
-
-        let mut index_cursor = index_cursor;
+        // Get indexes via listIndexes — the legacy system.indexes collection
+        // was removed in MongoDB 3.0, so querying it always returned nothing
         let mut indexes = Vec::new();
-        while let Ok(Some(index_doc)) = index_cursor.try_next().await {
-            if let Ok(name) = index_doc.get_str("name") {
-                indexes.push(crate::db::IndexInfo {
-                    name: name.to_string(),
-                    index_type: "INDEX".to_string(), // MongoDB doesn't have traditional index types
-                    is_primary: false,               // MongoDB doesn't have primary keys like SQL
-                    is_unique: false,                // Would need to check index options
-                    predicate: None,
-                    definition: format!("{index_doc:?}"),
-                    constraint_def: None,
-                });
+        match collection_handle.list_indexes().await {
+            Ok(mut index_cursor) => {
+                while let Ok(Some(index_model)) = index_cursor.try_next().await {
+                    let options = index_model.options.as_ref();
+                    let name = options
+                        .and_then(|o| o.name.clone())
+                        .unwrap_or_else(|| index_model.keys.to_string());
+                    let is_unique =
+                        options.and_then(|o| o.unique).unwrap_or(false) || name == "_id_";
+                    indexes.push(crate::db::IndexInfo {
+                        name: name.clone(),
+                        index_type: "INDEX".to_string(),
+                        is_primary: name == "_id_",
+                        is_unique,
+                        predicate: None,
+                        definition: index_model.keys.to_string(),
+                        constraint_def: None,
+                    });
+                }
+            }
+            Err(e) => {
+                debug!("Failed to list indexes for {collection}: {e}");
             }
         }
 
@@ -528,6 +532,7 @@ impl MongoDBClient {
     }
 
     /// Parse MongoDB find command syntax
+    #[allow(clippy::type_complexity)]
     fn parse_find_command(
         &self,
         command: &str,

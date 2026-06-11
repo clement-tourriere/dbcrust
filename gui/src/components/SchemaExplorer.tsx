@@ -21,6 +21,7 @@ interface SchemaExplorerProps {
   tables: string[];
   onRefreshTables: () => void;
   onTableSelect: (tableName: string) => void;
+  onLoadSnippet: (title: string, sql: string) => void;
 }
 
 export function SchemaExplorer({
@@ -28,6 +29,7 @@ export function SchemaExplorer({
   tables,
   onRefreshTables,
   onTableSelect,
+  onLoadSnippet,
 }: SchemaExplorerProps) {
   const [search, setSearch] = useState("");
   const [selectedTable, setSelectedTable] = useState<string | null>(null);
@@ -358,7 +360,9 @@ export function SchemaExplorer({
                 ].map((q) => (
                   <button
                     key={q}
-                    onClick={() => onTableSelect(selectedTable)}
+                    // Load the SQL the button actually shows — every button
+                    // used to load the same default SELECT via onTableSelect
+                    onClick={() => onLoadSnippet(selectedTable, `${q};`)}
                     className="px-3 py-1.5 rounded-md bg-zinc-800 text-zinc-400 text-xs font-mono
                       hover:bg-zinc-700 hover:text-zinc-200 transition-all truncate max-w-sm"
                     title={q}

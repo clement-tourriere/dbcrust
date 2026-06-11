@@ -97,7 +97,7 @@ run = "maturin build --release"
 
 [tasks."py:test"]
 description = "Run Python tests"
-run = "python -m pytest python/tests/"
+run = "python -m pytest python/dbcrust/django/tests/"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Documentation Tasks

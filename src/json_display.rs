@@ -262,7 +262,10 @@ impl ComplexDataDisplay for JsonDisplayAdapter {
                     let formatted = serde_json::to_string(&self.value)
                         .unwrap_or_else(|_| self.raw_json.clone());
                     if formatted.len() > 50 {
-                        format!("{}... (truncated)", &formatted[..47])
+                        format!(
+                            "{}... (truncated)",
+                            crate::complex_display::truncate_str_bytes(&formatted, 47)
+                        )
                     } else {
                         formatted
                     }
@@ -337,7 +340,14 @@ impl ComplexDataDisplay for JsonDisplayAdapter {
                         Value::Object(inner) => format!("Object({} fields)", inner.len()),
                         Value::Array(inner) => format!("Array[{}]", inner.len()),
                         Value::String(s) => {
-                            format!("\"{}\"", if s.len() > 20 { &s[..17] } else { s })
+                            format!(
+                                "\"{}\"",
+                                if s.len() > 20 {
+                                    crate::complex_display::truncate_str_bytes(s, 17)
+                                } else {
+                                    s
+                                }
+                            )
                         }
                         Value::Number(n) => n.to_string(),
                         Value::Bool(b) => b.to_string(),
@@ -360,7 +370,14 @@ impl ComplexDataDisplay for JsonDisplayAdapter {
                         Value::Object(inner) => format!("Object({} fields)", inner.len()),
                         Value::Array(inner) => format!("Array[{}]", inner.len()),
                         Value::String(s) => {
-                            format!("\"{}\"", if s.len() > 15 { &s[..12] } else { s })
+                            format!(
+                                "\"{}\"",
+                                if s.len() > 15 {
+                                    crate::complex_display::truncate_str_bytes(s, 12)
+                                } else {
+                                    s
+                                }
+                            )
                         }
                         Value::Number(n) => n.to_string(),
                         Value::Bool(b) => b.to_string(),

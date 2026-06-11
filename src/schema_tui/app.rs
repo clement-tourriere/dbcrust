@@ -440,6 +440,14 @@ impl SchemaTuiApp {
             return;
         }
 
+        // Ctrl-C always quits: it previously fell through to the plain 'c'
+        // arm (toggling constraint display) in normal mode and typed a
+        // literal 'c' in search mode
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.should_quit = true;
+            return;
+        }
+
         // Help overlay: any key closes it
         if self.show_help {
             self.show_help = false;

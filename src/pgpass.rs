@@ -199,10 +199,10 @@ fn save_password_to_path(
     }
 
     // Create file and parent directories if they don't exist
-    if let Some(parent) = pgpass_path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)?;
-        }
+    if let Some(parent) = pgpass_path.parent()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)?;
     }
 
     let entry_to_add = format!(
@@ -219,7 +219,7 @@ fn save_password_to_path(
     let mut entry_exists = false;
 
     if pgpass_path.exists() {
-        let file = File::open(&pgpass_path)?;
+        let file = File::open(pgpass_path)?;
         let reader = BufReader::new(file);
 
         for line in reader.lines() {
@@ -257,20 +257,34 @@ fn save_password_to_path(
         entries.push(entry_to_add);
     }
 
-    // Write entries back to file
-    let mut file = File::create(&pgpass_path)?;
+    // Write entries back, created 0600 from the start on Unix —
+    // create-then-chmod left a window where credentials sat readable under
+    // the default umask
+    #[cfg(target_family = "unix")]
+    let mut file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(pgpass_path)?
+    };
+    #[cfg(not(target_family = "unix"))]
+    let mut file = File::create(pgpass_path)?;
+
     for entry in entries {
         writeln!(file, "{entry}")?;
     }
 
-    // Set correct permissions on Unix
+    // mode() above only applies at creation — tighten pre-existing files too
     #[cfg(target_family = "unix")]
     {
         use std::os::unix::fs::PermissionsExt;
-        let metadata = fs::metadata(&pgpass_path)?;
+        let metadata = fs::metadata(pgpass_path)?;
         let mut permissions = metadata.permissions();
         permissions.set_mode(0o600); // User readable/writable only
-        fs::set_permissions(&pgpass_path, permissions)?;
+        fs::set_permissions(pgpass_path, permissions)?;
     }
 
     Ok(())

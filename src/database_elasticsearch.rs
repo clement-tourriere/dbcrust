@@ -685,6 +685,7 @@ impl ElasticsearchClient {
     }
 
     /// Recursively extract field types from mapping properties
+    #[allow(clippy::only_used_in_recursion)]
     fn extract_field_types(
         &self,
         properties: &Value,
@@ -775,6 +776,7 @@ impl ElasticsearchClient {
     }
 
     /// Recursively identify array fields from a document
+    #[allow(clippy::only_used_in_recursion)]
     fn identify_array_fields(
         &self,
         value: &Value,
@@ -1047,7 +1049,10 @@ impl ElasticsearchClient {
                     crate::complex_display::ComplexDisplayMode::Truncated => {
                         let max_len = self.complex_display_config.max_width;
                         if json_str.len() > max_len {
-                            format!("{}...", &json_str[..max_len])
+                            format!(
+                                "{}...",
+                                crate::complex_display::truncate_str_bytes(&json_str, max_len)
+                            )
                         } else {
                             json_str
                         }
@@ -1232,6 +1237,7 @@ impl ElasticsearchClient {
     }
 
     /// Recursively describe properties from mapping
+    #[allow(clippy::only_used_in_recursion)]
     fn describe_properties_recursive(
         &self,
         properties: &Value,

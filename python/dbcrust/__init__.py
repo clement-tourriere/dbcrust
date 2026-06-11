@@ -51,9 +51,6 @@ def run_cli(db_url=None):
     """
     return _run_cli_main(db_url)
 
-# Django app configuration
-default_app_config = 'dbcrust.apps.DbcrustConfig'
-
 __all__ = [
     # Enhanced API (recommended for new projects)
     "connect",

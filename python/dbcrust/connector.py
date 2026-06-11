@@ -193,19 +193,27 @@ class Connection:
         """
         Commit the current transaction.
 
-        Note: Currently a no-op as transactions are handled automatically
+        DBCrust connections run in autocommit mode: every statement is
+        committed as it executes, so there is nothing left to commit here.
         """
-        # TODO: Implement transaction support
         pass
 
     def rollback(self):
         """
-        Rollback the current transaction.
+        Rollback is NOT supported: connections run in autocommit mode and
+        every statement has already been committed by the time this is
+        called.
 
-        Note: Currently a no-op as transactions are handled automatically
+        Raises instead of silently doing nothing — callers invoking
+        rollback() expect their writes to be undone, and pretending to
+        comply would corrupt data. Use your framework's transaction
+        management (e.g. django.db.transaction.atomic) for atomicity.
         """
-        # TODO: Implement transaction support
-        pass
+        raise NotImplementedError(
+            "DBCrust connections are autocommit-only; rollback cannot undo "
+            "already-committed statements. Use django.db.transaction.atomic "
+            "(or your framework's equivalent) for transactional behavior."
+        )
 
     def close(self):
         """Close the database connection"""

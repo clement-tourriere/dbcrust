@@ -579,7 +579,7 @@ fn add_warnings_and_recommendations(node: &mut PlanNode) {
     if let Some(actual) = node.actual_rows {
         if node.plan_rows > 0 {
             let ratio = actual as f64 / node.plan_rows as f64;
-            if ratio > 10.0 || ratio < 0.1 {
+            if !(0.1..=10.0).contains(&ratio) {
                 node.warnings.push(format!(
                     "Row estimate off by {:.0}x (est: {}, actual: {})",
                     ratio.max(1.0 / ratio),

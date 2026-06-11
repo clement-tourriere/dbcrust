@@ -50,6 +50,7 @@ pub struct SqlCompleter {
 
 /// Command completion types for smart classification
 #[derive(Debug, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 enum CommandCompletionType {
     /// Simple argument completion (e.g., \vd, \s, \ss)
     ArgumentCompletion(String),
@@ -505,6 +506,43 @@ impl SqlCompleter {
         columns
     }
 
+    /// Delegate to the command manager's argument completion without
+    /// re-entering complete_backslash_commands: classify_command would route
+    /// a "\ns " line straight back into complete_ns_command — infinite mutual
+    /// recursion and a stack-overflow abort on Tab.
+    fn complete_command_arguments(&mut self, cmd: &str, line: &str, pos: usize) -> Vec<Suggestion> {
+        let args_start = cmd.len() + 1; // After command and space
+        if line.len() < args_start {
+            return Vec::new();
+        }
+        let args = &line[args_start..];
+        let args_pos = pos.saturating_sub(args_start);
+
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => tokio::task::block_in_place(|| {
+                let handle = tokio::runtime::Handle::current();
+                handle.block_on(async {
+                    let mut suggestions = self
+                        .command_manager
+                        .get_argument_completions(cmd, args, args_pos)
+                        .await;
+
+                    // Adjust spans to account for command prefix
+                    for suggestion in &mut suggestions {
+                        suggestion.span.start += args_start;
+                        suggestion.span.end += args_start;
+                    }
+
+                    suggestions
+                })
+            }),
+            Err(_) => {
+                debug!("No tokio runtime for command argument completion");
+                Vec::new()
+            }
+        }
+    }
+
     /// Complete \ns command with complex syntax: \ns query_name SQL_QUERY [--flags]
     fn complete_ns_command(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
         debug!("Completing \\ns command: '{}', pos: {}", line, pos);
@@ -516,7 +554,7 @@ impl SqlCompleter {
         if parts.is_empty() || (parts.len() == 1 && pos <= 4 + parts[0].len()) {
             // Completing query name (first argument)
             debug!("Completing query name for \\ns");
-            return self.complete_backslash_commands(line, pos);
+            return self.complete_command_arguments("\\ns", line, pos);
         }
 
         // Find the position ranges for different parts
@@ -550,7 +588,7 @@ impl SqlCompleter {
         if in_flags {
             // Completing flags - delegate to CommandCompletionManager
             debug!("Completing flags for \\ns command");
-            return self.complete_backslash_commands(line, pos);
+            return self.complete_command_arguments("\\ns", line, pos);
         }
 
         // We're in the SQL portion - extract it and use SQL completion

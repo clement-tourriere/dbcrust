@@ -51,7 +51,7 @@ impl MetadataProvider for SqliteMetadataProvider {
             schema
         );
 
-        let schema_name = schema.unwrap_or("main");
+        let schema_name = crate::database::quote_sql_ident(schema.unwrap_or("main"));
 
         // Query sqlite_master for tables and views
         let query = format!(
@@ -87,7 +87,8 @@ impl MetadataProvider for SqliteMetadataProvider {
             table, schema
         );
 
-        let schema_name = schema.unwrap_or("main");
+        let schema_name = crate::database::quote_sql_ident(schema.unwrap_or("main"));
+        let table = crate::database::quote_sql_ident(table);
 
         // Use PRAGMA table_info to get column information
         let query = format!("PRAGMA {schema_name}.table_info({table})");
@@ -161,10 +162,14 @@ impl MetadataProvider for SqliteMetadataProvider {
         );
 
         let schema_name = schema.unwrap_or("main");
+        // Quoted copies for identifier positions in the queries below —
+        // unquoted interpolation broke on names with quotes/spaces
+        let schema_q = crate::database::quote_sql_ident(schema_name);
+        let table_q = crate::database::quote_sql_ident(table);
 
         // First check if the table exists
         let table_exists_query =
-            format!("SELECT name FROM {schema_name}.sqlite_master WHERE type='table' AND name=?");
+            format!("SELECT name FROM {schema_q}.sqlite_master WHERE type='table' AND name=?");
         let table_exists = sqlx::query(&table_exists_query)
             .bind(table)
             .fetch_optional(&self.pool)
@@ -177,7 +182,7 @@ impl MetadataProvider for SqliteMetadataProvider {
         }
 
         // Get basic table info using PRAGMA table_info
-        let query = format!("PRAGMA {schema_name}.table_info({table})");
+        let query = format!("PRAGMA {schema_q}.table_info({table_q})");
         let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
 
         let mut columns = Vec::new();
@@ -196,7 +201,7 @@ impl MetadataProvider for SqliteMetadataProvider {
         }
 
         // Get index information
-        let index_query = format!("PRAGMA {schema_name}.index_list({table})");
+        let index_query = format!("PRAGMA {schema_q}.index_list({table_q})");
         let index_rows = sqlx::query(&index_query).fetch_all(&self.pool).await?;
 
         let mut indexes = Vec::new();
@@ -205,7 +210,8 @@ impl MetadataProvider for SqliteMetadataProvider {
             let is_unique: bool = index_row.get("unique");
 
             // Get index details
-            let detail_query = format!("PRAGMA {schema_name}.index_info({index_name})");
+            let index_name_q = crate::database::quote_sql_ident(&index_name);
+            let detail_query = format!("PRAGMA {schema_q}.index_info({index_name_q})");
             let detail_rows = sqlx::query(&detail_query).fetch_all(&self.pool).await?;
 
             let mut columns_in_index = Vec::new();
@@ -228,7 +234,7 @@ impl MetadataProvider for SqliteMetadataProvider {
         }
 
         // Get foreign key information
-        let fk_query = format!("PRAGMA {schema_name}.foreign_key_list({table})");
+        let fk_query = format!("PRAGMA {schema_q}.foreign_key_list({table_q})");
         let fk_rows = sqlx::query(&fk_query).fetch_all(&self.pool).await?;
 
         let mut foreign_keys = Vec::new();

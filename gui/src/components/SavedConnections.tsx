@@ -8,6 +8,7 @@ import {
   Loader2,
   Bookmark,
   RefreshCw,
+  AlertCircle,
 } from "lucide-react";
 import * as cmd from "../commands";
 import type { RecentConnection, SavedSession } from "../types";
@@ -30,6 +31,7 @@ interface SavedConnectionsProps {
   onConnectRecent: (index: number) => void;
   onConnectSession: (name: string) => void;
   connecting: boolean;
+  error: string | null;
 }
 
 type Section = "saved" | "recent";
@@ -38,6 +40,7 @@ export function SavedConnections({
   onConnectRecent,
   onConnectSession,
   connecting,
+  error: connectError,
 }: SavedConnectionsProps) {
   const [section, setSection] = useState<Section>("saved");
   const [search, setSearch] = useState("");
@@ -96,12 +99,17 @@ export function SavedConnections({
 
   const filteredRecent = useMemo(
     () =>
-      recent.filter(
-        (c) =>
-          !q ||
-          c.display_name.toLowerCase().includes(q) ||
-          c.database_type.toLowerCase().includes(q),
-      ),
+      recent
+        // Keep each item's index in the FULL list: the backend resolves the
+        // connection by that index, so using the filtered position could
+        // silently connect to a different database
+        .map((c, originalIndex) => ({ ...c, originalIndex }))
+        .filter(
+          (c) =>
+            !q ||
+            c.display_name.toLowerCase().includes(q) ||
+            c.database_type.toLowerCase().includes(q),
+        ),
     [recent, q],
   );
 
@@ -134,6 +142,17 @@ export function SavedConnections({
             Refresh
           </button>
         </div>
+
+        {/* Connection Error — this view used to fail silently */}
+        {connectError && !connecting && (
+          <div className="mb-5 bg-red-500/10 border border-red-500/20 rounded-xl p-4 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <h4 className="text-sm font-medium text-red-300">Connection failed</h4>
+              <p className="text-xs text-red-400/80 mt-1">{connectError}</p>
+            </div>
+          </div>
+        )}
 
         {/* Search */}
         <div className="relative mb-5">
@@ -290,10 +309,10 @@ export function SavedConnections({
               </div>
             ) : (
               <div className="space-y-2">
-                {filteredRecent.map((c, i) => (
+                {filteredRecent.map((c) => (
                   <button
-                    key={`${c.display_name}-${i}`}
-                    onClick={() => onConnectRecent(i)}
+                    key={`${c.display_name}-${c.originalIndex}`}
+                    onClick={() => onConnectRecent(c.originalIndex)}
                     disabled={connecting}
                     className="w-full text-left bg-surface rounded-xl border border-zinc-800
                       hover:border-zinc-700 hover:bg-surface-100 transition-all

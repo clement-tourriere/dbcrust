@@ -77,8 +77,13 @@ pub fn store_api_key(
         KeyStorageMethod::OsKeyring => store_keyring_key(adapter, key),
         KeyStorageMethod::EncryptedFile => store_encrypted_key(adapter, key),
         KeyStorageMethod::EnvVarHint => {
+            // Never echo the key itself — it would persist in terminal
+            // scrollback, tmux logs, and session recordings
+            let _ = key;
             let env_name = env_var_name(adapter).unwrap_or("DBCRUST_AI_API_KEY");
-            println!("\nAdd this to your shell profile:\n  export {env_name}={key}");
+            println!(
+                "\nAdd this to your shell profile (paste your key in place of the placeholder):\n  export {env_name}=<your-api-key>"
+            );
             Ok(())
         }
     }

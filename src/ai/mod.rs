@@ -94,6 +94,24 @@ pub fn build_client(ai_config: &AiConfig) -> Result<Client, AiError> {
         return Err(AiError::NotConfigured);
     }
 
+    // Pre-flight the API key: the auth resolver below maps failures to
+    // Ok(None), so without this check a missing key surfaces later as a raw
+    // provider error that never mentions `\ai setup`. Custom endpoints
+    // (self-hosted gateways) may legitimately run keyless — skip for those.
+    let has_custom_endpoint = ai_config
+        .endpoint
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .is_some();
+    let adapter = provider_for_model(&ai_config.model);
+    if !has_custom_endpoint
+        && key_storage::requires_api_key(adapter)
+        && key_storage::resolve_api_key(adapter).is_err()
+    {
+        return Err(AiError::MissingApiKey(adapter.as_str().to_string()));
+    }
+
     // Resolve API keys through dbcrust's own storage instead of genai's
     // default env-var lookup. Returning `Ok(None)` lets genai proceed without a
     // key (local providers like Ollama) or fall back to its own resolution.
@@ -236,8 +254,10 @@ mod tests {
 
     #[test]
     fn test_build_client_disabled_is_not_configured() {
-        let mut config = AiConfig::default();
-        config.enabled = false;
+        let config = AiConfig {
+            enabled: false,
+            ..Default::default()
+        };
         assert!(matches!(build_client(&config), Err(AiError::NotConfigured)));
     }
 }

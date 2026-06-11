@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust · fmt, clippy, test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --check
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: tests
+        run: cargo test
+
+  python:
+    name: Python · Django toolkit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The pure-Python suite runs without building the Rust extension —
+      # the repo-root conftest.py stubs dbcrust._internal when it is absent
+      - name: Install test dependencies
+        run: pip install "pytest>=8" "Django>=4.2"
+      - name: pytest
+        run: pytest python/dbcrust/django/tests -q
+      - name: ruff (errors only)
+        run: pipx run ruff check python/dbcrust --select E9,F821,F811
+
+  gui:
+    name: GUI · typecheck + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        working-directory: gui
+        run: bun install --frozen-lockfile
+      - name: Typecheck + bundle
+        working-directory: gui
+        run: bun run build

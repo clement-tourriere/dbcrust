@@ -371,7 +371,9 @@ class TestPerformanceAnalysisMiddleware(TestCase):
         response = HttpResponse()
 
         with patch('time.time', return_value=123456789.6):  # 600ms later
-            with self.assertLogs('dbcrust.performance', level='ERROR') as log:
+            # Bad grades log at WARNING (capped — a slow dev page is not an
+            # ERROR, and ERROR spams Sentry-style aggregators)
+            with self.assertLogs('dbcrust.performance', level='WARNING') as log:
                 result = middleware.process_response(request, response)
 
         # Verify consolidated report was logged (single log call)

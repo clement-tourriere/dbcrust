@@ -51,6 +51,7 @@ impl fmt::Display for ComplexDisplayMode {
 }
 
 impl ComplexDisplayMode {
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<ComplexDisplayMode> {
         match s.to_lowercase().as_str() {
             "full" => Some(ComplexDisplayMode::Full),
@@ -574,7 +575,7 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
                 .iter()
                 .map(|element| {
                     if element.len() > 20 {
-                        format!("{}...", &element[..17])
+                        format!("{}...", truncate_str_bytes(element, 17))
                     } else {
                         element.clone()
                     }
@@ -598,7 +599,7 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
                 .iter()
                 .map(|e| {
                     if e.len() > 15 {
-                        format!("{}...", &e[..12])
+                        format!("{}...", truncate_str_bytes(e, 12))
                     } else {
                         e.clone()
                     }
@@ -614,7 +615,7 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
                 .iter()
                 .map(|e| {
                     if e.len() > 15 {
-                        format!("{}...", &e[..12])
+                        format!("{}...", truncate_str_bytes(e, 12))
                     } else {
                         e.clone()
                     }
@@ -624,7 +625,7 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
                 .iter()
                 .map(|e| {
                     if e.len() > 15 {
-                        format!("{}...", &e[..12])
+                        format!("{}...", truncate_str_bytes(e, 12))
                     } else {
                         e.clone()
                     }
@@ -671,7 +672,7 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
 
         for (i, element) in self.elements.iter().take(max_items).enumerate() {
             let display_value = if element.len() > 15 {
-                format!("{}...", &element[..12])
+                format!("{}...", truncate_str_bytes(element, 12))
             } else {
                 element.clone()
             };
@@ -688,6 +689,21 @@ impl ComplexDataDisplay for ArrayDisplayAdapter {
 
         lines.join("\n")
     }
+}
+
+/// Largest prefix of `s` that fits in `max_bytes` and ends on a char
+/// boundary. Raw byte slicing (`&s[..n]`) panics when `n` lands inside a
+/// multibyte codepoint — accents/CJK/emoji in displayed values crashed the
+/// whole query.
+pub fn truncate_str_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 #[cfg(test)]
@@ -858,7 +874,7 @@ mod tests {
         assert_eq!(retrieved_config.display_mode, ComplexDisplayMode::Full);
         assert_eq!(retrieved_config.truncation_length, 10);
         assert_eq!(retrieved_config.viz_width, 60);
-        assert_eq!(retrieved_config.show_metadata, true);
+        assert!(retrieved_config.show_metadata);
     }
 
     #[test]
@@ -882,5 +898,17 @@ mod tests {
         let _full = adapter.format_full(&config);
         let _summary = adapter.format_summary(&config);
         let _viz = adapter.format_viz(&config);
+    }
+
+    #[test]
+    fn test_truncate_str_bytes_is_char_safe() {
+        // ASCII: plain byte semantics
+        assert_eq!(truncate_str_bytes("hello world", 5), "hello");
+        assert_eq!(truncate_str_bytes("hi", 5), "hi");
+        // Multibyte: must not panic and must cut on a boundary
+        assert_eq!(truncate_str_bytes("héllo", 2), "h"); // é is 2 bytes, starts at 1
+        assert_eq!(truncate_str_bytes("ééé", 3), "é");
+        assert_eq!(truncate_str_bytes("日本語", 4), "日"); // 3 bytes per char
+        assert_eq!(truncate_str_bytes("🦀🦀", 5), "🦀"); // 4 bytes per char
     }
 }

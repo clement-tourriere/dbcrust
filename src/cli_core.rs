@@ -248,6 +248,10 @@ impl CliCore {
 
         let mut cli_core = Self::new();
 
+        // Database clients are constructed without Config access — publish the
+        // configured query timeout for them (0 disables it)
+        crate::database::set_query_timeout_seconds(cli_core.config.query_timeout_seconds);
+
         // Handle shell completion generation if requested
         if let Some(shell) = args.completions {
             // Pass the binary name from the original args if available
@@ -287,8 +291,8 @@ impl CliCore {
 
             // Handle -c commands if provided (execute and exit)
             if !args.command.is_empty() {
-                cli_core.handle_command_mode(&args).await?;
-                return Ok(0);
+                let exit_code = cli_core.handle_command_mode(&args).await?;
+                return Ok(exit_code);
             }
 
             // Start interactive mode with database connection
@@ -822,19 +826,31 @@ impl CliCore {
         Ok(())
     }
 
-    /// Handle -c command mode (execute commands and exit)
-    async fn handle_command_mode(&mut self, args: &Args) -> Result<(), CliError> {
+    /// Handle -c command mode (execute commands and exit).
+    /// Returns the process exit code: non-zero when any command failed, so
+    /// scripts chaining `dbcrust ... -c "..." && next-step` can rely on it.
+    async fn handle_command_mode(&mut self, args: &Args) -> Result<i32, CliError> {
+        let mut failed = false;
         for command in &args.command {
             let command_trimmed = command.trim();
 
             if command_trimmed.starts_with('\\') {
                 // Handle backslash commands
-                self.execute_backslash_command(command_trimmed).await?;
+                match self.execute_backslash_command(command_trimmed).await? {
+                    CommandModeOutcome::Success => {}
+                    CommandModeOutcome::Failed => failed = true,
+                    // \q is a clean stop, not an error
+                    CommandModeOutcome::Exit => break,
+                }
             } else if let Some((name, args)) =
                 self.resolve_named_query_for_command_mode(command_trimmed)
             {
                 // Execute named query
-                self.execute_named_query_command_mode(name, args).await?;
+                if self.execute_named_query_command_mode(name, args).await?
+                    == CommandModeOutcome::Failed
+                {
+                    failed = true;
+                }
             } else {
                 // Execute SQL command
                 let database = self
@@ -868,16 +884,17 @@ impl CliCore {
                     Err(e) => {
                         // Check if this is a column selection abort
                         if e.to_string().contains("Column selection aborted") {
-                            // Just return to REPL without error message
-                            return Ok(());
+                            // User-initiated abort: stop without an error
+                            return Ok(if failed { 1 } else { 0 });
                         }
                         eprintln!("Error executing query: {e}");
+                        failed = true;
                     }
                 }
             }
         }
 
-        Ok(())
+        Ok(if failed { 1 } else { 0 })
     }
 
     /// Check if input matches a named query in command mode (non-interactive).
@@ -895,7 +912,7 @@ impl CliCore {
         &mut self,
         name: String,
         args: Vec<String>,
-    ) -> Result<(), CliError> {
+    ) -> Result<CommandModeOutcome, CliError> {
         let command = Command::ExecuteNamedQuery { name, args };
 
         let database = self
@@ -920,7 +937,7 @@ impl CliCore {
             self.config.multiline_prompt_indicator.clone(),
         );
 
-        match command
+        let outcome = match command
             .execute(
                 &db_arc,
                 &mut self.config,
@@ -932,15 +949,18 @@ impl CliCore {
         {
             Ok(CommandResult::Output(output)) => {
                 Self::page_or_print(&output, &self.config)?;
+                CommandModeOutcome::Success
             }
             Ok(CommandResult::Error(error)) => {
                 eprintln!("Named query error: {error}");
+                CommandModeOutcome::Failed
             }
             Err(e) => {
                 eprintln!("Error executing named query: {e}");
+                CommandModeOutcome::Failed
             }
-            _ => {}
-        }
+            _ => CommandModeOutcome::Success,
+        };
 
         // Restore database reference
         let updated_db = Arc::try_unwrap(db_arc)
@@ -949,11 +969,14 @@ impl CliCore {
             .map_err(|_| CliError::CommandError("Failed to unwrap database Mutex".to_string()))?;
 
         self.database = Some(updated_db);
-        Ok(())
+        Ok(outcome)
     }
 
     /// Execute a backslash command using the new type-safe command system
-    async fn execute_backslash_command(&mut self, command_str: &str) -> Result<(), CliError> {
+    async fn execute_backslash_command(
+        &mut self,
+        command_str: &str,
+    ) -> Result<CommandModeOutcome, CliError> {
         // Parse string command into typed Command enum
         let command = CommandParser::parse(command_str)
             .map_err(|e| CliError::CommandError(format!("Command parsing failed: {e}")))?;
@@ -982,7 +1005,7 @@ impl CliCore {
         );
 
         // Execute the typed command using the CommandExecutor trait
-        match command
+        let outcome = match command
             .execute(
                 &db_arc,
                 &mut self.config,
@@ -992,22 +1015,23 @@ impl CliCore {
             )
             .await
         {
-            Ok(CommandResult::Exit) => {
-                return Err(CliError::CommandError("Exit requested".to_string()));
-            }
-            Ok(CommandResult::Continue) => {
-                // Command executed successfully, continue
-            }
+            // \q in -c mode is a clean stop (it used to exit 1), and the
+            // database must still be restored below before returning
+            Ok(CommandResult::Exit) => CommandModeOutcome::Exit,
+            Ok(CommandResult::Continue) => CommandModeOutcome::Success,
             Ok(CommandResult::Output(output)) => {
                 println!("{output}");
+                CommandModeOutcome::Success
             }
             Ok(CommandResult::Error(error)) => {
                 eprintln!("Command error: {error}");
+                CommandModeOutcome::Failed
             }
             Err(e) => {
                 eprintln!("Error executing command: {e}");
+                CommandModeOutcome::Failed
             }
-        }
+        };
 
         // Update database reference
         let updated_db = Arc::try_unwrap(db_arc)
@@ -1016,10 +1040,14 @@ impl CliCore {
             .map_err(|_| CliError::CommandError("Failed to unwrap database Mutex".to_string()))?;
 
         self.database = Some(updated_db);
-        Ok(())
+        Ok(outcome)
     }
 
     /// Run interactive mode - core interactive logic
+    // The std-Mutex config guard is intentionally held across command
+    // execution awaits (Command::execute needs &mut Config); the REPL is
+    // single-task so this cannot deadlock across tasks.
+    #[allow(clippy::await_holding_lock)]
     pub async fn run_interactive_mode(&mut self) -> Result<(), CliError> {
         use crate::highlighter::SqlHighlighter;
         use reedline::{Reedline, Signal};
@@ -1166,15 +1194,19 @@ impl CliCore {
                 Signal::Success(buffer) => {
                     let line = buffer.trim();
 
-                    // If empty input but we have a last_script, execute it
+                    // If empty input but we have a pending script (from \ed or
+                    // \i), execute it ONCE. The buffer is cleared afterwards:
+                    // leaving it armed meant every reflexive Enter on an empty
+                    // prompt silently re-ran the script — disastrous for DML.
                     if line.is_empty() {
                         if !last_script.is_empty() {
                             println!(
                                 "Executing last script ({} lines)...",
                                 last_script.lines().count()
                             );
+                            let script = std::mem::take(&mut last_script);
                             match self
-                                .execute_sql_interactive(&last_script, &db_arc, &interrupt_flag)
+                                .execute_sql_interactive(&script, &db_arc, &interrupt_flag)
                                 .await
                             {
                                 Ok(_) => {}
@@ -1340,6 +1372,7 @@ impl CliCore {
     }
 
     /// Execute backslash command in interactive mode - returns whether to exit
+    #[allow(clippy::await_holding_lock)]
     async fn execute_backslash_command_interactive(
         &mut self,
         command_str: &str,
@@ -1355,18 +1388,26 @@ impl CliCore {
 
         // Execute the typed command using the CommandExecutor trait
         // Note: config lock is held across await, but this is necessary to ensure
-        // mutable config access is synchronized during command execution
+        // mutable config access is synchronized during command execution.
+        // The guard must be dropped BEFORE the match arms run: a guard created
+        // in the match scrutinee lives until the end of the whole match, and
+        // the AI handlers below re-lock the config — instant deadlock on
+        // \ai setup / \ai model otherwise.
         #[allow(clippy::await_holding_lock)]
-        match command
-            .execute(
-                db_arc,
-                &mut config_arc.lock().unwrap(),
-                last_script,
-                interrupt_flag,
-                prompt,
-            )
-            .await
-        {
+        let result = {
+            let mut config_guard = config_arc.lock().unwrap();
+            command
+                .execute(
+                    db_arc,
+                    &mut config_guard,
+                    last_script,
+                    interrupt_flag,
+                    prompt,
+                )
+                .await
+        };
+
+        match result {
             Ok(CommandResult::Exit) => Ok(true),      // Signal exit
             Ok(CommandResult::Continue) => Ok(false), // Continue interactive loop
             Ok(CommandResult::Output(output)) => {
@@ -1488,16 +1529,29 @@ impl CliCore {
         // Add to conversation history
         self.ai_conversation.add_exchange(natural_language, &sql);
 
-        // Determine whether to execute
+        // The user must SEE the SQL before being asked to confirm it —
+        // show_generated_sql only governs display for auto-execution.
+        // (Streaming mode already printed the response while it arrived.)
+        let sql_already_shown = config.ai.streaming || config.ai.show_generated_sql;
+        let needs_confirmation = !matches!(
+            config.ai.execution_mode,
+            crate::ai::config::AiExecutionMode::AutoExecute
+        );
+        if !sql_already_shown && needs_confirmation {
+            println!("\x1b[2m{sql}\x1b[0m");
+        }
+
+        // Determine whether to execute; writes never default to Yes
+        let is_read_only = crate::ai::streaming::is_select_query(&sql);
         let should_execute = match config.ai.execution_mode {
             crate::ai::config::AiExecutionMode::Confirm => {
                 inquire::Confirm::new("Execute this SQL?")
-                    .with_default(true)
+                    .with_default(is_read_only)
                     .prompt()
                     .unwrap_or(false)
             }
             crate::ai::config::AiExecutionMode::AutoSelect => {
-                if crate::ai::streaming::is_select_query(&sql) {
+                if is_read_only {
                     true
                 } else {
                     inquire::Confirm::new("Execute this write query?")
@@ -1522,7 +1576,10 @@ impl CliCore {
         use crate::ai::key_storage::{self, KeyStorageMethod, store_api_key};
 
         if !key_storage::requires_api_key(adapter) {
-            println!("{} runs locally and does not require an API key.", adapter.as_str());
+            println!(
+                "{} runs locally and does not require an API key.",
+                adapter.as_str()
+            );
             return true;
         }
 
@@ -1550,12 +1607,13 @@ impl CliCore {
             "Encrypted file",
             "Environment variable (show command)",
         ];
-        let method = match inquire::Select::new("How to store the API key?", storage_options).prompt() {
-            Ok("OS Keychain") => KeyStorageMethod::OsKeyring,
-            Ok("Encrypted file") => KeyStorageMethod::EncryptedFile,
-            Ok(_) => KeyStorageMethod::EnvVarHint,
-            Err(_) => return false,
-        };
+        let method =
+            match inquire::Select::new("How to store the API key?", storage_options).prompt() {
+                Ok("OS Keychain") => KeyStorageMethod::OsKeyring,
+                Ok("Encrypted file") => KeyStorageMethod::EncryptedFile,
+                Ok(_) => KeyStorageMethod::EnvVarHint,
+                Err(_) => return false,
+            };
 
         match store_api_key(adapter, &api_key, &method) {
             Ok(()) => {
@@ -1665,7 +1723,9 @@ impl CliCore {
             let current = config_arc.lock().unwrap().ai.model.clone();
             match inquire::Text::new("Model:")
                 .with_default(&current)
-                .with_help_message("Any genai-supported model — e.g. claude-sonnet-4-6, gpt-4o, ollama::llama3.1")
+                .with_help_message(
+                    "Any genai-supported model — e.g. claude-sonnet-4-6, gpt-4o, ollama::llama3.1",
+                )
                 .prompt()
             {
                 Ok(m) if !m.trim().is_empty() => m.trim().to_string(),
@@ -2384,4 +2444,15 @@ mod tests {
             );
         }
     }
+}
+
+/// Outcome of a single command in non-interactive (-c) mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandModeOutcome {
+    /// Command succeeded — keep processing remaining commands.
+    Success,
+    /// Command failed — keep processing, but exit non-zero at the end.
+    Failed,
+    /// \q or equivalent — stop processing and exit cleanly.
+    Exit,
 }

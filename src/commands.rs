@@ -1244,7 +1244,51 @@ impl CommandExecutor for Command {
             }
 
             Command::ShowConfig => {
-                let output = format!("Configuration:\n{config:#?}");
+                // Never Debug-dump the whole Config: it embeds decrypted vault
+                // credentials and other secrets in memory.
+                let pager_threshold = if config.pager_threshold_lines == 0 {
+                    "terminal height".to_string()
+                } else {
+                    config.pager_threshold_lines.to_string()
+                };
+                let output = format!(
+                    "Configuration (~/.config/dbcrust/config.toml):\n\
+                     \x20 default_limit: {}\n\
+                     \x20 expanded_display_default: {}\n\
+                     \x20 autocomplete_enabled: {}\n\
+                     \x20 explain_mode_default: {}\n\
+                     \x20 column_selection_threshold: {}\n\
+                     \x20 pager_enabled: {} (command: {}, threshold: {})\n\
+                     \x20 show_banner: {}\n\
+                     \x20 query_timeout_seconds: {}\n\
+                     \x20 metadata_timeout_seconds: {}\n\
+                     \x20 max_recent_connections: {}\n\
+                     \x20 logging.level: {}\n\
+                     \x20 ai.enabled: {} (model: {})\n\
+                     \x20 vector_display.display_mode: {}\n\
+                     \x20 complex_display.display_mode: {}\n\
+                     \x20 ssh_tunnel_patterns: {}\n\
+                     \x20 named_queries: {}",
+                    config.default_limit,
+                    config.expanded_display_default,
+                    config.autocomplete_enabled,
+                    config.explain_mode_default,
+                    config.column_selection_threshold,
+                    config.pager_enabled,
+                    config.pager_command,
+                    pager_threshold,
+                    config.show_banner,
+                    config.query_timeout_seconds,
+                    config.metadata_timeout_seconds,
+                    config.max_recent_connections,
+                    config.logging.level,
+                    config.ai.enabled,
+                    config.ai.model,
+                    config.vector_display.display_mode,
+                    config.complex_display.display_mode,
+                    config.ssh_tunnel_patterns.len(),
+                    config.named_queries.len(),
+                );
                 Ok(CommandResult::Output(output))
             }
 

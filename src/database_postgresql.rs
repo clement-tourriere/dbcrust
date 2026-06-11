@@ -960,20 +960,24 @@ impl PostgreSQLClient {
     async fn execute_query_raw_json(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[PostgreSQLClient::execute_query_raw_json] Executing query for raw JSON");
 
-        // Add timeout to prevent hanging queries
-        let timeout_duration = std::time::Duration::from_secs(30); // 30 seconds timeout
-        let rows =
-            match tokio::time::timeout(timeout_duration, sqlx::query(sql).fetch_all(&self.pool))
-                .await
-            {
-                Ok(Ok(rows)) => rows,
-                Ok(Err(e)) => return Err(DatabaseError::QueryError(e.to_string())),
-                Err(_) => {
-                    return Err(DatabaseError::QueryError(
-                        "Query timed out after 30 seconds".to_string(),
-                    ));
+        // Timeout from config (query_timeout_seconds, 0 = disabled)
+        let rows = match crate::database::query_timeout() {
+            Some(timeout_duration) => {
+                match tokio::time::timeout(timeout_duration, sqlx::query(sql).fetch_all(&self.pool))
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        return Err(DatabaseError::QueryError(format!(
+                            "Query timed out after {} seconds (query_timeout_seconds)",
+                            timeout_duration.as_secs()
+                        )));
+                    }
                 }
-            };
+            }
+            None => sqlx::query(sql).fetch_all(&self.pool).await,
+        }
+        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
 
         if rows.is_empty() {
             return Ok(vec![]);
@@ -1013,20 +1017,24 @@ impl DatabaseClient for PostgreSQLClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[PostgreSQLClient::execute_query] Executing query");
 
-        // Add timeout to prevent hanging queries
-        let timeout_duration = std::time::Duration::from_secs(30); // 30 seconds timeout
-        let rows =
-            match tokio::time::timeout(timeout_duration, sqlx::query(sql).fetch_all(&self.pool))
-                .await
-            {
-                Ok(Ok(rows)) => rows,
-                Ok(Err(e)) => return Err(DatabaseError::QueryError(e.to_string())),
-                Err(_) => {
-                    return Err(DatabaseError::QueryError(
-                        "Query timed out after 30 seconds".to_string(),
-                    ));
+        // Timeout from config (query_timeout_seconds, 0 = disabled)
+        let rows = match crate::database::query_timeout() {
+            Some(timeout_duration) => {
+                match tokio::time::timeout(timeout_duration, sqlx::query(sql).fetch_all(&self.pool))
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        return Err(DatabaseError::QueryError(format!(
+                            "Query timed out after {} seconds (query_timeout_seconds)",
+                            timeout_duration.as_secs()
+                        )));
+                    }
                 }
-            };
+            }
+            None => sqlx::query(sql).fetch_all(&self.pool).await,
+        }
+        .map_err(|e| DatabaseError::QueryError(e.to_string()))?;
 
         if rows.is_empty() {
             return Ok(vec![]);

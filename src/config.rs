@@ -1390,7 +1390,7 @@ impl Config {
 
                                 // Retry loading the freshly created config
                                 eprintln!("Retrying config load after creating fresh config...");
-                                return Self::load_with_retry_count(retry_count + 1);
+                                Self::load_with_retry_count(retry_count + 1)
                             } else {
                                 // On subsequent retries, show detailed error and fail
                                 eprintln!(
@@ -1652,6 +1652,78 @@ impl Config {
                 self.vector_display.show_dimensions
             ));
 
+            // Complex Data Display Settings
+            content.push_str("# ================================================================================\n");
+            content.push_str("# COMPLEX DATA DISPLAY SETTINGS\n");
+            content.push_str(
+                "# Configure how arrays, JSON, and other composite values are displayed\n",
+            );
+            content.push_str("# ================================================================================\n\n");
+
+            content
+                .push_str("# Display mode: full, truncated, summary, viz (default: truncated)\n");
+            content.push_str("[complex_display]\n");
+            content.push_str(&format!(
+                "display_mode = \"{}\"\n\n",
+                self.complex_display.display_mode
+            ));
+
+            content.push_str("# Maximum elements to show in truncated mode (default: 5)\n");
+            content.push_str(&format!(
+                "truncation_length = {}\n\n",
+                self.complex_display.truncation_length
+            ));
+
+            content.push_str("# Width of visualization modes (default: 40)\n");
+            content.push_str(&format!(
+                "viz_width = {}\n\n",
+                self.complex_display.viz_width
+            ));
+
+            content.push_str("# Show metadata/statistics (default: false)\n");
+            content.push_str(&format!(
+                "show_metadata = {}\n\n",
+                self.complex_display.show_metadata
+            ));
+
+            content.push_str(
+                "# Auto-switch to truncated mode above this element count (default: 20)\n",
+            );
+            content.push_str(&format!(
+                "size_threshold = {}\n\n",
+                self.complex_display.size_threshold
+            ));
+
+            content.push_str("# Show size/dimension information (default: true)\n");
+            content.push_str(&format!(
+                "show_dimensions = {}\n\n",
+                self.complex_display.show_dimensions
+            ));
+
+            content.push_str("# Elements per row in full mode (default: 8)\n");
+            content.push_str(&format!(
+                "full_elements_per_row = {}\n\n",
+                self.complex_display.full_elements_per_row
+            ));
+
+            content.push_str("# Maximum display width (default: 80)\n");
+            content.push_str(&format!(
+                "max_width = {}\n\n",
+                self.complex_display.max_width
+            ));
+
+            content.push_str("# Show row/field numbers in full mode (default: true)\n");
+            content.push_str(&format!(
+                "full_show_numbers = {}\n\n",
+                self.complex_display.full_show_numbers
+            ));
+
+            content.push_str("# Pretty-print JSON values, false = compact (default: false)\n");
+            content.push_str(&format!(
+                "json_pretty_print = {}\n\n",
+                self.complex_display.json_pretty_print
+            ));
+
             // AI Assistant Settings
             content.push_str("# ================================================================================\n");
             content.push_str("# AI ASSISTANT\n");
@@ -1659,15 +1731,25 @@ impl Config {
             content.push_str("# Prefix queries with ?? to generate SQL from natural language\n");
             content.push_str("# ================================================================================\n\n");
             content.push_str("[ai]\n");
-            content.push_str("# Enable AI assistant features (default: false — opt in with \\ai setup)\n");
+            content.push_str(
+                "# Enable AI assistant features (default: false — opt in with \\ai setup)\n",
+            );
             content.push_str(&format!("enabled = {}\n\n", self.ai.enabled));
             content.push_str("# Model identifier. The provider is inferred from the model name\n");
-            content.push_str("# (claude-* -> Anthropic, gpt-* -> OpenAI, gemini-* -> Gemini, ...),\n");
-            content.push_str("# or force it with provider::model syntax (e.g. groq::llama-3.1-70b).\n");
-            content.push_str("# Powered by the genai crate — 25+ providers, no hardcoded model lists.\n");
+            content
+                .push_str("# (claude-* -> Anthropic, gpt-* -> OpenAI, gemini-* -> Gemini, ...),\n");
+            content.push_str(
+                "# or force it with provider::model syntax (e.g. groq::llama-3.1-70b).\n",
+            );
+            content.push_str(
+                "# Powered by the genai crate — 25+ providers, no hardcoded model lists.\n",
+            );
             content.push_str(&format!("model = \"{}\"\n\n", self.ai.model));
-            content.push_str("# Optional custom endpoint base URL (self-hosted, Ollama, LM Studio,\n");
-            content.push_str("# or any OpenAI-compatible gateway). Empty uses the provider default.\n");
+            content
+                .push_str("# Optional custom endpoint base URL (self-hosted, Ollama, LM Studio,\n");
+            content.push_str(
+                "# or any OpenAI-compatible gateway). Empty uses the provider default.\n",
+            );
             match &self.ai.endpoint {
                 Some(url) if !url.is_empty() => {
                     content.push_str(&format!("endpoint = \"{url}\"\n\n"))
@@ -1839,7 +1921,12 @@ impl Config {
             "per_session_enabled",
             "max_history_files",
             "cleanup_after_days",
-            "[connection]",
+            // NOTE: every entry here must actually be written by
+            // save_with_documentation(), otherwise the config file is
+            // regenerated on every launch (and user comments wiped).
+            "[vector_display]",
+            "[complex_display]",
+            "[ai]",
         ];
 
         // Check if all required fields are present in the file content

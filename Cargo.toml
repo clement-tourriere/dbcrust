@@ -2,8 +2,14 @@
 name = "dbcrust"
 version = "0.27.1"
 edition = "2024"
+# edition 2024 requires Rust >= 1.85 — declared so `cargo install` on older
+# toolchains fails with a clear message instead of an edition parse error
+rust-version = "1.85"
 description = "High-performance database CLI engineered for Django developers — Advanced ORM analysis, performance optimization, SSH tunneling, and seamless multi-database support"
 authors = ["dbcrust authors"]
+license = "MIT"
+repository = "https://github.com/clement-tourriere/dbcrust"
+readme = "README.md"
 default-run = "dbcrust"
 
 [lib]
@@ -47,7 +53,9 @@ serde_json = { version = "1.0.149", default-features = false, features = ["std"]
 nu-ansi-term = { version = "0.50.3", default-features = false }
 pyo3 = { version = "0.26", features = [
     "extension-module",
-    "abi3-py38",
+    # Keep in sync with requires-python in pyproject.toml — a cp38 abi3 tag
+    # with requires-python >=3.10 produced wheels pip refuses to resolve
+    "abi3-py310",
 ], optional = true, default-features = false }
 toml = { version = "0.9.12", default-features = false, features = [
     "display",
@@ -151,6 +159,16 @@ codegen-units = 1 # Maximize performance
 [dev-dependencies]
 rstest = { version = "0.26", default-features = false }
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
+
+[lints.clippy]
+# Structural lints acknowledged in AUDIT.md — allowed so CI's `-D warnings`
+# gates real regressions. Remove entries as the corresponding code is
+# refactored.
+only_used_in_recursion = "allow"
+type_complexity = "allow"
+enum_variant_names = "allow"
+too_many_arguments = "allow"
+should_implement_trait = "allow"
 
 [workspace]
 members = ["gui/src-tauri"]

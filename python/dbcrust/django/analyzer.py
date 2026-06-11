@@ -41,7 +41,7 @@ class AnalysisResult:
     detected_patterns: List[DetectedPattern]
     recommendations: List[Recommendation]
     dbcrust_analysis: Optional[Dict[str, Any]] = None
-    
+
     @property
     def summary(self) -> str:
         """Generate a human-readable summary of the analysis."""
@@ -56,40 +56,46 @@ class AnalysisResult:
             f"",
             f"Query Types:",
         ]
-        
+
         for query_type, count in sorted(self.queries_by_type.items()):
             summary_lines.append(f"  - {query_type}: {count}")
-        
+
         if self.duplicate_queries > 0:
             summary_lines.extend([
                 f"",
                 f"⚠️  Duplicate Queries: {self.duplicate_queries}",
             ])
-        
+
         if self.detected_patterns:
             summary_lines.extend([
                 f"",
                 f"Performance Issues Detected:",
             ])
-            
+
             # Group patterns by type
             pattern_counts = {}
             for pattern in self.detected_patterns:
                 if pattern.pattern_type not in pattern_counts:
                     pattern_counts[pattern.pattern_type] = 0
                 pattern_counts[pattern.pattern_type] += 1
-            
+
+            # Rank severities explicitly — max() on the raw strings is
+            # alphabetical, which made "medium" outrank "critical"
+            severity_rank = {"low": 0, "medium": 1, "high": 2, "critical": 3}
             for pattern_type, count in pattern_counts.items():
-                severity = max(p.severity for p in self.detected_patterns if p.pattern_type == pattern_type)
+                severity = max(
+                    (p.severity for p in self.detected_patterns if p.pattern_type == pattern_type),
+                    key=lambda s: severity_rank.get(s, 0),
+                )
                 icon = "🔴" if severity == "critical" else "🟡" if severity == "high" else "🟢"
                 summary_lines.append(f"  {icon} {pattern_type.replace('_', ' ').title()}: {count}")
-        
+
         if self.recommendations:
             summary_lines.extend([
                 f"",
                 DjangoRecommendations.format_recommendations_summary(self.recommendations)
             ])
-        
+
         # Add detailed pattern analysis with specific context
         if self.detected_patterns:
             summary_lines.extend([
@@ -97,46 +103,46 @@ class AnalysisResult:
                 f"🔍 Detailed Analysis with Specific Recommendations:",
                 f"=" * 60
             ])
-            
+
             for i, pattern in enumerate(self.detected_patterns, 1):
                 summary_lines.extend([
                     f"",
                     f"{i}. {pattern.pattern_type.replace('_', ' ').title()} - {pattern.severity.upper()}"
                 ])
-                
+
                 # Show specific fields if available
                 if pattern.specific_fields:
                     fields_str = ', '.join(f"'{f}'" for f in pattern.specific_fields)
                     summary_lines.append(f"   💡 Suggested fields: {fields_str}")
-                
+
                 # Show code locations
                 if pattern.code_locations:
                     summary_lines.append(f"   📍 Code locations:")
                     for location in pattern.code_locations[:3]:  # Show up to 3 locations
                         summary_lines.append(f"      - {location}")
-                
+
                 # Show table context
                 if pattern.table_context:
                     tables = ', '.join(pattern.table_context.keys())
                     summary_lines.append(f"   🗃️  Tables involved: {tables}")
-                
+
                 # Show specific recommendation
                 if pattern.code_suggestion:
                     summary_lines.append(f"   ⚡ Quick fix: {pattern.code_suggestion}")
-                
+
                 # Show impact
                 if pattern.estimated_impact:
                     summary_lines.append(f"   📈 Impact: {pattern.estimated_impact}")
-                
+
                 # Show example queries (first one only, truncated)
                 if pattern.query_examples:
                     example = pattern.query_examples[0]
                     if len(example) > 100:
                         example = example[:100] + "..."
                     summary_lines.append(f"   🔍 Example query: {example}")
-        
+
         return "\n".join(summary_lines)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert results to dictionary for JSON serialization."""
         return {
@@ -174,15 +180,15 @@ class AnalysisResult:
 class DjangoAnalyzer:
     """
     Django ORM Query Analyzer with DBCrust integration.
-    
+
     Captures and analyzes Django database queries to detect performance
     issues like N+1 queries, missing select_related/prefetch_related,
     and provides optimization recommendations.
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  dbcrust_url: Optional[str] = None,
-                 transaction_safe: bool = True,
+                 transaction_safe: bool = False,
                  enable_explain: bool = True,
                  database_alias: str = 'default',
                  enable_code_analysis: bool = False,
@@ -190,10 +196,14 @@ class DjangoAnalyzer:
                  database_instance: Optional[Any] = None):
         """
         Initialize the Django analyzer.
-        
+
         Args:
             dbcrust_url: Optional DBCrust database URL for EXPLAIN analysis
-            transaction_safe: Whether to wrap analysis in a transaction (for safety)
+            transaction_safe: WARNING — when True, every database write made
+                inside the analysis block is ROLLED BACK at the end (the
+                analysis wraps the block in an atomic() it never commits).
+                Only enable for throwaway experiments, never in middleware or
+                production code paths.
             enable_explain: Whether to run EXPLAIN ANALYZE on queries
             database_alias: Django database alias to analyze
             enable_code_analysis: Whether to perform AST-based code analysis
@@ -202,7 +212,7 @@ class DjangoAnalyzer:
         """
         if not DJANGO_AVAILABLE:
             raise ImportError("Django is not installed. Please install Django to use this analyzer.")
-        
+
         self.dbcrust_url = dbcrust_url
         self.transaction_safe = transaction_safe
         self.enable_explain = enable_explain
@@ -210,13 +220,13 @@ class DjangoAnalyzer:
         self.enable_code_analysis = enable_code_analysis
         self.project_root = project_root
         self.database_instance = database_instance
-        
+
         self.query_collector = QueryCollector()
         self.result: Optional[AnalysisResult] = None
         self._connection = None
         self._connection_ctx = None
         self._transaction_ctx = None
-        
+
         # Initialize code analyzer if requested
         self.code_analyzer = None
         if enable_code_analysis and project_root:
@@ -225,75 +235,80 @@ class DjangoAnalyzer:
                 self.code_analyzer = DjangoCodeAnalyzer(project_root)
             except ImportError as e:
                 logger.debug("Could not initialize code analyzer: %s", e)
-    
+
     def analyze(self):
         """
         Context manager for analyzing Django queries.
-        
+
         Usage:
             with analyzer.analyze() as analysis:
                 # Your Django ORM code here
                 Book.objects.filter(author__name='Smith').count()
-            
+
             results = analysis.get_results()
             print(results.summary)
         """
         return self
-    
+
     def __enter__(self):
         """Enter the analysis context."""
         from django.db import connections as django_connections, transaction as django_transaction
 
         # Get the Django database connection
         self._connection = django_connections[self.database_alias]
-        
+
         # Start query collection
         self.query_collector.start_collection()
-        
+
         # Install the query wrapper
         self._connection_ctx = self._connection.execute_wrapper(self.query_collector)
         self._connection_ctx.__enter__()
-        
+
         # Start transaction if requested
         if self.transaction_safe:
             self._transaction_ctx = django_transaction.atomic(using=self.database_alias)
             self._transaction_ctx.__enter__()
-        
+
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the analysis context and perform analysis."""
         try:
             # Stop query collection
             self.query_collector.stop_collection()
-            
-            # Remove the query wrapper
+
+            # Remove the query wrapper. Contexts are nulled out before exiting
+            # so a second __exit__ (process_exception followed by
+            # process_response for the error response) is a no-op instead of
+            # re-exiting Django's finished contextmanagers.
             if self._connection_ctx:
-                self._connection_ctx.__exit__(exc_type, exc_val, exc_tb)
-            
+                ctx, self._connection_ctx = self._connection_ctx, None
+                ctx.__exit__(exc_type, exc_val, exc_tb)
+
             # Rollback transaction if in transaction mode
             if self._transaction_ctx:
+                ctx, self._transaction_ctx = self._transaction_ctx, None
                 # Force rollback by raising an exception inside the atomic block
                 try:
-                    self._transaction_ctx.__exit__(Exception, Exception("Analysis rollback"), None)
+                    ctx.__exit__(Exception, Exception("Analysis rollback"), None)
                 except:
                     pass  # Expected - we're forcing a rollback
-            
+
             # Perform analysis if no exception occurred
             if exc_type is None:
                 self._perform_analysis()
-                
+
         except Exception as e:
             # Log the error but don't re-raise to avoid masking the original exception
             logger.debug("Error during analysis cleanup: %s", e)
-        
+
         return False  # Don't suppress exceptions
-    
+
     def _perform_analysis(self):
         """Perform the actual query analysis."""
         # Get captured queries
         queries = self.query_collector.queries
-        
+
         if not queries:
             self.result = AnalysisResult(
                 start_time=datetime.now(),
@@ -306,7 +321,7 @@ class DjangoAnalyzer:
                 recommendations=[],
             )
             return
-        
+
         # Basic metrics
         start_time = queries[0].timestamp
         end_time = queries[-1].timestamp
@@ -317,19 +332,19 @@ class DjangoAnalyzer:
         duplicate_queries = sum(
             len(dups) - 1 for dups in self.query_collector.get_duplicate_queries().values()
         )
-        
+
         # Pattern detection
         pattern_detector = PatternDetector(queries)
         detected_patterns = pattern_detector.analyze()
-        
+
         # Generate recommendations
         recommendations = DjangoRecommendations.generate_recommendations(detected_patterns)
-        
+
         # DBCrust integration for EXPLAIN analysis
         dbcrust_analysis = None
         if self.enable_explain and self.dbcrust_url:
             dbcrust_analysis = self._run_dbcrust_analysis(queries)
-        
+
         # Create result
         self.result = AnalysisResult(
             start_time=start_time,
@@ -342,12 +357,12 @@ class DjangoAnalyzer:
             recommendations=recommendations,
             dbcrust_analysis=dbcrust_analysis,
         )
-    
+
     def _run_dbcrust_analysis(self, queries: List[CapturedQuery]) -> Optional[Dict[str, Any]]:
         """Run DBCrust EXPLAIN analysis on captured queries."""
         try:
             from .dbcrust_integration import enhance_analysis_with_dbcrust
-            
+
             # Run DBCrust analysis with enhanced integration
             results, report = enhance_analysis_with_dbcrust(
                 queries=queries,
@@ -355,13 +370,13 @@ class DjangoAnalyzer:
                 database_instance=self.database_instance,
                 max_queries=10  # Analyze top 10 slowest queries
             )
-            
+
             # Extract optimization suggestions from DBCrust results
             all_suggestions = []
             for result in results:
                 if "optimization_suggestions" in result:
                     all_suggestions.extend(result["optimization_suggestions"])
-            
+
             return {
                 "analyzed_queries": len(results),
                 "performance_report": report,
@@ -369,69 +384,69 @@ class DjangoAnalyzer:
                 "optimization_suggestions": all_suggestions,
                 "explain_enabled": True
             }
-            
+
         except Exception as e:
             logger.debug("DBCrust analysis failed: %s", e)
             return None
-    
+
     def get_results(self) -> Optional[AnalysisResult]:
         """Get the analysis results."""
         return self.result
-    
+
     def analyze_project_code(self) -> Optional[List[Any]]:
         """
         Analyze project code for Django ORM patterns.
-        
+
         Returns:
             List of code issues found through AST analysis
         """
         if not self.code_analyzer:
             logger.warning("Code analysis not enabled. Initialize with enable_code_analysis=True and project_root.")
             return None
-        
+
         logger.info("Analyzing project code for Django ORM patterns...")
-        
+
         try:
             # Analyze the Django project
             code_issues = self.code_analyzer.analyze_directory(self.project_root)
-            
+
             logger.info("Found %d potential code issues", len(code_issues))
             return code_issues
-            
+
         except Exception as e:
             logger.error("Code analysis failed: %s", e)
             return None
-    
+
     def analyze_project_models(self) -> Optional[List[Any]]:
         """
         Analyze Django models for optimization opportunities.
-        
+
         Returns:
             List of model analysis results
         """
         if not self.project_root:
             logger.warning("Project root not specified. Cannot analyze models.")
             return None
-        
+
         logger.info("Analyzing Django models...")
-        
+
         try:
             from .project_analyzer import DjangoProjectAnalyzer
-            
+
             project_analyzer = DjangoProjectAnalyzer(self.project_root)
             models = project_analyzer.analyze_models_only()
-            
+
             logger.info("Analyzed %d Django models", len(models))
             return models
-            
+
         except Exception as e:
             logger.error("Model analysis failed: %s", e)
             return None
-    
+
     def get_comprehensive_analysis(self) -> Dict[str, Any]:
         """
         Get comprehensive analysis including queries, code, and models.
-        
+
         Returns:
             Dictionary containing all analysis results
         """
@@ -441,18 +456,18 @@ class DjangoAnalyzer:
             "model_analysis": None,
             "combined_recommendations": []
         }
-        
+
         # Add code analysis if available
         if self.enable_code_analysis:
             comprehensive["code_issues"] = self.analyze_project_code()
-        
+
         # Add model analysis if available
         if self.project_root:
             comprehensive["model_analysis"] = self.analyze_project_models()
-        
+
         # Combine recommendations from all sources
         all_recommendations = []
-        
+
         # Query-based recommendations
         if self.result and self.result.recommendations:
             all_recommendations.extend([{
@@ -462,9 +477,9 @@ class DjangoAnalyzer:
                 "difficulty": rec.difficulty,
                 "impact": rec.impact
             } for rec in self.result.recommendations])
-        
+
         # EXPLAIN-based recommendations
-        if (self.result and self.result.dbcrust_analysis and 
+        if (self.result and self.result.dbcrust_analysis and
             "optimization_suggestions" in self.result.dbcrust_analysis):
             for suggestion in self.result.dbcrust_analysis["optimization_suggestions"]:
                 all_recommendations.append({
@@ -474,20 +489,20 @@ class DjangoAnalyzer:
                     "difficulty": "medium",  # Default for EXPLAIN suggestions
                     "impact": suggestion["priority"]
                 })
-        
+
         comprehensive["combined_recommendations"] = all_recommendations
         return comprehensive
-    
+
     def generate_comprehensive_report(self) -> str:
         """Generate a comprehensive analysis report."""
         comprehensive = self.get_comprehensive_analysis()
-        
+
         report_lines = [
             "🔍 Comprehensive Django ORM Analysis Report",
             "=" * 50,
             ""
         ]
-        
+
         # Query analysis summary
         if comprehensive["query_analysis"]:
             query_data = comprehensive["query_analysis"]
@@ -499,7 +514,7 @@ class DjangoAnalyzer:
                 f"  - Patterns Detected: {len(query_data['detected_patterns'])}",
                 ""
             ])
-        
+
         # Code analysis summary
         if comprehensive["code_issues"]:
             code_issues = comprehensive["code_issues"]
@@ -507,23 +522,23 @@ class DjangoAnalyzer:
             for issue in code_issues:
                 severity = issue.severity
                 severity_counts[severity] = severity_counts.get(severity, 0) + 1
-            
+
             report_lines.extend([
                 "💻 Code Analysis:",
                 f"  - Total Issues Found: {len(code_issues)}",
             ])
-            
+
             for severity, count in severity_counts.items():
                 report_lines.append(f"  - {severity.title()}: {count}")
-            
+
             report_lines.append("")
-        
+
         # Model analysis summary
         if comprehensive["model_analysis"]:
             models = comprehensive["model_analysis"]
             models_with_indexes = len([m for m in models if m.indexes])
             models_with_relationships = len([m for m in models if m.foreign_keys or m.many_to_many])
-            
+
             report_lines.extend([
                 "🏗️ Model Analysis:",
                 f"  - Total Models: {len(models)}",
@@ -531,7 +546,7 @@ class DjangoAnalyzer:
                 f"  - Models with Custom Indexes: {models_with_indexes}",
                 ""
             ])
-        
+
         # Combined recommendations
         recommendations = comprehensive["combined_recommendations"]
         if recommendations:
@@ -539,28 +554,28 @@ class DjangoAnalyzer:
             critical = [r for r in recommendations if r.get("impact") == "critical" or r.get("impact") == "high"]
             high = [r for r in recommendations if r.get("impact") == "high" and r not in critical]
             medium = [r for r in recommendations if r.get("impact") == "medium"]
-            
+
             report_lines.extend([
                 "🎯 Priority Recommendations:",
                 ""
             ])
-            
+
             if critical:
                 report_lines.append(f"🚨 Critical/High Priority ({len(critical)} issues):")
                 for i, rec in enumerate(critical[:5], 1):  # Show top 5
                     report_lines.append(f"  {i}. {rec['type']} ({rec['source']})")
                 report_lines.append("")
-            
+
             if medium:
                 report_lines.append(f"⚠️ Medium Priority ({len(medium)} issues):")
                 for i, rec in enumerate(medium[:3], 1):  # Show top 3
                     report_lines.append(f"  {i}. {rec['type']} ({rec['source']})")
                 report_lines.append("")
-        
+
         # Overall assessment
         total_issues = len(recommendations)
         critical_count = len([r for r in recommendations if r.get("impact") in ["critical", "high"]])
-        
+
         if total_issues == 0:
             assessment = "✅ Excellent: No major optimization opportunities found"
         elif critical_count == 0:
@@ -569,7 +584,7 @@ class DjangoAnalyzer:
             assessment = "⚠️ Needs Attention: Some critical issues to address"
         else:
             assessment = "🚨 Action Required: Multiple critical performance issues detected"
-        
+
         report_lines.extend([
             "📊 Overall Assessment:",
             f"  {assessment}",
@@ -577,69 +592,69 @@ class DjangoAnalyzer:
             f"  Critical/High Priority: {critical_count}",
             ""
         ])
-        
+
         return "\n".join(report_lines)
-    
+
     def print_queries(self, verbose: bool = False):
         """Print all captured queries for debugging."""
         if not self.query_collector.queries:
             print("No queries captured.")
             return
-        
+
         print(f"\nCaptured {len(self.query_collector.queries)} queries:")
         print("-" * 80)
-        
+
         for i, query in enumerate(self.query_collector.queries, 1):
             print(f"\nQuery {i}:")
             print(f"Type: {query.query_type}")
             print(f"Duration: {query.duration * 1000:.2f}ms")
             print(f"Tables: {', '.join(query.table_names)}")
             print(f"SQL: {query.sql[:200]}{'...' if len(query.sql) > 200 else ''}")
-            
+
             if verbose and query.params:
                 print(f"Params: {query.params}")
-            
+
             if verbose and query.stack_trace:
                 print("Stack trace:")
                 for frame in query.stack_trace[-3:]:  # Show last 3 frames
                     print(f"  {frame}")
-    
+
     def export_results(self, filename: str):
         """Export analysis results to JSON file."""
         if not self.result:
             raise ValueError("No analysis results available. Run analyze() first.")
-        
+
         with open(filename, 'w') as f:
             json.dump(self.result.to_dict(), f, indent=2)
-        
+
         logger.info("Results exported to %s", filename)
 
 
 # Convenience function for quick analysis
 @contextmanager
-def analyze(dbcrust_url: Optional[str] = None, 
+def analyze(dbcrust_url: Optional[str] = None,
            enable_code_analysis: bool = False,
            project_root: Optional[str] = None,
            database_instance: Optional[Any] = None,
            **kwargs):
     """
     Enhanced convenience function for analyzing Django queries with optional code analysis.
-    
+
     Args:
         dbcrust_url: Database URL for EXPLAIN analysis
         enable_code_analysis: Whether to analyze code patterns
         project_root: Django project root for code/model analysis
         database_instance: Pre-existing PyDatabase instance
         **kwargs: Additional arguments for DjangoAnalyzer
-    
+
     Usage:
         from dbcrust.django import analyze
-        
+
         # Basic query analysis
         with analyze() as analysis:
             MyModel.objects.all()
         print(analysis.get_results().summary)
-        
+
         # Comprehensive analysis with code patterns
         with analyze(
             dbcrust_url="postgres://user@localhost/db",
@@ -647,7 +662,7 @@ def analyze(dbcrust_url: Optional[str] = None,
             project_root="/path/to/project"
         ) as analysis:
             MyModel.objects.all()
-        
+
         # Get comprehensive report
         comprehensive_report = analysis.generate_comprehensive_report()
         print(comprehensive_report)
@@ -659,42 +674,42 @@ def analyze(dbcrust_url: Optional[str] = None,
         database_instance=database_instance,
         **kwargs
     )
-    
+
     with analyzer.analyze() as analysis:
         yield analysis
 
 
 # Convenience function for project-wide analysis
-def analyze_django_project(project_root: str, 
+def analyze_django_project(project_root: str,
                           dbcrust_url: Optional[str] = None,
                           database_instance: Optional[Any] = None) -> Dict[str, Any]:
     """
     Analyze an entire Django project without runtime query capture.
-    
+
     Args:
         project_root: Path to Django project root
         dbcrust_url: Optional database URL for model analysis
         database_instance: Pre-existing PyDatabase instance
-    
+
     Returns:
         Comprehensive analysis results
-    
+
     Usage:
         from dbcrust.django.analyzer import analyze_django_project
-        
+
         results = analyze_django_project(
             project_root="/path/to/django/project",
             dbcrust_url="postgres://user@localhost/db"
         )
-        
+
         print(f"Found {len(results['code_issues'])} code issues")
         print(f"Analyzed {len(results['model_analysis'])} models")
     """
     from .project_analyzer import analyze_django_project as project_analyze
-    
+
     # Use the project analyzer for comprehensive analysis
     project_results = project_analyze(project_root)
-    
+
     # Convert to dictionary format compatible with query analyzer
     return {
         "models": [model.__dict__ for model in project_results.models],
@@ -711,30 +726,32 @@ def create_enhanced_analyzer(dbcrust_url: Optional[str] = None,
                            project_root: Optional[str] = None,
                            database_instance: Optional[Any] = None,
                            enable_all_features: bool = True,
-                            transaction_safe: bool = True) -> DjangoAnalyzer:
+                            transaction_safe: bool = False) -> DjangoAnalyzer:
     """
     Create a fully-featured Django analyzer with all capabilities enabled.
-    
+
     Args:
-        dbcrust_url: Database URL for EXPLAIN analysis  
+        dbcrust_url: Database URL for EXPLAIN analysis
         project_root: Django project root for code/model analysis
         database_instance: Pre-existing PyDatabase instance
         enable_all_features: Enable all analysis features
-        transaction_safe: Whether to wrap analysis in transaction (can interfere with session management)
-    
+        transaction_safe: WARNING — when True, all writes made inside the
+            analysis block are rolled back at the end. Never enable in
+            production code paths.
+
     Returns:
         Configured DjangoAnalyzer instance
-        
+
     Usage:
         analyzer = create_enhanced_analyzer(
             dbcrust_url="postgres://user@localhost/db",
             project_root="/path/to/project"
         )
-        
+
         # Runtime query analysis
         with analyzer.analyze():
             MyModel.objects.filter(active=True)
-        
+
         # Get comprehensive results
         report = analyzer.generate_comprehensive_report()
     """

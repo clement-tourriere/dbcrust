@@ -85,17 +85,19 @@ User data lives in dedicated files, not mixed into `config.toml`:
 | Data | File |
 |------|------|
 | App settings | `~/.config/dbcrust/config.toml` |
-| Saved sessions | `~/.config/dbcrust/saved_sessions.toml` |
-| Recent connections | `~/.config/dbcrust/recent_connections.toml` |
+| Saved sessions | `~/.config/dbcrust/sessions.toml` |
+| Recent connections | `~/.config/dbcrust/recent.toml` |
+| Named queries | `~/.config/dbcrust/named_queries.toml` |
 | Vault credentials | `~/.config/dbcrust/vault_credentials.enc` |
 | Universal passwords | `~/.dbcrust` (format: `db_type:host:port:db:user:pass`) |
 
 ### 5. Testing
 
 - Use `rstest` for parameterized tests.
-- Tests auto-isolate config to `/tmp/dbcrust_test_{pid}/` — never touch real `~/.config/dbcrust/`.
-- Integration tests requiring a real DB gate on `DATABASE_URL` env var and skip gracefully.
-- Known pre-existing failure: `command_completion::tests::test_command_line_parsing`.
+- All Rust tests are inline `#[cfg(test)]` modules — there is no `tests/` directory.
+- Tests auto-isolate config to `/tmp/dbcrust_test_{pid}/` (heuristic: thread name contains "test" or `RUST_TEST_MODE` is set — `cargo test -- --test-threads=1` runs on the main thread and escapes it; export `RUST_TEST_MODE=1` in that case).
+- PostgreSQL integration tests gate on `DATABASE_URL` env var and skip gracefully; other backends have no DB-gated tests yet.
+- Python: `mise run py:test` runs `python/dbcrust/django/tests` (pure Python — the repo-root `conftest.py` stubs the native module when it isn't built).
 
 ### 6. Error handling
 
@@ -108,9 +110,9 @@ User data lives in dedicated files, not mixed into `config.toml`:
 - [ ] New `Command` variant + `CommandShortcut` variant (strum handles the rest)
 - [ ] Config field with `#[serde(default)]` + `save_with_documentation` entry
 - [ ] `inquire` for any interactive prompts
-- [ ] Unit tests + integration test in `tests/`
+- [ ] Unit tests in the module's `#[cfg(test)]` block
 - [ ] `cargo test && cargo clippy` clean
-- [ ] Update `docs/reference/backslash-commands.md` if new `\cmd` added
+- [ ] Update `docs/src/content/docs/reference/backslash-commands.md` if new `\cmd` added
 
 ## Python CLI
 

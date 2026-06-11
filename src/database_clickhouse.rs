@@ -61,6 +61,7 @@ impl MetadataProvider for ClickHouseMetadataProvider {
         );
 
         let query = if let Some(schema_name) = schema {
+            let schema_name = crate::database::escape_sql_string(schema_name);
             format!("SELECT name FROM system.tables WHERE database = '{schema_name}' ORDER BY name")
         } else {
             "SELECT name FROM system.tables WHERE database = currentDatabase() ORDER BY name"
@@ -98,13 +99,15 @@ impl MetadataProvider for ClickHouseMetadataProvider {
             table, schema
         );
 
+        let table_lit = crate::database::escape_sql_string(table);
         let query = if let Some(schema_name) = schema {
+            let schema_name = crate::database::escape_sql_string(schema_name);
             format!(
-                "SELECT name FROM system.columns WHERE database = '{schema_name}' AND table = '{table}' ORDER BY position"
+                "SELECT name FROM system.columns WHERE database = '{schema_name}' AND table = '{table_lit}' ORDER BY position"
             )
         } else {
             format!(
-                "SELECT name FROM system.columns WHERE database = currentDatabase() AND table = '{table}' ORDER BY position"
+                "SELECT name FROM system.columns WHERE database = currentDatabase() AND table = '{table_lit}' ORDER BY position"
             )
         };
 
@@ -169,17 +172,19 @@ impl MetadataProvider for ClickHouseMetadataProvider {
             table, schema
         );
 
-        let database_name = schema.unwrap_or("default");
         let schema_name = schema.unwrap_or("default");
+        // Escaped copies for the '…' literal positions in the queries below
+        let database_lit = crate::database::escape_sql_string(schema_name);
+        let table_lit = crate::database::escape_sql_string(table);
 
         // Get column information
         let columns_query = if schema.is_some() {
             format!(
-                "SELECT name, type, default_expression, is_in_primary_key FROM system.columns WHERE database = '{database_name}' AND table = '{table}' ORDER BY position"
+                "SELECT name, type, default_expression, is_in_primary_key FROM system.columns WHERE database = '{database_lit}' AND table = '{table_lit}' ORDER BY position"
             )
         } else {
             format!(
-                "SELECT name, type, default_expression, is_in_primary_key FROM system.columns WHERE database = currentDatabase() AND table = '{table}' ORDER BY position"
+                "SELECT name, type, default_expression, is_in_primary_key FROM system.columns WHERE database = currentDatabase() AND table = '{table_lit}' ORDER BY position"
             )
         };
 

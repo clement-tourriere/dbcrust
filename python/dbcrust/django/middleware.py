@@ -216,10 +216,18 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
     def _initialize_analyzer(self):
         """Initialize the enhanced analyzer and slow-query subsystem."""
         try:
-            self.analyzer = create_enhanced_analyzer(
-                transaction_safe=self.config['TRANSACTION_SAFE'],
-                enable_all_features=False,
-            )
+            if self.config['TRANSACTION_SAFE']:
+                logger.warning(
+                    "DBCrust TRANSACTION_SAFE=True rolls back ALL database "
+                    "writes made during every analyzed request — requests "
+                    "will appear to succeed but persist nothing. Never "
+                    "enable this outside throwaway experiments."
+                )
+
+            # Probe instance: validates that an analyzer can be built and
+            # gates process_request. Each request gets its OWN analyzer (see
+            # process_request) — a shared one is unsafe under concurrency.
+            self.analyzer = self._create_analyzer()
 
             # Slow-query analyzer with configurable thresholds
             self._slow_query_analyzer = SlowQueryAnalyzer(
@@ -262,14 +270,25 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
     # Request lifecycle
     # ------------------------------------------------------------------
 
+    def _create_analyzer(self) -> DjangoAnalyzer:
+        return create_enhanced_analyzer(
+            transaction_safe=self.config['TRANSACTION_SAFE'],
+            enable_all_features=False,
+        )
+
     def process_request(self, request: HttpRequest):
         """Start performance analysis for this request."""
         if not self.analyzer:
             return None
 
         try:
-            analysis_context = self.analyzer.analyze()
-            request._dbcrust_analysis = analysis_context.__enter__()
+            # Fresh analyzer per request: a single shared instance corrupts
+            # results under any concurrent serving (threaded runserver,
+            # gunicorn --threads, ASGI) — request B's start_collection()
+            # wipes request A's queries mid-flight and exits A's
+            # execute_wrapper context.
+            analyzer = self._create_analyzer()
+            request._dbcrust_analysis = analyzer.analyze().__enter__()
             request._dbcrust_start_time = time.time()
         except Exception as e:
             logger.debug("Could not start performance analysis: %s", e)
@@ -281,8 +300,10 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
             return response
 
         try:
-            # 1. Complete the analysis context
+            # 1. Complete the analysis context (and detach it from the
+            # request so nothing can exit it a second time)
             analysis = request._dbcrust_analysis
+            del request._dbcrust_analysis
             analysis.__exit__(None, None, None)
 
             results = analysis.get_results()
@@ -292,8 +313,15 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
             request_time = time.time() - getattr(request, '_dbcrust_start_time', time.time())
             request_time_ms = request_time * 1000
 
-            # 2. Build the consolidated report
-            self._emit_consolidated_report(request, response, results, request_time_ms)
+            # 2. Build the consolidated report (pass this request's queries —
+            # the shared probe analyzer never collects anything)
+            collector = getattr(analysis, 'query_collector', None)
+            captured_queries = getattr(collector, 'queries', None)
+            if not isinstance(captured_queries, list):
+                captured_queries = []
+            self._emit_consolidated_report(
+                request, response, results, request_time_ms, captured_queries
+            )
 
             # 3. Performance headers
             if self.config['INCLUDE_HEADERS']:
@@ -307,8 +335,13 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
     def process_exception(self, request: HttpRequest, exception: Exception):
         """Clean up analysis context on exception."""
         if hasattr(request, '_dbcrust_analysis'):
+            analysis = request._dbcrust_analysis
+            # Remove the attribute first — Django still calls
+            # process_response for the error response, which must not exit
+            # the same context a second time
+            del request._dbcrust_analysis
             try:
-                request._dbcrust_analysis.__exit__(
+                analysis.__exit__(
                     type(exception), exception, exception.__traceback__
                 )
             except Exception as e:
@@ -325,6 +358,7 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
         response: HttpResponse,
         results,
         request_time_ms: float,
+        captured_queries=None,
     ):
         """
         Build and log a single consolidated performance report.
@@ -349,10 +383,7 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
 
         # -- slow query analysis -------------------------------------------
         slow_query_infos = []
-        if self._slow_query_analyzer:
-            captured_queries = getattr(
-                self.analyzer.query_collector, 'queries', []
-            )
+        if self._slow_query_analyzer and captured_queries:
             slow_raw = self._slow_query_analyzer.identify_slow_queries(
                 captured_queries,
                 total_db_time=results.total_duration,
@@ -383,9 +414,11 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
         # -- render & log --------------------------------------------------
         report_text = format_performance_report(report)
 
-        # Choose log level based on grade
+        # Choose log level based on grade. Cap at WARNING: a slow dev page is
+        # not an error, and ERROR-level logs create an event per request in
+        # Sentry-style aggregators hooked to the root logger.
         if report.grade in ("F", "D"):
-            log_level = logging.ERROR
+            log_level = logging.WARNING
         elif report.grade == "C":
             log_level = logging.WARNING
         else:

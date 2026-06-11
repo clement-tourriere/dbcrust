@@ -651,7 +651,7 @@ fn render_details(frame: &mut Frame, app: &ExplainTuiApp, area: Rect) {
         }
 
         if let Some(launched) = node.workers_launched {
-            let launch_style = if node.workers_planned.map_or(false, |p| launched < p) {
+            let launch_style = if node.workers_planned.is_some_and(|p| launched < p) {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
@@ -662,7 +662,7 @@ fn render_details(frame: &mut Frame, app: &ExplainTuiApp, area: Rect) {
                 Span::styled("  Launched: ", Style::default().fg(Color::Yellow)),
                 Span::styled(format!("{}", launched), launch_style),
             ]));
-            if node.workers_planned.map_or(false, |p| launched < p) {
+            if node.workers_planned.is_some_and(|p| launched < p) {
                 lines.push(Line::from(vec![
                     Span::styled(
                         "    ⚠ Fewer workers than planned! ",
