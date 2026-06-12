@@ -1,3 +1,21 @@
+## v0.28.0 (2026-06-12)
+
+### Feat
+
+- **config**: interactive \config menu, get/set/edit, dbcrust config CLI
+- **django**: persist dashboard history across restarts (SQLite)
+- **django**: local performance dashboard (htmx, DEBUG-only)
+- **cli**: --update self-updater, help on bare invocation, mise install task
+- **django**: EXPLAIN on Django's own connection + query-budget test helpers
+- **cli**: psql-grade session semantics — pinned connection, Ctrl-C cancel, multi-statement
+- add ai queries
+- **clickhouse**: add TLS/HTTPS support and fix authentication headers
+
+### Fix
+
+- audit pass — correctness, security, and safety fixes across the stack
+- **hooks**: use rustfmt instead of cargo fmt in pre-commit fix step
+
 ## v0.27.1 (2026-04-14)
 
 ### Fix
