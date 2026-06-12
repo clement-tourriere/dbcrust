@@ -31,6 +31,7 @@ export default defineConfig({
           label: 'User Guide',
           items: [
             { label: 'Basic Usage', slug: 'user-guide/basic-usage' },
+            { label: 'AI Assistant', slug: 'user-guide/ai-assistant' },
             { label: 'Desktop GUI', slug: 'user-guide/gui' },
             { label: 'Advanced Features', slug: 'user-guide/advanced-features' },
             { label: 'Performance Analysis', slug: 'user-guide/performance-analysis' },

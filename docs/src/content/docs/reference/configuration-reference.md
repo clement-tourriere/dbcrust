@@ -200,6 +200,55 @@ log_connection_events = true        # Log connection attempts
 | `enable_performance_logging` | Boolean | `true` | Log performance metrics |
 | `log_connection_events` | Boolean | `true` | Log connection attempts |
 
+### `[ai]` - AI Assistant Configuration
+
+Settings for the natural-language SQL assistant (`??` prefix and `\ai` commands). See the [AI Assistant guide](/dbcrust/user-guide/ai-assistant/) for setup.
+
+```toml
+[ai]
+# Opt-in: disabled until \ai setup or \ai on
+enabled = false
+
+# Model identifier; the provider is inferred from the name
+# (claude-* → Anthropic, gpt-* → OpenAI, …) or forced with provider::model
+model = "claude-sonnet-4-6"
+
+# Custom endpoint for self-hosted gateways, Ollama, LM Studio (optional)
+# endpoint = "http://localhost:11434/v1/"
+
+# Generation settings
+max_tokens = 4096
+temperature = 0.0
+streaming = true                    # Stream responses as they arrive
+
+# Context and display
+max_schema_tables = 50              # Cap on tables sent as schema context
+show_generated_sql = true           # Show SQL before/after generation
+
+# Execution: confirm | auto_select | auto_execute
+execution_mode = "confirm"
+
+# Conversation exchanges kept for follow-up questions
+history_length = 5
+```
+
+**Settings:**
+
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `enabled` | Boolean | `false` | Enable AI features (opt-in) |
+| `model` | String | `"claude-sonnet-4-6"` | Model identifier; provider inferred from name |
+| `endpoint` | String | unset | Custom endpoint (Ollama, LM Studio, gateways) |
+| `max_tokens` | Integer | `4096` | Max tokens per generation |
+| `temperature` | Float | `0.0` | Sampling temperature |
+| `streaming` | Boolean | `true` | Stream responses to the terminal |
+| `max_schema_tables` | Integer | `50` | Tables included as schema context |
+| `show_generated_sql` | Boolean | `true` | Display generated SQL |
+| `execution_mode` | String | `"confirm"` | `confirm` / `auto_select` / `auto_execute` |
+| `history_length` | Integer | `5` | Conversation exchanges kept |
+
+API keys are **not** stored in `config.toml` — they resolve from environment variables, the OS keychain, or an encrypted file (in that order).
+
 ### `[ssh_tunnel_patterns]` - SSH Tunnel Configuration
 
 Automatic SSH tunnel patterns based on hostname matching.

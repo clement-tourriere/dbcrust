@@ -106,6 +106,21 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
 | `\search <collection> <term>` | MongoDB text search | `\search articles "mongodb tutorial"` |
 
 
+**AI Assistant**
+
+
+| Command | Description | Example |
+|---------|-------------|---------|
+| `\ai [status]` | Show AI configuration and key status | `\ai` |
+| `\ai setup` | Interactive AI setup wizard | `\ai setup` |
+| `\ai provider [name]` | Select AI provider | `\ai provider anthropic` |
+| `\ai model [name]` | Select AI model | `\ai model gpt-4o` |
+| `\ai toggle\|on\|off` | Enable/disable AI features | `\ai on` |
+| `\ai clear` | Clear AI conversation history | `\ai clear` |
+
+Natural-language queries use the `??` prefix (not a backslash command): `?? top 10 customers by revenue`. See the [AI Assistant guide](/dbcrust/user-guide/ai-assistant/) for setup, execution modes, and privacy notes.
+
+
 **Help & Control**
 
 
