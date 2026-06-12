@@ -128,7 +128,9 @@ wait_for_release_run() {
 
     if [ -n "$run_id" ]; then
       log "Release workflow run: https://github.com/${repo}/actions/runs/${run_id}"
-      gh run watch "$run_id" --repo "$repo" --exit-status --interval 20
+      if ! gh run watch "$run_id" --repo "$repo" --exit-status --interval 20; then
+        die "Release workflow failed (tag is already pushed — rerun with 'gh run rerun ${run_id}' or fix and cut a patch release): https://github.com/${repo}/actions/runs/${run_id}"
+      fi
       return 0
     fi
 
