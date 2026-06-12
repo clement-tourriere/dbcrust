@@ -33,11 +33,13 @@ AI features are **disabled by default**. Run the interactive wizard once:
 
 The wizard walks you through:
 
-1. **Provider** — Anthropic, OpenAI, Gemini, Ollama, Groq, DeepSeek, xAI, OpenRouter, Z.AI, GitHub Copilot, Cohere, or Together
-2. **Model** — e.g. `claude-sonnet-4-6` (the default), `gpt-4o`, or any model your provider serves
-3. **API key** — stored in your OS keychain, an encrypted file, or via environment variable (your choice)
+1. **Provider** — Anthropic, OpenAI, Gemini, Ollama, Groq, DeepSeek, xAI, OpenRouter, Z.AI, GitHub Copilot, Cohere, or Together. The choice is saved (`provider` under `[ai]`) and drives authentication and routing.
+2. **Authentication** — an API key stored in your OS keychain, an encrypted file, or an environment variable. For OpenAI you can instead [sign in with ChatGPT](#sign-in-with-chatgpt) and use your subscription.
+3. **Model** — picked from a **live list fetched from your provider** (so it reflects what your key can access), with type-to-filter and a free-text escape hatch. Falls back to curated suggestions when the list can't be fetched.
 
 Local providers like Ollama need no API key — just a model name and optionally an `endpoint`.
+
+Pressing `Ctrl-C` anywhere in the wizard cancels the whole setup without saving; `Esc` skips the current step where a skip makes sense.
 
 ## Using `??`
 
@@ -67,20 +69,40 @@ Set it in the config file (`execution_mode` under `[ai]`) or during `\ai setup`.
 
 | Command | Description |
 |---------|-------------|
-| `\ai` or `\ai status` | Show provider, model, key status, and settings |
+| `\ai` or `\ai status` | Show provider, model, credential status, and settings |
 | `\ai setup` | Interactive setup wizard |
-| `\ai provider [name]` | Switch provider (interactive picker without argument) |
-| `\ai model [name]` | Switch model (e.g. `\ai model gpt-4o`) |
+| `\ai provider [name\|auto]` | Set the active provider (`auto` = infer from the model name) |
+| `\ai model [name]` | Switch model — without an argument, pick from the provider's live model list |
+| `\ai login` | Sign in with ChatGPT (use your subscription instead of an API key) |
+| `\ai logout` | Sign out of ChatGPT and return to API-key auth |
 | `\ai on` / `\ai off` / `\ai toggle` | Enable / disable AI features |
 | `\ai clear` | Clear the conversation history |
 
+## Sign in with ChatGPT
+
+If you have a ChatGPT plan (Plus, Pro, Business, …), the assistant can use it directly instead of a pay-per-use OpenAI API key:
+
+```sql
+\ai login
+```
+
+This opens your browser for an OAuth sign-in (the same flow Codex CLI uses), stores the tokens in your OS keychain (encrypted-file fallback), and routes requests through the ChatGPT Codex backend on your plan's quota. If you already ran `codex login`, the setup wizard also offers to **reuse your Codex CLI session** — no second sign-in needed.
+
+Things to know:
+
+- Model choice is limited to what that backend serves (`gpt-5.5`, `gpt-5-codex`, …); the picker shows the supported set.
+- `\ai logout` deletes the stored tokens and returns to API-key auth.
+- This rides an OpenAI surface that is tolerated but not officially documented for third-party tools — it can change or break without notice. dbcrust only ever *reads* `~/.codex/auth.json`, never writes it.
+
 ## Providers and models
 
-Provider handling is delegated to the [genai](https://crates.io/crates/genai) crate (25+ providers over their native protocols). The provider is inferred from the model name (`claude-*` → Anthropic, `gpt-*` → OpenAI, …), or can be forced with `provider::model` syntax:
+Provider handling is delegated to the [genai](https://crates.io/crates/genai) crate (25+ providers over their native protocols). The active provider is whatever `provider` is set to under `[ai]`; with `provider = "auto"` it is inferred from the model name (`claude-*` → Anthropic, `gpt-*` → OpenAI, …). `provider::model` syntax still forces it per-model:
 
 ```sql
 \ai model groq::llama-3.1-70b
 ```
+
+`\ai model` without an argument fetches the **live model list** from your provider's `/models` endpoint using your stored key — so restricted keys only show what they can use — and falls back to curated suggestions when the endpoint is unreachable.
 
 For self-hosted gateways, Ollama, LM Studio, or any OpenAI-compatible service, set a custom endpoint in the config:
 
@@ -107,7 +129,9 @@ All settings live under `[ai]` in `~/.config/dbcrust/config.toml`:
 ```toml
 [ai]
 enabled = false                # opt-in; \ai setup or \ai on enables it
-model = "claude-sonnet-4-6"    # provider inferred from the model name
+provider = "auto"              # "auto" infers from the model name, or e.g. "openai"
+model = "claude-sonnet-4-6"    # model identifier
+auth_method = "api_key"        # api_key | chatgpt_subscription (OpenAI, via \ai login)
 # endpoint = "http://..."      # custom/self-hosted endpoint (optional)
 max_tokens = 4096
 temperature = 0.0

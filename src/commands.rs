@@ -223,6 +223,8 @@ pub enum Command {
         state: Option<bool>,
     },
     AiClearHistory,
+    AiLogin,
+    AiLogout,
     AiGenerateSql {
         natural_language: String,
     },
@@ -523,7 +525,7 @@ impl CommandShortcut {
             // Schema viewer
             CommandShortcut::Sv => "Interactive schema viewer (TUI)",
             // AI assistant
-            CommandShortcut::Ai => "AI assistant (setup|status|provider|model|toggle|clear)",
+            CommandShortcut::Ai => "AI assistant (setup|status|provider|model|login|logout|toggle|clear)",
         }
     }
 
@@ -1079,8 +1081,10 @@ impl CommandParser {
                         "on" => Ok(Command::AiToggle { state: Some(true) }),
                         "off" => Ok(Command::AiToggle { state: Some(false) }),
                         "clear" => Ok(Command::AiClearHistory),
+                        "login" => Ok(Command::AiLogin),
+                        "logout" => Ok(Command::AiLogout),
                         _ => Err(CommandError::InvalidSyntax(format!(
-                            "Unknown \\ai subcommand: {subcmd}. Use: setup|status|provider|model|toggle|on|off|clear"
+                            "Unknown \\ai subcommand: {subcmd}. Use: setup|status|provider|model|login|logout|toggle|on|off|clear"
                         ))),
                     }
                 }
@@ -2942,14 +2946,30 @@ impl CommandExecutor for Command {
                 output.push_str(&format!("  Streaming: {}\n", config.ai.streaming));
                 output.push_str(&format!("  History length: {}\n", config.ai.history_length));
 
-                // Check key status
-                match crate::ai::key_storage::detect_key_storage(adapter) {
-                    Some(method) => output.push_str(&format!("  API key: stored via {method}\n")),
-                    None => {
-                        if crate::ai::key_storage::requires_api_key(adapter) {
-                            output.push_str("  API key: NOT SET (run \\ai setup)\n");
-                        } else {
-                            output.push_str("  API key: not required (local provider)\n");
+                // Check credential status for the active auth method
+                if config.ai.auth_method == crate::ai::config::AiAuthMethod::ChatgptSubscription {
+                    match crate::ai::chatgpt_auth::load_tokens() {
+                        Some(tokens) => {
+                            output.push_str(&format!(
+                                "  ChatGPT: signed in (account {})\n",
+                                tokens.account_id
+                            ));
+                        }
+                        None => {
+                            output.push_str("  ChatGPT: NOT signed in (run \\ai login)\n");
+                        }
+                    }
+                } else {
+                    match crate::ai::key_storage::detect_key_storage(adapter) {
+                        Some(method) => {
+                            output.push_str(&format!("  API key: stored via {method}\n"))
+                        }
+                        None => {
+                            if crate::ai::key_storage::requires_api_key(adapter) {
+                                output.push_str("  API key: NOT SET (run \\ai setup)\n");
+                            } else {
+                                output.push_str("  API key: not required (local provider)\n");
+                            }
                         }
                     }
                 }
@@ -3005,6 +3025,22 @@ impl CommandExecutor for Command {
             Command::AiClearHistory => {
                 // Handled in cli_core.rs where conversation state lives
                 Ok(CommandResult::Output("__AI_CLEAR_HISTORY__".to_string()))
+            }
+
+            Command::AiLogin => {
+                // Browser + local callback server — handled in cli_core.rs
+                Ok(CommandResult::Output("__AI_LOGIN__".to_string()))
+            }
+
+            Command::AiLogout => {
+                crate::ai::chatgpt_auth::delete_tokens();
+                if config.ai.auth_method == crate::ai::config::AiAuthMethod::ChatgptSubscription {
+                    config.ai.auth_method = crate::ai::config::AiAuthMethod::ApiKey;
+                    config.save_with_documentation().ok();
+                }
+                Ok(CommandResult::Output(
+                    "Signed out of ChatGPT; auth method is back to api_key.".to_string(),
+                ))
             }
 
             Command::AiGenerateSql { .. } => {
@@ -3104,6 +3140,8 @@ impl CommandExecutor for Command {
             Command::AiSelectModel { .. } => "Select AI model",
             Command::AiToggle { .. } => "Enable/disable AI assistant",
             Command::AiClearHistory => "Clear AI conversation history",
+            Command::AiLogin => "Sign in with ChatGPT (use your subscription instead of an API key)",
+            Command::AiLogout => "Sign out of ChatGPT and return to API-key auth",
             Command::AiGenerateSql { .. } => "Generate SQL from natural language",
         }
     }
@@ -3196,6 +3234,8 @@ impl CommandExecutor for Command {
             Command::AiSelectModel { .. } => "\\ai model [name]",
             Command::AiToggle { .. } => "\\ai toggle|on|off",
             Command::AiClearHistory => "\\ai clear",
+            Command::AiLogin => "\\ai login",
+            Command::AiLogout => "\\ai logout",
             Command::AiGenerateSql { .. } => "?? <natural language query>",
         }
     }
@@ -3286,6 +3326,8 @@ impl CommandExecutor for Command {
             | Command::AiSelectModel { .. }
             | Command::AiToggle { .. }
             | Command::AiClearHistory
+            | Command::AiLogin
+            | Command::AiLogout
             | Command::AiGenerateSql { .. } => CommandCategory::AiAssistant,
         }
     }
@@ -4444,6 +4486,13 @@ mod tests {
             Command::AiSelectModel {
                 model: Some("gpt-4o".to_string())
             }
+        );
+
+        // \ai login / logout
+        assert_eq!(CommandParser::parse("\\ai login").unwrap(), Command::AiLogin);
+        assert_eq!(
+            CommandParser::parse("\\ai logout").unwrap(),
+            Command::AiLogout
         );
 
         // \ai toggle

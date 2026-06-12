@@ -108,22 +108,58 @@ pub fn detect_key_storage(adapter: AdapterKind) -> Option<KeyStorageMethod> {
     None
 }
 
+// --- Named secrets (generic storage shared by API keys and OAuth tokens) ---
+
+/// Name under which the ChatGPT-subscription OAuth tokens are stored.
+pub const CHATGPT_TOKENS_SECRET: &str = "chatgpt_oauth_tokens";
+
+/// Store a named secret: OS keyring first, encrypted file as fallback.
+pub fn store_named_secret(name: &str, value: &str) -> Result<(), AiError> {
+    match store_keyring_secret(name, value) {
+        Ok(()) => Ok(()),
+        Err(_) => store_encrypted_secret(name, value),
+    }
+}
+
+/// Load a named secret: OS keyring, then encrypted file.
+pub fn load_named_secret(name: &str) -> Option<String> {
+    get_keyring_secret(name)
+        .ok()
+        .or_else(|| load_encrypted_secret(name).ok())
+}
+
+/// Delete a named secret from both backends. Missing entries are not errors.
+pub fn delete_named_secret(name: &str) {
+    if let Ok(entry) = keyring::Entry::new("dbcrust", name) {
+        let _ = entry.delete_credential();
+    }
+    let _ = remove_encrypted_secret(name);
+}
+
 // --- OS Keyring ---
 
-fn get_keyring_key(adapter: AdapterKind) -> Result<String, AiError> {
-    let entry = keyring::Entry::new("dbcrust", &key_name(adapter))
+fn get_keyring_secret(name: &str) -> Result<String, AiError> {
+    let entry = keyring::Entry::new("dbcrust", name)
         .map_err(|e| AiError::KeyStorageError(format!("Keyring init error: {e}")))?;
     entry
         .get_password()
         .map_err(|e| AiError::KeyStorageError(format!("Keyring read error: {e}")))
 }
 
-fn store_keyring_key(adapter: AdapterKind, key: &str) -> Result<(), AiError> {
-    let entry = keyring::Entry::new("dbcrust", &key_name(adapter))
+fn store_keyring_secret(name: &str, value: &str) -> Result<(), AiError> {
+    let entry = keyring::Entry::new("dbcrust", name)
         .map_err(|e| AiError::KeyStorageError(format!("Keyring init error: {e}")))?;
     entry
-        .set_password(key)
+        .set_password(value)
         .map_err(|e| AiError::KeyStorageError(format!("Keyring store error: {e}")))
+}
+
+fn get_keyring_key(adapter: AdapterKind) -> Result<String, AiError> {
+    get_keyring_secret(&key_name(adapter))
+}
+
+fn store_keyring_key(adapter: AdapterKind, key: &str) -> Result<(), AiError> {
+    store_keyring_secret(&key_name(adapter), key)
 }
 
 // --- Encrypted File ---
@@ -134,7 +170,7 @@ fn get_ai_keys_path() -> Result<PathBuf, AiError> {
         .map_err(|e| AiError::KeyStorageError(format!("Config dir error: {e}")))
 }
 
-fn load_encrypted_key(adapter: AdapterKind) -> Result<String, AiError> {
+fn load_encrypted_secret(name: &str) -> Result<String, AiError> {
     let path = get_ai_keys_path()?;
     if !path.exists() {
         return Err(AiError::KeyStorageError(
@@ -145,10 +181,9 @@ fn load_encrypted_key(adapter: AdapterKind) -> Result<String, AiError> {
     let content = fs::read_to_string(&path)
         .map_err(|e| AiError::KeyStorageError(format!("Read error: {e}")))?;
 
-    let key_name = key_name(adapter);
     for line in content.lines() {
-        if let Some((name, encrypted_value)) = line.split_once('=')
-            && name.trim() == key_name
+        if let Some((entry_name, encrypted_value)) = line.split_once('=')
+            && entry_name.trim() == name
         {
             let value = encrypted_value.trim();
             if value.starts_with("enc:") {
@@ -164,18 +199,37 @@ fn load_encrypted_key(adapter: AdapterKind) -> Result<String, AiError> {
         }
     }
 
-    Err(AiError::KeyStorageError(format!(
-        "Key not found for {}",
-        adapter.as_str()
-    )))
+    Err(AiError::KeyStorageError(format!("No entry for {name}")))
 }
 
-fn store_encrypted_key(adapter: AdapterKind, key: &str) -> Result<(), AiError> {
-    let path = get_ai_keys_path()?;
-    let key_name = key_name(adapter);
+fn load_encrypted_key(adapter: AdapterKind) -> Result<String, AiError> {
+    load_encrypted_secret(&key_name(adapter))
+}
 
-    // Encrypt the key
-    let encrypted = crate::password_encryption::encrypt_password(key)
+/// Rewrite the encrypted file without `name`'s line. Ok when absent.
+fn remove_encrypted_secret(name: &str) -> Result<(), AiError> {
+    let path = get_ai_keys_path()?;
+    if !path.exists() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&path)
+        .map_err(|e| AiError::KeyStorageError(format!("Read error: {e}")))?;
+    let lines: Vec<String> = content
+        .lines()
+        .filter(|line| {
+            line.split_once('=')
+                .map(|(entry_name, _)| entry_name.trim() != name)
+                .unwrap_or(true)
+        })
+        .map(str::to_string)
+        .collect();
+    write_secret_file(&path, &lines)
+}
+
+fn store_encrypted_secret(name: &str, value: &str) -> Result<(), AiError> {
+    let path = get_ai_keys_path()?;
+
+    let encrypted = crate::password_encryption::encrypt_password(value)
         .map_err(|e| AiError::KeyStorageError(format!("Encryption failed: {e}")))?;
 
     // Read existing content (if any)
@@ -189,19 +243,27 @@ fn store_encrypted_key(adapter: AdapterKind, key: &str) -> Result<(), AiError> {
         Vec::new()
     };
 
-    // Update or add the key
+    // Update or add the entry
     let mut found = false;
     for line in &mut lines {
-        if line.starts_with(&format!("{key_name}=")) || line.starts_with(&format!("{key_name} =")) {
-            *line = format!("{key_name}={encrypted}");
+        if line.starts_with(&format!("{name}=")) || line.starts_with(&format!("{name} =")) {
+            *line = format!("{name}={encrypted}");
             found = true;
             break;
         }
     }
     if !found {
-        lines.push(format!("{key_name}={encrypted}"));
+        lines.push(format!("{name}={encrypted}"));
     }
 
+    write_secret_file(&path, &lines)
+}
+
+fn store_encrypted_key(adapter: AdapterKind, key: &str) -> Result<(), AiError> {
+    store_encrypted_secret(&key_name(adapter), key)
+}
+
+fn write_secret_file(path: &std::path::Path, lines: &[String]) -> Result<(), AiError> {
     // Create/write with restrictive permissions from the start on Unix so the
     // key is never briefly world-readable under the default umask.
     #[cfg(unix)]
@@ -213,16 +275,58 @@ fn store_encrypted_key(adapter: AdapterKind, key: &str) -> Result<(), AiError> {
             .create(true)
             .truncate(true)
             .mode(0o600)
-            .open(&path)
+            .open(path)
             .map_err(|e| AiError::KeyStorageError(format!("Open error: {e}")))?;
         file.write_all((lines.join("\n") + "\n").as_bytes())
             .map_err(|e| AiError::KeyStorageError(format!("Write error: {e}")))?;
     }
     #[cfg(not(unix))]
     {
-        fs::write(&path, lines.join("\n") + "\n")
+        fs::write(path, lines.join("\n") + "\n")
             .map_err(|e| AiError::KeyStorageError(format!("Write error: {e}")))?;
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Only the encrypted-file backend is exercised — tests must never touch
+    // the developer's real OS keychain. The config dir auto-isolates to
+    // /tmp/dbcrust_test_{pid} in test builds.
+
+    // Single test on purpose: all encrypted-secret operations share one
+    // ai_keys.enc per process, and the read-modify-write is not atomic —
+    // parallel test threads would race each other on it.
+    #[test]
+    fn test_encrypted_secret_round_trip_remove_and_preservation() {
+        let name = "test_round_trip_secret";
+        store_encrypted_secret(name, "s3cret-value").unwrap();
+        assert_eq!(load_encrypted_secret(name).unwrap(), "s3cret-value");
+
+        // value is encrypted at rest, not plaintext
+        let content = fs::read_to_string(get_ai_keys_path().unwrap()).unwrap();
+        assert!(!content.contains("s3cret-value"));
+        assert!(content.contains(&format!("{name}=enc:")));
+
+        // overwrite keeps a single line
+        store_encrypted_secret(name, "v2").unwrap();
+        assert_eq!(load_encrypted_secret(name).unwrap(), "v2");
+        let content = fs::read_to_string(get_ai_keys_path().unwrap()).unwrap();
+        assert_eq!(content.matches(name).count(), 1);
+
+        remove_encrypted_secret(name).unwrap();
+        assert!(load_encrypted_secret(name).is_err());
+        // removing a missing entry is fine
+        remove_encrypted_secret(name).unwrap();
+
+        // removal only drops the targeted entry
+        store_encrypted_secret("test_keep_me", "keep").unwrap();
+        store_encrypted_secret("test_drop_me", "drop").unwrap();
+        remove_encrypted_secret("test_drop_me").unwrap();
+        assert_eq!(load_encrypted_secret("test_keep_me").unwrap(), "keep");
+        assert!(load_encrypted_secret("test_drop_me").is_err());
+    }
 }

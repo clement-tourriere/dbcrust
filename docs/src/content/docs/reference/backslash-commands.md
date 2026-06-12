@@ -117,8 +117,10 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
 |---------|-------------|---------|
 | `\ai [status]` | Show AI configuration and key status | `\ai` |
 | `\ai setup` | Interactive AI setup wizard | `\ai setup` |
-| `\ai provider [name]` | Select AI provider | `\ai provider anthropic` |
-| `\ai model [name]` | Select AI model | `\ai model gpt-4o` |
+| `\ai provider [name\|auto]` | Set the active AI provider | `\ai provider anthropic` |
+| `\ai model [name]` | Select AI model (live picker without argument) | `\ai model gpt-4o` |
+| `\ai login` | Sign in with ChatGPT (subscription instead of API key) | `\ai login` |
+| `\ai logout` | Sign out of ChatGPT, back to API-key auth | `\ai logout` |
 | `\ai toggle\|on\|off` | Enable/disable AI features | `\ai on` |
 | `\ai clear` | Clear AI conversation history | `\ai clear` |
 

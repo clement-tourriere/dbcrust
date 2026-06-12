@@ -1557,6 +1557,8 @@ impl CliCore {
                 } else if output == "__AI_CLEAR_HISTORY__" {
                     self.ai_conversation.clear();
                     println!("AI conversation history cleared.");
+                } else if output == "__AI_LOGIN__" {
+                    self.handle_ai_login(config_arc).await;
                 } else if let Some(arg) = output.strip_prefix("__AI_PROVIDER__") {
                     self.handle_ai_select_provider(arg, config_arc).await;
                 } else if let Some(arg) = output.strip_prefix("__AI_MODEL__") {
@@ -1886,50 +1888,76 @@ impl CliCore {
         &mut self,
         config_arc: &Arc<Mutex<DbCrustConfig>>,
     ) -> Result<(), WizardCancelled> {
+        use crate::ai::config::AiAuthMethod;
+
         // The chosen provider is stored in config and drives auth + routing;
         // the curated list is a UX convenience — any genai provider works.
         let adapter = Self::select_provider("Select AI provider:")?;
 
-        Self::configure_provider_key(adapter)?;
+        // Auth step. OpenAI additionally offers "Sign in with ChatGPT" so the
+        // user's subscription pays for requests instead of an API key.
+        let auth_method = Self::configure_auth(adapter).await?;
 
-        // Optional custom endpoint, asked before the model step so the live
-        // model listing below can query it (self-hosted / OpenAI-compatible
-        // gateways, remote Ollama). Esc keeps the previously configured value.
-        let current_endpoint = config_arc
-            .lock()
-            .unwrap()
-            .ai
-            .endpoint
-            .clone()
-            .unwrap_or_default();
-        let endpoint = match wizard_step(
-            inquire::Text::new("Custom endpoint URL (optional):")
-                .with_default(&current_endpoint)
-                .with_help_message("Leave empty to use the provider's default endpoint")
-                .prompt(),
-        )? {
-            Some(u) => {
-                let u = u.trim().to_string();
-                if u.is_empty() { None } else { Some(u) }
-            }
-            None => config_arc.lock().unwrap().ai.endpoint.clone(),
-        };
+        let (endpoint, model) = if auth_method == AiAuthMethod::ChatgptSubscription {
+            // Subscription mode: the endpoint is forced to the Codex backend
+            // and only its model set applies — no endpoint/listing questions.
+            let current_model = config_arc.lock().unwrap().ai.model.clone();
+            let subscription = crate::ai::model_listing::chatgpt_subscription_models();
+            let suggested = if subscription.contains(&current_model.as_str()) {
+                current_model
+            } else {
+                subscription[0].to_string()
+            };
+            let (options, _) = crate::ai::model_listing::build_model_options(
+                Ok(subscription.iter().map(|s| s.to_string()).collect()),
+                &[],
+                &suggested,
+            );
+            let model = Self::pick_model_from(options, &suggested)?.unwrap_or(suggested);
+            (None, model)
+        } else {
+            // Optional custom endpoint, asked before the model step so the
+            // live model listing below can query it (self-hosted gateways,
+            // remote Ollama). Esc keeps the previously configured value.
+            let current_endpoint = config_arc
+                .lock()
+                .unwrap()
+                .ai
+                .endpoint
+                .clone()
+                .unwrap_or_default();
+            let endpoint = match wizard_step(
+                inquire::Text::new("Custom endpoint URL (optional):")
+                    .with_default(&current_endpoint)
+                    .with_help_message("Leave empty to use the provider's default endpoint")
+                    .prompt(),
+            )? {
+                Some(u) => {
+                    let u = u.trim().to_string();
+                    if u.is_empty() { None } else { Some(u) }
+                }
+                None => config_arc.lock().unwrap().ai.endpoint.clone(),
+            };
 
-        // Model: live list from the chosen provider (curated fallback), with a
-        // provider-appropriate default — keeping the previous model only makes
-        // sense if it already belongs to this provider.
-        let current_model = config_arc.lock().unwrap().ai.model.clone();
-        let suggested_model =
-            if crate::ai::same_provider(crate::ai::provider_for_model(&current_model), adapter) {
+            // Model: live list from the chosen provider (curated fallback),
+            // with a provider-appropriate default — keeping the previous model
+            // only makes sense if it already belongs to this provider.
+            let current_model = config_arc.lock().unwrap().ai.model.clone();
+            let suggested_model = if crate::ai::same_provider(
+                crate::ai::provider_for_model(&current_model),
+                adapter,
+            ) {
                 current_model.clone()
             } else {
                 crate::ai::default_model_for(adapter)
                     .map(str::to_string)
                     .unwrap_or_else(|| current_model.clone())
             };
-        let model = Self::pick_model(adapter, endpoint.as_deref(), &suggested_model)
-            .await?
-            .unwrap_or(suggested_model);
+            let model = Self::pick_model(adapter, endpoint.as_deref(), &suggested_model)
+                .await?
+                .unwrap_or(suggested_model);
+            (endpoint, model)
+        };
 
         {
             let mut config = config_arc.lock().unwrap();
@@ -1937,14 +1965,7 @@ impl CliCore {
             config.ai.provider = adapter.as_lower_str().to_string();
             config.ai.model = model.clone();
             config.ai.endpoint = endpoint;
-            // A fresh API-key setup invalidates a previous ChatGPT-subscription
-            // setup for a different provider; \ai login re-enables it.
-            if !matches!(
-                adapter,
-                genai::adapter::AdapterKind::OpenAI | genai::adapter::AdapterKind::OpenAIResp
-            ) {
-                config.ai.auth_method = crate::ai::config::AiAuthMethod::ApiKey;
-            }
+            config.ai.auth_method = auth_method;
             config.save_with_documentation().ok();
         }
 
@@ -1953,6 +1974,112 @@ impl CliCore {
             adapter.as_str()
         );
         Ok(())
+    }
+
+    /// Auth step of the setup wizard. Returns the auth method to persist.
+    /// For OpenAI this offers API key / browser sign-in / Codex CLI import;
+    /// every other provider goes straight to the API-key flow.
+    async fn configure_auth(
+        adapter: genai::adapter::AdapterKind,
+    ) -> Result<crate::ai::config::AiAuthMethod, WizardCancelled> {
+        use crate::ai::config::AiAuthMethod;
+
+        if !crate::ai::same_provider(adapter, genai::adapter::AdapterKind::OpenAI) {
+            Self::configure_provider_key(adapter)?;
+            return Ok(AiAuthMethod::ApiKey);
+        }
+
+        const OPT_API_KEY: &str = "API key";
+        const OPT_CHATGPT: &str = "ChatGPT subscription (sign in with your browser)";
+        const OPT_CODEX: &str = "Reuse Codex CLI login (~/.codex/auth.json)";
+
+        let mut options = vec![OPT_API_KEY, OPT_CHATGPT];
+        if crate::ai::chatgpt_auth::codex_auth_path().is_some() {
+            options.push(OPT_CODEX);
+        }
+
+        // Structural step: Esc aborts like Ctrl-C — there is no sane default.
+        let choice =
+            match wizard_step(inquire::Select::new("How do you want to authenticate?", options).prompt())? {
+                Some(c) => c,
+                None => return Err(WizardCancelled),
+            };
+
+        match choice {
+            OPT_CHATGPT => match crate::ai::chatgpt_auth::login().await {
+                Ok(tokens) => {
+                    println!("Signed in to ChatGPT (account {}).", tokens.account_id);
+                    Ok(AiAuthMethod::ChatgptSubscription)
+                }
+                Err(e) => {
+                    eprintln!("ChatGPT sign-in failed: {e}");
+                    println!("Falling back to API-key setup.");
+                    Self::configure_provider_key(adapter)?;
+                    Ok(AiAuthMethod::ApiKey)
+                }
+            },
+            OPT_CODEX => match crate::ai::chatgpt_auth::import_from_codex() {
+                Ok(tokens) => {
+                    println!("Imported Codex CLI login (account {}).", tokens.account_id);
+                    Ok(AiAuthMethod::ChatgptSubscription)
+                }
+                Err(e) => {
+                    eprintln!("Codex import failed: {e}");
+                    println!("Falling back to API-key setup.");
+                    Self::configure_provider_key(adapter)?;
+                    Ok(AiAuthMethod::ApiKey)
+                }
+            },
+            _ => {
+                Self::configure_provider_key(adapter)?;
+                Ok(AiAuthMethod::ApiKey)
+            }
+        }
+    }
+
+    /// Handle \ai login — standalone "Sign in with ChatGPT".
+    async fn handle_ai_login(&mut self, config_arc: &Arc<Mutex<DbCrustConfig>>) {
+        use crate::ai::config::AiAuthMethod;
+
+        println!("Signing in with ChatGPT (requests will use your ChatGPT plan via the Codex backend).");
+        match crate::ai::chatgpt_auth::login().await {
+            Ok(tokens) => {
+                let needs_model_pick = {
+                    let mut config = config_arc.lock().unwrap();
+                    config.ai.enabled = true;
+                    config.ai.provider = "openai".to_string();
+                    config.ai.auth_method = AiAuthMethod::ChatgptSubscription;
+                    let subscription = crate::ai::model_listing::chatgpt_subscription_models();
+                    let needs = !subscription.contains(&config.ai.model.as_str());
+                    config.save_with_documentation().ok();
+                    needs
+                };
+                println!("Signed in to ChatGPT (account {}).", tokens.account_id);
+
+                if needs_model_pick {
+                    let subscription = crate::ai::model_listing::chatgpt_subscription_models();
+                    let suggested = subscription[0].to_string();
+                    let (options, _) = crate::ai::model_listing::build_model_options(
+                        Ok(subscription.iter().map(|s| s.to_string()).collect()),
+                        &[],
+                        &suggested,
+                    );
+                    match Self::pick_model_from(options, &suggested) {
+                        Ok(Some(model)) => {
+                            let mut config = config_arc.lock().unwrap();
+                            config.ai.model = model.clone();
+                            config.save_with_documentation().ok();
+                            println!("Model set to {model}.");
+                        }
+                        Ok(None) => {}
+                        // Sign-in already succeeded and was saved; only the
+                        // model pick was abandoned.
+                        Err(WizardCancelled) => cancel_ai_wizard(),
+                    }
+                }
+            }
+            Err(e) => eprintln!("ChatGPT sign-in failed: {e}"),
+        }
     }
 
     /// Handle \ai provider [name] — set the active provider in config (and

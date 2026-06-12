@@ -10,6 +10,7 @@
 //! so AI assistance can be reused beyond text-to-SQL (query optimization,
 //! error explanation, etc.).
 
+pub mod chatgpt_auth;
 pub mod config;
 pub mod conversation;
 pub mod key_storage;
@@ -25,7 +26,7 @@ use genai::{Client, ModelIden, ServiceTarget};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
-use self::config::AiConfig;
+use self::config::{AiAuthMethod, AiConfig};
 
 #[derive(Error, Debug)]
 pub enum AiError {
@@ -39,6 +40,12 @@ pub enum AiError {
     KeyStorageError(String),
     #[error("generation cancelled")]
     Cancelled,
+    #[error("OAuth error: {0}")]
+    OAuth(String),
+    #[error("Not signed in to ChatGPT. Run \\ai login first.")]
+    NotLoggedIn,
+    #[error("ChatGPT token refresh failed: {0} Run \\ai login again.")]
+    TokenRefreshFailed(String),
 }
 
 #[derive(Debug, Clone)]
@@ -149,11 +156,71 @@ pub fn default_model_for(adapter: AdapterKind) -> Option<&'static str> {
     })
 }
 
+/// Auth resolved for one request. In subscription mode the token refresh has
+/// already happened here, BEFORE the genai client is built, so the service
+/// target resolver can stay a plain sync closure.
+pub enum ResolvedAuthMode {
+    ApiKey,
+    ChatGptSubscription {
+        access_token: String,
+        account_id: String,
+        session_id: String,
+    },
+}
+
+/// Stable per-process session id sent to the Codex backend.
+fn session_id() -> &'static str {
+    static SESSION_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SESSION_ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
+pub async fn resolve_auth_mode(ai_config: &AiConfig) -> Result<ResolvedAuthMode, AiError> {
+    match ai_config.auth_method {
+        AiAuthMethod::ApiKey => Ok(ResolvedAuthMode::ApiKey),
+        AiAuthMethod::ChatgptSubscription => {
+            let (access_token, account_id) = chatgpt_auth::current_access().await?;
+            Ok(ResolvedAuthMode::ChatGptSubscription {
+                access_token,
+                account_id,
+                session_id: session_id().to_string(),
+            })
+        }
+    }
+}
+
+/// Model string handed to genai for this request.
+fn request_model(ai_config: &AiConfig, mode: &ResolvedAuthMode) -> String {
+    match mode {
+        ResolvedAuthMode::ApiKey => qualified_model(ai_config),
+        // The target resolver pins adapter + endpoint; bare names route fine.
+        ResolvedAuthMode::ChatGptSubscription { .. } => ai_config.model.clone(),
+    }
+}
+
 /// Build a `genai` client wired to dbcrust's credential chain (env → OS keyring
-/// → encrypted file) and an optional custom endpoint.
-pub fn build_client(ai_config: &AiConfig) -> Result<Client, AiError> {
+/// → encrypted file) and an optional custom endpoint. In ChatGPT-subscription
+/// mode the client instead targets the Codex backend with the OAuth bearer.
+pub fn build_client(ai_config: &AiConfig, mode: &ResolvedAuthMode) -> Result<Client, AiError> {
     if !ai_config.enabled {
         return Err(AiError::NotConfigured);
+    }
+
+    if let ResolvedAuthMode::ChatGptSubscription { access_token, .. } = mode {
+        // No API-key preflight: auth is the OAuth bearer, and endpoint + adapter
+        // are forced — the Codex backend only speaks the Responses API.
+        let access = access_token.clone();
+        let target_resolver = ServiceTargetResolver::from_resolver_fn(
+            move |target: ServiceTarget| -> Result<ServiceTarget, genai::resolver::Error> {
+                Ok(ServiceTarget {
+                    endpoint: Endpoint::from_static(chatgpt_auth::CHATGPT_CODEX_BASE),
+                    auth: AuthData::from_single(access.clone()),
+                    model: ModelIden::new(AdapterKind::OpenAIResp, target.model.model_name.clone()),
+                })
+            },
+        );
+        return Ok(Client::builder()
+            .with_service_target_resolver(target_resolver)
+            .build());
     }
 
     // Pre-flight the API key: the auth resolver below maps failures to
@@ -215,10 +282,23 @@ fn build_request(system_prompt: &str, messages: &[(MessageRole, String)]) -> Cha
     req
 }
 
-fn chat_options(ai_config: &AiConfig) -> ChatOptions {
-    ChatOptions::default()
+fn chat_options(ai_config: &AiConfig, mode: &ResolvedAuthMode) -> ChatOptions {
+    let opts = ChatOptions::default()
         .with_max_tokens(ai_config.max_tokens)
-        .with_temperature(ai_config.temperature as f64)
+        .with_temperature(ai_config.temperature as f64);
+    match mode {
+        ResolvedAuthMode::ApiKey => opts,
+        ResolvedAuthMode::ChatGptSubscription {
+            account_id,
+            session_id,
+            ..
+        } => opts.with_extra_headers(vec![
+            ("chatgpt-account-id".to_string(), account_id.clone()),
+            ("OpenAI-Beta".to_string(), "responses=experimental".to_string()),
+            ("originator".to_string(), "dbcrust".to_string()),
+            ("session_id".to_string(), session_id.clone()),
+        ]),
+    }
 }
 
 /// Non-streaming completion. Reusable for any AI task (not just SQL).
@@ -227,10 +307,18 @@ pub async fn generate(
     system_prompt: &str,
     messages: &[(MessageRole, String)],
 ) -> Result<AiResponse, AiError> {
-    let client = build_client(ai_config)?;
+    let mode = resolve_auth_mode(ai_config).await?;
+
+    // The Codex backend is SSE-only — aggregate the stream for callers that
+    // asked for a non-streaming completion.
+    if matches!(mode, ResolvedAuthMode::ChatGptSubscription { .. }) {
+        return generate_via_stream(ai_config, &mode, system_prompt, messages).await;
+    }
+
+    let client = build_client(ai_config, &mode)?;
     let req = build_request(system_prompt, messages);
-    let opts = chat_options(ai_config);
-    let model = qualified_model(ai_config);
+    let opts = chat_options(ai_config, &mode);
+    let model = request_model(ai_config, &mode);
 
     let res = client
         .exec_chat(model.as_str(), req, Some(&opts))
@@ -239,6 +327,43 @@ pub async fn generate(
 
     Ok(AiResponse {
         content: res.first_text().unwrap_or_default().to_string(),
+        model: ai_config.model.clone(),
+    })
+}
+
+/// Run the streaming path and fold the deltas into one response (no terminal
+/// output) — used where the backend does not accept non-streaming requests.
+async fn generate_via_stream(
+    ai_config: &AiConfig,
+    mode: &ResolvedAuthMode,
+    system_prompt: &str,
+    messages: &[(MessageRole, String)],
+) -> Result<AiResponse, AiError> {
+    use futures_util::StreamExt;
+
+    let client = build_client(ai_config, mode)?;
+    let req = build_request(system_prompt, messages);
+    let opts = chat_options(ai_config, mode);
+    let model = request_model(ai_config, mode);
+
+    let chat_res = client
+        .exec_chat_stream(model.as_str(), req, Some(&opts))
+        .await
+        .map_err(|e| AiError::RequestFailed(e.to_string()))?;
+
+    let mut stream = chat_res.stream;
+    let mut content = String::new();
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(ChatStreamEvent::Chunk(chunk)) => content.push_str(&chunk.content),
+            Ok(ChatStreamEvent::End(_)) => break,
+            Ok(_) => {}
+            Err(e) => return Err(AiError::RequestFailed(e.to_string())),
+        }
+    }
+
+    Ok(AiResponse {
+        content,
         model: ai_config.model.clone(),
     })
 }
@@ -253,10 +378,11 @@ pub async fn generate_stream(
 ) -> Result<(), AiError> {
     use futures_util::StreamExt;
 
-    let client = build_client(ai_config)?;
+    let mode = resolve_auth_mode(ai_config).await?;
+    let client = build_client(ai_config, &mode)?;
     let req = build_request(system_prompt, messages);
-    let opts = chat_options(ai_config);
-    let model = qualified_model(ai_config);
+    let opts = chat_options(ai_config, &mode);
+    let model = request_model(ai_config, &mode);
 
     let chat_res = client
         .exec_chat_stream(model.as_str(), req, Some(&opts))
@@ -322,7 +448,10 @@ mod tests {
             enabled: false,
             ..Default::default()
         };
-        assert!(matches!(build_client(&config), Err(AiError::NotConfigured)));
+        assert!(matches!(
+            build_client(&config, &ResolvedAuthMode::ApiKey),
+            Err(AiError::NotConfigured)
+        ));
     }
 
     fn config_with(provider: &str, model: &str) -> AiConfig {

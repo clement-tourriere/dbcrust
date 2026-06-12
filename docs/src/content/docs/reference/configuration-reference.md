@@ -211,9 +211,16 @@ Settings for the natural-language SQL assistant (`??` prefix and `\ai` commands)
 # Opt-in: disabled until \ai setup or \ai on
 enabled = false
 
-# Model identifier; the provider is inferred from the name
-# (claude-* → Anthropic, gpt-* → OpenAI, …) or forced with provider::model
+# Provider key (anthropic, openai, gemini, ollama, …); "auto" infers it
+# from the model name (claude-* → Anthropic, gpt-* → OpenAI, …)
+provider = "auto"
+
+# Model identifier; provider::model syntax also forces a provider per-model
 model = "claude-sonnet-4-6"
+
+# Authentication: api_key, or chatgpt_subscription to ride a ChatGPT plan
+# (OpenAI only — set up with \ai login)
+auth_method = "api_key"
 
 # Custom endpoint for self-hosted gateways, Ollama, LM Studio (optional)
 # endpoint = "http://localhost:11434/v1/"
@@ -239,7 +246,9 @@ history_length = 5
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `enabled` | Boolean | `false` | Enable AI features (opt-in) |
-| `model` | String | `"claude-sonnet-4-6"` | Model identifier; provider inferred from name |
+| `provider` | String | `"auto"` | Provider key, or `auto` to infer from the model name |
+| `model` | String | `"claude-sonnet-4-6"` | Model identifier |
+| `auth_method` | String | `"api_key"` | `api_key` / `chatgpt_subscription` (OpenAI, `\ai login`) |
 | `endpoint` | String | unset | Custom endpoint (Ollama, LM Studio, gateways) |
 | `max_tokens` | Integer | `4096` | Max tokens per generation |
 | `temperature` | Float | `0.0` | Sampling temperature |
