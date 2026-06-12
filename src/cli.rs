@@ -7,6 +7,13 @@ use clap::{Parser, ValueEnum};
 #[command(version, long_about = None)]
 #[command(about = "A blazing-fast multi-database client with intelligent autocompletion")]
 #[command(arg_required_else_help = false)]
+#[command(after_help = "Examples:
+  dbcrust postgres://user:pass@localhost:5432/mydb
+  dbcrust recent://                 # pick from recent connections
+  dbcrust session://prod            # open a saved session
+  dbcrust docker://my-container/mydb
+  dbcrust sqlite:///path/to/file.db
+  dbcrust --update                  # update dbcrust to the latest release")]
 pub struct Args {
     /// Database connection URL
     ///
@@ -33,6 +40,10 @@ pub struct Args {
     /// Execute SQL command and exit
     #[arg(short, long, action = clap::ArgAction::Append)]
     pub command: Vec<String>,
+
+    /// Check for a newer release and update dbcrust in place
+    #[arg(long)]
+    pub update: bool,
 }
 
 impl std::fmt::Debug for Args {
@@ -54,6 +65,7 @@ impl std::fmt::Debug for Args {
             )
             .field("completions", &self.completions)
             .field("command", &self.command)
+            .field("update", &self.update)
             .finish()
     }
 }
@@ -78,6 +90,14 @@ mod tests {
         let args = Args::try_parse_from(["dbcrust"]).unwrap();
         assert!(args.connection_url.is_none());
         assert!(args.command.is_empty());
+        assert!(!args.update);
+    }
+
+    #[test]
+    fn test_update_flag() {
+        let args = Args::try_parse_from(["dbcrust", "--update"]).unwrap();
+        assert!(args.update);
+        assert!(args.connection_url.is_none());
     }
 
     #[test]

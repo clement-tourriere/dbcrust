@@ -70,9 +70,10 @@ cd dbcrust
 mise install            # installs Bun, commitizen, etc.
 mise run build          # release build
 mise run build:dev      # debug build (faster)
+mise run install        # build + install dbcrust and dbc into ~/.cargo/bin
 
 # Option B: cargo only (CLI only, no GUI)
-cargo install --path .
+cargo install --path . --locked --force
 ```
 
 ### Building the GUI
@@ -185,6 +186,14 @@ Special schemes:
 
 ## Updating
 
+DBCrust can update itself. It detects how it was installed (uv tool, pipx, pip, cargo, standalone binary), checks GitHub for the latest release, and runs — or prints — the matching upgrade command:
+
+```bash
+dbcrust --update
+```
+
+Or update manually through your install channel:
+
 ```bash
 # Pre-built binary — just re-run the installer
 curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
@@ -192,11 +201,14 @@ curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
 # uv
 uv tool upgrade dbcrust
 
+# pipx
+pipx upgrade dbcrust
+
 # pip
 pip install --upgrade dbcrust
 
 # From source
-git pull && cargo install --path .
+git pull && mise run install      # or: cargo install --path . --locked --force
 ```
 
 ## Uninstalling

@@ -19,6 +19,10 @@ run = "cargo build --release"
 description = "Build the CLI in debug mode"
 run = "cargo build"
 
+[tasks."install"]
+description = "Build release binaries and install dbcrust + dbc locally (~/.cargo/bin)"
+run = "cargo install --path . --locked --force"
+
 [tasks."test"]
 description = "Run all tests"
 run = "cargo test"

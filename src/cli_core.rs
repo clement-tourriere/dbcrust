@@ -270,6 +270,11 @@ impl CliCore {
             return Ok(0);
         }
 
+        // Handle self-update if requested (runs before any connection logic)
+        if args.update {
+            return Ok(crate::update::run_update().await);
+        }
+
         // Log system information
         cli_core.log_system_info(&args);
 
@@ -305,8 +310,11 @@ impl CliCore {
                 ));
             }
 
-            // Start interactive mode without initial connection
-            cli_core.run_interactive_mode_no_connection().await?;
+            // No URL and nothing to execute: print help instead of opening an
+            // empty REPL — connection examples live in `after_help` (cli.rs).
+            Args::command()
+                .print_help()
+                .map_err(|e| CliError::CommandError(format!("Failed to print help: {e}")))?;
         }
 
         Ok(0)
@@ -451,31 +459,6 @@ impl CliCore {
                 }
             }
         }
-        Ok(())
-    }
-
-    /// Interactive mode without initial database connection
-    async fn run_interactive_mode_no_connection(&mut self) -> Result<(), CliError> {
-        // Show banner if config allows it
-        if self.config.show_banner {
-            Self::print_banner(&self.config);
-        }
-
-        println!("Welcome to DBCrust! No database connected yet.");
-        println!();
-        println!("To connect to a database, provide a connection URL:");
-        println!("  dbc postgres://user@host:5432/database");
-        println!("  dbc session://saved_session_name");
-        println!(
-            "  dbc recent://                        # Interactive recent connection selection"
-        );
-        println!();
-        println!("Examples:");
-        println!("  dbc postgres://user@localhost/mydb");
-        println!("  dbc sqlite:///path/to/file.db");
-        println!("  dbc docker://postgres-container");
-        println!();
-        println!("For more help: dbc --help");
         Ok(())
     }
 

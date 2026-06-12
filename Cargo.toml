@@ -43,6 +43,7 @@ clap = { version = "4.6", features = [
     "derive",
     "std",
     "help",
+    "usage",
     "env",
 ], default-features = false }
 clap_complete = { version = "4.6", default-features = false }

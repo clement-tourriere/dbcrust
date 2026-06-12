@@ -7,6 +7,7 @@ DBCrust — high-performance multi-database interactive client in Rust with Pyth
 ```bash
 mise run build:dev        # dev build
 mise run build            # release build
+mise run install          # install dbcrust + dbc into ~/.cargo/bin
 mise run test             # run tests
 cargo test -- --nocapture # tests with output
 cargo run -- postgres://localhost/test  # run CLI directly
@@ -26,7 +27,9 @@ mise run gui:install && mise run gui:build
 | `src/main.rs` | Entry point, Tokio runtime, CLI orchestration |
 | `src/lib.rs` | PyO3 bindings (`PyDatabase`, `PyConfig`, `run_cli_loop`) |
 | `src/commands.rs` | **Enum-based command system** — all `\cmd` logic lives here |
-| `src/cli.rs` | Clap arg parsing |
+| `src/cli.rs` | Clap arg parsing (no args → prints help; `--update` self-updates) |
+| `src/ai/` | AI assistant (`??` text-to-SQL, `\ai`) — multi-provider via `genai` |
+| `src/update.rs` | `--update`: install-channel detection + GitHub release check |
 | `src/config.rs` | TOML config, `save_with_documentation` must be updated for new fields |
 | `src/prompt.rs` | Reedline interactive REPL |
 | `src/completion.rs` | SQL autocomplete with metadata caching |
