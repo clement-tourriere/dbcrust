@@ -6,6 +6,29 @@ title: "Configuration"
 
 DBCrust stores its configuration in a TOML file located at `~/.config/dbcrust/config.toml`. The configuration is automatically created with sensible defaults when you first run DBCrust.
 
+## 🎛️ Editing Configuration Interactively
+
+You never have to hand-edit the file: the `\config` command (in a session) and the `dbcrust config` subcommand (no connection needed) provide an interactive menu and scriptable get/set access.
+
+```bash
+# From the shell — no database connection required
+dbcrust config                          # interactive menu (sections, SSH tunnel manager)
+dbcrust config show                     # read-only summary
+dbcrust config get logging.level        # print one value
+dbcrust config set default_limit 50     # set and persist a value
+dbcrust config edit                     # open config.toml in $EDITOR, reload on close
+```
+
+```sql
+-- Inside a session, the same via backslash commands
+\config
+\config get
+\config set logging.level debug
+\config edit
+```
+
+The interactive menu includes a dedicated **SSH tunnel patterns** manager: list, add, edit, and remove patterns with regex/target validation, and test a hostname to see which pattern (and tunnel) would apply. All writes preserve the documented config format, comments included.
+
 ## 📍 Configuration Location
 
 ```bash

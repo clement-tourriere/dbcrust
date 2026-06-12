@@ -18,7 +18,11 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
 | `\dt` | List tables | `\dt` |
 | `\d [table]` | Describe table or list all tables | `\d users` |
 | `\c <database>` | Connect to database | `\c production` |
-| `\config` | Show current configuration | `\config` |
+| `\config` | Interactive configuration menu (TTY) | `\config` |
+| `\config show` | Read-only configuration summary | `\config show` |
+| `\config get [key]` | Print one value, or all keys | `\config get logging.level` |
+| `\config set <key> <value>` | Set and persist a value | `\config set default_limit 50` |
+| `\config edit` | Open config.toml in `$EDITOR`, reload on close | `\config edit` |
 
 
 **Display & Output**
@@ -214,6 +218,73 @@ Switches to a different database on the same server.
 ```
 You are now connected to database "production_db" as user "postgres".
 ```
+
+### Configuration Management
+
+#### `\config` - Interactive Configuration Menu
+
+Opens an interactive menu over every section of `~/.config/dbcrust/config.toml` — browse sections, edit values with type-aware prompts (toggles for booleans, pickers for enums, validated text for numbers), and manage SSH tunnel patterns without hand-editing the file. Changes are saved immediately, preserving the documented config format.
+
+```
+> \config
+? Configuration — select a section:
+❯ Display settings          (limit=100, expanded=off)
+  Pager                     (enabled, less -R)
+  Features                  (autocomplete=on, explain=off)
+  Timeouts                  (query=30s, metadata=10s)
+  Vault credential cache    (cache=on)
+  Vector display            (mode=truncated)
+  Complex data display      (mode=truncated)
+  AI assistant              (disabled, model=claude-sonnet-4-6)
+  Logging                   (level=info)
+  History                   (per-session=on)
+  SSH tunnel patterns       (2 patterns)
+  Open config.toml in $EDITOR
+```
+
+The **SSH tunnel patterns** submenu lists configured patterns and offers:
+
+- **Add / Edit / Remove** — prompts validate that the regex compiles and the target parses (`[user[:password]@]host[:port]`; backtick command substitution is accepted without being executed)
+- **Test a hostname** — shows which pattern(s) match a hostname and optionally resolves the tunnel target (asks before executing backtick commands)
+
+In non-interactive contexts (piped output, `-c` command mode), `\config` prints the read-only summary instead of opening the menu.
+
+#### `\config get` / `\config set` - Scriptable Access
+
+```sql
+-- Print every key (passwords in tunnel targets are sanitized)
+\config get
+
+-- Print a single value (bare, script-friendly)
+\config get logging.level
+
+-- Set a value (the value is the rest of the line — spaces allowed)
+\config set logging.level debug
+\config set pager_command less -RFX
+
+-- Clear an optional value
+\config set ai.endpoint ""
+```
+
+Unknown keys suggest the closest matches (`Did you mean: logging.level?`), and values are validated per field: booleans accept `true/false`, `on/off`, `yes/no`, `1/0`; enums list their valid options on error; numbers are range-checked. Display-related changes apply immediately; others note `(takes effect next session)`.
+
+#### `\config edit` - Edit in $EDITOR
+
+Opens `config.toml` in `$EDITOR` (falling back to vim/nano), then reloads the configuration and re-applies runtime settings when the editor closes.
+
+#### `dbcrust config` - CLI Access Without a Connection
+
+The same functionality is available from the shell, with no database connection — useful for adjusting tunnel patterns *before* connecting:
+
+```bash
+dbcrust config                          # interactive menu
+dbcrust config show                     # read-only summary
+dbcrust config get logging.level
+dbcrust config set default_limit 50
+dbcrust config edit                     # open in $EDITOR
+```
+
+Note: a relative SQLite file literally named `config` must be opened as `sqlite://config`.
 
 ### Display Commands
 

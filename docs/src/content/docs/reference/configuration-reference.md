@@ -6,6 +6,8 @@ title: "Configuration Reference"
 
 DBCrust provides extensive configuration options through TOML configuration files, environment variables, and command-line arguments. This reference covers all available settings and their usage.
 
+> **Tip:** you don't need to edit the file by hand. Run `dbcrust config` (no connection needed) or `\config` inside a session for an interactive menu with an SSH-tunnel-pattern manager, or use `\config get <key>` / `\config set <key> <value>` for scriptable access. See [Configuration](/configuration/#-editing-configuration-interactively).
+
 ## 📁 Configuration Files
 
 ### Primary Configuration File

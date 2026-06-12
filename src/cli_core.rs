@@ -275,6 +275,12 @@ impl CliCore {
             return Ok(crate::update::run_update().await);
         }
 
+        // Handle `dbcrust config ...` — no database connection needed
+        if let Some(crate::cli::CliCommand::Config { action }) = &args.subcommand {
+            cli_core.handle_config_subcommand(action)?;
+            return Ok(0);
+        }
+
         // Log system information
         cli_core.log_system_info(&args);
 
@@ -438,18 +444,7 @@ impl CliCore {
                     }
                 }
                 cmd if cmd.starts_with("\\config") => {
-                    println!("Current configuration:");
-                    println!("  Default limit: {}", self.config.default_limit);
-                    println!(
-                        "  Expanded display: {}",
-                        self.config.expanded_display_default
-                    );
-                    println!(
-                        "  Autocomplete enabled: {}",
-                        self.config.autocomplete_enabled
-                    );
-                    println!("  Pager enabled: {}", self.config.pager_enabled);
-                    println!("  Logging level: {}", self.config.logging.level);
+                    self.handle_standalone_config_command(cmd)?;
                 }
                 _ => {
                     eprintln!("Command '{command_trimmed}' requires a database connection");
@@ -460,6 +455,72 @@ impl CliCore {
             }
         }
         Ok(())
+    }
+
+    /// Handle a `\config ...` string without a database connection
+    /// (`dbcrust -c '\config ...'`). Command mode never opens the interactive
+    /// menu — a bare `\config` falls back to the read-only summary.
+    fn handle_standalone_config_command(&mut self, command_str: &str) -> Result<(), CliError> {
+        let command = CommandParser::parse(command_str)
+            .map_err(|e| CliError::CommandError(format!("Command parsing failed: {e}")))?;
+        let result = match command {
+            Command::ConfigMenu | Command::ShowConfig => {
+                Ok(crate::config_editor::render_summary(&self.config))
+            }
+            Command::ConfigGet { key } => {
+                crate::config_editor::get_value(&self.config, key.as_deref())
+            }
+            Command::ConfigSet { key, value } => {
+                crate::config_editor::set_value(&mut self.config, &key, &value)
+            }
+            Command::ConfigEdit => crate::config_editor::edit_in_editor(&mut self.config),
+            _ => {
+                return Err(CliError::CommandError(
+                    "Database connection required for this command".to_string(),
+                ));
+            }
+        };
+        match result {
+            Ok(message) => {
+                println!("{message}");
+                Ok(())
+            }
+            Err(e) => Err(CliError::CommandError(e)),
+        }
+    }
+
+    /// Handle the `dbcrust config [show|get|set|edit]` CLI subcommand —
+    /// no database connection involved. Bare `dbcrust config` opens the
+    /// interactive menu when stdin/stdout are TTYs.
+    fn handle_config_subcommand(
+        &mut self,
+        action: &Option<crate::cli::ConfigAction>,
+    ) -> Result<(), CliError> {
+        use crate::cli::ConfigAction;
+        let result = match action {
+            None => {
+                if crate::config_editor::can_run_interactive() {
+                    crate::config_editor::run_menu(&mut self.config)
+                } else {
+                    Ok(crate::config_editor::render_summary(&self.config))
+                }
+            }
+            Some(ConfigAction::Show) => Ok(crate::config_editor::render_summary(&self.config)),
+            Some(ConfigAction::Get { key }) => {
+                crate::config_editor::get_value(&self.config, key.as_deref())
+            }
+            Some(ConfigAction::Set { key, value }) => {
+                crate::config_editor::set_value(&mut self.config, key, value)
+            }
+            Some(ConfigAction::Edit) => crate::config_editor::edit_in_editor(&mut self.config),
+        };
+        match result {
+            Ok(message) => {
+                println!("{message}");
+                Ok(())
+            }
+            Err(e) => Err(CliError::CommandError(e)),
+        }
     }
 
     /// Print the banner (moved from main.rs)
@@ -986,6 +1047,14 @@ impl CliCore {
         // Parse string command into typed Command enum
         let command = CommandParser::parse(command_str)
             .map_err(|e| CliError::CommandError(format!("Command parsing failed: {e}")))?;
+
+        // Command mode (-c) must never open the interactive menu: a bare
+        // \config falls back to the read-only summary.
+        let command = if command == Command::ConfigMenu {
+            Command::ShowConfig
+        } else {
+            command
+        };
 
         let database = self
             .database
@@ -1740,7 +1809,7 @@ impl CliCore {
             config.ai.enabled = true;
             config.ai.model = model.clone();
             config.ai.endpoint = endpoint;
-            config.save().ok();
+            config.save_with_documentation().ok();
         }
 
         println!(
@@ -1801,7 +1870,7 @@ impl CliCore {
 
         let mut config = config_arc.lock().unwrap();
         config.ai.model = model.clone();
-        config.save().ok();
+        config.save_with_documentation().ok();
         let adapter = crate::ai::provider_for_model(&model);
         println!("Model set to {model} (provider: {}).", adapter.as_str());
     }

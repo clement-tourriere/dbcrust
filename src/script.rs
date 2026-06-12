@@ -5,6 +5,19 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::NamedTempFile;
 
+/// Resolve the user's editor: $EDITOR, falling back to vim/nano (notepad on Windows).
+pub fn resolve_editor() -> String {
+    std::env::var("EDITOR").unwrap_or_else(|_| {
+        if cfg!(target_os = "windows") {
+            "notepad".to_string()
+        } else if Command::new("vim").arg("--version").output().is_ok() {
+            "vim".to_string()
+        } else {
+            "nano".to_string()
+        }
+    })
+}
+
 /// Enter a multiline edit mode for SQL script editing
 ///
 /// This function creates a temporary file with the current script (if any),
@@ -30,15 +43,7 @@ pub fn edit_multiline_script(current_script: &str) -> Result<String, Box<dyn Err
     temp_file.flush()?;
 
     // Determine which editor to use
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| {
-        if cfg!(target_os = "windows") {
-            "notepad".to_string()
-        } else if Command::new("vim").arg("--version").output().is_ok() {
-            "vim".to_string()
-        } else {
-            "nano".to_string()
-        }
-    });
+    let editor = resolve_editor();
 
     // Print a message to indicate the editor being used
     println!("Opening {editor} for multiline editing...");

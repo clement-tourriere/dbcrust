@@ -31,6 +31,7 @@ mise run gui:install && mise run gui:build
 | `src/ai/` | AI assistant (`??` text-to-SQL, `\ai`) — multi-provider via `genai` |
 | `src/update.rs` | `--update`: install-channel detection + GitHub release check |
 | `src/config.rs` | TOML config, `save_with_documentation` must be updated for new fields |
+| `src/config_editor.rs` | Schema-driven `\config` menu/get/set + SSH tunnel manager (`dbcrust config` CLI) |
 | `src/prompt.rs` | Reedline interactive REPL |
 | `src/completion.rs` | SQL autocomplete with metadata caching |
 | `src/format.rs` | Output formatting (table, expanded, JSON, CSV) |
@@ -76,10 +77,12 @@ Never remove the `strum` crate — it powers automatic synchronization across au
 
 ALL interactive prompts MUST use the `inquire` crate (`Select`, `MultiSelect`, `Confirm`, `Text`). Never use raw `stdin`/`stdout` or `println!` for prompts.
 
-### 3. Config — `#[serde(default)]` + update `save_with_documentation`
+### 3. Config — `#[serde(default)]` + `save_with_documentation` + `FieldSpec`
 
 - New config fields require `#[serde(default)]` for backward compatibility.
-- Always update `save_with_documentation()` in `src/config.rs` so the field appears with comments in generated configs.
+- Always update `save_with_documentation()` in `src/config.rs` so the field appears with comments in generated configs. Root-level keys must be written **before** the first `[table]` section or TOML re-parents them.
+- Add a `FieldSpec` entry to the schema in `src/config_editor.rs` (powers `\config` menu/get/set). The sync tests (`test_schema_matches_serialized_config`, `test_documented_save_covers_schema`) fail if either is missed.
+- Persist config with `save_with_documentation()`, never plain `save()` (it strips all comments from the user's file).
 
 ### 4. Storage separation
 

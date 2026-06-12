@@ -97,7 +97,6 @@ impl CommandCompleter for BasicCommandCompleter {
                 | "\\h"
                 | "\\x"
                 | "\\e"
-                | "\\config"
                 | "\\ed"
                 | "\\ecopy"
                 | "\\pager"
@@ -546,6 +545,71 @@ impl CommandCompleter for ConfigCompleter {
                 ];
                 self.build_suggestions_from_items(items, args, pos, true)
             }
+            "\\config" => {
+                let upto = &args[..pos.min(args.len())];
+                let words: Vec<&str> = upto.split_whitespace().collect();
+                // Index of the word being completed (a trailing space starts a new word).
+                let word_index = if upto.is_empty() || upto.ends_with(' ') {
+                    words.len()
+                } else {
+                    words.len() - 1
+                };
+
+                match word_index {
+                    0 => {
+                        let items = vec![
+                            (
+                                "show".to_string(),
+                                "Read-only configuration summary".to_string(),
+                            ),
+                            (
+                                "get".to_string(),
+                                "Print configuration value(s)".to_string(),
+                            ),
+                            ("set".to_string(), "Set a configuration value".to_string()),
+                            (
+                                "edit".to_string(),
+                                "Open config.toml in $EDITOR".to_string(),
+                            ),
+                        ];
+                        self.build_suggestions_from_items(items, args, pos, true)
+                    }
+                    1 if matches!(words.first(), Some(&"get") | Some(&"set")) => {
+                        // Key paths come from the config_editor schema — never hardcode.
+                        let mut items: Vec<(String, String)> = crate::config_editor::schema()
+                            .iter()
+                            .map(|s| (s.path.to_string(), s.help.to_string()))
+                            .collect();
+                        if words.first() == Some(&"get") {
+                            items.push((
+                                "ssh_tunnel_patterns".to_string(),
+                                "List SSH tunnel patterns".to_string(),
+                            ));
+                        }
+                        self.build_suggestions_from_items(items, args, pos, true)
+                    }
+                    2 if words.first() == Some(&"set") => {
+                        // Complete the value for enum/bool keys.
+                        let key = words.get(1).copied().unwrap_or("");
+                        let items: Vec<(String, String)> =
+                            match crate::config_editor::find_spec(key).map(|s| &s.kind) {
+                                Some(crate::config_editor::FieldKind::Enum(options)) => options
+                                    .iter()
+                                    .map(|o| (o.to_string(), format!("Set {key} = {o}")))
+                                    .collect(),
+                                Some(crate::config_editor::FieldKind::Bool) => {
+                                    vec![
+                                        ("true".to_string(), format!("Enable {key}")),
+                                        ("false".to_string(), format!("Disable {key}")),
+                                    ]
+                                }
+                                _ => Vec::new(),
+                            };
+                        self.build_suggestions_from_items(items, args, pos, true)
+                    }
+                    _ => Vec::new(),
+                }
+            }
             "\\ai" => {
                 let items = vec![
                     (
@@ -577,7 +641,7 @@ impl CommandCompleter for ConfigCompleter {
     fn handles_command(&self, command: &str) -> bool {
         matches!(
             command,
-            "\\setmulti" | "\\csthreshold" | "\\vd" | "\\cd" | "\\ai"
+            "\\setmulti" | "\\csthreshold" | "\\vd" | "\\cd" | "\\ai" | "\\config"
         )
     }
 

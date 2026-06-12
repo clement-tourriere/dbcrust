@@ -1,5 +1,5 @@
 use crate::password_sanitizer::{sanitize_connection_url, sanitize_ssh_tunnel_string};
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 
 /// DBCrust - A blazing-fast multi-database client
 #[derive(Parser, Clone)]
@@ -13,6 +13,8 @@ use clap::{Parser, ValueEnum};
   dbcrust session://prod            # open a saved session
   dbcrust docker://my-container/mydb
   dbcrust sqlite:///path/to/file.db
+  dbcrust config                    # interactive configuration menu (no connection)
+  dbcrust config set logging.level debug
   dbcrust --update                  # update dbcrust to the latest release")]
 pub struct Args {
     /// Database connection URL
@@ -44,6 +46,43 @@ pub struct Args {
     /// Check for a newer release and update dbcrust in place
     #[arg(long)]
     pub update: bool,
+
+    /// Utility subcommands that run without a database connection
+    #[command(subcommand)]
+    pub subcommand: Option<CliCommand>,
+}
+
+/// Top-level subcommands. A bare word matching a subcommand name wins over the
+/// positional URL — a relative SQLite file literally named `config` must be
+/// opened as `sqlite://config`.
+#[derive(Subcommand, Clone, Debug)]
+pub enum CliCommand {
+    /// View and edit DBCrust configuration (no database connection needed)
+    Config {
+        #[command(subcommand)]
+        action: Option<ConfigAction>,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug)]
+pub enum ConfigAction {
+    /// Print a summary of the current configuration
+    Show,
+    /// Print one value, or all keys when no key is given
+    Get {
+        /// Dotted key, e.g. logging.level
+        key: Option<String>,
+    },
+    /// Set a configuration value
+    Set {
+        /// Dotted key, e.g. logging.level
+        key: String,
+        /// New value (quote values containing spaces)
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+    },
+    /// Open config.toml in $EDITOR and reload it on close
+    Edit,
 }
 
 impl std::fmt::Debug for Args {
@@ -66,6 +105,7 @@ impl std::fmt::Debug for Args {
             .field("completions", &self.completions)
             .field("command", &self.command)
             .field("update", &self.update)
+            .field("subcommand", &self.subcommand)
             .finish()
     }
 }
@@ -141,5 +181,65 @@ mod tests {
     fn test_completions() {
         let args = Args::try_parse_from(["dbcrust", "--completions", "bash"]).unwrap();
         assert_eq!(args.completions, Some(Shell::Bash));
+    }
+
+    #[test]
+    fn test_config_subcommand_bare() {
+        let args = Args::try_parse_from(["dbcrust", "config"]).unwrap();
+        assert!(matches!(
+            args.subcommand,
+            Some(CliCommand::Config { action: None })
+        ));
+        assert!(args.connection_url.is_none());
+    }
+
+    #[test]
+    fn test_config_subcommand_get() {
+        let args = Args::try_parse_from(["dbcrust", "config", "get", "logging.level"]).unwrap();
+        let Some(CliCommand::Config {
+            action: Some(ConfigAction::Get { key }),
+        }) = args.subcommand
+        else {
+            panic!("expected config get subcommand");
+        };
+        assert_eq!(key.as_deref(), Some("logging.level"));
+    }
+
+    #[test]
+    fn test_config_subcommand_set() {
+        let args =
+            Args::try_parse_from(["dbcrust", "config", "set", "default_limit", "50"]).unwrap();
+        let Some(CliCommand::Config {
+            action: Some(ConfigAction::Set { key, value }),
+        }) = args.subcommand
+        else {
+            panic!("expected config set subcommand");
+        };
+        assert_eq!(key, "default_limit");
+        assert_eq!(value, "50");
+    }
+
+    #[test]
+    fn test_config_subcommand_set_hyphen_value() {
+        let args = Args::try_parse_from(["dbcrust", "config", "set", "pager_command", "less -RFX"])
+            .unwrap();
+        let Some(CliCommand::Config {
+            action: Some(ConfigAction::Set { value, .. }),
+        }) = args.subcommand
+        else {
+            panic!("expected config set subcommand");
+        };
+        assert_eq!(value, "less -RFX");
+    }
+
+    #[test]
+    fn test_connection_url_still_wins_over_subcommand() {
+        // A URL must not be mistaken for a subcommand.
+        let args = Args::try_parse_from(["dbcrust", "postgres://localhost/test"]).unwrap();
+        assert!(args.subcommand.is_none());
+        assert_eq!(
+            args.connection_url.as_deref(),
+            Some("postgres://localhost/test")
+        );
     }
 }

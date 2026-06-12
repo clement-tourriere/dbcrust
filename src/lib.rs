@@ -10,6 +10,7 @@ pub mod completion;
 pub mod completion_provider; // Database-agnostic completion trait
 pub mod complex_display; // Unified display system for complex data types
 pub mod config;
+pub mod config_editor; // Schema-driven \config menu, get/set, tunnel manager
 pub mod database; // New database abstraction layer
 pub mod database_clickhouse; // ClickHouse implementation
 pub mod database_datafusion; // DataFusion implementation for file formats (Parquet, CSV, JSON)
@@ -446,10 +447,10 @@ impl PyConfig {
         self.inner.expanded_display_default = expanded;
     }
 
-    /// Save the configuration.
+    /// Save the configuration (documented format, comments preserved).
     pub fn save(&self) -> PyResult<()> {
         self.inner
-            .save()
+            .save_with_documentation()
             .map_err(|e| DbcrustConfigError::new_err(format!("Failed to save config: {e}")))
     }
 }
@@ -978,6 +979,8 @@ pub async fn run_interactive_cli(url: &str) -> Result<(), Box<dyn std::error::Er
         command: Vec::new(),
         ssh_tunnel: None,
         completions: None,
+        update: false,
+        subcommand: None,
     };
 
     // Run the CLI with the constructed args

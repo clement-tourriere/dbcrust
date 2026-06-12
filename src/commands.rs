@@ -38,6 +38,17 @@ pub enum Command {
     ToggleExplainTuiMode,
     ShowConfig,
 
+    // Configuration management (\config)
+    ConfigMenu,
+    ConfigGet {
+        key: Option<String>,
+    },
+    ConfigSet {
+        key: String,
+        value: String,
+    },
+    ConfigEdit,
+
     // Script handling
     WriteScript {
         filename: String,
@@ -450,7 +461,7 @@ impl CommandShortcut {
             CommandShortcut::X => "Toggle expanded display",
             CommandShortcut::E => "Toggle EXPLAIN mode",
             CommandShortcut::Ev => "Toggle EXPLAIN TUI visualizer mode",
-            CommandShortcut::Config => "Show configuration",
+            CommandShortcut::Config => "Configuration menu (show|get|set|edit)",
             // Script handling
             CommandShortcut::W => "Write script to file",
             CommandShortcut::I => "Load script from file",
@@ -650,7 +661,50 @@ impl CommandParser {
             "x" => Ok(Command::ToggleExpandedDisplay),
             "e" => Ok(Command::ToggleExplainMode),
             "ev" => Ok(Command::ToggleExplainTuiMode),
-            "config" => Ok(Command::ShowConfig),
+            "config" => {
+                if args.is_empty() {
+                    Ok(Command::ConfigMenu)
+                } else {
+                    let mut sub_parts = args.splitn(2, ' ');
+                    let subcmd = sub_parts.next().unwrap_or("");
+                    let sub_args = sub_parts.next().unwrap_or("").trim();
+
+                    match subcmd {
+                        "show" => Ok(Command::ShowConfig),
+                        "get" => Ok(Command::ConfigGet {
+                            key: if sub_args.is_empty() {
+                                None
+                            } else {
+                                Some(sub_args.to_string())
+                            },
+                        }),
+                        "set" => {
+                            let mut kv = sub_args.splitn(2, ' ');
+                            let key = kv.next().unwrap_or("").trim();
+                            // The value is the remainder of the line, so it may contain spaces.
+                            let value = kv.next().unwrap_or("").trim();
+                            if key.is_empty() {
+                                Err(CommandError::MissingArgument(
+                                    "key (usage: \\config set <key> <value>)".to_string(),
+                                ))
+                            } else if value.is_empty() {
+                                Err(CommandError::MissingArgument(format!(
+                                    "value (usage: \\config set {key} <value>)"
+                                )))
+                            } else {
+                                Ok(Command::ConfigSet {
+                                    key: key.to_string(),
+                                    value: value.to_string(),
+                                })
+                            }
+                        }
+                        "edit" => Ok(Command::ConfigEdit),
+                        _ => Err(CommandError::InvalidSyntax(format!(
+                            "Unknown \\config subcommand: {subcmd}. Use: show|get|set|edit"
+                        ))),
+                    }
+                }
+            }
 
             // Script handling
             "w" => {
@@ -1245,52 +1299,45 @@ impl CommandExecutor for Command {
 
             Command::ShowConfig => {
                 // Never Debug-dump the whole Config: it embeds decrypted vault
-                // credentials and other secrets in memory.
-                let pager_threshold = if config.pager_threshold_lines == 0 {
-                    "terminal height".to_string()
-                } else {
-                    config.pager_threshold_lines.to_string()
-                };
-                let output = format!(
-                    "Configuration (~/.config/dbcrust/config.toml):\n\
-                     \x20 default_limit: {}\n\
-                     \x20 expanded_display_default: {}\n\
-                     \x20 autocomplete_enabled: {}\n\
-                     \x20 explain_mode_default: {}\n\
-                     \x20 column_selection_threshold: {}\n\
-                     \x20 pager_enabled: {} (command: {}, threshold: {})\n\
-                     \x20 show_banner: {}\n\
-                     \x20 query_timeout_seconds: {}\n\
-                     \x20 metadata_timeout_seconds: {}\n\
-                     \x20 max_recent_connections: {}\n\
-                     \x20 logging.level: {}\n\
-                     \x20 ai.enabled: {} (model: {})\n\
-                     \x20 vector_display.display_mode: {}\n\
-                     \x20 complex_display.display_mode: {}\n\
-                     \x20 ssh_tunnel_patterns: {}\n\
-                     \x20 named_queries: {}",
-                    config.default_limit,
-                    config.expanded_display_default,
-                    config.autocomplete_enabled,
-                    config.explain_mode_default,
-                    config.column_selection_threshold,
-                    config.pager_enabled,
-                    config.pager_command,
-                    pager_threshold,
-                    config.show_banner,
-                    config.query_timeout_seconds,
-                    config.metadata_timeout_seconds,
-                    config.max_recent_connections,
-                    config.logging.level,
-                    config.ai.enabled,
-                    config.ai.model,
-                    config.vector_display.display_mode,
-                    config.complex_display.display_mode,
-                    config.ssh_tunnel_patterns.len(),
-                    config.named_queries.len(),
-                );
-                Ok(CommandResult::Output(output))
+                // credentials and other secrets in memory. The schema-driven
+                // summary only renders whitelisted fields (passwords sanitized).
+                Ok(CommandResult::Output(crate::config_editor::render_summary(
+                    config,
+                )))
             }
+
+            Command::ConfigMenu => {
+                if crate::config_editor::can_run_interactive() {
+                    match crate::config_editor::run_menu(config) {
+                        Ok(message) => Ok(CommandResult::Output(message)),
+                        Err(e) => Ok(CommandResult::Error(e)),
+                    }
+                } else {
+                    // No TTY (piped/scripted use): fall back to the summary.
+                    Ok(CommandResult::Output(crate::config_editor::render_summary(
+                        config,
+                    )))
+                }
+            }
+
+            Command::ConfigGet { key } => {
+                match crate::config_editor::get_value(config, key.as_deref()) {
+                    Ok(output) => Ok(CommandResult::Output(output)),
+                    Err(e) => Ok(CommandResult::Error(e)),
+                }
+            }
+
+            Command::ConfigSet { key, value } => {
+                match crate::config_editor::set_value(config, key, value) {
+                    Ok(message) => Ok(CommandResult::Output(message)),
+                    Err(e) => Ok(CommandResult::Error(e)),
+                }
+            }
+
+            Command::ConfigEdit => match crate::config_editor::edit_in_editor(config) {
+                Ok(message) => Ok(CommandResult::Output(message)),
+                Err(e) => Ok(CommandResult::Error(e)),
+            },
 
             Command::SchemaViewer => {
                 // Check if TUI can run
@@ -2036,7 +2083,7 @@ impl CommandExecutor for Command {
             Command::SetMultilineIndicator { indicator } => {
                 config.multiline_prompt_indicator = indicator.clone();
                 config
-                    .save()
+                    .save_with_documentation()
                     .map_err(|e| CommandError::DatabaseError(e.into()))?;
                 Ok(CommandResult::Output(format!(
                     "Multiline indicator set to: {indicator} (will take effect on next restart)"
@@ -2046,7 +2093,7 @@ impl CommandExecutor for Command {
             Command::TogglePager => {
                 config.pager_enabled = !config.pager_enabled;
                 config
-                    .save()
+                    .save_with_documentation()
                     .map_err(|e| CommandError::DatabaseError(e.into()))?;
                 let status = if config.pager_enabled {
                     "enabled"
@@ -2059,7 +2106,7 @@ impl CommandExecutor for Command {
             Command::ToggleBanner => {
                 config.show_banner = !config.show_banner;
                 config
-                    .save()
+                    .save_with_documentation()
                     .map_err(|e| CommandError::DatabaseError(e.into()))?;
                 let status = if config.show_banner {
                     "enabled"
@@ -2072,7 +2119,7 @@ impl CommandExecutor for Command {
             Command::ToggleServerInfo => {
                 config.show_server_info = !config.show_server_info;
                 config
-                    .save()
+                    .save_with_documentation()
                     .map_err(|e| CommandError::DatabaseError(e.into()))?;
                 let status = if config.show_server_info {
                     "enabled"
@@ -2087,7 +2134,7 @@ impl CommandExecutor for Command {
             Command::ToggleAutocomplete => {
                 config.autocomplete_enabled = !config.autocomplete_enabled;
                 config
-                    .save()
+                    .save_with_documentation()
                     .map_err(|e| CommandError::DatabaseError(e.into()))?;
                 let status = if config.autocomplete_enabled {
                     "enabled"
@@ -2111,7 +2158,7 @@ impl CommandExecutor for Command {
             Command::SetColumnSelectionThreshold { threshold } => {
                 config.column_selection_threshold = *threshold;
                 config
-                    .save()
+                    .save_with_documentation()
                     .map_err(|e| CommandError::DatabaseError(e.into()))?;
                 Ok(CommandResult::Output(format!(
                     "Column selection threshold set to: {threshold}"
@@ -2136,7 +2183,7 @@ impl CommandExecutor for Command {
                 config.explain_mode_default = false;
                 config.expanded_display_default = false;
                 config
-                    .save()
+                    .save_with_documentation()
                     .map_err(|e| CommandError::DatabaseError(e.into()))?;
                 Ok(CommandResult::Output(
                     "View settings reset to defaults.".to_string(),
@@ -2165,7 +2212,7 @@ impl CommandExecutor for Command {
                         );
 
                         config
-                            .save()
+                            .save_with_documentation()
                             .map_err(|e| CommandError::DatabaseError(e.into()))?;
                         Ok(CommandResult::Output(format!(
                             "Vector display mode set to: {mode}"
@@ -2201,7 +2248,7 @@ impl CommandExecutor for Command {
                 crate::vector_display::set_global_vector_config(config.vector_display.clone());
 
                 config
-                    .save()
+                    .save_with_documentation()
                     .map_err(|e| CommandError::DatabaseError(e.into()))?;
                 let status = if config.vector_display.show_statistics {
                     "enabled"
@@ -2927,17 +2974,17 @@ impl CommandExecutor for Command {
             Command::AiToggle { state } => match state {
                 Some(true) => {
                     config.ai.enabled = true;
-                    config.save().ok();
+                    config.save_with_documentation().ok();
                     Ok(CommandResult::Output("AI assistant enabled.".to_string()))
                 }
                 Some(false) => {
                     config.ai.enabled = false;
-                    config.save().ok();
+                    config.save_with_documentation().ok();
                     Ok(CommandResult::Output("AI assistant disabled.".to_string()))
                 }
                 None => {
                     config.ai.enabled = !config.ai.enabled;
-                    config.save().ok();
+                    config.save_with_documentation().ok();
                     let status = if config.ai.enabled {
                         "enabled"
                     } else {
@@ -2971,6 +3018,10 @@ impl CommandExecutor for Command {
             Command::ToggleExplainMode => "Toggle automatic EXPLAIN for queries",
             Command::ToggleExplainTuiMode => "Toggle TUI explain visualizer mode",
             Command::ShowConfig => "Show current configuration",
+            Command::ConfigMenu => "Interactive configuration menu",
+            Command::ConfigGet { .. } => "Print configuration value(s)",
+            Command::ConfigSet { .. } => "Set a configuration value",
+            Command::ConfigEdit => "Open config.toml in $EDITOR and reload",
             Command::ListSessions => "List saved sessions",
             Command::SaveSession { .. } => "Save current connection as a session",
             Command::DeleteSession { .. } => "Delete a saved session",
@@ -3060,7 +3111,11 @@ impl CommandExecutor for Command {
             Command::ToggleExpandedDisplay => "\\x",
             Command::ToggleExplainMode => "\\e",
             Command::ToggleExplainTuiMode => "\\ev",
-            Command::ShowConfig => "\\config",
+            Command::ShowConfig => "\\config show",
+            Command::ConfigMenu => "\\config",
+            Command::ConfigGet { .. } => "\\config get [key]",
+            Command::ConfigSet { .. } => "\\config set <key> <value>",
+            Command::ConfigEdit => "\\config edit",
             Command::WriteScript { .. } => "\\w <filename>",
             Command::LoadScript { .. } => "\\i <filename>",
             Command::EditMultiline => "\\ed",
@@ -3147,7 +3202,11 @@ impl CommandExecutor for Command {
             Command::ToggleExpandedDisplay
             | Command::ToggleExplainMode
             | Command::ToggleExplainTuiMode
-            | Command::ShowConfig => CommandCategory::DisplayOptions,
+            | Command::ShowConfig
+            | Command::ConfigMenu
+            | Command::ConfigGet { .. }
+            | Command::ConfigSet { .. }
+            | Command::ConfigEdit => CommandCategory::DisplayOptions,
             Command::WriteScript { .. }
             | Command::LoadScript { .. }
             | Command::EditMultiline
@@ -3868,8 +3927,45 @@ mod tests {
         );
         assert_eq!(
             CommandParser::parse("\\config").unwrap(),
-            Command::ShowConfig
+            Command::ConfigMenu
         );
+    }
+
+    #[rstest::rstest]
+    #[case("\\config show", Command::ShowConfig)]
+    #[case("\\config get", Command::ConfigGet { key: None })]
+    #[case(
+        "\\config get logging.level",
+        Command::ConfigGet { key: Some("logging.level".to_string()) }
+    )]
+    #[case(
+        "\\config set logging.level debug",
+        Command::ConfigSet { key: "logging.level".to_string(), value: "debug".to_string() }
+    )]
+    // The value is the remainder of the line — spaces are preserved.
+    #[case(
+        "\\config set pager_command less -RFX",
+        Command::ConfigSet { key: "pager_command".to_string(), value: "less -RFX".to_string() }
+    )]
+    #[case("\\config edit", Command::ConfigEdit)]
+    fn test_config_subcommand_parsing(#[case] input: &str, #[case] expected: Command) {
+        assert_eq!(CommandParser::parse(input).unwrap(), expected);
+    }
+
+    #[test]
+    fn test_config_subcommand_errors() {
+        assert!(matches!(
+            CommandParser::parse("\\config set"),
+            Err(CommandError::MissingArgument(_))
+        ));
+        assert!(matches!(
+            CommandParser::parse("\\config set default_limit"),
+            Err(CommandError::MissingArgument(_))
+        ));
+        assert!(matches!(
+            CommandParser::parse("\\config bogus"),
+            Err(CommandError::InvalidSyntax(_))
+        ));
     }
 
     #[test]

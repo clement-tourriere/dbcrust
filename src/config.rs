@@ -585,6 +585,9 @@ pub struct Config {
     pub column_selection_default_all: bool,
     #[serde(default = "default_test_named_query_before_saving")]
     pub test_named_query_before_saving: bool,
+    /// Frozen legacy field — real named queries live in `named_queries.toml`
+    /// (`named_queries_storage`). Kept only so old config files still parse;
+    /// `save_with_documentation` intentionally does not write it.
     #[serde(default)]
     pub named_queries: HashMap<String, String>,
     #[serde(default)]
@@ -1443,6 +1446,9 @@ impl Config {
         }
     }
 
+    /// Write the config as bare TOML, WITHOUT the documentation comments.
+    /// Prefer `save_with_documentation()` — this variant flattens the
+    /// user-facing documented config file.
     pub fn save(&self) -> io::Result<()> {
         if let Some(config_path) = get_config_path() {
             ensure_config_dir(&config_path)?;
@@ -1480,7 +1486,18 @@ impl Config {
 
         if let Some(config_path) = get_config_path() {
             ensure_config_dir(&config_path)?;
+            let content = self.render_documented_config();
+            let mut file = File::create(&config_path)?;
+            file.write_all(content.as_bytes())?;
+        }
+        Ok(())
+    }
 
+    /// Render the fully-documented config file content (what
+    /// `save_with_documentation` writes). Separate from the save itself so
+    /// tests can verify field completeness without touching the filesystem.
+    pub fn render_documented_config(&self) -> String {
+        {
             let mut content = String::new();
 
             // Header
@@ -1602,6 +1619,35 @@ impl Config {
                 self.metadata_timeout_seconds
             ));
 
+            // Vault Settings — root-level keys, MUST stay above the first
+            // [table] section or TOML re-parents them into that table.
+            content.push_str("# ================================================================================\n");
+            content.push_str("# VAULT INTEGRATION\n");
+            content.push_str("# HashiCorp Vault credential caching settings\n");
+            content.push_str("# ================================================================================\n\n");
+
+            content.push_str("# Enable Vault credential caching (default: true)\n");
+            content.push_str(&format!(
+                "vault_credential_cache_enabled = {}\n\n",
+                self.vault_credential_cache_enabled
+            ));
+
+            content.push_str(
+                "# Renew credentials when this fraction of TTL remains (default: 0.25 = 25%)\n",
+            );
+            content.push_str(&format!(
+                "vault_cache_renewal_threshold = {}\n\n",
+                self.vault_cache_renewal_threshold
+            ));
+
+            content.push_str(
+                "# Don't cache credentials with TTL less than this (seconds, default: 300)\n",
+            );
+            content.push_str(&format!(
+                "vault_cache_min_ttl_seconds = {}\n\n",
+                self.vault_cache_min_ttl_seconds
+            ));
+
             // Vector Display Settings
             content.push_str("# ================================================================================\n");
             content.push_str("# VECTOR DISPLAY SETTINGS\n");
@@ -1650,6 +1696,18 @@ impl Config {
             content.push_str(&format!(
                 "show_dimensions = {}\n\n",
                 self.vector_display.show_dimensions
+            ));
+
+            content.push_str("# Elements per row in full-mode matrix layout (default: 8)\n");
+            content.push_str(&format!(
+                "full_elements_per_row = {}\n\n",
+                self.vector_display.full_elements_per_row
+            ));
+
+            content.push_str("# Show row numbers in full-mode matrix layout (default: true)\n");
+            content.push_str(&format!(
+                "full_show_row_numbers = {}\n\n",
+                self.vector_display.full_show_row_numbers
             ));
 
             // Complex Data Display Settings
@@ -1784,34 +1842,6 @@ impl Config {
             );
             content.push_str(&format!("history_length = {}\n\n", self.ai.history_length));
 
-            // Vault Settings
-            content.push_str("# ================================================================================\n");
-            content.push_str("# VAULT INTEGRATION\n");
-            content.push_str("# HashiCorp Vault credential caching settings\n");
-            content.push_str("# ================================================================================\n\n");
-
-            content.push_str("# Enable Vault credential caching (default: true)\n");
-            content.push_str(&format!(
-                "vault_credential_cache_enabled = {}\n\n",
-                self.vault_credential_cache_enabled
-            ));
-
-            content.push_str(
-                "# Renew credentials when this fraction of TTL remains (default: 0.25 = 25%)\n",
-            );
-            content.push_str(&format!(
-                "vault_cache_renewal_threshold = {}\n\n",
-                self.vault_cache_renewal_threshold
-            ));
-
-            content.push_str(
-                "# Don't cache credentials with TTL less than this (seconds, default: 300)\n",
-            );
-            content.push_str(&format!(
-                "vault_cache_min_ttl_seconds = {}\n\n",
-                self.vault_cache_min_ttl_seconds
-            ));
-
             // NOW ADD TABLE SECTIONS AFTER ALL ROOT-LEVEL FIELDS
             // ================================================================================
 
@@ -1888,10 +1918,8 @@ impl Config {
                 self.history.cleanup_after_days
             ));
 
-            let mut file = File::create(&config_path)?;
-            file.write_all(content.as_bytes())?;
+            content
         }
-        Ok(())
     }
 
     /// Check if the config file contains all expected fields
@@ -1927,6 +1955,9 @@ impl Config {
             "[vector_display]",
             "[complex_display]",
             "[ai]",
+            // Triggers a one-time regeneration for configs written before the
+            // [vector_display] gap + vault-keys-inside-[ai] placement fixes.
+            "full_show_row_numbers",
         ];
 
         // Check if all required fields are present in the file content
