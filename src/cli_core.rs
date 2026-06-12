@@ -224,6 +224,42 @@ fn resolve_named_query(
     None
 }
 
+/// Marker: the user pressed Ctrl-C inside an interactive AI wizard. Callers
+/// must abort the whole flow without saving anything.
+struct WizardCancelled;
+
+/// Map one inquire prompt result to wizard semantics: Esc skips the step
+/// (`Ok(None)`), Ctrl-C aborts the whole wizard (`Err(WizardCancelled)`).
+fn wizard_step<T>(res: Result<T, inquire::InquireError>) -> Result<Option<T>, WizardCancelled> {
+    match res {
+        Ok(v) => Ok(Some(v)),
+        Err(inquire::InquireError::OperationCanceled) => Ok(None),
+        Err(inquire::InquireError::OperationInterrupted) => Err(WizardCancelled),
+        Err(e) => {
+            eprintln!("Prompt error: {e}");
+            Err(WizardCancelled)
+        }
+    }
+}
+
+/// Drop key events stranded in crossterm's process-global event queue by an
+/// interrupted inquire prompt. inquire and reedline share that queue (single
+/// crossterm copy), so without this a rapid Ctrl-C inside a wizard instantly
+/// fails the next inquire prompt and leaks into reedline's next read_line,
+/// re-rendering the REPL prompt twice ("db=> =>").
+fn drain_stale_terminal_events() {
+    while crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+        let _ = crossterm::event::read();
+    }
+}
+
+/// Single exit path for a cancelled AI wizard: clean the terminal state so
+/// reedline repaints on a fresh line with no stale key events.
+fn cancel_ai_wizard() {
+    drain_stale_terminal_events();
+    println!("\nCancelled — nothing was saved.");
+}
+
 impl CliCore {
     /// Create a new CLI core instance
     pub fn new() -> Self {
@@ -1676,22 +1712,24 @@ impl CliCore {
 
         // Determine whether to execute; writes never default to Yes
         let is_read_only = crate::ai::streaming::is_select_query(&sql);
-        let should_execute = match config.ai.execution_mode {
-            crate::ai::config::AiExecutionMode::Confirm => {
-                inquire::Confirm::new("Execute this SQL?")
-                    .with_default(is_read_only)
-                    .prompt()
-                    .unwrap_or(false)
+        // Esc/Ctrl-C collapse to "do not execute" (the safe default), but stale
+        // terminal events must still be drained or they leak into the REPL.
+        let confirm_or_no = |prompt: inquire::Confirm| match prompt.prompt() {
+            Ok(v) => v,
+            Err(_) => {
+                drain_stale_terminal_events();
+                false
             }
+        };
+        let should_execute = match config.ai.execution_mode {
+            crate::ai::config::AiExecutionMode::Confirm => confirm_or_no(
+                inquire::Confirm::new("Execute this SQL?").with_default(is_read_only),
+            ),
             crate::ai::config::AiExecutionMode::AutoSelect => {
-                if is_read_only {
-                    true
-                } else {
-                    inquire::Confirm::new("Execute this write query?")
-                        .with_default(false)
-                        .prompt()
-                        .unwrap_or(false)
-                }
+                is_read_only
+                    || confirm_or_no(
+                        inquire::Confirm::new("Execute this write query?").with_default(false),
+                    )
             }
             crate::ai::config::AiExecutionMode::AutoExecute => true,
         };
@@ -1704,8 +1742,11 @@ impl CliCore {
         Ok(())
     }
 
-    /// Prompt for an API key and persist it for `adapter`. Returns false if cancelled.
-    fn configure_provider_key(adapter: genai::adapter::AdapterKind) -> bool {
+    /// Prompt for an API key and persist it for `adapter`. `Ok(false)` means the
+    /// key step was skipped (Esc / empty input) — the wizard may continue.
+    fn configure_provider_key(
+        adapter: genai::adapter::AdapterKind,
+    ) -> Result<bool, WizardCancelled> {
         use crate::ai::key_storage::{self, KeyStorageMethod, store_api_key};
 
         if !key_storage::requires_api_key(adapter) {
@@ -1713,7 +1754,7 @@ impl CliCore {
                 "{} runs locally and does not require an API key.",
                 adapter.as_str()
             );
-            return true;
+            return Ok(true);
         }
 
         if let Some(env_name) = key_storage::env_var_name(adapter) {
@@ -1724,14 +1765,15 @@ impl CliCore {
             );
         }
 
-        let api_key = match inquire::Password::new("Enter API key:")
-            .without_confirmation()
-            .prompt()
-        {
-            Ok(key) if !key.is_empty() => key,
+        let api_key = match wizard_step(
+            inquire::Password::new("Enter API key:")
+                .without_confirmation()
+                .prompt(),
+        )? {
+            Some(key) if !key.is_empty() => key,
             _ => {
                 println!("Skipped API key configuration.");
-                return false;
+                return Ok(false);
             }
         };
 
@@ -1740,67 +1782,86 @@ impl CliCore {
             "Encrypted file",
             "Environment variable (show command)",
         ];
-        let method =
-            match inquire::Select::new("How to store the API key?", storage_options).prompt() {
-                Ok("OS Keychain") => KeyStorageMethod::OsKeyring,
-                Ok("Encrypted file") => KeyStorageMethod::EncryptedFile,
-                Ok(_) => KeyStorageMethod::EnvVarHint,
-                Err(_) => return false,
-            };
+        let method = match wizard_step(
+            inquire::Select::new("How to store the API key?", storage_options).prompt(),
+        )? {
+            Some("OS Keychain") => KeyStorageMethod::OsKeyring,
+            Some("Encrypted file") => KeyStorageMethod::EncryptedFile,
+            Some(_) => KeyStorageMethod::EnvVarHint,
+            None => {
+                println!("API key not stored.");
+                return Ok(false);
+            }
+        };
 
         match store_api_key(adapter, &api_key, &method) {
             Ok(()) => {
                 if method != KeyStorageMethod::EnvVarHint {
                     println!("API key stored successfully via {method}.");
                 }
-                true
+                Ok(true)
             }
             Err(e) => {
                 eprintln!("Failed to store API key: {e}");
-                false
+                Ok(false)
             }
         }
     }
 
-    /// Interactively pick a provider from the curated wizard list. Returns None if cancelled.
-    fn select_provider(prompt: &str) -> Option<genai::adapter::AdapterKind> {
+    /// Interactively pick a provider from the curated wizard list. This is the
+    /// first structural step of a wizard, so Esc aborts just like Ctrl-C.
+    fn select_provider(prompt: &str) -> Result<genai::adapter::AdapterKind, WizardCancelled> {
         let providers = crate::ai::suggested_providers();
         let names: Vec<String> = providers.iter().map(|p| p.as_str().to_string()).collect();
         let names_ref: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
-        match inquire::Select::new(prompt, names_ref.clone()).prompt() {
-            Ok(choice) => Some(providers[names_ref.iter().position(|&n| n == choice).unwrap_or(0)]),
-            Err(_) => None,
+        match wizard_step(inquire::Select::new(prompt, names_ref.clone()).prompt())? {
+            Some(choice) => {
+                Ok(providers[names_ref.iter().position(|&n| n == choice).unwrap_or(0)])
+            }
+            None => Err(WizardCancelled),
         }
     }
 
     /// Handle \ai setup - interactive setup wizard
     async fn handle_ai_setup(&mut self, config_arc: &Arc<Mutex<DbCrustConfig>>) {
-        // Provider selection is a UX convenience — any genai model works.
-        let Some(adapter) = Self::select_provider("Select AI provider:") else {
-            println!("Setup cancelled.");
-            return;
-        };
+        if let Err(WizardCancelled) = self.run_ai_setup_wizard(config_arc).await {
+            cancel_ai_wizard();
+        }
+    }
 
-        Self::configure_provider_key(adapter);
+    /// The actual `\ai setup` flow. Every prompt propagates Ctrl-C via `?`, so
+    /// config is only touched when the user completes the whole wizard.
+    async fn run_ai_setup_wizard(
+        &mut self,
+        config_arc: &Arc<Mutex<DbCrustConfig>>,
+    ) -> Result<(), WizardCancelled> {
+        // Provider selection is a UX convenience — any genai model works.
+        let adapter = Self::select_provider("Select AI provider:")?;
+
+        Self::configure_provider_key(adapter)?;
 
         // Model name (free text — the provider is inferred from it).
         let current_model = config_arc.lock().unwrap().ai.model.clone();
-        let model = match inquire::Text::new("Model:")
-            .with_default(&current_model)
-            .with_help_message("e.g. claude-sonnet-4-6, gpt-4o, gemini-2.5-pro, ollama::llama3.1")
-            .prompt()
-        {
-            Ok(m) if !m.trim().is_empty() => m.trim().to_string(),
+        let model = match wizard_step(
+            inquire::Text::new("Model:")
+                .with_default(&current_model)
+                .with_help_message(
+                    "e.g. claude-sonnet-4-6, gpt-4o, gemini-2.5-pro, ollama::llama3.1",
+                )
+                .prompt(),
+        )? {
+            Some(m) if !m.trim().is_empty() => m.trim().to_string(),
             _ => current_model,
         };
 
         // Optional custom endpoint (self-hosted / OpenAI-compatible gateways).
-        let endpoint = match inquire::Text::new("Custom endpoint URL (optional):")
-            .with_default("")
-            .with_help_message("Leave empty to use the provider's default endpoint")
-            .prompt()
-        {
-            Ok(u) if !u.trim().is_empty() => Some(u.trim().to_string()),
+        let endpoint = match wizard_step(
+            inquire::Text::new("Custom endpoint URL (optional):")
+                .with_default("")
+                .with_help_message("Leave empty to use the provider's default endpoint")
+                .prompt(),
+        )? {
+            Some(u) if !u.trim().is_empty() => Some(u.trim().to_string()),
             _ => None,
         };
 
@@ -1815,6 +1876,7 @@ impl CliCore {
         println!(
             "\nAI assistant configured (model: {model}). Use ?? to generate SQL from natural language."
         );
+        Ok(())
     }
 
     /// Handle \ai provider [name] — configure the API key for a provider.
@@ -1827,8 +1889,11 @@ impl CliCore {
     ) {
         let adapter = if arg.is_empty() {
             match Self::select_provider("Configure API key for provider:") {
-                Some(a) => a,
-                None => return,
+                Ok(a) => a,
+                Err(WizardCancelled) => {
+                    cancel_ai_wizard();
+                    return;
+                }
             }
         } else {
             match genai::adapter::AdapterKind::from_lower_str(&arg.to_lowercase()) {
@@ -1842,7 +1907,9 @@ impl CliCore {
             }
         };
 
-        Self::configure_provider_key(adapter);
+        if let Err(WizardCancelled) = Self::configure_provider_key(adapter) {
+            cancel_ai_wizard();
+        }
     }
 
     /// Handle \ai model [name] — set the model (provider is inferred from it).
@@ -1854,15 +1921,20 @@ impl CliCore {
     ) {
         let model = if arg.is_empty() {
             let current = config_arc.lock().unwrap().ai.model.clone();
-            match inquire::Text::new("Model:")
-                .with_default(&current)
-                .with_help_message(
-                    "Any genai-supported model — e.g. claude-sonnet-4-6, gpt-4o, ollama::llama3.1",
-                )
-                .prompt()
-            {
-                Ok(m) if !m.trim().is_empty() => m.trim().to_string(),
-                _ => return,
+            match wizard_step(
+                inquire::Text::new("Model:")
+                    .with_default(&current)
+                    .with_help_message(
+                        "Any genai-supported model — e.g. claude-sonnet-4-6, gpt-4o, ollama::llama3.1",
+                    )
+                    .prompt(),
+            ) {
+                Ok(Some(m)) if !m.trim().is_empty() => m.trim().to_string(),
+                Ok(_) => return,
+                Err(WizardCancelled) => {
+                    cancel_ai_wizard();
+                    return;
+                }
             }
         } else {
             arg.to_string()
