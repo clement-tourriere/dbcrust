@@ -817,7 +817,10 @@ mod tests {
 
     #[test]
     fn test_orbstack_custom_domain() {
-        let docker_client = DockerClient::new().unwrap();
+        let Ok(docker_client) = DockerClient::new() else {
+            eprintln!("Skipping: Docker daemon not available");
+            return;
+        };
 
         // Test custom domain detection
         let mut labels = HashMap::new();
@@ -846,7 +849,10 @@ mod tests {
 
     #[test]
     fn test_orbstack_compose_domain() {
-        let docker_client = DockerClient::new().unwrap();
+        let Ok(docker_client) = DockerClient::new() else {
+            eprintln!("Skipping: Docker daemon not available");
+            return;
+        };
 
         // Test compose project domain detection via labels
         let mut labels = HashMap::new();
@@ -900,7 +906,10 @@ mod tests {
 
     #[test]
     fn test_linux_container_ip_fallback() {
-        let docker_client = DockerClient::new().unwrap();
+        let Ok(docker_client) = DockerClient::new() else {
+            eprintln!("Skipping: Docker daemon not available");
+            return;
+        };
 
         // Test Linux container IP fallback when no ports are exposed
         let container_info = DockerContainerInfo {
