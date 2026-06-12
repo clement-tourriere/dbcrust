@@ -283,22 +283,51 @@ fn build_request(system_prompt: &str, messages: &[(MessageRole, String)]) -> Cha
 }
 
 fn chat_options(ai_config: &AiConfig, mode: &ResolvedAuthMode) -> ChatOptions {
-    let opts = ChatOptions::default()
-        .with_max_tokens(ai_config.max_tokens)
-        .with_temperature(ai_config.temperature as f64);
     match mode {
-        ResolvedAuthMode::ApiKey => opts,
+        ResolvedAuthMode::ApiKey => ChatOptions::default()
+            .with_max_tokens(ai_config.max_tokens)
+            .with_temperature(ai_config.temperature as f64),
         ResolvedAuthMode::ChatGptSubscription {
             account_id,
             session_id,
             ..
-        } => opts.with_extra_headers(vec![
-            ("chatgpt-account-id".to_string(), account_id.clone()),
-            ("OpenAI-Beta".to_string(), "responses=experimental".to_string()),
-            ("originator".to_string(), "dbcrust".to_string()),
-            ("session_id".to_string(), session_id.clone()),
-        ]),
+        } => {
+            // The Codex backend rejects sampling parameters with
+            // 400 "Unsupported parameter" (verified live for both
+            // temperature and max_output_tokens) — send neither.
+            ChatOptions::default().with_extra_headers(vec![
+                ("chatgpt-account-id".to_string(), account_id.clone()),
+                ("OpenAI-Beta".to_string(), "responses=experimental".to_string()),
+                ("originator".to_string(), "dbcrust".to_string()),
+                ("session_id".to_string(), session_id.clone()),
+            ])
+        }
     }
+}
+
+/// Provider silence budget: time to the first stream event (covers connect,
+/// auth, and model spin-up), then a longer idle budget between events. A
+/// stalled or silently-retrying transport must become a visible error, never
+/// an indefinite hang.
+const FIRST_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+const IDLE_EVENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+async fn next_stream_event<S, T>(stream: &mut S, received_any: bool) -> Result<Option<T>, AiError>
+where
+    S: futures_util::Stream<Item = T> + Unpin,
+{
+    use futures_util::StreamExt;
+    let budget = if received_any {
+        IDLE_EVENT_TIMEOUT
+    } else {
+        FIRST_EVENT_TIMEOUT
+    };
+    tokio::time::timeout(budget, stream.next()).await.map_err(|_| {
+        AiError::RequestFailed(format!(
+            "no response from the provider after {}s",
+            budget.as_secs()
+        ))
+    })
 }
 
 /// Non-streaming completion. Reusable for any AI task (not just SQL).
@@ -339,8 +368,6 @@ async fn generate_via_stream(
     system_prompt: &str,
     messages: &[(MessageRole, String)],
 ) -> Result<AiResponse, AiError> {
-    use futures_util::StreamExt;
-
     let client = build_client(ai_config, mode)?;
     let req = build_request(system_prompt, messages);
     let opts = chat_options(ai_config, mode);
@@ -353,7 +380,9 @@ async fn generate_via_stream(
 
     let mut stream = chat_res.stream;
     let mut content = String::new();
-    while let Some(event) = stream.next().await {
+    let mut received_any = false;
+    while let Some(event) = next_stream_event(&mut stream, received_any).await? {
+        received_any = true;
         match event {
             Ok(ChatStreamEvent::Chunk(chunk)) => content.push_str(&chunk.content),
             Ok(ChatStreamEvent::End(_)) => break,
@@ -376,8 +405,6 @@ pub async fn generate_stream(
     messages: &[(MessageRole, String)],
     tx: mpsc::Sender<AiStreamEvent>,
 ) -> Result<(), AiError> {
-    use futures_util::StreamExt;
-
     let mode = resolve_auth_mode(ai_config).await?;
     let client = build_client(ai_config, &mode)?;
     let req = build_request(system_prompt, messages);
@@ -390,7 +417,18 @@ pub async fn generate_stream(
         .map_err(|e| AiError::RequestFailed(e.to_string()))?;
 
     let mut stream = chat_res.stream;
-    while let Some(event) = stream.next().await {
+    let mut received_any = false;
+    loop {
+        let event = match next_stream_event(&mut stream, received_any).await {
+            Ok(Some(event)) => event,
+            Ok(None) => break,
+            Err(e) => {
+                // The consumer learns via the channel; the caller via Err.
+                let _ = tx.send(AiStreamEvent::Error(e.to_string())).await;
+                return Err(e);
+            }
+        };
+        received_any = true;
         match event {
             Ok(ChatStreamEvent::Chunk(chunk)) => {
                 let _ = tx.send(AiStreamEvent::TextDelta(chunk.content)).await;

@@ -1601,6 +1601,17 @@ impl CliCore {
         // Fresh cancellation state (a previous Ctrl-C must not abort us)
         interrupt_flag.store(false, std::sync::atomic::Ordering::SeqCst);
 
+        // Immediate feedback: schema introspection + generation can take a
+        // few seconds, and the user must know Ctrl-C works the whole time.
+        let auth_label = match config.ai.auth_method {
+            crate::ai::config::AiAuthMethod::ChatgptSubscription => " via ChatGPT subscription",
+            crate::ai::config::AiAuthMethod::ApiKey => "",
+        };
+        println!(
+            "\x1b[2mGenerating with {}{auth_label}… (Ctrl-C cancels)\x1b[0m",
+            config.ai.model
+        );
+
         // Build schema context
         let schema_context = {
             let mut db_guard = db_arc.lock().unwrap();
