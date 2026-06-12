@@ -231,6 +231,7 @@ class SqliteDashboardStore:
                 (captured_at.isoformat(), _serialize_report(report)),
             )
             record_id = cursor.lastrowid
+            assert record_id is not None  # always set after an INSERT
             # AUTOINCREMENT ids are monotonic, so this prunes everything
             # older than the newest max_entries rows.
             conn.execute(

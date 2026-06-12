@@ -330,8 +330,10 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
             # wipes request A's queries mid-flight and exits A's
             # execute_wrapper context.
             analyzer = self._create_analyzer()
-            request._dbcrust_analysis = analyzer.analyze().__enter__()
-            request._dbcrust_start_time = time.time()
+            # Dynamic attributes on the request (set/getattr keeps type
+            # checkers happy about the deliberate monkey-patching)
+            setattr(request, '_dbcrust_analysis', analyzer.analyze().__enter__())
+            setattr(request, '_dbcrust_start_time', time.time())
         except Exception as e:
             logger.debug("Could not start performance analysis: %s", e)
             return None
@@ -344,8 +346,8 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
         try:
             # 1. Complete the analysis context (and detach it from the
             # request so nothing can exit it a second time)
-            analysis = request._dbcrust_analysis
-            del request._dbcrust_analysis
+            analysis: DjangoAnalyzer = getattr(request, '_dbcrust_analysis')
+            delattr(request, '_dbcrust_analysis')
             analysis.__exit__(None, None, None)
 
             results = analysis.get_results()
@@ -377,11 +379,11 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
     def process_exception(self, request: HttpRequest, exception: Exception):
         """Clean up analysis context on exception."""
         if hasattr(request, '_dbcrust_analysis'):
-            analysis = request._dbcrust_analysis
+            analysis: DjangoAnalyzer = getattr(request, '_dbcrust_analysis')
             # Remove the attribute first — Django still calls
             # process_response for the error response, which must not exit
             # the same context a second time
-            del request._dbcrust_analysis
+            delattr(request, '_dbcrust_analysis')
             try:
                 analysis.__exit__(
                     type(exception), exception, exception.__traceback__

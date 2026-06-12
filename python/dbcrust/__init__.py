@@ -2,7 +2,7 @@
 dbcrust - Multi-database interactive client with tab completion
 """
 # Import from the compiled Rust extension
-from dbcrust._internal import (
+from dbcrust._internal import (  # ty: ignore[unresolved-import]
     PyDatabase,
     PyConfig,
     run_command,

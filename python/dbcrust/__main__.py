@@ -24,7 +24,7 @@ def run_with_url(db_url, additional_args=None):
     """
 
     # Import the Rust CLI function
-    from dbcrust._internal import run_command
+    from dbcrust._internal import run_command  # ty: ignore[unresolved-import]
 
     # Prepare command arguments
     cmd_args = ["dbcrust", db_url]
@@ -49,7 +49,7 @@ def main(db_url=None):
     """
 
     # Import the Rust CLI function and exceptions
-    from dbcrust._internal import (
+    from dbcrust._internal import (  # ty: ignore[unresolved-import]
         run_command,
         DbcrustConnectionError,
         DbcrustCommandError,

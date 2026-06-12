@@ -87,3 +87,18 @@ dbcrust = "dbcrust.pytest_plugin"
 
 [tool.pytest.ini_options]
 testpaths = ["python/dbcrust/django/tests"]
+
+[tool.ty.src]
+# Same set as [tool.maturin] exclude: demo/scratch scripts and the test
+# suite are not shipped in the wheel and are not yet type-clean. Shrink
+# this list as files get cleaned up.
+exclude = [
+    "python/dbcrust/django/tests",
+    "python/dbcrust/django/test_enhanced_analyzer.py",
+    "python/dbcrust/django/test_middleware_demo.py",
+    "python/dbcrust/django/example.py",
+    "python/dbcrust/django/example_middleware_usage.py",
+    "python/dbcrust/django/debug_logging.py",
+    "python/dbcrust/django/troubleshoot_logging.py",
+    "python/example.py",
+]

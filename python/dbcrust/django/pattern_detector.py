@@ -24,10 +24,10 @@ class DetectedPattern:
     code_suggestion: Optional[str] = None
     estimated_impact: Optional[str] = None
     # Enhanced context
-    specific_fields: List[str] = None  # Specific field names for select_related/prefetch_related
-    code_locations: List[str] = None  # Where the issue occurs in code
-    table_context: Dict[str, str] = None  # Table -> Model mapping context
-    query_examples: List[str] = None  # Example problematic SQL queries
+    specific_fields: Optional[List[str]] = None  # Specific field names for select_related/prefetch_related
+    code_locations: Optional[List[str]] = None  # Where the issue occurs in code
+    table_context: Optional[Dict[str, str]] = None  # Table -> Model mapping context
+    query_examples: Optional[List[str]] = None  # Example problematic SQL queries
     # Issue categorization
     is_user_code: bool = True  # True for user code, False for framework code
     framework_type: Optional[str] = None  # 'django_admin', 'django_forms', etc.
@@ -719,8 +719,8 @@ class PatternDetector:
 
     def _generate_categorized_recommendation(self, pattern_type: str, is_user_code: bool,
                                           framework_type: Optional[str], specific_fields: List[str],
-                                          query_count: int = 1, table_context: Dict[str, str] = None,
-                                          code_locations: List[str] = None) -> tuple:
+                                          query_count: int = 1, table_context: Optional[Dict[str, str]] = None,
+                                          code_locations: Optional[List[str]] = None) -> tuple:
         """Generate appropriate recommendations based on responsibility, not location."""
         # For Django admin issues, the RESPONSIBILITY is always with the user
         # even if the query executes in framework code
@@ -750,8 +750,8 @@ class PatternDetector:
         return "Optimize this query in your code", "# Add optimization here"
 
     def _generate_admin_recommendation(self, pattern_type: str, specific_fields: List[str],
-                                     query_count: int, table_context: Dict[str, str] = None,
-                                     code_locations: List[str] = None) -> tuple:
+                                     query_count: int, table_context: Optional[Dict[str, str]] = None,
+                                     code_locations: Optional[List[str]] = None) -> tuple:
         """Generate Django admin-specific recommendations with file path guidance."""
         # Try to infer the admin file path from table name
         admin_file_hint = self._infer_admin_file_path(table_context, code_locations)
@@ -804,7 +804,7 @@ class PatternDetector:
         # Default admin recommendation
         return f"Django admin issue detected. {admin_file_hint}Optimize your ModelAdmin configuration", "# Add admin optimization"
 
-    def _infer_admin_file_path(self, table_context: Dict[str, str] = None, code_locations: List[str] = None) -> str:
+    def _infer_admin_file_path(self, table_context: Optional[Dict[str, str]] = None, code_locations: Optional[List[str]] = None) -> str:
         """Infer the likely admin.py file path from table names."""
         if not table_context:
             return ""
@@ -823,7 +823,7 @@ class PatternDetector:
 
         return "Update your admin.py file: "
 
-    def _is_admin_filter_query(self, code_locations: List[str] = None) -> bool:
+    def _is_admin_filter_query(self, code_locations: Optional[List[str]] = None) -> bool:
         """Detect if this query is from Django admin filters."""
         if not code_locations:
             return False

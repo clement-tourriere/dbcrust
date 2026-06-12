@@ -17,6 +17,8 @@ Usage::
                 _ = book.author.name
 """
 
+from typing import Optional
+
 import pytest
 
 
@@ -26,17 +28,17 @@ class DbcrustQueryHelpers:
     def __init__(self, using: str = "default"):
         self.using = using
 
-    def max_queries(self, count: int, using: str = None):
+    def max_queries(self, count: int, using: Optional[str] = None):
         from dbcrust.django.testing import assert_max_queries
 
         return assert_max_queries(count, using=using or self.using)
 
-    def no_n_plus_one(self, using: str = None):
+    def no_n_plus_one(self, using: Optional[str] = None):
         from dbcrust.django.testing import assert_no_n_plus_one
 
         return assert_no_n_plus_one(using=using or self.using)
 
-    def capture(self, using: str = None):
+    def capture(self, using: Optional[str] = None):
         from dbcrust.django.testing import capture_queries
 
         return capture_queries(using=using or self.using)

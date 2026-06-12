@@ -7,7 +7,7 @@ with a mysql.connector-like API.
 
 from typing import Optional, Dict, Any, Union
 from urllib.parse import urlparse, urlunparse
-from dbcrust._internal import (
+from dbcrust._internal import (  # ty: ignore[unresolved-import]
     py_connect,
     PyConnection as _PyConnection,
     PyCursor as _PyCursor,

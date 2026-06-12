@@ -15,7 +15,7 @@ from typing import Optional
 try:
     from dbcrust import run_with_url
 except ImportError:
-    run_with_url = None
+    run_with_url = None  # ty: ignore[invalid-assignment]
 
 # Import Django utilities
 try:
@@ -29,12 +29,12 @@ try:
     )
 except ImportError:
     # Fallback if django submodule is not available
-    get_dbcrust_url = None
-    get_database_info_summary = None
-    list_available_databases = None
-    validate_database_support = None
-    UnsupportedDatabaseError = Exception
-    DatabaseConfigurationError = Exception
+    get_dbcrust_url = None  # ty: ignore[invalid-assignment]
+    get_database_info_summary = None  # ty: ignore[invalid-assignment]
+    list_available_databases = None  # ty: ignore[invalid-assignment]
+    validate_database_support = None  # ty: ignore[invalid-assignment]
+    UnsupportedDatabaseError = Exception  # ty: ignore[invalid-assignment]
+    DatabaseConfigurationError = Exception  # ty: ignore[invalid-assignment]
 
 
 class Command(BaseCommand):
@@ -280,7 +280,7 @@ class Command(BaseCommand):
         )
 
         try:
-            # Use DBCrust Python bindings directly  
+            # Use DBCrust Python bindings directly
             # run_with_url expects (url, additional_args)
             exit_code = run_with_url(connection_url, cmd_args[:-1])  # URL is separate from other args
             sys.exit(exit_code)

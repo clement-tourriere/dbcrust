@@ -20,9 +20,9 @@ try:
     DJANGO_AVAILABLE = True
 except ImportError:
     DJANGO_AVAILABLE = False
-    connection = None
-    connections = None
-    transaction = None
+    connection = None  # ty: ignore[invalid-assignment]
+    connections = None  # ty: ignore[invalid-assignment]
+    transaction = None  # ty: ignore[invalid-assignment]
 
 from .query_collector import QueryCollector, CapturedQuery
 from .pattern_detector import PatternDetector, DetectedPattern
@@ -434,7 +434,7 @@ class DjangoAnalyzer:
         Returns:
             List of code issues found through AST analysis
         """
-        if not self.code_analyzer:
+        if not self.code_analyzer or not self.project_root:
             logger.warning("Code analysis not enabled. Initialize with enable_code_analysis=True and project_root.")
             return None
 
@@ -792,7 +792,7 @@ def create_enhanced_analyzer(dbcrust_url: Optional[str] = None,
     return DjangoAnalyzer(
         dbcrust_url=dbcrust_url,
         database_instance=database_instance,
-        enable_explain=enable_all_features and (dbcrust_url or database_instance),
+        enable_explain=enable_all_features and bool(dbcrust_url or database_instance),
         enable_code_analysis=enable_all_features and bool(project_root),
         project_root=project_root,
         transaction_safe=transaction_safe
