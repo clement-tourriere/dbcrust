@@ -14,7 +14,18 @@ local linters = new Mapping<String, Step> {
     ["cargo-clippy"] {
         glob = "**/*.rs"
         exclude = List("python/**", "tests/**")
-        check = "cargo clippy --lib --bins -- -D clippy::correctness -D clippy::suspicious -D clippy::perf -W clippy::style -W clippy::complexity -A clippy::await_holding_lock -A clippy::needless_return -A clippy::too_many_arguments -A clippy::type_complexity -A clippy::collapsible_if -A clippy::only_used_in_recursion -A clippy::should_implement_trait -A clippy::enum_variant_names"
+        // Same flags as CI (ci.yml); structural allows live in Cargo.toml [lints.clippy]
+        check = "cargo clippy --all-targets -- -D warnings"
+    }
+    ["ruff"] {
+        glob = "python/**/*.py"
+        // Same rule selection as CI (ci.yml "ruff (errors only)")
+        check = "ruff check python/dbcrust --select E9,F821,F811"
+        fix = "ruff check python/dbcrust --select E9,F821,F811 --fix"
+    }
+    ["ty"] {
+        glob = "python/**/*.py"
+        check = "ty check python/dbcrust"
     }
 }
 

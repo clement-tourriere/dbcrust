@@ -3,6 +3,8 @@ bun = "1.2.10"
 hk = "latest"
 "pipx:commitizen" = "latest"
 pkl = "latest"
+ruff = "latest"
+ty = "latest"
 
 [env]
 _.python.venv = ".venv"
@@ -28,16 +30,16 @@ description = "Run all tests"
 run = "cargo test"
 
 [tasks."lint"]
-description = "Run clippy linting"
-run = 'cargo clippy --lib --bins -- -D "clippy::correctness" -D "clippy::suspicious" -D "clippy::perf" -W "clippy::style" -W "clippy::complexity"'
+description = "Run clippy linting (same flags as CI)"
+run = "cargo clippy --all-targets -- -D warnings"
 
 [tasks."fmt"]
 description = "Format all Rust code"
 run = "cargo fmt"
 
 [tasks."check"]
-description = "Run fmt + clippy + test"
-depends = ["fmt", "lint", "test"]
+description = "Run fmt + clippy + tests + Python lint/type-check/tests (CI parity)"
+depends = ["fmt", "lint", "test", "py:lint", "py:test"]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GUI Tasks
@@ -102,6 +104,13 @@ run = "maturin build --release"
 [tasks."py:test"]
 description = "Run Python tests"
 run = "python -m pytest python/dbcrust/django/tests/"
+
+[tasks."py:lint"]
+description = "Lint + type-check the Python package (ruff matches CI, ty)"
+run = [
+    "ruff check python/dbcrust --select E9,F821,F811",
+    "ty check python/dbcrust",
+]
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Documentation Tasks
