@@ -1,3 +1,16 @@
+## v0.29.0 (2026-06-12)
+
+### Feat
+
+- **ai**: sign in with ChatGPT — use a ChatGPT plan instead of an API key
+- **ai**: live model listing in the setup wizard and \ai model picker
+- **ai**: make provider selection real via ai.provider config field
+
+### Fix
+
+- **ai**: unblock ChatGPT-subscription requests and never hang silently
+- **ai**: abort setup wizard cleanly on Ctrl-C
+
 ## v0.28.1 (2026-06-12)
 
 ### Fix
