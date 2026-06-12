@@ -525,7 +525,9 @@ impl CommandShortcut {
             // Schema viewer
             CommandShortcut::Sv => "Interactive schema viewer (TUI)",
             // AI assistant
-            CommandShortcut::Ai => "AI assistant (setup|status|provider|model|login|logout|toggle|clear)",
+            CommandShortcut::Ai => {
+                "AI assistant (setup|status|provider|model|login|logout|toggle|clear)"
+            }
         }
     }
 
@@ -3140,7 +3142,9 @@ impl CommandExecutor for Command {
             Command::AiSelectModel { .. } => "Select AI model",
             Command::AiToggle { .. } => "Enable/disable AI assistant",
             Command::AiClearHistory => "Clear AI conversation history",
-            Command::AiLogin => "Sign in with ChatGPT (use your subscription instead of an API key)",
+            Command::AiLogin => {
+                "Sign in with ChatGPT (use your subscription instead of an API key)"
+            }
             Command::AiLogout => "Sign out of ChatGPT and return to API-key auth",
             Command::AiGenerateSql { .. } => "Generate SQL from natural language",
         }
@@ -4489,7 +4493,10 @@ mod tests {
         );
 
         // \ai login / logout
-        assert_eq!(CommandParser::parse("\\ai login").unwrap(), Command::AiLogin);
+        assert_eq!(
+            CommandParser::parse("\\ai login").unwrap(),
+            Command::AiLogin
+        );
         assert_eq!(
             CommandParser::parse("\\ai logout").unwrap(),
             Command::AiLogout

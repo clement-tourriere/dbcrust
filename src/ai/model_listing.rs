@@ -103,7 +103,12 @@ pub fn curated_models(adapter: AdapterKind) -> Vec<&'static str> {
 /// That backend has no /models endpoint, so this curated set is the picker
 /// source in subscription mode. Suggestions only — custom entry still works.
 pub fn chatgpt_subscription_models() -> Vec<&'static str> {
-    vec!["gpt-5.5", "gpt-5.5-codex", "gpt-5-codex", "codex-mini-latest"]
+    vec![
+        "gpt-5.5",
+        "gpt-5.5-codex",
+        "gpt-5-codex",
+        "codex-mini-latest",
+    ]
 }
 
 /// Assemble the picker options from a live result (or its failure) plus the

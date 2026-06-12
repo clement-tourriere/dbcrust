@@ -1799,9 +1799,12 @@ impl Config {
             content.push_str(
                 "# gpt-* -> OpenAI, ...). Set a genai provider key (anthropic, openai,\n",
             );
-            content.push_str("# gemini, ollama, groq, ...) to force one regardless of the model.\n");
+            content
+                .push_str("# gemini, ollama, groq, ...) to force one regardless of the model.\n");
             content.push_str(&format!("provider = \"{}\"\n\n", self.ai.provider));
-            content.push_str("# Model identifier. With provider = \"auto\" the provider is inferred\n");
+            content.push_str(
+                "# Model identifier. With provider = \"auto\" the provider is inferred\n",
+            );
             content.push_str(
                 "# from this name; provider::model syntax also works (groq::llama-3.1-70b).\n",
             );
@@ -1809,7 +1812,8 @@ impl Config {
                 "# Powered by the genai crate — 25+ providers, no hardcoded model lists.\n",
             );
             content.push_str(&format!("model = \"{}\"\n\n", self.ai.model));
-            content.push_str("# Authentication: api_key (default), or chatgpt_subscription to use\n");
+            content
+                .push_str("# Authentication: api_key (default), or chatgpt_subscription to use\n");
             content.push_str(
                 "# your ChatGPT plan instead of an API key (OpenAI only — run \\ai login).\n",
             );

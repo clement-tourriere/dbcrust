@@ -212,9 +212,7 @@ async fn bind_callback_listener(port: u16) -> Result<tokio::net::TcpListener, Ai
         })
 }
 
-async fn wait_for_callback(
-    listener: tokio::net::TcpListener,
-) -> Result<(String, String), AiError> {
+async fn wait_for_callback(listener: tokio::net::TcpListener) -> Result<(String, String), AiError> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     const SUCCESS_BODY: &str =
@@ -405,7 +403,9 @@ pub async fn login_with(config: &OAuthConfig) -> Result<ChatGptTokens, AiError> 
 
     let (code, returned_state) = wait_for_callback(listener).await?;
     if returned_state != state {
-        return Err(AiError::OAuth("state mismatch in OAuth callback".to_string()));
+        return Err(AiError::OAuth(
+            "state mismatch in OAuth callback".to_string(),
+        ));
     }
 
     let http = http_client()?;
@@ -568,10 +568,7 @@ mod tests {
     #[case("GET /auth/callback?code=abc&state=xyz HTTP/1.1", Some(("abc", "xyz")))]
     #[case("GET /favicon.ico HTTP/1.1", None)]
     #[case("", None)]
-    fn test_parse_callback_request_ok(
-        #[case] line: &str,
-        #[case] expected: Option<(&str, &str)>,
-    ) {
+    fn test_parse_callback_request_ok(#[case] line: &str, #[case] expected: Option<(&str, &str)>) {
         let parsed = parse_callback_request(line).unwrap();
         assert_eq!(
             parsed,
@@ -636,7 +633,9 @@ mod tests {
     /// request body, answers with `body` as JSON.
     async fn spawn_token_endpoint(body: String) -> u16 {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             if let Ok((mut stream, _)) = listener.accept().await {
@@ -704,7 +703,9 @@ mod tests {
     #[tokio::test]
     async fn test_exchange_code_error_status() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(async move {
             if let Ok((mut stream, _)) = listener.accept().await {

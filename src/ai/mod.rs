@@ -297,7 +297,10 @@ fn chat_options(ai_config: &AiConfig, mode: &ResolvedAuthMode) -> ChatOptions {
             // temperature and max_output_tokens) — send neither.
             ChatOptions::default().with_extra_headers(vec![
                 ("chatgpt-account-id".to_string(), account_id.clone()),
-                ("OpenAI-Beta".to_string(), "responses=experimental".to_string()),
+                (
+                    "OpenAI-Beta".to_string(),
+                    "responses=experimental".to_string(),
+                ),
                 ("originator".to_string(), "dbcrust".to_string()),
                 ("session_id".to_string(), session_id.clone()),
             ])
@@ -322,12 +325,14 @@ where
     } else {
         FIRST_EVENT_TIMEOUT
     };
-    tokio::time::timeout(budget, stream.next()).await.map_err(|_| {
-        AiError::RequestFailed(format!(
-            "no response from the provider after {}s",
-            budget.as_secs()
-        ))
-    })
+    tokio::time::timeout(budget, stream.next())
+        .await
+        .map_err(|_| {
+            AiError::RequestFailed(format!(
+                "no response from the provider after {}s",
+                budget.as_secs()
+            ))
+        })
 }
 
 /// Non-streaming completion. Reusable for any AI task (not just SQL).
@@ -528,7 +533,11 @@ mod tests {
     // provider disagrees with inference: force the namespace
     #[case("groq", "llama-3.3-70b-versatile", "groq::llama-3.3-70b-versatile")]
     // a user-supplied namespace always wins, even a conflicting one
-    #[case("openai", "anthropic::claude-sonnet-4-6", "anthropic::claude-sonnet-4-6")]
+    #[case(
+        "openai",
+        "anthropic::claude-sonnet-4-6",
+        "anthropic::claude-sonnet-4-6"
+    )]
     fn test_qualified_model(#[case] provider: &str, #[case] model: &str, #[case] expected: &str) {
         assert_eq!(qualified_model(&config_with(provider, model)), expected);
     }
@@ -547,6 +556,9 @@ mod tests {
         }
         // OpenAI's default routes through the Responses API — same family.
         let model = default_model_for(AdapterKind::OpenAI).unwrap();
-        assert!(same_provider(provider_for_model(model), AdapterKind::OpenAI));
+        assert!(same_provider(
+            provider_for_model(model),
+            AdapterKind::OpenAI
+        ));
     }
 }

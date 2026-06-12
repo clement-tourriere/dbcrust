@@ -1735,9 +1735,9 @@ impl CliCore {
             }
         };
         let should_execute = match config.ai.execution_mode {
-            crate::ai::config::AiExecutionMode::Confirm => confirm_or_no(
-                inquire::Confirm::new("Execute this SQL?").with_default(is_read_only),
-            ),
+            crate::ai::config::AiExecutionMode::Confirm => {
+                confirm_or_no(inquire::Confirm::new("Execute this SQL?").with_default(is_read_only))
+            }
             crate::ai::config::AiExecutionMode::AutoSelect => {
                 is_read_only
                     || confirm_or_no(
@@ -1879,9 +1879,7 @@ impl CliCore {
         let names: Vec<String> = providers.iter().map(|p| p.as_str().to_string()).collect();
         let names_ref: Vec<&str> = names.iter().map(|s| s.as_str()).collect();
         match wizard_step(inquire::Select::new(prompt, names_ref.clone()).prompt())? {
-            Some(choice) => {
-                Ok(providers[names_ref.iter().position(|&n| n == choice).unwrap_or(0)])
-            }
+            Some(choice) => Ok(providers[names_ref.iter().position(|&n| n == choice).unwrap_or(0)]),
             None => Err(WizardCancelled),
         }
     }
@@ -1954,16 +1952,15 @@ impl CliCore {
             // with a provider-appropriate default — keeping the previous model
             // only makes sense if it already belongs to this provider.
             let current_model = config_arc.lock().unwrap().ai.model.clone();
-            let suggested_model = if crate::ai::same_provider(
-                crate::ai::provider_for_model(&current_model),
-                adapter,
-            ) {
-                current_model.clone()
-            } else {
-                crate::ai::default_model_for(adapter)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| current_model.clone())
-            };
+            let suggested_model =
+                if crate::ai::same_provider(crate::ai::provider_for_model(&current_model), adapter)
+                {
+                    current_model.clone()
+                } else {
+                    crate::ai::default_model_for(adapter)
+                        .map(str::to_string)
+                        .unwrap_or_else(|| current_model.clone())
+                };
             let model = Self::pick_model(adapter, endpoint.as_deref(), &suggested_model)
                 .await?
                 .unwrap_or(suggested_model);
@@ -2010,11 +2007,12 @@ impl CliCore {
         }
 
         // Structural step: Esc aborts like Ctrl-C — there is no sane default.
-        let choice =
-            match wizard_step(inquire::Select::new("How do you want to authenticate?", options).prompt())? {
-                Some(c) => c,
-                None => return Err(WizardCancelled),
-            };
+        let choice = match wizard_step(
+            inquire::Select::new("How do you want to authenticate?", options).prompt(),
+        )? {
+            Some(c) => c,
+            None => return Err(WizardCancelled),
+        };
 
         match choice {
             OPT_CHATGPT => match crate::ai::chatgpt_auth::login().await {
@@ -2052,7 +2050,9 @@ impl CliCore {
     async fn handle_ai_login(&mut self, config_arc: &Arc<Mutex<DbCrustConfig>>) {
         use crate::ai::config::AiAuthMethod;
 
-        println!("Signing in with ChatGPT (requests will use your ChatGPT plan via the Codex backend).");
+        println!(
+            "Signing in with ChatGPT (requests will use your ChatGPT plan via the Codex backend)."
+        );
         match crate::ai::chatgpt_auth::login().await {
             Ok(tokens) => {
                 let needs_model_pick = {
@@ -2205,7 +2205,10 @@ impl CliCore {
         } else {
             "inferred"
         };
-        println!("Model set to {model} (provider: {}, {source}).", adapter.as_str());
+        println!(
+            "Model set to {model} (provider: {}, {source}).",
+            adapter.as_str()
+        );
     }
 
     // ==================== End AI Assistant Methods ====================
