@@ -185,8 +185,12 @@ remote_sha="$(git rev-parse origin/main)"
 if [ "$local_sha" != "$remote_sha" ]; then
   if git merge-base --is-ancestor HEAD origin/main; then
     run git pull --ff-only origin main
+  elif git merge-base --is-ancestor origin/main HEAD; then
+    # Local main is ahead: unpushed commits about to be released. They get
+    # pushed together with the bump commit and tag later in this script.
+    log "Local main is ahead of origin/main; unpushed commits will ship with the release"
   else
-    die "Local main is not a fast-forward of origin/main"
+    die "Local main and origin/main have diverged; reconcile before releasing"
   fi
 fi
 
