@@ -137,8 +137,8 @@ impl SSHTunnel {
             self.local_port,
             self.remote_host,
             self.remote_port,
-            if self.ssh_key.is_some() {
-                format!("-i {} ", self.ssh_key.as_ref().unwrap().display())
+            if let Some(key) = &self.ssh_key {
+                format!("-i {} ", key.display())
             } else {
                 String::new()
             },

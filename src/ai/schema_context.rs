@@ -140,7 +140,7 @@ fn select_relevant_tables(
         .collect();
 
     // Sort by score descending
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|entry| std::cmp::Reverse(entry.0));
 
     // Take top N tables, but always include tables with non-zero score
     let mut selected: Vec<String> = scored

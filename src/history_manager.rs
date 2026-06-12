@@ -227,7 +227,7 @@ impl SessionHistoryManager {
         }
 
         // Sort by last modified (most recent first)
-        histories.sort_by(|a, b| b.last_modified.cmp(&a.last_modified));
+        histories.sort_by_key(|h| std::cmp::Reverse(h.last_modified));
 
         Ok(histories)
     }
