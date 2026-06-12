@@ -191,7 +191,9 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: aarch64-unknown-linux-gnu
-          manylinux: auto
+          # 2_28 (not auto→2014): aws-lc-sys needs a C11 toolchain with
+          # stdatomic.h, which the manylinux2014 cross gcc lacks
+          manylinux: 2_28
           args: >
             --release
             --locked
