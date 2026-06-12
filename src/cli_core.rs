@@ -1835,23 +1835,33 @@ impl CliCore {
         &mut self,
         config_arc: &Arc<Mutex<DbCrustConfig>>,
     ) -> Result<(), WizardCancelled> {
-        // Provider selection is a UX convenience — any genai model works.
+        // The chosen provider is stored in config and drives auth + routing;
+        // the curated list is a UX convenience — any genai provider works.
         let adapter = Self::select_provider("Select AI provider:")?;
 
         Self::configure_provider_key(adapter)?;
 
-        // Model name (free text — the provider is inferred from it).
+        // Model name (free text). Default to a model OF THE CHOSEN PROVIDER —
+        // keeping the previous model only makes sense if it already matches.
         let current_model = config_arc.lock().unwrap().ai.model.clone();
+        let suggested_model =
+            if crate::ai::same_provider(crate::ai::provider_for_model(&current_model), adapter) {
+                current_model.clone()
+            } else {
+                crate::ai::default_model_for(adapter)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| current_model.clone())
+            };
         let model = match wizard_step(
             inquire::Text::new("Model:")
-                .with_default(&current_model)
+                .with_default(&suggested_model)
                 .with_help_message(
-                    "e.g. claude-sonnet-4-6, gpt-4o, gemini-2.5-pro, ollama::llama3.1",
+                    "e.g. claude-sonnet-4-6, gpt-5.1, gemini-2.5-pro, ollama::llama3.1",
                 )
                 .prompt(),
         )? {
             Some(m) if !m.trim().is_empty() => m.trim().to_string(),
-            _ => current_model,
+            _ => suggested_model,
         };
 
         // Optional custom endpoint (self-hosted / OpenAI-compatible gateways).
@@ -1868,47 +1878,97 @@ impl CliCore {
         {
             let mut config = config_arc.lock().unwrap();
             config.ai.enabled = true;
+            config.ai.provider = adapter.as_lower_str().to_string();
             config.ai.model = model.clone();
             config.ai.endpoint = endpoint;
+            // A fresh API-key setup invalidates a previous ChatGPT-subscription
+            // setup for a different provider; \ai login re-enables it.
+            if !matches!(
+                adapter,
+                genai::adapter::AdapterKind::OpenAI | genai::adapter::AdapterKind::OpenAIResp
+            ) {
+                config.ai.auth_method = crate::ai::config::AiAuthMethod::ApiKey;
+            }
             config.save_with_documentation().ok();
         }
 
         println!(
-            "\nAI assistant configured (model: {model}). Use ?? to generate SQL from natural language."
+            "\nAI assistant configured (provider: {}, model: {model}). Use ?? to generate SQL from natural language.",
+            adapter.as_str()
         );
         Ok(())
     }
 
-    /// Handle \ai provider [name] — configure the API key for a provider.
-    /// The *active* provider is inferred from the model (`\ai model`); this just
-    /// stores credentials so multiple providers can be configured.
+    /// Handle \ai provider [name] — set the active provider in config (and
+    /// offer to store its API key). `auto` returns to inferring the provider
+    /// from the model name.
     async fn handle_ai_select_provider(
         &mut self,
         arg: &str,
-        _config_arc: &Arc<Mutex<DbCrustConfig>>,
+        config_arc: &Arc<Mutex<DbCrustConfig>>,
     ) {
-        let adapter = if arg.is_empty() {
-            match Self::select_provider("Configure API key for provider:") {
-                Ok(a) => a,
+        use genai::adapter::AdapterKind;
+
+        let arg = arg.trim();
+        let adapter: Option<AdapterKind> = if arg.is_empty() {
+            match Self::select_provider("Select AI provider:") {
+                Ok(a) => Some(a),
                 Err(WizardCancelled) => {
                     cancel_ai_wizard();
                     return;
                 }
             }
+        } else if arg.eq_ignore_ascii_case("auto") {
+            None
         } else {
-            match genai::adapter::AdapterKind::from_lower_str(&arg.to_lowercase()) {
-                Some(a) => a,
+            match AdapterKind::from_lower_str(&arg.to_lowercase()) {
+                Some(a) => Some(a),
                 None => {
                     eprintln!(
-                        "Unknown provider: {arg}. The active provider is inferred from the model — use \\ai model <name>."
+                        "Unknown provider: {arg}. Use \"auto\" or any genai provider key (anthropic, openai, gemini, ollama, groq, ...)."
                     );
                     return;
                 }
             }
         };
 
-        if let Err(WizardCancelled) = Self::configure_provider_key(adapter) {
-            cancel_ai_wizard();
+        // Mutate + save without holding the lock across the prompts below.
+        let model = {
+            let mut config = config_arc.lock().unwrap();
+            config.ai.provider = adapter
+                .map(|a| a.as_lower_str().to_string())
+                .unwrap_or_else(|| "auto".to_string());
+            let effective = crate::ai::effective_provider(&config.ai);
+            if config.ai.auth_method == crate::ai::config::AiAuthMethod::ChatgptSubscription
+                && !crate::ai::same_provider(effective, AdapterKind::OpenAI)
+            {
+                config.ai.auth_method = crate::ai::config::AiAuthMethod::ApiKey;
+                println!("Auth method reset to api_key (ChatGPT subscription is OpenAI-only).");
+            }
+            config.save_with_documentation().ok();
+            config.ai.model.clone()
+        };
+
+        match adapter {
+            Some(a) => {
+                println!("Provider set to {}.", a.as_str());
+                if crate::ai::key_storage::requires_api_key(a)
+                    && crate::ai::key_storage::detect_key_storage(a).is_none()
+                    && let Err(WizardCancelled) = Self::configure_provider_key(a)
+                {
+                    cancel_ai_wizard();
+                    return;
+                }
+                let inferred = crate::ai::provider_for_model(&model);
+                if !model.contains("::") && !crate::ai::same_provider(inferred, a) {
+                    println!(
+                        "Note: model \"{model}\" looks like a {} model — requests will be forced to {}. Run \\ai model to pick another.",
+                        inferred.as_str(),
+                        a.as_str()
+                    );
+                }
+            }
+            None => println!("Provider set to auto (inferred from the model name)."),
         }
     }
 
@@ -1943,8 +2003,13 @@ impl CliCore {
         let mut config = config_arc.lock().unwrap();
         config.ai.model = model.clone();
         config.save_with_documentation().ok();
-        let adapter = crate::ai::provider_for_model(&model);
-        println!("Model set to {model} (provider: {}).", adapter.as_str());
+        let adapter = crate::ai::effective_provider(&config.ai);
+        let source = if crate::ai::explicit_provider(&config.ai).is_some() {
+            "from config"
+        } else {
+            "inferred"
+        };
+        println!("Model set to {model} (provider: {}, {source}).", adapter.as_str());
     }
 
     // ==================== End AI Assistant Methods ====================

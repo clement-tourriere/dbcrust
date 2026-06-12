@@ -1793,16 +1793,27 @@ impl Config {
                 "# Enable AI assistant features (default: false — opt in with \\ai setup)\n",
             );
             content.push_str(&format!("enabled = {}\n\n", self.ai.enabled));
-            content.push_str("# Model identifier. The provider is inferred from the model name\n");
-            content
-                .push_str("# (claude-* -> Anthropic, gpt-* -> OpenAI, gemini-* -> Gemini, ...),\n");
             content.push_str(
-                "# or force it with provider::model syntax (e.g. groq::llama-3.1-70b).\n",
+                "# Provider: \"auto\" infers it from the model name (claude-* -> Anthropic,\n",
+            );
+            content.push_str(
+                "# gpt-* -> OpenAI, ...). Set a genai provider key (anthropic, openai,\n",
+            );
+            content.push_str("# gemini, ollama, groq, ...) to force one regardless of the model.\n");
+            content.push_str(&format!("provider = \"{}\"\n\n", self.ai.provider));
+            content.push_str("# Model identifier. With provider = \"auto\" the provider is inferred\n");
+            content.push_str(
+                "# from this name; provider::model syntax also works (groq::llama-3.1-70b).\n",
             );
             content.push_str(
                 "# Powered by the genai crate — 25+ providers, no hardcoded model lists.\n",
             );
             content.push_str(&format!("model = \"{}\"\n\n", self.ai.model));
+            content.push_str("# Authentication: api_key (default), or chatgpt_subscription to use\n");
+            content.push_str(
+                "# your ChatGPT plan instead of an API key (OpenAI only — run \\ai login).\n",
+            );
+            content.push_str(&format!("auth_method = \"{}\"\n\n", self.ai.auth_method));
             content
                 .push_str("# Optional custom endpoint base URL (self-hosted, Ollama, LM Studio,\n");
             content.push_str(

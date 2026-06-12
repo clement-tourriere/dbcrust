@@ -2920,11 +2920,19 @@ impl CommandExecutor for Command {
             // AI assistant commands
             Command::AiStatus => {
                 let mut output = String::new();
-                let adapter = crate::ai::provider_for_model(&config.ai.model);
+                let adapter = crate::ai::effective_provider(&config.ai);
                 output.push_str("AI Assistant Status:\n");
                 output.push_str(&format!("  Enabled: {}\n", config.ai.enabled));
                 output.push_str(&format!("  Model: {}\n", config.ai.model));
-                output.push_str(&format!("  Provider: {} (inferred)\n", adapter.as_str()));
+                if crate::ai::explicit_provider(&config.ai).is_some() {
+                    output.push_str(&format!("  Provider: {} (from config)\n", adapter.as_str()));
+                } else {
+                    output.push_str(&format!(
+                        "  Provider: {} (inferred from model; set with \\ai provider)\n",
+                        adapter.as_str()
+                    ));
+                }
+                output.push_str(&format!("  Auth method: {}\n", config.ai.auth_method));
                 if let Some(ref endpoint) = config.ai.endpoint
                     && !endpoint.is_empty()
                 {

@@ -89,6 +89,65 @@ pub fn provider_for_model(model: &str) -> AdapterKind {
     AdapterKind::from_model(model).unwrap_or(AdapterKind::Ollama)
 }
 
+/// Provider forced via `ai.provider`, unless it is `"auto"` (or invalid).
+pub fn explicit_provider(ai_config: &AiConfig) -> Option<AdapterKind> {
+    let provider = ai_config.provider.trim().to_lowercase();
+    if provider.is_empty() || provider == "auto" {
+        return None;
+    }
+    AdapterKind::from_lower_str(&provider)
+}
+
+/// The provider requests actually use: explicit `ai.provider`, else inferred
+/// from the model name (the behavior of configs predating the field).
+pub fn effective_provider(ai_config: &AiConfig) -> AdapterKind {
+    explicit_provider(ai_config).unwrap_or_else(|| provider_for_model(&ai_config.model))
+}
+
+/// Whether two adapters are the same provider for routing purposes. OpenAI and
+/// OpenAIResp are one provider: genai routes `gpt-5*`/`*codex*` models through
+/// the Responses API (OpenAIResp), and forcing them back under an `openai::`
+/// namespace would demote them to the legacy chat endpoint.
+pub fn same_provider(a: AdapterKind, b: AdapterKind) -> bool {
+    let openai_family = |k: AdapterKind| matches!(k, AdapterKind::OpenAI | AdapterKind::OpenAIResp);
+    a == b || (openai_family(a) && openai_family(b))
+}
+
+/// Model string handed to genai. When the explicit provider disagrees with what
+/// genai would infer from the bare name, force it with the `provider::model`
+/// namespace genai understands. User-supplied namespaces always win.
+pub fn qualified_model(ai_config: &AiConfig) -> String {
+    let model = ai_config.model.clone();
+    if model.contains("::") {
+        return model;
+    }
+    let Some(chosen) = explicit_provider(ai_config) else {
+        return model;
+    };
+    if same_provider(chosen, provider_for_model(&model)) {
+        model
+    } else {
+        format!("{}::{}", chosen.as_lower_str(), model)
+    }
+}
+
+/// Curated default model per provider — a wizard suggestion only, never a
+/// restriction (free text always wins, and `\ai model` lists live models).
+/// `None` for providers we don't curate a default for.
+pub fn default_model_for(adapter: AdapterKind) -> Option<&'static str> {
+    Some(match adapter {
+        AdapterKind::Anthropic => "claude-sonnet-4-6",
+        AdapterKind::OpenAI | AdapterKind::OpenAIResp => "gpt-5.1",
+        AdapterKind::Gemini => "gemini-2.5-pro",
+        AdapterKind::Ollama => "llama3.1",
+        AdapterKind::Groq => "llama-3.3-70b-versatile",
+        AdapterKind::DeepSeek => "deepseek-chat",
+        AdapterKind::Xai => "grok-4",
+        AdapterKind::Cohere => "command-a-03-2025",
+        _ => return None,
+    })
+}
+
 /// Build a `genai` client wired to dbcrust's credential chain (env → OS keyring
 /// → encrypted file) and an optional custom endpoint.
 pub fn build_client(ai_config: &AiConfig) -> Result<Client, AiError> {
@@ -106,7 +165,7 @@ pub fn build_client(ai_config: &AiConfig) -> Result<Client, AiError> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .is_some();
-    let adapter = provider_for_model(&ai_config.model);
+    let adapter = effective_provider(ai_config);
     if !has_custom_endpoint
         && key_storage::requires_api_key(adapter)
         && key_storage::resolve_api_key(adapter).is_err()
@@ -170,9 +229,10 @@ pub async fn generate(
     let client = build_client(ai_config)?;
     let req = build_request(system_prompt, messages);
     let opts = chat_options(ai_config);
+    let model = qualified_model(ai_config);
 
     let res = client
-        .exec_chat(ai_config.model.as_str(), req, Some(&opts))
+        .exec_chat(model.as_str(), req, Some(&opts))
         .await
         .map_err(|e| AiError::RequestFailed(e.to_string()))?;
 
@@ -195,9 +255,10 @@ pub async fn generate_stream(
     let client = build_client(ai_config)?;
     let req = build_request(system_prompt, messages);
     let opts = chat_options(ai_config);
+    let model = qualified_model(ai_config);
 
     let chat_res = client
-        .exec_chat_stream(ai_config.model.as_str(), req, Some(&opts))
+        .exec_chat_stream(model.as_str(), req, Some(&opts))
         .await
         .map_err(|e| AiError::RequestFailed(e.to_string()))?;
 
@@ -261,5 +322,63 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(build_client(&config), Err(AiError::NotConfigured)));
+    }
+
+    fn config_with(provider: &str, model: &str) -> AiConfig {
+        AiConfig {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_effective_provider() {
+        // auto → inferred from model (legacy behavior)
+        let config = config_with("auto", "claude-sonnet-4-6");
+        assert!(explicit_provider(&config).is_none());
+        assert_eq!(effective_provider(&config), AdapterKind::Anthropic);
+
+        // explicit provider wins over the model name
+        let config = config_with("groq", "llama-3.3-70b-versatile");
+        assert_eq!(effective_provider(&config), AdapterKind::Groq);
+
+        // invalid provider value falls back to inference, not a panic
+        let config = config_with("not-a-provider", "gpt-4o");
+        assert!(explicit_provider(&config).is_none());
+        assert_eq!(effective_provider(&config), AdapterKind::OpenAI);
+    }
+
+    #[rstest::rstest]
+    // auto: bare model passes through untouched
+    #[case("auto", "gpt-4o", "gpt-4o")]
+    // provider agrees with inference: no namespace needed
+    #[case("anthropic", "claude-sonnet-4-6", "claude-sonnet-4-6")]
+    // OpenAI family: gpt-5* infers OpenAIResp — must NOT be namespaced back
+    // under openai:: or it loses the Responses API routing
+    #[case("openai", "gpt-5.1", "gpt-5.1")]
+    // provider disagrees with inference: force the namespace
+    #[case("groq", "llama-3.3-70b-versatile", "groq::llama-3.3-70b-versatile")]
+    // a user-supplied namespace always wins, even a conflicting one
+    #[case("openai", "anthropic::claude-sonnet-4-6", "anthropic::claude-sonnet-4-6")]
+    fn test_qualified_model(#[case] provider: &str, #[case] model: &str, #[case] expected: &str) {
+        assert_eq!(qualified_model(&config_with(provider, model)), expected);
+    }
+
+    #[test]
+    fn test_default_model_for_prefix_inference() {
+        // Where the curated default has a recognizable prefix, genai must infer
+        // the same provider back — guards against typos in the curated ids.
+        for adapter in [
+            AdapterKind::Anthropic,
+            AdapterKind::Gemini,
+            AdapterKind::DeepSeek,
+        ] {
+            let model = default_model_for(adapter).unwrap();
+            assert_eq!(provider_for_model(model), adapter, "default for {adapter}");
+        }
+        // OpenAI's default routes through the Responses API — same family.
+        let model = default_model_for(AdapterKind::OpenAI).unwrap();
+        assert!(same_provider(provider_for_model(model), AdapterKind::OpenAI));
     }
 }

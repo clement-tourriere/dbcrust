@@ -230,6 +230,17 @@ const LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 const DISPLAY_MODES: &[&str] = &["full", "truncated", "summary", "viz"];
 const AI_EXECUTION_MODES: &[&str] = &["confirm", "auto_select", "auto_execute"];
 
+fn parse_auth_method(v: &str) -> Result<crate::ai::config::AiAuthMethod, String> {
+    use crate::ai::config::AiAuthMethod;
+    match v {
+        "api_key" => Ok(AiAuthMethod::ApiKey),
+        "chatgpt_subscription" => Ok(AiAuthMethod::ChatgptSubscription),
+        _ => Err(format!("invalid auth method: {v}")),
+    }
+}
+
+const AI_AUTH_METHODS: &[&str] = &["api_key", "chatgpt_subscription"];
+
 /// Every editable scalar leaf of [`Config`], grouped by section.
 ///
 /// The completeness test in this module compares these paths against the
@@ -780,6 +791,25 @@ static SCHEMA: &[FieldSpec] = &[
         },
     },
     FieldSpec {
+        path: "ai.provider",
+        label: "AI provider",
+        help: "Provider key (anthropic, openai, ...), or \"auto\" to infer from the model",
+        kind: FieldKind::Text { allow_empty: false },
+        section: ConfigSection::Ai,
+        sensitive: false,
+        get: |c| c.ai.provider.clone(),
+        set: |c, v| {
+            let p = v.trim().to_lowercase();
+            if p != "auto" && genai::adapter::AdapterKind::from_lower_str(&p).is_none() {
+                return Err(format!(
+                    "unknown provider: {v} (use \"auto\" or a genai provider key like anthropic, openai, gemini, ollama)"
+                ));
+            }
+            c.ai.provider = p;
+            Ok(())
+        },
+    },
+    FieldSpec {
         path: "ai.model",
         label: "AI model",
         help: "Model id; provider inferred from the name, or use provider::model",
@@ -789,6 +819,19 @@ static SCHEMA: &[FieldSpec] = &[
         get: |c| c.ai.model.clone(),
         set: |c, v| {
             c.ai.model = v.to_string();
+            Ok(())
+        },
+    },
+    FieldSpec {
+        path: "ai.auth_method",
+        label: "AI auth method",
+        help: "api_key, or chatgpt_subscription to use a ChatGPT plan (default: api_key)",
+        kind: FieldKind::Enum(AI_AUTH_METHODS),
+        section: ConfigSection::Ai,
+        sensitive: false,
+        get: |c| c.ai.auth_method.to_string(),
+        set: |c, v| {
+            c.ai.auth_method = parse_auth_method(v)?;
             Ok(())
         },
     },
