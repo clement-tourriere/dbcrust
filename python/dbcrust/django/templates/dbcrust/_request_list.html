@@ -1,0 +1,38 @@
+<div class="stats">
+  <div class="stat"><span class="stat-value">{{ stats.request_count }}</span><span class="stat-label">requests</span></div>
+  <div class="stat"><span class="stat-value">{{ stats.with_issues }}</span><span class="stat-label">with issues</span></div>
+  <div class="stat"><span class="stat-value">{{ stats.avg_queries|floatformat:1 }}</span><span class="stat-label">avg queries</span></div>
+  <div class="stat"><span class="stat-value">{{ stats.avg_db_time_ms|floatformat:1 }}<small>ms</small></span><span class="stat-label">avg db time</span></div>
+</div>
+{% if records %}
+<table>
+  <thead>
+    <tr>
+      <th></th><th>Time</th><th>Request</th>
+      <th class="num">Queries</th><th class="num">DB ms</th><th class="num">Req ms</th><th class="num">Issues</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for record in records %}
+    <tr hx-get="{% url 'dbcrust:request-detail' record.id %}" hx-target="#detail" hx-swap="innerHTML">
+      <td><span class="badge {{ record.grade_class }}">{{ record.report.grade }}</span></td>
+      <td class="mono dim">{{ record.captured_at|time:"H:i:s" }}</td>
+      <td class="mono path" title="{{ record.report.path }}">
+        <span class="method">{{ record.report.method }}</span> {{ record.report.path }}
+      </td>
+      <td class="num mono">{{ record.report.total_queries }}</td>
+      <td class="num mono">{{ record.report.db_time_ms|floatformat:1 }}</td>
+      <td class="num mono">{{ record.report.request_time_ms|floatformat:1 }}</td>
+      <td class="num">
+        {% if record.critical_count %}<span class="pill bad">{{ record.critical_count }}</span>{% endif %}
+        {% if record.warning_count %}<span class="pill warn">{{ record.warning_count }}</span>{% endif %}
+        {% if record.hint_count %}<span class="pill dim">{{ record.hint_count }}</span>{% endif %}
+        {% if not record.total_issues %}<span class="dim">—</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="placeholder">No requests recorded yet — browse your app and they'll appear here.</div>
+{% endif %}

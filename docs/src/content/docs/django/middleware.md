@@ -55,6 +55,10 @@ DBCRUST_PERFORMANCE_ANALYSIS = {
     # Display
     'INCLUDE_HEADERS': True,          # X-DBCrust-* response headers
 
+    # Dashboard (see the Dashboard page)
+    'DASHBOARD_ENABLED': True,        # record requests for the web dashboard
+    'DASHBOARD_MAX_REQUESTS': 100,    # ring-buffer size (per process)
+
     # Advanced
     'TRANSACTION_SAFE': False,        # WARNING: True rolls back ALL writes
                                       # made during every analyzed request —
@@ -99,6 +103,9 @@ Slow query (118ms): SELECT … FROM books_book WHERE …
 Response headers (when `INCLUDE_HEADERS` is on) expose
 `X-DBCrust-Query-Count`, `X-DBCrust-Query-Time`, and
 `X-DBCrust-Warning` for quick inspection from the browser or curl.
+
+Prefer a UI? The same analysis feeds a local web dashboard — see
+[Dashboard](/dbcrust/django/dashboard/).
 
 ## 🧪 Query budgets in tests and CI
 

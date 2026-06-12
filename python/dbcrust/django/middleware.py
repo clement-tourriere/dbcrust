@@ -36,6 +36,10 @@ Configuration:
         # ── Display ───────────────────────────────────────────────
         'INCLUDE_HEADERS': True,      # Add X-DBCrust-* response headers
 
+        # ── Dashboard ─────────────────────────────────────────────
+        'DASHBOARD_ENABLED': True,    # Record requests for the web dashboard
+        'DASHBOARD_MAX_REQUESTS': 100,  # Ring-buffer size (per process)
+
         # ── Advanced ─────────────────────────────────────────────
         'TRANSACTION_SAFE': False,    # Wrap analysis in a transaction
         'DEBUG_TOOLBAR_COMPATIBILITY': True,
@@ -43,6 +47,16 @@ Configuration:
 
     Note: Requests with detected performance patterns will ALWAYS be
     logged, regardless of QUERY_THRESHOLD / TIME_THRESHOLD settings.
+
+Dashboard:
+    Mount the local dashboard (DEBUG-only views) to browse recorded
+    requests in the browser:
+
+        # urls.py
+        if settings.DEBUG:
+            urlpatterns += [path('__dbcrust__/', include('dbcrust.django.urls'))]
+
+    Requires 'dbcrust.django' in INSTALLED_APPS (for template discovery).
 """
 
 import logging
@@ -135,6 +149,10 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
 
             # Display
             'INCLUDE_HEADERS': True,
+
+            # Dashboard
+            'DASHBOARD_ENABLED': True,
+            'DASHBOARD_MAX_REQUESTS': 100,
 
             # Advanced
             'TRANSACTION_SAFE': False,
@@ -241,6 +259,11 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
                 )
             )
 
+            # Size the dashboard ring buffer (per process)
+            if self.config['DASHBOARD_ENABLED']:
+                from . import dashboard
+                dashboard.store.set_max_entries(self.config['DASHBOARD_MAX_REQUESTS'])
+
             # EXPLAIN runs on Django's own connection — only the vendor
             # needs to be supported, no URL detection or second client
             if self.config['EXPLAIN_ENABLED']:
@@ -283,6 +306,11 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
     def process_request(self, request: HttpRequest):
         """Start performance analysis for this request."""
         if not self.analyzer:
+            return None
+
+        # The dashboard polls every couple of seconds — analyzing its own
+        # requests would flood the store and the log with noise.
+        if self._is_dashboard_request(request):
             return None
 
         try:
@@ -382,7 +410,8 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
             or has_query_concerns
             or has_time_concerns
         )
-        if not should_log:
+        record_to_dashboard = self.config['DASHBOARD_ENABLED']
+        if not should_log and not record_to_dashboard:
             return
 
         # -- slow query analysis -------------------------------------------
@@ -415,6 +444,19 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
             request_time_ms=request_time_ms,
             slow_queries=slow_query_infos,
         )
+
+        # -- dashboard ------------------------------------------------------
+        # Every analyzed request is recorded (not just the logged ones) so
+        # the dashboard shows the full timeline, healthy requests included.
+        if record_to_dashboard:
+            try:
+                from . import dashboard
+                dashboard.store.add(report)
+            except Exception as e:
+                logger.debug("Could not record request in dashboard: %s", e)
+
+        if not should_log:
+            return
 
         # -- render & log --------------------------------------------------
         report_text = format_performance_report(report)
@@ -491,6 +533,16 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_dashboard_request(request: HttpRequest) -> bool:
+        """True when the request targets the dashboard's own views."""
+        try:
+            from django.urls import resolve
+            return resolve(request.path_info).app_name == 'dbcrust'
+        except Exception:
+            # Unresolvable path (404) or no URLconf — not the dashboard.
+            return False
 
     @staticmethod
     def _resolve_view_name(request: HttpRequest) -> Optional[str]:

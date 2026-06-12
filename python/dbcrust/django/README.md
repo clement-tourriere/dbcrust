@@ -8,6 +8,22 @@ The Django analyzer is included with DBCrust and provides enterprise-grade perfo
 
 For complete documentation, examples, and advanced usage, see the [Django Analyzer Guide](../../../docs/django-analyzer.md) in the main documentation.
 
+## Web Dashboard
+
+The middleware feeds a DEBUG-only web dashboard (htmx-powered, zero build step) showing every analyzed request with grades, N+1 detections, recommendations, and slow queries:
+
+```python
+# settings.py
+INSTALLED_APPS = [..., 'dbcrust.django']
+MIDDLEWARE = ['dbcrust.django.PerformanceAnalysisMiddleware', ...]
+
+# urls.py
+if settings.DEBUG:
+    urlpatterns += [path('__dbcrust__/', include('dbcrust.django.urls'))]
+```
+
+Then open `http://localhost:8000/__dbcrust__/`.
+
 ## Quick Start
 
 ### Installation

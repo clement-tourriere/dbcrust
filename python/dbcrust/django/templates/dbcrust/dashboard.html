@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DBCrust — Performance Dashboard</title>
+  <script src="{% url 'dbcrust:htmx' %}"></script>
+  <style>
+    :root {
+      --bg: #0d1117; --panel: #161b22; --border: #21262d;
+      --text: #e6edf3; --dim: #8b949e;
+      --good: #3fb950; --warn: #d29922; --bad: #f85149; --accent: #58a6ff;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 14px 22px; border-bottom: 1px solid var(--border);
+      background: var(--panel); position: sticky; top: 0; z-index: 10;
+    }
+    h1 { margin: 0; font-size: 16px; }
+    h1 .sub { color: var(--dim); font-weight: 400; }
+    .actions { display: flex; gap: 14px; align-items: center; }
+    .live { color: var(--dim); font-size: 12px; }
+    .live .dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--good); margin-right: 4px; animation: pulse 2s infinite;
+    }
+    @keyframes pulse { 50% { opacity: 0.3; } }
+    button {
+      background: transparent; border: 1px solid var(--border); color: var(--text);
+      padding: 5px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+    }
+    button:hover { border-color: var(--bad); color: var(--bad); }
+    main {
+      display: grid; grid-template-columns: minmax(440px, 46%) 1fr;
+      gap: 18px; padding: 18px 22px; align-items: start;
+    }
+    #list, #detail {
+      background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px; min-height: 200px;
+    }
+    #detail { position: sticky; top: 76px; max-height: calc(100vh - 96px); overflow-y: auto; }
+
+    .stats { display: flex; gap: 22px; padding: 4px 6px 14px; }
+    .stat-value { display: block; font-size: 19px; font-weight: 600; }
+    .stat-label { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left; color: var(--dim); font-size: 11px; font-weight: 500;
+      text-transform: uppercase; letter-spacing: .04em;
+      padding: 6px 8px; border-bottom: 1px solid var(--border);
+    }
+    td { padding: 7px 8px; border-bottom: 1px solid var(--border); }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover { background: #1c2330; }
+    .num { text-align: right; }
+    th.num { text-align: right; }
+    .mono { font-family: var(--mono); font-size: 12.5px; }
+    .dim { color: var(--dim); }
+    .path { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .method { color: var(--accent); font-weight: 600; }
+
+    .badge {
+      display: inline-block; min-width: 22px; text-align: center;
+      padding: 2px 6px; border-radius: 6px; font-weight: 700; font-size: 12px;
+    }
+    .badge.lg { font-size: 18px; padding: 6px 12px; }
+    .badge.good { background: rgba(63,185,80,.15); color: var(--good); }
+    .badge.warn { background: rgba(210,153,34,.15); color: var(--warn); }
+    .badge.bad  { background: rgba(248,81,73,.15);  color: var(--bad); }
+    .pill {
+      display: inline-block; min-width: 18px; text-align: center; margin-left: 3px;
+      padding: 1px 6px; border-radius: 9px; font-size: 11px; font-weight: 600;
+    }
+    .pill.bad  { background: rgba(248,81,73,.18);  color: var(--bad); }
+    .pill.warn { background: rgba(210,153,34,.18); color: var(--warn); }
+    .pill.dim  { background: rgba(139,148,158,.15); color: var(--dim); }
+
+    .placeholder { color: var(--dim); padding: 36px 12px; text-align: center; }
+    .placeholder.ok { color: var(--good); }
+
+    .detail-head { display: flex; gap: 14px; align-items: center; margin-bottom: 12px; }
+    .metrics { display: flex; flex-wrap: wrap; gap: 20px; padding: 10px 2px 16px; }
+
+    section.issues { margin-top: 16px; }
+    section.issues h3 {
+      margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em;
+    }
+    section.issues .count { color: var(--dim); font-weight: 400; }
+    section.critical h3 { color: var(--bad); }
+    section.warning h3 { color: var(--warn); }
+    section.hint h3, section.slow h3 { color: var(--dim); }
+    .issue {
+      border: 1px solid var(--border); border-left-width: 3px;
+      border-radius: 6px; padding: 10px 12px; margin-bottom: 10px;
+    }
+    section.critical .issue { border-left-color: var(--bad); }
+    section.warning .issue { border-left-color: var(--warn); }
+    section.hint .issue, section.slow .issue { border-left-color: var(--dim); }
+    .issue p { margin: 6px 0; }
+    .issue-head { display: flex; justify-content: space-between; gap: 10px; }
+    .rec { color: var(--good); }
+    pre {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+      padding: 8px 10px; overflow-x: auto; font-family: var(--mono); font-size: 12px;
+      white-space: pre-wrap; word-break: break-word; margin: 6px 0;
+    }
+    ul.locations { margin: 6px 0; padding-left: 18px; }
+    ul.locations li { font-size: 12px; color: var(--dim); }
+  </style>
+</head>
+<body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+  <header>
+    <h1>DBCrust <span class="sub">Performance Dashboard</span></h1>
+    <div class="actions">
+      <span class="live"><span class="dot"></span>auto-refresh</span>
+      <button hx-post="{% url 'dbcrust:clear' %}" hx-target="#list" hx-swap="innerHTML">Clear</button>
+    </div>
+  </header>
+  <main>
+    <section id="list"
+             hx-get="{% url 'dbcrust:request-list' %}"
+             hx-trigger="every 2s"
+             hx-swap="innerHTML">
+      {% include "dbcrust/_request_list.html" %}
+    </section>
+    <section id="detail">
+      <div class="placeholder">Select a request to inspect issues, recommendations, and slow queries.</div>
+    </section>
+  </main>
+</body>
+</html>

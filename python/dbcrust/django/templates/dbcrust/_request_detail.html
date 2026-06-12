@@ -1,0 +1,49 @@
+<div class="detail-head">
+  <span class="badge {{ record.grade_class }} lg">{{ record.report.grade }}</span>
+  <div>
+    <div class="mono">
+      <span class="method">{{ record.report.method }}</span> {{ record.report.path }}
+      {% if record.report.status_code %}<span class="dim">→ {{ record.report.status_code }}</span>{% endif %}
+    </div>
+    {% if record.report.view_name %}<div class="dim mono">{{ record.report.view_name }}</div>{% endif %}
+  </div>
+</div>
+
+<div class="metrics">
+  <div class="metric"><span class="stat-value">{{ record.report.total_queries }}</span><span class="stat-label">queries</span></div>
+  <div class="metric"><span class="stat-value">{{ record.report.db_time_ms|floatformat:1 }}<small>ms</small></span><span class="stat-label">db time</span></div>
+  <div class="metric"><span class="stat-value">{{ record.report.request_time_ms|floatformat:1 }}<small>ms</small></span><span class="stat-label">request time</span></div>
+  <div class="metric"><span class="stat-value">{{ record.report.duplicate_queries }}</span><span class="stat-label">duplicates</span></div>
+  <div class="metric">
+    <span class="stat-value mono">{{ record.report.selects }}/{{ record.report.inserts }}/{{ record.report.updates }}/{{ record.report.deletes }}</span>
+    <span class="stat-label">sel / ins / upd / del</span>
+  </div>
+</div>
+
+{% include "dbcrust/_issue_section.html" with title="Critical" css="critical" issues=record.report.critical_issues only %}
+{% include "dbcrust/_issue_section.html" with title="Warnings" css="warning" issues=record.report.warnings only %}
+{% include "dbcrust/_issue_section.html" with title="Hints" css="hint" issues=record.report.hints only %}
+
+{% if record.report.slow_queries %}
+<section class="issues slow">
+  <h3>Slow queries <span class="count">({{ record.report.slow_queries|length }})</span></h3>
+  {% for query in record.report.slow_queries %}
+  <article class="issue">
+    <div class="issue-head">
+      <strong>{{ query.duration_ms|floatformat:1 }} ms</strong>
+      {% if query.tables %}<span class="dim mono">{{ query.tables|join:", " }}</span>{% endif %}
+    </div>
+    <pre class="sql">{{ query.sql }}</pre>
+    {% if query.explain_plan_type %}
+    <p class="dim">Plan: {{ query.explain_plan_type }}{% if query.explain_rows_examined %} — {{ query.explain_rows_examined }} rows examined{% endif %}</p>
+    {% endif %}
+    {% if query.explain_suggestion %}<p class="rec">💡 {{ query.explain_suggestion }}</p>{% endif %}
+    {% if query.explain_django_fix %}<pre>{{ query.explain_django_fix }}</pre>{% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if not record.total_issues and not record.report.slow_queries %}
+<div class="placeholder ok">No issues detected for this request ✅</div>
+{% endif %}

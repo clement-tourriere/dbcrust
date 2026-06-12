@@ -48,6 +48,7 @@ export default defineConfig({
           items: [
             { label: 'ORM Analyzer', slug: 'django-analyzer' },
             { label: 'Middleware', slug: 'django/middleware' },
+            { label: 'Dashboard', slug: 'django/dashboard' },
             { label: 'Management Commands', slug: 'django/management-commands' },
             { label: 'CI/CD Integration', slug: 'django/ci-integration' },
             { label: 'Team Workflows', slug: 'django/team-workflows' },

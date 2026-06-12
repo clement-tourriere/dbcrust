@@ -1,0 +1,24 @@
+{% if issues %}
+<section class="issues {{ css }}">
+  <h3>{{ title }} <span class="count">({{ issues|length }})</span></h3>
+  {% for issue in issues %}
+  <article class="issue">
+    <div class="issue-head">
+      <strong>{{ issue.label }}</strong>
+      {% if issue.affected_queries_count %}
+      <span class="dim">{{ issue.affected_queries_count }} quer{{ issue.affected_queries_count|pluralize:"y,ies" }}</span>
+      {% endif %}
+    </div>
+    <p>{{ issue.description }}</p>
+    {% if issue.recommendation %}<p class="rec">💡 {{ issue.recommendation }}</p>{% endif %}
+    {% if issue.code_suggestion %}<pre>{{ issue.code_suggestion }}</pre>{% endif %}
+    {% if issue.code_locations %}
+    <ul class="locations">
+      {% for location in issue.code_locations %}<li class="mono">{{ location }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% if issue.sql_example %}<pre class="sql">{{ issue.sql_example }}</pre>{% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
