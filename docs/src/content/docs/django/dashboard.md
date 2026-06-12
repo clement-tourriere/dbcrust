@@ -51,22 +51,37 @@ The dashboard's own polling requests are recognized (by URL namespace) and exclu
 
 ## Configuration
 
-Two keys in `DBCRUST_PERFORMANCE_ANALYSIS` (defaults shown):
+All dashboard keys in `DBCRUST_PERFORMANCE_ANALYSIS` (defaults shown):
 
 ```python
 DBCRUST_PERFORMANCE_ANALYSIS = {
     'DASHBOARD_ENABLED': True,      # record analyzed requests for the dashboard
-    'DASHBOARD_MAX_REQUESTS': 100,  # ring-buffer size
+    'DASHBOARD_MAX_REQUESTS': 100,  # history size (oldest pruned first)
+    'DASHBOARD_PERSIST': True,      # keep history across restarts (SQLite file)
+    'DASHBOARD_DB_PATH': None,      # None → BASE_DIR/.dbcrust/dashboard.sqlite3
 }
 ```
 
 Unlike console reports — which only fire on issues or threshold breaches — the dashboard records **every** analyzed request, healthy ones included, so the timeline is complete.
 
-## Security & storage
+## Storage
+
+History is persisted by default to a dedicated SQLite file at `BASE_DIR/.dbcrust/dashboard.sqlite3`, so it **survives `runserver` autoreloads and restarts** — fix the N+1 the dashboard showed you, save, and the "before" requests are still there to compare against. Add the directory to your project's `.gitignore`:
+
+```gitignore
+.dbcrust/
+```
+
+Worth knowing:
+
+- This is **not your project database** — no models, no migrations, no `DATABASES` entry. It's a self-managed file (WAL mode, capped at `DASHBOARD_MAX_REQUESTS`, schema migrated by drop-and-recreate since history is disposable).
+- **Multi-process servers work**: gunicorn workers all write to the same file, so the dashboard shows one combined timeline.
+- Nothing is ever sent anywhere; delete the file (or click **Clear**) to wipe history.
+- Prefer zero filesystem footprint? Set `'DASHBOARD_PERSIST': False` to use a per-process in-memory ring buffer instead (history dies with the process).
+
+## Security
 
 - **DEBUG-only**: every dashboard view returns 404 when `settings.DEBUG` is off. The dashboard exposes raw SQL and code paths; keep the `if settings.DEBUG:` guard around the URL include as a second layer.
-- **In-memory only**: records live in a per-process ring buffer. Nothing is written to disk or sent anywhere, and a restart clears it.
-- **Per-process**: under multi-process servers (e.g. gunicorn with several workers) each worker has its own buffer. With `runserver` — the intended use — there is exactly one.
 
 ## Troubleshooting
 

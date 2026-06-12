@@ -38,7 +38,10 @@ Configuration:
 
         # ── Dashboard ─────────────────────────────────────────────
         'DASHBOARD_ENABLED': True,    # Record requests for the web dashboard
-        'DASHBOARD_MAX_REQUESTS': 100,  # Ring-buffer size (per process)
+        'DASHBOARD_MAX_REQUESTS': 100,  # History size (oldest pruned first)
+        'DASHBOARD_PERSIST': True,    # Keep history in a SQLite file so it
+                                      # survives dev-server autoreloads
+        'DASHBOARD_DB_PATH': None,    # None → BASE_DIR/.dbcrust/dashboard.sqlite3
 
         # ── Advanced ─────────────────────────────────────────────
         'TRANSACTION_SAFE': False,    # Wrap analysis in a transaction
@@ -153,6 +156,8 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
             # Dashboard
             'DASHBOARD_ENABLED': True,
             'DASHBOARD_MAX_REQUESTS': 100,
+            'DASHBOARD_PERSIST': True,
+            'DASHBOARD_DB_PATH': None,
 
             # Advanced
             'TRANSACTION_SAFE': False,
@@ -259,10 +264,15 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
                 )
             )
 
-            # Size the dashboard ring buffer (per process)
+            # Configure the dashboard store (SQLite-persisted by default so
+            # history survives runserver autoreloads)
             if self.config['DASHBOARD_ENABLED']:
                 from . import dashboard
-                dashboard.store.set_max_entries(self.config['DASHBOARD_MAX_REQUESTS'])
+                dashboard.configure_store(
+                    persist=self.config['DASHBOARD_PERSIST'],
+                    db_path=self.config['DASHBOARD_DB_PATH'],
+                    max_entries=self.config['DASHBOARD_MAX_REQUESTS'],
+                )
 
             # EXPLAIN runs on Django's own connection — only the vendor
             # needs to be supported, no URL detection or second client
@@ -451,7 +461,7 @@ class PerformanceAnalysisMiddleware(MiddlewareMixin):
         if record_to_dashboard:
             try:
                 from . import dashboard
-                dashboard.store.add(report)
+                dashboard.get_store().add(report)
             except Exception as e:
                 logger.debug("Could not record request in dashboard: %s", e)
 

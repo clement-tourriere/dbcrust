@@ -57,7 +57,9 @@ DBCRUST_PERFORMANCE_ANALYSIS = {
 
     # Dashboard (see the Dashboard page)
     'DASHBOARD_ENABLED': True,        # record requests for the web dashboard
-    'DASHBOARD_MAX_REQUESTS': 100,    # ring-buffer size (per process)
+    'DASHBOARD_MAX_REQUESTS': 100,    # history size (oldest pruned first)
+    'DASHBOARD_PERSIST': True,        # survive restarts (SQLite file)
+    'DASHBOARD_DB_PATH': None,        # None → BASE_DIR/.dbcrust/dashboard.sqlite3
 
     # Advanced
     'TRANSACTION_SAFE': False,        # WARNING: True rolls back ALL writes

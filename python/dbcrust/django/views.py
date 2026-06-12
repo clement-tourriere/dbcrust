@@ -38,9 +38,10 @@ def _debug_only(view):
 
 
 def _list_context():
+    store = dashboard.get_store()
     return {
-        "records": dashboard.store.records(),
-        "stats": dashboard.store.stats(),
+        "records": store.records(),
+        "stats": store.stats(),
     }
 
 
@@ -59,7 +60,7 @@ def request_list(request):
 @_debug_only
 def request_detail(request, record_id):
     """htmx partial: issues, recommendations, and slow queries for one request."""
-    record = dashboard.store.get(record_id)
+    record = dashboard.get_store().get(record_id)
     if record is None:
         raise Http404
     return render(request, "dbcrust/_request_detail.html", {"record": record})
@@ -70,7 +71,7 @@ def clear(request):
     """Empty the ring buffer and return the refreshed list partial."""
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
-    dashboard.store.clear()
+    dashboard.get_store().clear()
     return render(request, "dbcrust/_request_list.html", _list_context())
 
 
