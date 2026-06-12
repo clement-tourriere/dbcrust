@@ -1,3 +1,13 @@
+## v0.28.1 (2026-06-12)
+
+### Fix
+
+- **test**: retry port-reuse race in test_find_available_port_specific_free
+- **test**: skip docker tests gracefully when no daemon is available
+- **ci**: build linux-arm64 wheel on manylinux_2_28
+- **python**: repair type bugs surfaced by ruff/ty and make the package type-clean
+- **lint**: resolve clippy -D warnings findings
+
 ## v0.28.0 (2026-06-12)
 
 ### Feat
