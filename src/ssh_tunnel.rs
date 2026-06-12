@@ -509,17 +509,24 @@ mod tests {
     #[rstest]
     #[tokio::test]
     async fn test_find_available_port_specific_free() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let free_port = listener.local_addr().unwrap().port();
-        drop(listener);
+        // Releasing a port and re-binding it races with other processes
+        // grabbing it in between — retry with a fresh port if that happens.
+        for attempt in 0..5 {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let free_port = listener.local_addr().unwrap().port();
+            drop(listener);
 
-        let mut tunnel = SSHTunnel::default();
-        tunnel.local_port = free_port;
-        let port = tunnel
-            .find_available_port()
-            .await
-            .expect("Should use specified free port");
-        assert_eq!(port, free_port);
+            let mut tunnel = SSHTunnel::default();
+            tunnel.local_port = free_port;
+            match tunnel.find_available_port().await {
+                Ok(port) => {
+                    assert_eq!(port, free_port);
+                    return;
+                }
+                Err(_) if attempt < 4 => continue,
+                Err(e) => panic!("Should use specified free port: {e:?}"),
+            }
+        }
     }
 
     #[rstest]
