@@ -13,6 +13,7 @@
 pub mod config;
 pub mod conversation;
 pub mod key_storage;
+pub mod model_listing;
 pub mod prompt_templates;
 pub mod schema_context;
 pub mod streaming;

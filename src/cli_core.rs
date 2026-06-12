@@ -1808,6 +1808,57 @@ impl CliCore {
         }
     }
 
+    /// Fetch live models for `adapter` (curated fallback on any failure) and
+    /// let the user pick one. `Ok(None)` means keep the current model (Esc).
+    async fn pick_model(
+        adapter: genai::adapter::AdapterKind,
+        endpoint: Option<&str>,
+        current: &str,
+    ) -> Result<Option<String>, WizardCancelled> {
+        use crate::ai::model_listing;
+
+        println!("Fetching available models from {}…", adapter.as_str());
+        let live = model_listing::list_models(adapter, endpoint).await;
+        if let Err(e) = &live {
+            println!(
+                "\x1b[2mCould not fetch the live model list ({e}); showing suggestions.\x1b[0m"
+            );
+        }
+        let curated = model_listing::curated_models(adapter);
+        let (options, _) = model_listing::build_model_options(live, &curated, current);
+        Self::pick_model_from(options, current)
+    }
+
+    /// Model Select (type to filter) with a free-text escape hatch.
+    fn pick_model_from(
+        options: Vec<String>,
+        current: &str,
+    ) -> Result<Option<String>, WizardCancelled> {
+        let starting = options.iter().position(|m| m == current).unwrap_or(0);
+        let choice = match wizard_step(
+            inquire::Select::new("Model:", options)
+                .with_starting_cursor(starting)
+                .with_page_size(12)
+                .with_help_message("type to filter; Esc keeps the current model")
+                .prompt(),
+        )? {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+        if choice != crate::ai::model_listing::CUSTOM_MODEL_OPTION {
+            return Ok(Some(choice));
+        }
+        match wizard_step(
+            inquire::Text::new("Model:")
+                .with_default(current)
+                .with_help_message("any genai-supported model, e.g. provider::model")
+                .prompt(),
+        )? {
+            Some(m) if !m.trim().is_empty() => Ok(Some(m.trim().to_string())),
+            _ => Ok(None),
+        }
+    }
+
     /// Interactively pick a provider from the curated wizard list. This is the
     /// first structural step of a wizard, so Esc aborts just like Ctrl-C.
     fn select_provider(prompt: &str) -> Result<genai::adapter::AdapterKind, WizardCancelled> {
@@ -1841,8 +1892,32 @@ impl CliCore {
 
         Self::configure_provider_key(adapter)?;
 
-        // Model name (free text). Default to a model OF THE CHOSEN PROVIDER —
-        // keeping the previous model only makes sense if it already matches.
+        // Optional custom endpoint, asked before the model step so the live
+        // model listing below can query it (self-hosted / OpenAI-compatible
+        // gateways, remote Ollama). Esc keeps the previously configured value.
+        let current_endpoint = config_arc
+            .lock()
+            .unwrap()
+            .ai
+            .endpoint
+            .clone()
+            .unwrap_or_default();
+        let endpoint = match wizard_step(
+            inquire::Text::new("Custom endpoint URL (optional):")
+                .with_default(&current_endpoint)
+                .with_help_message("Leave empty to use the provider's default endpoint")
+                .prompt(),
+        )? {
+            Some(u) => {
+                let u = u.trim().to_string();
+                if u.is_empty() { None } else { Some(u) }
+            }
+            None => config_arc.lock().unwrap().ai.endpoint.clone(),
+        };
+
+        // Model: live list from the chosen provider (curated fallback), with a
+        // provider-appropriate default — keeping the previous model only makes
+        // sense if it already belongs to this provider.
         let current_model = config_arc.lock().unwrap().ai.model.clone();
         let suggested_model =
             if crate::ai::same_provider(crate::ai::provider_for_model(&current_model), adapter) {
@@ -1852,28 +1927,9 @@ impl CliCore {
                     .map(str::to_string)
                     .unwrap_or_else(|| current_model.clone())
             };
-        let model = match wizard_step(
-            inquire::Text::new("Model:")
-                .with_default(&suggested_model)
-                .with_help_message(
-                    "e.g. claude-sonnet-4-6, gpt-5.1, gemini-2.5-pro, ollama::llama3.1",
-                )
-                .prompt(),
-        )? {
-            Some(m) if !m.trim().is_empty() => m.trim().to_string(),
-            _ => suggested_model,
-        };
-
-        // Optional custom endpoint (self-hosted / OpenAI-compatible gateways).
-        let endpoint = match wizard_step(
-            inquire::Text::new("Custom endpoint URL (optional):")
-                .with_default("")
-                .with_help_message("Leave empty to use the provider's default endpoint")
-                .prompt(),
-        )? {
-            Some(u) if !u.trim().is_empty() => Some(u.trim().to_string()),
-            _ => None,
-        };
+        let model = Self::pick_model(adapter, endpoint.as_deref(), &suggested_model)
+            .await?
+            .unwrap_or(suggested_model);
 
         {
             let mut config = config_arc.lock().unwrap();
@@ -1980,17 +2036,19 @@ impl CliCore {
         _db_arc: &Arc<Mutex<Database>>,
     ) {
         let model = if arg.is_empty() {
-            let current = config_arc.lock().unwrap().ai.model.clone();
-            match wizard_step(
-                inquire::Text::new("Model:")
-                    .with_default(&current)
-                    .with_help_message(
-                        "Any genai-supported model — e.g. claude-sonnet-4-6, gpt-4o, ollama::llama3.1",
-                    )
-                    .prompt(),
-            ) {
-                Ok(Some(m)) if !m.trim().is_empty() => m.trim().to_string(),
-                Ok(_) => return,
+            // Clone what the picker needs and drop the guard — it does
+            // network I/O and must not hold the config lock across awaits.
+            let (current, adapter, endpoint) = {
+                let config = config_arc.lock().unwrap();
+                (
+                    config.ai.model.clone(),
+                    crate::ai::effective_provider(&config.ai),
+                    config.ai.endpoint.clone(),
+                )
+            };
+            match Self::pick_model(adapter, endpoint.as_deref(), &current).await {
+                Ok(Some(m)) => m,
+                Ok(None) => return,
                 Err(WizardCancelled) => {
                     cancel_ai_wizard();
                     return;
