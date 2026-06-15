@@ -1,3 +1,9 @@
+## v0.30.0 (2026-06-15)
+
+### Feat
+
+- **ai**: agentic ??? mode, Django-aware AI, faster schema context
+
 ## v0.29.0 (2026-06-12)
 
 ### Feat
