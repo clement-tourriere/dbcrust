@@ -227,6 +227,16 @@ impl Highlighter for SqlHighlighter {
             *buffer_guard = Some(line.to_string());
         }
 
+        // AI prompts (`??` text-to-SQL and `???` agentic) are natural language, not
+        // SQL — applying SQL keyword/string/number coloring to them is noise. Render
+        // the whole line plain. `starts_with("??")` covers `???` as well. (The buffer
+        // capture above must still run for the completer, so this returns after it.)
+        if line.trim_start().starts_with("??") {
+            let mut styled_text = StyledText::new();
+            styled_text.push((Style::new(), line.to_string()));
+            return styled_text;
+        }
+
         let mut styled_text = StyledText::new();
         let mut last_end = 0;
 

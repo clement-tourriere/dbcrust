@@ -10,6 +10,7 @@
 //! so AI assistance can be reused beyond text-to-SQL (query optimization,
 //! error explanation, etc.).
 
+pub mod agent;
 pub mod chatgpt_auth;
 pub mod config;
 pub mod conversation;
@@ -333,6 +334,64 @@ where
                 budget.as_secs()
             ))
         })
+}
+
+/// One agentic round-trip result, owned so the caller can re-append the tool
+/// calls (which preserves provider thought signatures).
+pub struct AgentStep {
+    pub text: Option<String>,
+    pub tool_calls: Vec<genai::chat::ToolCall>,
+}
+
+/// Execute a single tool-enabled chat round. The caller threads the growing
+/// `ChatRequest` (system + history + tools) and appends the tool calls and
+/// `ToolResponse`s before the next call.
+///
+/// Runs over a STREAMING request with `capture_tool_calls` enabled, then reads
+/// the assembled tool calls from the stream end. This is deliberate: the
+/// ChatGPT-subscription (Codex/OpenAIResp) backend is SSE-only and rejects
+/// non-streaming `exec_chat`, and streaming-with-capture works for every API-key
+/// provider too — so one path serves both. The captured tool calls retain their
+/// `thought_signatures`, so re-appending them preserves Gemini's required
+/// thought-signature ordering.
+pub async fn run_agent_step(ai_config: &AiConfig, req: &ChatRequest) -> Result<AgentStep, AiError> {
+    let mode = resolve_auth_mode(ai_config).await?;
+    let client = build_client(ai_config, &mode)?;
+    let opts = chat_options(ai_config, &mode).with_capture_tool_calls(true);
+    let model = request_model(ai_config, &mode);
+
+    let chat_res = client
+        .exec_chat_stream(model.as_str(), req.clone(), Some(&opts))
+        .await
+        .map_err(|e| AiError::RequestFailed(e.to_string()))?;
+
+    let mut stream = chat_res.stream;
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+    let mut received_any = false;
+    while let Some(event) = next_stream_event(&mut stream, received_any).await? {
+        received_any = true;
+        match event {
+            Ok(ChatStreamEvent::Chunk(chunk)) => text.push_str(&chunk.content),
+            Ok(ChatStreamEvent::End(end)) => {
+                if let Some(captured) = end.captured_into_tool_calls() {
+                    tool_calls = captured;
+                }
+                break;
+            }
+            // Start / ReasoningChunk / ToolCallChunk / … carry no final text here;
+            // the assembled tool calls arrive in End via capture_tool_calls.
+            Ok(_) => {}
+            Err(e) => return Err(AiError::RequestFailed(e.to_string())),
+        }
+    }
+
+    let text = if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    };
+    Ok(AgentStep { text, tool_calls })
 }
 
 /// Non-streaming completion. Reusable for any AI task (not just SQL).

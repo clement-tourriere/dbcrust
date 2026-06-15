@@ -58,5 +58,6 @@ except ImportError:
     _stub.run_command = _native_unavailable
     _stub.run_cli_loop = _native_unavailable
     _stub.py_connect = _native_unavailable
+    _stub.run_ai_investigation = _native_unavailable
 
     sys.modules["dbcrust._internal"] = _stub

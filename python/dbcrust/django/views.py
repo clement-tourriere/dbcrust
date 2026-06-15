@@ -67,11 +67,69 @@ def request_detail(request, record_id):
 
 
 @_debug_only
+def ai_investigate(request, record_id):
+    """htmx POST: kick off an AI investigation in the background and return the
+    live status panel, which then polls :func:`ai_status`.
+
+    The investigation runs in a daemon thread (the Rust call releases the GIL),
+    so the dashboard stays responsive; progress streams to a temp file the status
+    panel tails. Requires the AI assistant to be configured (`\\ai setup`).
+    """
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+    record = dashboard.get_store().get(record_id)
+    if record is None:
+        raise Http404
+
+    project_root = str(getattr(settings, "BASE_DIR", "") or "") or None
+    database = getattr(settings, "DBCRUST_AI_DATABASE", "default")
+    report = record.report
+
+    from .ai_context import investigate_report
+    from .ai_jobs import get_job_store
+
+    def runner(progress_path):
+        return investigate_report(
+            report,
+            database=database,
+            project_root=project_root,
+            progress_path=progress_path,
+        )
+
+    job = get_job_store().start(record_id, runner)
+    return render(
+        request, "dbcrust/_ai_status.html", {"job": job, "record_id": record_id}
+    )
+
+
+@_debug_only
+def ai_status(request, record_id):
+    """htmx GET (polled): current state of the investigation for one request.
+
+    While running, returns the panel with the live progress trace and the poll
+    trigger; when done/failed, returns the final analysis (or error) with NO
+    trigger, so htmx stops polling.
+    """
+    from .ai_jobs import get_job_store
+
+    job = get_job_store().get(record_id)
+    if job is None:
+        raise Http404
+    return render(
+        request, "dbcrust/_ai_status.html", {"job": job, "record_id": record_id}
+    )
+
+
+@_debug_only
 def clear(request):
     """Empty the ring buffer and return the refreshed list partial."""
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
     dashboard.get_store().clear()
+    # Also drop finished AI jobs + their temp files (running ones are kept).
+    from .ai_jobs import get_job_store
+
+    get_job_store().clear()
     return render(request, "dbcrust/_request_list.html", _list_context())
 
 

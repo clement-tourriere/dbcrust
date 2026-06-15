@@ -24,6 +24,8 @@ urlpatterns = [
     path("", views.index, name="index"),
     path("requests/", views.request_list, name="request-list"),
     path("requests/<int:record_id>/", views.request_detail, name="request-detail"),
+    path("requests/<int:record_id>/ai/", views.ai_investigate, name="ai-investigate"),
+    path("requests/<int:record_id>/ai/status/", views.ai_status, name="ai-status"),
     path("clear/", views.clear, name="clear"),
     path("htmx.min.js", views.htmx_js, name="htmx"),
 ]

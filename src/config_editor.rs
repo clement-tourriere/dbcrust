@@ -949,6 +949,32 @@ static SCHEMA: &[FieldSpec] = &[
             Ok(())
         },
     },
+    FieldSpec {
+        path: "ai.agentic_max_iterations",
+        label: "Agentic max iterations",
+        help: "Max tool-call turns for ??? agentic mode (default: 8)",
+        kind: FieldKind::UInt { min: 1, max: 50 },
+        section: ConfigSection::Ai,
+        sensitive: false,
+        get: |c| c.ai.agentic_max_iterations.to_string(),
+        set: |c, v| {
+            c.ai.agentic_max_iterations = pnum(v)?;
+            Ok(())
+        },
+    },
+    FieldSpec {
+        path: "ai.agentic_max_rows_per_tool",
+        label: "Agentic max rows per tool",
+        help: "Max rows from one agentic tool query fed to the model (default: 50)",
+        kind: FieldKind::UInt { min: 1, max: 1_000 },
+        section: ConfigSection::Ai,
+        sensitive: false,
+        get: |c| c.ai.agentic_max_rows_per_tool.to_string(),
+        set: |c, v| {
+            c.ai.agentic_max_rows_per_tool = pnum(v)?;
+            Ok(())
+        },
+    },
     // ---------- Logging ----------
     FieldSpec {
         path: "logging.level",

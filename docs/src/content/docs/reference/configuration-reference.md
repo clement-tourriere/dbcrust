@@ -239,6 +239,10 @@ execution_mode = "confirm"
 
 # Conversation exchanges kept for follow-up questions
 history_length = 5
+
+# Agentic ??? investigation loop
+agentic_max_iterations = 8          # Max tool-call turns before forcing an answer
+agentic_max_rows_per_tool = 50      # Rows from one tool query fed back to the model
 ```
 
 **Settings:**
@@ -257,6 +261,8 @@ history_length = 5
 | `show_generated_sql` | Boolean | `true` | Display generated SQL |
 | `execution_mode` | String | `"confirm"` | `confirm` / `auto_select` / `auto_execute` |
 | `history_length` | Integer | `5` | Conversation exchanges kept |
+| `agentic_max_iterations` | Integer | `8` | Max tool-call turns for `???` investigations |
+| `agentic_max_rows_per_tool` | Integer | `50` | Rows from one `???` tool query fed to the model |
 
 API keys are **not** stored in `config.toml` — they resolve from environment variables, the OS keychain, or an encrypted file (in that order).
 

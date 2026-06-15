@@ -264,6 +264,7 @@ pub fn _internal(_py: Python<'_>, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_command, &m)?)?;
     m.add_function(wrap_pyfunction!(run_cli_loop, &m)?)?;
     m.add_function(wrap_pyfunction!(py_connect, &m)?)?;
+    m.add_function(wrap_pyfunction!(run_ai_investigation, &m)?)?;
 
     // Add custom exceptions to the module
     m.add("DbcrustError", _py.get_type::<DbcrustError>())?;
@@ -900,6 +901,130 @@ pub fn py_connect(
     auto_commit: Option<bool>,
 ) -> PyResult<PyConnection> {
     PyConnection::new(connection_url, timeout, auto_commit)
+}
+
+/// Run an AI investigation against a database, optionally seeded with extra
+/// context (e.g. Django models + ORM code). Returns the final analysis text.
+///
+/// With `agentic=true` (default) this runs the same tool-using investigation loop
+/// as the REPL's `???`: the model calls read-only tools, observes results, and
+/// iterates until it produces a structured analysis. With `agentic=false` it does
+/// a single-shot text-to-SQL generation with the extra context prepended. Reuses
+/// the on-disk AI config — the user runs `\ai setup` once via the CLI.
+///
+/// The GIL is **released** for the whole (multi-second) investigation, so a
+/// caller running this in a background thread (e.g. the Django dashboard) does
+/// not freeze other Python threads. Progress is silent by default (programmatic
+/// callers get a clean return value); set `progress_path` to tail the agent's
+/// narration from a file, or `stdout_progress=True` to print it (the management
+/// command does this).
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(signature = (connection_url, question, django_context, agentic=true, max_iterations=None, progress_path=None, stdout_progress=false))]
+pub fn run_ai_investigation(
+    py: Python<'_>,
+    connection_url: String,
+    question: String,
+    django_context: String,
+    agentic: bool,
+    max_iterations: Option<usize>,
+    progress_path: Option<String>,
+    stdout_progress: bool,
+) -> PyResult<String> {
+    // Release the GIL: the investigation is all Rust (genai HTTP + DB) and takes
+    // many seconds; holding the GIL would block every other Python thread,
+    // including the dashboard's polling requests. Errors are plain Strings here
+    // (no PyErr without the GIL) and mapped back to a Python exception after.
+    let result: Result<String, String> = py.detach(move || {
+        let rt = Runtime::new().map_err(|e| format!("Failed to create Tokio runtime: {e}"))?;
+
+        rt.block_on(async move {
+            let config = crate::config::Config::load();
+            if !config.ai.enabled {
+                return Err(
+                    "AI assistant is disabled. Run `dbcrust` then `\\ai setup` to configure it."
+                        .to_string(),
+                );
+            }
+
+            let extra = if django_context.trim().is_empty() {
+                None
+            } else {
+                Some(django_context.as_str())
+            };
+
+            // Gui frontend mode: headless/background use — no interactive terminal
+            // UI (column selection) and no stdout status banners that would leak
+            // into Django logs.
+            let mut database = crate::db::Database::from_url_with_mode(
+                &connection_url,
+                None,
+                None,
+                crate::db::FrontendMode::Gui,
+            )
+            .await
+            .map_err(|e| format!("Failed to connect: {e}"))?;
+            let db_type = database.get_database_type();
+
+            let progress: Box<dyn crate::ai::agent::ProgressSink> = match &progress_path {
+                Some(path) => Box::new(crate::ai::agent::FileProgress::new(path.clone())),
+                None if stdout_progress => Box::new(crate::ai::agent::StdoutProgress),
+                // Silent by default so programmatic callers don't emit traces.
+                None => Box::new(crate::ai::agent::NoOpProgress),
+            };
+
+            if agentic {
+                let seed = crate::ai::schema_context::build_agent_seed_context(&mut database).await;
+                let system_prompt = crate::ai::prompt_templates::build_agentic_system_prompt(
+                    &db_type, &seed, extra,
+                );
+
+                let db_arc = std::sync::Arc::new(std::sync::Mutex::new(database));
+                let interrupt = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let max_iters = max_iterations.unwrap_or(config.ai.agentic_max_iterations);
+                let executor = crate::ai::agent::DbToolExecutor::new(
+                    db_arc.clone(),
+                    interrupt.clone(),
+                    config.ai.agentic_max_rows_per_tool,
+                );
+
+                // No session here — the question is the lone user message.
+                let messages = vec![(crate::ai::MessageRole::User, question.clone())];
+                crate::ai::agent::run_agent(
+                    &config.ai,
+                    &system_prompt,
+                    &messages,
+                    max_iters,
+                    &executor,
+                    progress.as_ref(),
+                    &interrupt,
+                )
+                .await
+                .map_err(|e| format!("AI investigation failed: {e}"))
+            } else {
+                // Single-shot: build the full schema context and prepend the extra context.
+                let (schema_ctx, _cacheable) = crate::ai::schema_context::build_schema_context(
+                    &mut database,
+                    &question,
+                    config.ai.max_schema_tables,
+                )
+                .await;
+                let combined = match extra {
+                    Some(ctx) => format!("{ctx}\n\n{schema_ctx}"),
+                    None => schema_ctx,
+                };
+                let system_prompt =
+                    crate::ai::prompt_templates::build_system_prompt(&db_type, &combined);
+                let messages = vec![(crate::ai::MessageRole::User, question.to_string())];
+                let resp = crate::ai::generate(&config.ai, &system_prompt, &messages)
+                    .await
+                    .map_err(|e| format!("AI generation failed: {e}"))?;
+                Ok(crate::ai::streaming::extract_sql(&resp.content))
+            }
+        })
+    });
+
+    result.map_err(DbcrustError::new_err)
 }
 
 /// Python function to run a command using the new unified CLI system

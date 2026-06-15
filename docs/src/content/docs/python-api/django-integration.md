@@ -134,6 +134,36 @@ for alias, info in databases.items():
     print(f"{alias}: {info['engine_type']} {status}")
 ```
 
+### AI assistant
+
+Ask the [AI assistant](/dbcrust/user-guide/ai-assistant/) about your database with your Django models as context. The agent investigates the live database read-only and recommends Django-level fixes (`select_related` / `prefetch_related` / `db_index` / …), referencing the `file:line` of each model. Configure it once via the CLI (`dbcrust` → `\ai setup`).
+
+#### `ask_ai(question, *, database="default", project_root=None, agentic=True, max_iterations=None, stdout_progress=False)`
+
+Static, model-aware question — introspects the project's **model definitions** (fields, relationships, indexes, and their `file:line`) and hands them to the agent. (For the actual ORM call sites and captured SQL, use `investigate_ai` below.)
+
+Returns the analysis as a string and is **silent by default**; pass `stdout_progress=True` to stream the agent's tool trace to stdout (the `dbcrust_ai` management command does this).
+
+```python
+from dbcrust.django import ask_ai
+
+print(ask_ai("which tables lack an index on a foreign key?"))
+```
+
+#### `DjangoAnalyzer.investigate_ai(question, agentic=True, max_iterations=None)`
+
+Run inside an `analyze()` block so the agent also sees the **actual captured queries** and the code that issued them — the richest context for "why are there so many queries here?":
+
+```python
+from dbcrust.django import analyze
+
+with analyze() as a:
+    list(Order.objects.all())          # exercise the slow path
+print(a.investigate_ai("why are there so many queries here?"))
+```
+
+Both run the agent in read-only mode (writes, DDL, and known side-effecting statements are rejected — best-effort, not a hard sandbox; use a read-only role or replica for hard enforcement) and reuse your `\ai setup` configuration. The dashboard's **🤖 Investigate with AI** button wraps the same flow for a captured request — see [Dashboard](/dbcrust/django/dashboard/#investigate-with-ai).
+
 ## 📊 Real-World Examples
 
 ### Data Analysis with Django Models

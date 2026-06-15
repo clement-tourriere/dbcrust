@@ -53,6 +53,39 @@ Schema context is built from your current database: table and column metadata fo
 
 Responses stream to the terminal as they arrive (`streaming = true`); press `Ctrl-C` to cancel a generation in progress.
 
+## Investigating with `???`
+
+Where `??` does one-shot text-to-SQL, `???` runs an **agentic investigation loop**: the assistant calls read-only tools, observes the results, and iterates until it can answer a question with evidence — ideal for "why is this slow?" questions.
+
+```sql
+??? counting rows on the orders table with a join is slow — why?
+```
+
+The agent works through tools and narrates its progress (dim lines), then prints a structured answer:
+
+```
+🔍 Investigating with claude-sonnet-4-6… (Ctrl-C cancels)
+🔧 describe_table: orders
+   🗂  orders: 9 cols
+🔧 explain: SELECT count(*) FROM orders o JOIN customers c …
+   📊 8 rows × 1 cols
+
+## Finding
+The join sequentially scans `orders` because `orders.customer_id` has no index.
+## Evidence
+The plan shows a Seq Scan on orders (rows=1.2M) feeding a Hash Join.
+## Recommendation
+CREATE INDEX idx_orders_customer_id ON orders (customer_id);
+```
+
+The agent has four tools: `list_tables`, `describe_table`, `run_sql`, and `explain`. Key properties:
+
+- **Read-only.** Every query is gated — only `SELECT`/`WITH`/`SHOW`/`EXPLAIN` run; writes, DDL, and **many known side-effecting patterns** (sequence bumps, named/advisory locks, notifications, `SELECT … INTO`, file writes, mutating `PRAGMA`) are rejected back to the model, which self-corrects. So it runs without per-step confirmation. This is **best-effort SQL inspection, not a hard sandbox** — a `SELECT` can still call a user-defined side-effecting function. For sensitive databases, point the agent at a **read-only role or a replica** for real enforcement.
+- **Bounded.** It takes at most `agentic_max_iterations` tool turns (8 by default), and each tool result is capped to `agentic_max_rows_per_tool` rows (50). If it hits the limit it is forced to summarize rather than stop silently.
+- **Cancelable.** `Ctrl-C` stops the loop at any point.
+- **Remembers its own context.** `???` keeps a conversation history **separate from `??`**, so follow-up investigations build on earlier ones without polluting text-to-SQL prompts. `\ai clear` resets both.
+- **Works with API keys or a ChatGPT subscription.** The loop runs over streaming requests, so it works on the Codex/subscription backend (`\ai login`) as well as any API-key provider.
+
 ## Execution modes
 
 The assistant never silently runs writes unless you explicitly opt in:
@@ -140,10 +173,36 @@ max_schema_tables = 50         # cap on tables sent as schema context
 show_generated_sql = true      # display SQL before/after generation
 execution_mode = "confirm"     # confirm | auto_select | auto_execute
 history_length = 5             # conversation exchanges kept for follow-ups
+agentic_max_iterations = 8     # max tool-call turns for ??? investigations
+agentic_max_rows_per_tool = 50 # rows from one ??? tool query fed back to the model
 ```
+
+## Django-aware AI
+
+In a Django project, the AI can investigate with your **models and ORM code** as context — not just the raw SQL schema — so it recommends Django-level fixes (`select_related` / `prefetch_related` / `only` / `db_index` / `Meta.indexes`) with exact `file:line` references.
+
+A management command for ad-hoc questions:
+
+```bash
+python manage.py dbcrust_ai "why is the order list view slow?"
+```
+
+Or, inside an analysis block, so the agent also sees the **actual captured queries** and the code that issued them:
+
+```python
+from dbcrust.django import analyze
+
+with analyze() as a:
+    list(Order.objects.all())          # exercise the slow path
+print(a.investigate_ai("why are there so many queries here?"))
+```
+
+Both reuse your `\ai setup` configuration and run the same read-only agent against your Django database (API-key or ChatGPT-subscription auth — same as `???`).
 
 ## Privacy notes
 
-- Your question, conversation history, and schema metadata (table/column names and types) are sent to the configured provider.
-- Query **results are never sent** — execution happens locally after generation.
+What is sent to the configured provider depends on which feature you use:
+
+- **`??` (text-to-SQL):** your question, recent conversation history, and schema **metadata** (table/column names and types). Query **results are never sent** — the generated SQL runs locally, after generation.
+- **`???` (agentic) and the Django dashboard's "Investigate with AI":** the same metadata **plus the output of the read-only queries the agent runs** — i.e. up to `agentic_max_rows_per_tool` (default 50) **rows of actual data per query**, query plans, and (for the Django-aware paths) your **model definitions, source `file:line` locations, and the captured SQL** of flagged queries. This is what lets the agent reason with evidence, but it means real row data can leave the machine automatically. Lower `agentic_max_rows_per_tool`, or avoid `???` on sensitive tables, if that matters.
 - For air-gapped or sensitive environments, use a local provider (Ollama / LM Studio) via `endpoint`.

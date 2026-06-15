@@ -1,0 +1,26 @@
+{% if job.status == "running" %}
+<section class="issues ai"
+         hx-get="{% url 'dbcrust:ai-status' record_id %}"
+         hx-trigger="every 1.5s"
+         hx-swap="outerHTML">
+  <h3>🤖 AI investigation <span class="dim">· investigating… {{ job.elapsed }}s</span></h3>
+  {% with trace=job.progress_text %}
+  {% if trace %}<pre class="ai-answer dim">{{ trace }}</pre>{% else %}<p class="dim">starting…</p>{% endif %}
+  {% endwith %}
+</section>
+{% elif job.status == "error" %}
+<div class="placeholder">⚠ AI investigation failed: {{ job.error }}</div>
+{% else %}
+<section class="issues ai">
+  <h3>🤖 AI investigation</h3>
+  {% with trace=job.progress_text %}
+  {% if trace %}
+  <details class="ai-trace">
+    <summary class="dim">investigation trace ({{ job.elapsed }}s)</summary>
+    <pre class="ai-answer dim">{{ trace }}</pre>
+  </details>
+  {% endif %}
+  {% endwith %}
+  <pre class="ai-answer">{{ job.answer }}</pre>
+</section>
+{% endif %}

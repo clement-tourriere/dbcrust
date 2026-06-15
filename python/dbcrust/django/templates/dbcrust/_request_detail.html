@@ -20,6 +20,21 @@
   </div>
 </div>
 
+{% if record.report.slow_queries or record.total_issues %}
+<section class="ai-actions">
+  <button class="ai-btn"
+          hx-post="{% url 'dbcrust:ai-investigate' record.id %}"
+          hx-target="#ai-result-{{ record.id }}"
+          hx-swap="innerHTML"
+          hx-disabled-elt="this"
+          hx-indicator="#ai-ind-{{ record.id }}">
+    🤖 Investigate with AI
+  </button>
+  <span id="ai-ind-{{ record.id }}" class="htmx-indicator dim">investigating… this can take ~30s</span>
+  <div id="ai-result-{{ record.id }}"></div>
+</section>
+{% endif %}
+
 {% include "dbcrust/_issue_section.html" with title="Critical" css="critical" issues=record.report.critical_issues only %}
 {% include "dbcrust/_issue_section.html" with title="Warnings" css="warning" issues=record.report.warnings only %}
 {% include "dbcrust/_issue_section.html" with title="Hints" css="hint" issues=record.report.hints only %}

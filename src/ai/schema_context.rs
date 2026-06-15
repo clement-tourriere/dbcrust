@@ -6,11 +6,16 @@ use crate::db::Database;
 
 /// Build schema context string for the AI system prompt.
 /// For databases with many tables, uses keyword matching to focus on relevant tables.
+///
+/// Returns `(context, cacheable)`. `cacheable` is true only when the context is
+/// independent of `user_query` (the small-database "all tables" case) — for large
+/// databases the table selection is query-specific, so the caller must NOT reuse it
+/// across different questions.
 pub async fn build_schema_context(
     db: &mut Database,
     user_query: &str,
     max_tables: usize,
-) -> String {
+) -> (String, bool) {
     let db_type = db.get_database_type();
     let db_name = db.get_current_db();
     let server_version = get_server_version(db).await;
@@ -22,18 +27,20 @@ pub async fn build_schema_context(
         server_version
     );
 
-    // Get all table names
-    let tables = match db.get_tables_and_views(None).await {
+    // Get all table names (schema-qualified for non-public PostgreSQL schemas, so
+    // analytics.orders is fetched/described correctly rather than as public.orders).
+    let tables = match collect_table_names(db, &db_type).await {
         Ok(t) => t,
         Err(e) => {
             context.push_str(&format!("-- Error fetching tables: {e}\n"));
-            return context;
+            // Transient error — do not cache.
+            return (context, false);
         }
     };
 
     if tables.is_empty() {
         context.push_str("-- No tables found in database\n");
-        return context;
+        return (context, true);
     }
 
     // Select which tables to include in context
@@ -51,14 +58,14 @@ pub async fn build_schema_context(
             .cloned()
             .collect();
 
-        // Build DDL for selected tables
-        for table_name in &selected {
-            match db.get_table_details(table_name).await {
-                Ok(details) => {
+        // Build DDL for selected tables (fetched concurrently to cut tunnel latency)
+        for (table_name, details) in db.get_table_details_bulk(&selected).await {
+            match details {
+                Some(details) => {
                     context.push_str(&format_table_ddl(&details, &db_type));
                     context.push('\n');
                 }
-                Err(_) => {
+                None => {
                     context.push_str(&format!("-- Table: {table_name} (details unavailable)\n\n"));
                 }
             }
@@ -73,23 +80,95 @@ pub async fn build_schema_context(
             ));
         }
 
-        return context;
+        // Query-specific selection — not safe to reuse for a different question.
+        return (context, false);
     };
 
-    // Build DDL for all tables (small database case)
-    for table_name in &selected_tables {
-        match db.get_table_details(table_name).await {
-            Ok(details) => {
+    // Build DDL for all tables (small database case), fetched concurrently
+    for (table_name, details) in db.get_table_details_bulk(&selected_tables).await {
+        match details {
+            Some(details) => {
                 context.push_str(&format_table_ddl(&details, &db_type));
                 context.push('\n');
             }
-            Err(_) => {
+            None => {
                 context.push_str(&format!("-- Table: {table_name} (details unavailable)\n\n"));
             }
         }
     }
 
+    // All tables included regardless of the query — safe to cache for the session.
+    (context, true)
+}
+
+/// Build a *lightweight* seed context for the agentic assistant: database
+/// identity plus the table/view name list, with NO per-table catalog queries.
+/// The agent pulls full details on demand via its `describe_table` tool, so the
+/// first turn stays cheap even over a slow SSH tunnel.
+///
+/// For PostgreSQL with non-`public` schemas, names are **schema-qualified**
+/// (`analytics.orders`) so the agent knows the full namespace up front; the agent
+/// can pass those straight to `describe_table` / `run_sql`.
+pub async fn build_agent_seed_context(db: &mut Database) -> String {
+    let db_type = db.get_database_type();
+    let db_name = db.get_current_db();
+    let server_version = get_server_version(db).await;
+
+    let mut context = format!(
+        "Database: {} ({} {})\n\n",
+        db_name,
+        db_type.display_name(),
+        server_version
+    );
+
+    match collect_table_names(db, &db_type).await {
+        Ok(tables) if !tables.is_empty() => {
+            context.push_str(&format!("Tables and views ({}):\n", tables.len()));
+            for name in &tables {
+                context.push_str(&format!("  {name}\n"));
+            }
+        }
+        Ok(_) => context.push_str("-- No tables found in database\n"),
+        Err(e) => context.push_str(&format!("-- Error fetching tables: {e}\n")),
+    }
+
     context
+}
+
+/// Collect the table list for AI context. PostgreSQL with non-public schemas gets
+/// schema-qualified names (`schema.table`); public tables and every other backend
+/// stay unqualified — and the per-schema round-trips are skipped entirely when
+/// there is nothing to disambiguate. Shared by the `??` schema context and the
+/// `???` seed so both describe non-public tables correctly.
+async fn collect_table_names(
+    db: &mut Database,
+    db_type: &DatabaseType,
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+    if !matches!(db_type, DatabaseType::PostgreSQL) {
+        return db.get_tables_and_views(None).await;
+    }
+
+    let schemas = db.get_schemas().await.unwrap_or_default();
+    if !schemas.iter().any(|s| s != "public") {
+        // Only the default schema — bare names, a single round-trip.
+        return db.get_tables_and_views(None).await;
+    }
+
+    let mut entries = Vec::new();
+    for schema in &schemas {
+        let tables = db
+            .get_tables_and_views(Some(schema))
+            .await
+            .unwrap_or_default();
+        for table in tables {
+            if schema == "public" {
+                entries.push(table);
+            } else {
+                entries.push(format!("{schema}.{table}"));
+            }
+        }
+    }
+    Ok(entries)
 }
 
 /// Select tables most relevant to the user's natural language query
@@ -165,7 +244,10 @@ fn select_relevant_tables(
     selected
 }
 
-fn format_table_ddl(details: &crate::db::TableDetails, _db_type: &DatabaseType) -> String {
+pub(crate) fn format_table_ddl(
+    details: &crate::db::TableDetails,
+    _db_type: &DatabaseType,
+) -> String {
     let mut ddl = String::new();
 
     let full_name = if details.schema.is_empty() || details.schema == "public" {

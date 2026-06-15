@@ -477,6 +477,37 @@ class DjangoAnalyzer:
             logger.error("Model analysis failed: %s", e)
             return None
 
+    def investigate_ai(
+        self,
+        question: str,
+        agentic: bool = True,
+        max_iterations: Optional[int] = None,
+    ) -> str:
+        """Ask the DBCrust AI to investigate, with this analysis's captured
+        queries + project models as context.
+
+        Run inside (or after) an ``analyze()`` block so the captured slow queries
+        and their code locations are available; the model then reasons over the
+        ORM layer (not just SQL) and recommends Django-level fixes with file:line.
+
+        Returns the AI's analysis text.
+        """
+        from dbcrust._internal import run_ai_investigation  # ty: ignore[unresolved-import]
+
+        from .ai_context import build_django_context, load_project_models
+        from .utils import get_dbcrust_url
+
+        queries = list(self.query_collector.queries)
+        tables = sorted({
+            t for q in queries for t in getattr(q, "table_names", [])
+        })
+        models = load_project_models(self.project_root)
+        context = build_django_context(
+            models, queries=queries, tables=tables or None
+        )
+        url = get_dbcrust_url(self.database_alias)
+        return run_ai_investigation(url, question, context, agentic, max_iterations)
+
     def get_comprehensive_analysis(self) -> Dict[str, Any]:
         """
         Get comprehensive analysis including queries, code, and models.

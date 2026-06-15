@@ -9,6 +9,7 @@ Comprehensive Django integration including:
 """
 
 from .analyzer import DjangoAnalyzer, analyze
+from .ai_context import ask_ai, build_django_context
 from .middleware import PerformanceAnalysisMiddleware
 from .report_formatter import (
     RequestPerformanceReport,
@@ -36,6 +37,10 @@ __all__ = [
     "DjangoAnalyzer",
     "analyze",
     "PerformanceAnalysisMiddleware",
+
+    # AI assistant (Django-aware)
+    "ask_ai",
+    "build_django_context",
 
     # Report & Slow-query analysis
     "RequestPerformanceReport",

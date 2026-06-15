@@ -95,6 +95,16 @@ pub struct AiConfig {
 
     #[serde(default = "default_history_length")]
     pub history_length: usize,
+
+    /// Maximum tool-call turns the `???` agentic investigation loop may take
+    /// before it is forced to answer. Bounds latency and token cost.
+    #[serde(default = "default_agentic_max_iterations")]
+    pub agentic_max_iterations: usize,
+
+    /// Maximum data rows from a single agentic tool query fed back to the model.
+    /// Keeps the context (and token cost) bounded on large result sets.
+    #[serde(default = "default_agentic_max_rows_per_tool")]
+    pub agentic_max_rows_per_tool: usize,
 }
 
 impl Default for AiConfig {
@@ -112,6 +122,8 @@ impl Default for AiConfig {
             show_generated_sql: default_show_generated_sql(),
             execution_mode: AiExecutionMode::default(),
             history_length: default_history_length(),
+            agentic_max_iterations: default_agentic_max_iterations(),
+            agentic_max_rows_per_tool: default_agentic_max_rows_per_tool(),
         }
     }
 }
@@ -151,6 +163,14 @@ fn default_show_generated_sql() -> bool {
 
 fn default_history_length() -> usize {
     5
+}
+
+fn default_agentic_max_iterations() -> usize {
+    8
+}
+
+fn default_agentic_max_rows_per_tool() -> usize {
+    50
 }
 
 #[cfg(test)]

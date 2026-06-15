@@ -49,6 +49,17 @@ Any prefix works; `__dbcrust__` is just a convention. No `staticfiles` configura
 
 The dashboard's own polling requests are recognized (by URL namespace) and excluded from analysis, so it never pollutes its own data.
 
+## Investigate with AI
+
+When a request has slow queries or flagged issues, the detail pane shows a **🤖 Investigate with AI** button. One click hands the request's slow queries, detected issues, and your Django models to the [AI assistant](/dbcrust/user-guide/ai-assistant/#investigating-with-), which investigates the **live database** read-only (running `EXPLAIN`, inspecting indexes) and returns a Django-aware analysis — root cause plus the concrete fix (`select_related` / `db_index` / …) and the underlying SQL.
+
+It reuses your existing AI setup, so configure it once via the CLI (`dbcrust` → `\ai setup`). Notes:
+
+- The investigation runs in a **background thread** and the panel **streams the agent's progress live** (the tools it runs, rows seen) via htmx polling — the dashboard stays responsive the whole time, then swaps in the final analysis. A full investigation takes ~30s.
+- It runs **read-only** queries only — writes, DDL, and side-effecting statements are rejected. (Best-effort SQL inspection, not a hard sandbox; for sensitive databases use a read-only role or replica.)
+- Requires API-key or ChatGPT-subscription auth (same as `??`/`???` in the CLI). If the assistant isn't configured, the panel shows a short error hint instead.
+- It connects to the `default` database alias by default; override with `DBCRUST_AI_DATABASE = "<alias>"` in settings.
+
 ## Configuration
 
 All dashboard keys in `DBCRUST_PERFORMANCE_ANALYSIS` (defaults shown):

@@ -29,15 +29,22 @@ class DjangoModel:
     many_to_many: Dict[str, str] = field(default_factory=dict)  # field_name -> related_model
     indexes: List[str] = field(default_factory=list)
     meta_options: Dict[str, Any] = field(default_factory=dict)
+    app_label: str = ""
 
     @property
     def table_name(self) -> str:
-        """Get the database table name for this model."""
+        """The database table name, matching Django's own resolution.
+
+        Honors ``Meta.db_table``; otherwise Django's default is
+        ``<app_label>_<model_name>`` where ``model_name`` is the class name
+        **lowercased** (NOT snake_cased — Django does not insert underscores).
+        Falls back to the bare lowercased name when the app label is unknown.
+        """
         if 'db_table' in self.meta_options:
             return self.meta_options['db_table']
-        else:
-            # Convert CamelCase to snake_case
-            return re.sub(r'(?<!^)(?=[A-Z])', '_', self.name).lower()
+        app_label = self.meta_options.get('app_label') or self.app_label
+        model_name = self.name.lower()
+        return f"{app_label}_{model_name}" if app_label else model_name
 
 
 @dataclass
@@ -254,7 +261,10 @@ class DjangoProjectAnalyzer:
         model = DjangoModel(
             name=node.name,
             file_path=file_path,
-            line_number=node.lineno
+            line_number=node.lineno,
+            # Default Django app label is the app directory name (the dir holding
+            # models.py). Meta.app_label, parsed below, overrides this.
+            app_label=Path(file_path).parent.name,
         )
 
         for item in node.body:
@@ -323,6 +333,9 @@ class DjangoProjectAnalyzer:
 
                         if option_name == 'db_table' and isinstance(item.value, ast.Constant):
                             meta_options['db_table'] = item.value.value
+
+                        elif option_name == 'app_label' and isinstance(item.value, ast.Constant):
+                            meta_options['app_label'] = item.value.value
 
                         elif option_name == 'indexes':
                             # Parse index definitions

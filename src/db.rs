@@ -1361,6 +1361,31 @@ impl Database {
         }
     }
 
+    /// Like [`Database::execute_query_with_interrupt`], but with interactive
+    /// column selection fully disabled (both the explicit mode and the
+    /// auto-enable threshold) while preserving the interrupt flag. For
+    /// non-interactive callers like the AI agent, which must never raise an
+    /// `inquire` prompt mid-query (it would hang a background thread, and is wrong
+    /// during an autonomous investigation in the REPL too).
+    pub async fn execute_query_with_interrupt_no_column_selection(
+        &mut self,
+        query: &str,
+        interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        let original_cs_mode = self.column_select_mode;
+        let original_threshold = self.column_selection_threshold;
+        self.column_select_mode = false;
+        self.column_selection_threshold = usize::MAX; // disable auto-triggering
+
+        let result = self
+            .execute_query_with_interrupt(query, interrupt_flag)
+            .await;
+
+        self.column_select_mode = original_cs_mode;
+        self.column_selection_threshold = original_threshold;
+        result
+    }
+
     pub async fn execute_query_with_interrupt_and_info(
         &mut self,
         query: &str,
@@ -1747,6 +1772,75 @@ impl Database {
         } else {
             Err("No database client available".into())
         }
+    }
+
+    /// Like [`Database::get_table_details`], but for an explicit schema (e.g. the
+    /// agent's `describe_table` tool resolving `analytics.orders`). `None` schema
+    /// uses the backend default (PostgreSQL: `public` / search_path).
+    pub async fn get_table_details_in_schema(
+        &mut self,
+        table_name: &str,
+        schema: Option<&str>,
+    ) -> std::result::Result<TableDetails, Box<dyn StdError>> {
+        if let Some(ref database_client) = self.database_client {
+            database_client
+                .get_metadata_provider()
+                .get_table_details(table_name, schema)
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn StdError>)
+        } else {
+            Err("No database client available".into())
+        }
+    }
+
+    /// Fetch details for many tables concurrently, preserving input order.
+    ///
+    /// `get_table_details` is 5-6 catalog round-trips per table; doing them
+    /// sequentially for a whole schema is painfully slow over an SSH tunnel.
+    /// The connection pool allows several concurrent queries, so fan the
+    /// per-table fetches out (bounded) instead. A table whose details fail to
+    /// load comes back as `None` so callers can degrade gracefully rather than
+    /// aborting the whole context build.
+    pub async fn get_table_details_bulk(
+        &self,
+        table_names: &[String],
+    ) -> Vec<(String, Option<TableDetails>)> {
+        use futures_util::stream::StreamExt;
+
+        let Some(ref database_client) = self.database_client else {
+            return table_names
+                .iter()
+                .map(|name| (name.clone(), None))
+                .collect();
+        };
+
+        let provider = database_client.get_metadata_provider();
+        // Bounded concurrency: stay within the pool's connection budget.
+        const MAX_CONCURRENT: usize = 8;
+        let mut indexed: Vec<(usize, String, Option<TableDetails>)> =
+            futures_util::stream::iter(table_names.iter().enumerate())
+                .map(|(idx, name)| async move {
+                    // Accept schema-qualified names (`schema.table`) so non-public
+                    // tables resolve to the right schema instead of defaulting to
+                    // public; bare names keep schema = None.
+                    let (schema, table) = match name.split_once('.') {
+                        Some((s, t)) => (Some(s), t),
+                        None => (None, name.as_str()),
+                    };
+                    let details = provider.get_table_details(table, schema).await.ok();
+                    (idx, name.clone(), details)
+                })
+                .buffer_unordered(MAX_CONCURRENT)
+                .collect()
+                .await;
+
+        // buffer_unordered yields in completion order; restore input order so the
+        // generated DDL is deterministic across runs.
+        indexed.sort_by_key(|(idx, _, _)| *idx);
+        indexed
+            .into_iter()
+            .map(|(_, name, details)| (name, details))
+            .collect()
     }
 
     pub fn new_for_test() -> Self {

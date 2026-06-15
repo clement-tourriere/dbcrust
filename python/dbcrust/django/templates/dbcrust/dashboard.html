@@ -113,6 +113,19 @@
     }
     ul.locations { margin: 6px 0; padding-left: 18px; }
     ul.locations li { font-size: 12px; color: var(--dim); }
+
+    .ai-actions { margin: 14px 0 4px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .ai-btn { border-color: var(--accent); color: var(--accent); }
+    .ai-btn:hover { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,.1); }
+    .ai-btn:disabled { opacity: .5; cursor: progress; }
+    section.ai h3 { color: var(--accent); }
+    .ai-answer { white-space: pre-wrap; }
+    details.ai-trace { margin: 4px 0 10px; }
+    details.ai-trace summary { cursor: pointer; font-size: 12px; }
+    .ai-actions > #ai-result-,
+    [id^="ai-result-"] { width: 100%; }
+    .htmx-indicator { display: none; }
+    .htmx-indicator.htmx-request, .htmx-request .htmx-indicator { display: inline; }
   </style>
 </head>
 <body hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>

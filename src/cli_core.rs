@@ -25,6 +25,16 @@ pub struct CliCore {
     pub database: Option<Database>,
     pub connection_info: Option<ConnectionInfo>,
     pub ai_conversation: crate::ai::conversation::AiConversation,
+    /// Separate conversation history for `???` agentic investigations. Kept apart
+    /// from `ai_conversation` (which feeds `??` text-to-SQL) so prose analyses
+    /// never pollute SQL-generation prompts, while `???` follow-ups still recall
+    /// prior investigations.
+    pub agentic_conversation: crate::ai::conversation::AiConversation,
+    /// Session cache of the AI schema context, keyed by database name. Building
+    /// it is many catalog round-trips (slow over a tunnel); reuse it across `??`
+    /// calls within the same database. Only the query-independent build is cached
+    /// (see `build_schema_context`'s `cacheable` flag). Invalidated on DB switch.
+    pub ai_schema_cache: Option<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -129,6 +139,8 @@ impl Default for CliCore {
             database: None,
             connection_info: None,
             ai_conversation: crate::ai::conversation::AiConversation::new(ai_history_len),
+            agentic_conversation: crate::ai::conversation::AiConversation::new(ai_history_len),
+            ai_schema_cache: None,
         }
     }
 }
@@ -1358,6 +1370,26 @@ impl CliCore {
                         continue;
                     }
 
+                    // Handle AI agentic investigation prefix (???). Must be checked
+                    // BEFORE ?? — "???x".strip_prefix("??") would also match.
+                    if let Some(nl) = line.strip_prefix("???") {
+                        let nl = nl.trim();
+                        if nl.is_empty() {
+                            eprintln!("Usage: ??? <question to investigate>");
+                            continue;
+                        }
+                        match self
+                            .handle_ai_agentic(nl, &db_arc, &config_arc, &interrupt_flag)
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(e) => {
+                                eprintln!("AI error: {e}");
+                            }
+                        }
+                        continue;
+                    }
+
                     // Handle AI text-to-SQL prefix (??)
                     if let Some(nl) = line.strip_prefix("??") {
                         let nl = nl.trim();
@@ -1556,6 +1588,10 @@ impl CliCore {
                     self.handle_ai_setup(config_arc).await;
                 } else if output == "__AI_CLEAR_HISTORY__" {
                     self.ai_conversation.clear();
+                    self.agentic_conversation.clear();
+                    // Also drop the cached schema context so the next ?? rebuilds it
+                    // (e.g. after a DDL change the user wants reflected).
+                    self.ai_schema_cache = None;
                     println!("AI conversation history cleared.");
                 } else if output == "__AI_LOGIN__" {
                     self.handle_ai_login(config_arc).await;
@@ -1612,15 +1648,32 @@ impl CliCore {
             config.ai.model
         );
 
-        // Build schema context
+        // Build schema context, reusing the session cache when it's valid for the
+        // current database. The build is many catalog round-trips — slow over a
+        // tunnel — so we avoid repeating it. Only the query-independent build is
+        // cacheable (see `build_schema_context`); a query-specific selection on a
+        // large database is rebuilt every time.
         let schema_context = {
             let mut db_guard = db_arc.lock().unwrap();
-            crate::ai::schema_context::build_schema_context(
-                &mut db_guard,
-                natural_language,
-                config.ai.max_schema_tables,
-            )
-            .await
+            let db_name = db_guard.get_current_db();
+            match &self.ai_schema_cache {
+                Some((cached_db, ctx)) if *cached_db == db_name => ctx.clone(),
+                _ => {
+                    let (ctx, cacheable) = crate::ai::schema_context::build_schema_context(
+                        &mut db_guard,
+                        natural_language,
+                        config.ai.max_schema_tables,
+                    )
+                    .await;
+                    if cacheable {
+                        self.ai_schema_cache = Some((db_name, ctx.clone()));
+                    } else {
+                        // Stale entry from a previous database must not linger.
+                        self.ai_schema_cache = None;
+                    }
+                    ctx
+                }
+            }
         };
 
         // Build system prompt
@@ -1753,6 +1806,86 @@ impl CliCore {
         }
 
         Ok(())
+    }
+
+    /// Handle `??? <question>` — the agentic investigation loop. The model calls
+    /// read-only tools (list/describe/run_sql/explain), observes results, and
+    /// iterates until it produces a structured analysis. It can never mutate data.
+    #[allow(clippy::await_holding_lock)]
+    async fn handle_ai_agentic(
+        &mut self,
+        question: &str,
+        db_arc: &Arc<Mutex<Database>>,
+        config_arc: &Arc<Mutex<DbCrustConfig>>,
+        interrupt_flag: &Arc<AtomicBool>,
+    ) -> Result<(), CliError> {
+        let config = config_arc.lock().unwrap().clone();
+
+        if !config.ai.enabled {
+            return Err(CliError::CommandError(
+                "AI assistant is disabled. Run \\ai on or \\ai setup to configure.".to_string(),
+            ));
+        }
+
+        // Fresh cancellation state (a previous Ctrl-C must not abort us).
+        interrupt_flag.store(false, std::sync::atomic::Ordering::SeqCst);
+
+        println!(
+            "\x1b[2m🔍 Investigating with {}… (Ctrl-C cancels)\x1b[0m",
+            config.ai.model
+        );
+
+        // Build a lightweight seed (table-name list only) — lock+drop the guard
+        // so no DB mutex is held across the agent's genai round-trips.
+        let (db_type, seed) = {
+            let mut db_guard = db_arc.lock().unwrap();
+            let db_type = db_guard.get_database_type();
+            let seed = crate::ai::schema_context::build_agent_seed_context(&mut db_guard).await;
+            (db_type, seed)
+        };
+
+        let system_prompt =
+            crate::ai::prompt_templates::build_agentic_system_prompt(&db_type, &seed, None);
+
+        let executor = crate::ai::agent::DbToolExecutor::new(
+            db_arc.clone(),
+            interrupt_flag.clone(),
+            config.ai.agentic_max_rows_per_tool,
+        );
+        let progress = crate::ai::agent::StdoutProgress;
+
+        // Thread prior-investigation history (separate from the `??` history) so
+        // `???` follow-ups recall earlier findings. The current question is the
+        // trailing user message.
+        let messages = self.agentic_conversation.to_messages(question);
+
+        match crate::ai::agent::run_agent(
+            &config.ai,
+            &system_prompt,
+            &messages,
+            config.ai.agentic_max_iterations,
+            &executor,
+            &progress,
+            interrupt_flag,
+        )
+        .await
+        {
+            Ok(answer) => {
+                // Final analysis in normal weight so it stands out as the answer.
+                // Recorded in the dedicated agentic history (NOT `ai_conversation`,
+                // which feeds `??` text-to-SQL — prose would pollute those prompts).
+                println!("\n{answer}");
+                self.agentic_conversation.add_exchange(question, &answer);
+                Ok(())
+            }
+            Err(crate::ai::AiError::Cancelled) => {
+                eprintln!("AI investigation cancelled.");
+                Ok(())
+            }
+            Err(e) => Err(CliError::CommandError(format!(
+                "AI investigation error: {e}"
+            ))),
+        }
     }
 
     /// Prompt for an API key and persist it for `adapter`. `Ok(false)` means the

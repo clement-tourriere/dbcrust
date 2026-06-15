@@ -76,6 +76,27 @@ python manage.py dbcrust_analyze --report detailed --output report.html
 - `--slow-queries`: Focus on slow query detection
 - `--n-plus-one`: Focus on N+1 query detection
 
+#### `python manage.py dbcrust_ai`
+Ask the [AI assistant](/dbcrust/user-guide/ai-assistant/) a question about your database, with your Django **models and ORM code** as context. The agent investigates the live database read-only (listing tables, describing them, running `EXPLAIN`/`SELECT`) and recommends Django-level fixes with `file:line` references — not just raw SQL.
+
+```bash
+# Investigate a slow path
+python manage.py dbcrust_ai "why is the order list view slow?"
+
+# Ask about a specific database alias
+python manage.py dbcrust_ai "which tables lack an index on their FK?" --database analytics
+
+# Just generate the SQL (text-to-SQL), no investigation loop
+python manage.py dbcrust_ai "the 10 newest orders with their customer" --no-agentic
+```
+
+**Options:**
+- `--database ALIAS`: Django database alias from `DATABASES` (default: `default`)
+- `--no-agentic`: Skip the investigation loop — generate a single SQL query from the question (text-to-SQL) and print it, without running tools or returning a prose analysis
+- `--max-iterations N`: Override the agent's maximum tool-call turns
+
+Requires the AI assistant to be configured once via the CLI (`dbcrust` → `\ai setup`). For richer context that includes the **actual captured queries** and the code that issued them, use `DjangoAnalyzer.investigate_ai()` (see [Django integration](/dbcrust/python-api/django-integration/#ai-assistant)).
+
 #### `python manage.py dbcrust_migrate_check`
 Verify migration performance and detect potential issues.
 

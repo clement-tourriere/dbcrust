@@ -1856,6 +1856,20 @@ impl Config {
                 "# Number of conversation exchanges to keep (0 = stateless) (default: 5)\n",
             );
             content.push_str(&format!("history_length = {}\n\n", self.ai.history_length));
+            content.push_str(
+                "# Maximum tool-call turns for the ??? agentic investigation loop (default: 8)\n",
+            );
+            content.push_str(&format!(
+                "agentic_max_iterations = {}\n\n",
+                self.ai.agentic_max_iterations
+            ));
+            content.push_str(
+                "# Maximum rows from one agentic tool query fed back to the model (default: 50)\n",
+            );
+            content.push_str(&format!(
+                "agentic_max_rows_per_tool = {}\n\n",
+                self.ai.agentic_max_rows_per_tool
+            ));
 
             // NOW ADD TABLE SECTIONS AFTER ALL ROOT-LEVEL FIELDS
             // ================================================================================
