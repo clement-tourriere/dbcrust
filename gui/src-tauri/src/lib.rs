@@ -752,6 +752,7 @@ fn connect_vault_database(
                     file_path: None,
                     options,
                     docker_container: None,
+                    use_tls: original_connection_info.use_tls,
                 };
 
                 database.set_connection_info_override(connection_info.clone());
