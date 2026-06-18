@@ -13,6 +13,7 @@ use tracing::debug;
 use url::Url;
 
 const VAULT_OPTION_KEYS: [&str; 3] = ["vault_mount", "vault_database", "vault_role"];
+const DBCRUST_CONFIG_DIR_ENV: &str = "DBCRUST_CONFIG_DIR";
 
 fn is_vault_option_key(key: &str) -> bool {
     VAULT_OPTION_KEYS.contains(&key)
@@ -690,11 +691,7 @@ impl Default for Config {
             ai: crate::ai::config::AiConfig::default(),
             recent_connections_storage: {
                 // For tests, use empty storage to avoid loading user data
-                let is_test = std::env::var("RUST_TEST_MODE").is_ok()
-                    || std::thread::current()
-                        .name()
-                        .map(|name| name.contains("test"))
-                        .unwrap_or(false);
+                let is_test = is_test_mode();
 
                 if is_test {
                     RecentConnectionsStorage::default()
@@ -704,11 +701,7 @@ impl Default for Config {
             },
             saved_sessions_storage: {
                 // For tests, use empty storage to avoid loading user data
-                let is_test = std::env::var("RUST_TEST_MODE").is_ok()
-                    || std::thread::current()
-                        .name()
-                        .map(|name| name.contains("test"))
-                        .unwrap_or(false);
+                let is_test = is_test_mode();
 
                 if is_test {
                     SavedSessionsStorage::default()
@@ -718,11 +711,7 @@ impl Default for Config {
             },
             vault_credential_storage: {
                 // For tests, use empty storage to avoid loading user data
-                let is_test = std::env::var("RUST_TEST_MODE").is_ok()
-                    || std::thread::current()
-                        .name()
-                        .map(|name| name.contains("test"))
-                        .unwrap_or(false);
+                let is_test = is_test_mode();
 
                 if is_test {
                     VaultCredentialStorage::default()
@@ -732,11 +721,7 @@ impl Default for Config {
             },
             named_queries_storage: {
                 // For tests, use empty storage to avoid loading user data
-                let is_test = std::env::var("RUST_TEST_MODE").is_ok()
-                    || std::thread::current()
-                        .name()
-                        .map(|name| name.contains("test"))
-                        .unwrap_or(false);
+                let is_test = is_test_mode();
                 if is_test {
                     NamedQueriesStorage::default()
                 } else {
@@ -871,37 +856,40 @@ static CONFIG_LOADING_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 static CONFIG_SAVING_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 impl Config {
-    /// Get the configuration directory path - single source of truth for all config files
-    /// Returns a temp directory during tests, real config directory otherwise
+    /// Get the configuration directory path - single source of truth for all config files.
+    ///
+    /// By default this is `~/.config/dbcrust`. Set `DBCRUST_CONFIG_DIR` to force
+    /// a specific directory (useful when the Python/Django process runs with a
+    /// different `HOME`, such as Docker, systemd, or IDE-launched servers).
+    /// Tests still use an isolated temp directory unless explicitly overridden.
     pub fn get_config_directory() -> Result<PathBuf, Box<dyn Error>> {
-        // Detect test mode using multiple strategies since cfg!(test) doesn't work across crate boundaries
-        let is_test = std::env::var("RUST_TEST_MODE").is_ok()
-            || std::thread::current()
-                .name()
-                .map(|name| name.contains("test"))
-                .unwrap_or(false);
+        if let Some(config_dir) = get_config_dir_override() {
+            ensure_directory(&config_dir)?;
+            return Ok(config_dir);
+        }
 
-        if is_test {
+        if is_test_mode() {
             // For tests, use a temp directory based on process ID
             let temp_dir = std::env::temp_dir();
             let pid = std::process::id();
             let test_dir = temp_dir.join(format!("dbcrust_test_{pid}"));
 
-            if !test_dir.exists() {
-                fs::create_dir_all(&test_dir)?;
-            }
+            ensure_directory(&test_dir)?;
             Ok(test_dir)
         } else {
             // For production, use the real config directory
             if let Some(config_dir) = get_config_dir_impl() {
-                if !config_dir.exists() {
-                    fs::create_dir_all(&config_dir)?;
-                }
+                ensure_directory(&config_dir)?;
                 Ok(config_dir)
             } else {
                 Err("Failed to get configuration directory".into())
             }
         }
+    }
+
+    /// Get the path to the main configuration file.
+    pub fn get_config_file_path() -> Result<PathBuf, Box<dyn Error>> {
+        Ok(Self::get_config_directory()?.join("config.toml"))
     }
 
     /// DEPRECATED: Use get_config_directory() instead
@@ -2777,10 +2765,43 @@ fn get_config_dir_impl() -> Option<PathBuf> {
     home_dir().map(|home| home.join(".config").join("dbcrust"))
 }
 
+fn is_test_mode() -> bool {
+    // Detect test mode using multiple strategies since cfg!(test) doesn't work
+    // across crate boundaries, while the env/thread-name checks cover Python and
+    // integration-test harnesses.
+    cfg!(test)
+        || std::env::var("RUST_TEST_MODE").is_ok()
+        || std::thread::current()
+            .name()
+            .map(|name| name.contains("test"))
+            .unwrap_or(false)
+}
+
+fn get_config_dir_override() -> Option<PathBuf> {
+    let raw = std::env::var_os(DBCRUST_CONFIG_DIR_ENV)?;
+    if raw.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(raw))
+}
+
 fn get_config_path() -> Option<PathBuf> {
-    Config::get_config_directory()
-        .ok()
-        .map(|dir| dir.join("config.toml"))
+    Config::get_config_file_path().ok()
+}
+
+fn ensure_directory(path: &Path) -> io::Result<()> {
+    if path.exists() {
+        if path.is_dir() {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "Config path exists but is not a directory: {}",
+                path.display()
+            )))
+        }
+    } else {
+        fs::create_dir_all(path)
+    }
 }
 
 fn ensure_config_dir(config_path: &Path) -> io::Result<()> {

@@ -136,7 +136,7 @@ for alias, info in databases.items():
 
 ### AI assistant
 
-Ask the [AI assistant](/dbcrust/user-guide/ai-assistant/) about your database with your Django models as context. The agent investigates the live database read-only and recommends Django-level fixes (`select_related` / `prefetch_related` / `db_index` / …), referencing the `file:line` of each model. Configure it once via the CLI (`dbcrust` → `\ai setup`).
+Ask the [AI assistant](/dbcrust/user-guide/ai-assistant/) about your database with your Django models as context. The agent investigates the live database read-only and recommends Django-level fixes (`select_related` / `prefetch_related` / `db_index` / …), referencing the `file:line` of each model. Configure it once via the CLI (`dbcrust` → `\ai setup`). If Python/Django runs under a different user/container than the CLI, set `DBCRUST_CONFIG_DIR` to the CLI config directory (or `DBCRUST_CONFIG_DIR = "..."` in Django settings). Auth secrets must also be available in that runtime; containers/services usually need API-key environment variables or their own `\ai setup` / `\ai login`.
 
 #### `ask_ai(question, *, database="default", project_root=None, agentic=True, max_iterations=None, stdout_progress=False)`
 

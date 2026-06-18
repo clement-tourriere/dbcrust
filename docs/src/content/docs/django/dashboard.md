@@ -58,6 +58,7 @@ It reuses your existing AI setup, so configure it once via the CLI (`dbcrust` �
 - The investigation runs in a **background thread** and the panel **streams the agent's progress live** (the tools it runs, rows seen) via htmx polling — the dashboard stays responsive the whole time, then swaps in the final analysis. A full investigation takes ~30s.
 - It runs **read-only** queries only — writes, DDL, and side-effecting statements are rejected. (Best-effort SQL inspection, not a hard sandbox; for sensitive databases use a read-only role or replica.)
 - Requires API-key or ChatGPT-subscription auth (same as `??`/`???` in the CLI). If the assistant isn't configured, the panel shows a short error hint instead.
+- It uses the same DBCrust config directory as the Rust core. By default that is `~/.config/dbcrust` for the user running Django; if `dbcrust` works in your shell but the dashboard says AI is disabled, your Django process is likely running with a different `HOME` (Docker, systemd, IDE, another user). Set `DBCRUST_CONFIG_DIR=/path/to/.config/dbcrust` in the Django process, or set `DBCRUST_CONFIG_DIR = "/path/to/.config/dbcrust"` in Django settings. Auth secrets must also be available to that runtime; for containers/services, prefer provider API-key environment variables or run `\ai setup` / `\ai login` there.
 - It connects to the `default` database alias by default; override with `DBCRUST_AI_DATABASE = "<alias>"` in settings.
 
 ## Configuration

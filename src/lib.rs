@@ -264,6 +264,7 @@ pub fn _internal(_py: Python<'_>, m: Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_command, &m)?)?;
     m.add_function(wrap_pyfunction!(run_cli_loop, &m)?)?;
     m.add_function(wrap_pyfunction!(py_connect, &m)?)?;
+    m.add_function(wrap_pyfunction!(ai_config_status, &m)?)?;
     m.add_function(wrap_pyfunction!(run_ai_investigation, &m)?)?;
 
     // Add custom exceptions to the module
@@ -903,6 +904,33 @@ pub fn py_connect(
     PyConnection::new(connection_url, timeout, auto_commit)
 }
 
+/// Return non-secret AI configuration diagnostics for Python/Django callers.
+#[cfg(feature = "python")]
+#[pyfunction]
+pub fn ai_config_status(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let config_dir = crate::config::Config::get_config_directory().map_err(|e| {
+        DbcrustConfigError::new_err(format!("Failed to resolve config directory: {e}"))
+    })?;
+    let config_path = config_dir.join("config.toml");
+    let config = crate::config::Config::load();
+
+    let dict = PyDict::new(py);
+    dict.set_item("config_dir", config_dir.display().to_string())?;
+    dict.set_item("config_file", config_path.display().to_string())?;
+    dict.set_item("config_file_exists", config_path.exists())?;
+    dict.set_item(
+        "dbcrust_config_dir_env",
+        std::env::var("DBCRUST_CONFIG_DIR").unwrap_or_default(),
+    )?;
+    dict.set_item("enabled", config.ai.enabled)?;
+    dict.set_item("provider", &config.ai.provider)?;
+    dict.set_item("model", &config.ai.model)?;
+    dict.set_item("auth_method", config.ai.auth_method.to_string())?;
+    dict.set_item("streaming", config.ai.streaming)?;
+    dict.set_item("execution_mode", config.ai.execution_mode.to_string())?;
+    Ok(dict.into_any().unbind())
+}
+
 /// Run an AI investigation against a database, optionally seeded with extra
 /// context (e.g. Django models + ORM code). Returns the final analysis text.
 ///
@@ -941,10 +969,12 @@ pub fn run_ai_investigation(
         rt.block_on(async move {
             let config = crate::config::Config::load();
             if !config.ai.enabled {
-                return Err(
-                    "AI assistant is disabled. Run `dbcrust` then `\\ai setup` to configure it."
-                        .to_string(),
-                );
+                let config_path = crate::config::Config::get_config_file_path()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|_| "<unknown config path>".to_string());
+                return Err(format!(
+                    "AI assistant is disabled in {config_path}. If `dbcrust` shows AI enabled, the Django/Python process is using a different config directory (often a different HOME, Docker container, or service user). Set DBCRUST_CONFIG_DIR to the CLI config directory, or run `dbcrust` then `\\ai setup` from that same environment."
+                ));
             }
 
             let extra = if django_context.trim().is_empty() {

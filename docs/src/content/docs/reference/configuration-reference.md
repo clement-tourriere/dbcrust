@@ -12,7 +12,9 @@ DBCrust provides extensive configuration options through TOML configuration file
 
 ### Primary Configuration File
 
-**Location**: `~/.config/dbcrust/config.toml`
+**Location**: `~/.config/dbcrust/config.toml` by default.
+
+Set `DBCRUST_CONFIG_DIR=/path/to/dbcrust-config-dir` to make both the CLI and Python/Django integration use a different directory. This is especially useful when Django runs under Docker, systemd, an IDE, or another user and therefore has a different `HOME` than your shell.
 
 This is the main configuration file containing all settings and user data.
 
@@ -25,6 +27,7 @@ DBCrust uses dedicated files for different types of data:
 | `~/.config/dbcrust/config.toml` | Main configuration and settings | TOML |
 | `~/.config/dbcrust/named_queries.toml` | Named query storage | TOML |
 | `~/.config/dbcrust/vault_credentials.enc` | Encrypted Vault credentials | Binary (AES-256-GCM) |
+| `~/.config/dbcrust/ai_keys.enc` | Encrypted AI API keys / OAuth token fallback | Text with encrypted values |
 | `~/.config/dbcrust/dbcrust.log` | Application logs | Plain text |
 
 ### Configuration Hierarchy

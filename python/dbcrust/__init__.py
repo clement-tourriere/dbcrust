@@ -22,6 +22,14 @@ from dbcrust._internal import (  # ty: ignore[unresolved-import]
     DbcrustArgumentError
 )
 
+try:
+    from dbcrust._internal import ai_config_status  # ty: ignore[unresolved-import]
+except ImportError:  # pragma: no cover - only for mismatched editable installs
+    def ai_config_status():
+        raise DbcrustConfigError(
+            "ai_config_status requires the dbcrust native extension from this release"
+        )
+
 # Import enhanced connector API
 from .connector import (
     connect,
@@ -75,6 +83,7 @@ __all__ = [
     "run_with_url",
     "run_command",
     "run_cli_loop",
+    "ai_config_status",
 
     # Exception classes
     "DbcrustError",

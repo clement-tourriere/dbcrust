@@ -130,6 +130,19 @@ def test_summarize_report_includes_queries_and_issues():
     assert "shop/views.py:42" in text
 
 
+def test_dbcrust_config_dir_setting_sets_env(monkeypatch, tmp_path):
+    from django.conf import settings
+
+    from dbcrust.django.ai_context import _apply_dbcrust_config_dir_setting
+
+    monkeypatch.delenv("DBCRUST_CONFIG_DIR", raising=False)
+    monkeypatch.setattr(settings, "DBCRUST_CONFIG_DIR", tmp_path, raising=False)
+
+    _apply_dbcrust_config_dir_setting()
+
+    assert os.environ["DBCRUST_CONFIG_DIR"] == str(tmp_path)
+
+
 def test_dashboard_ai_investigate_starts_job_and_reports_failure():
     # POST kicks off a background job; when the investigation raises, ai-status
     # renders a friendly error and stops polling — never a 500. `investigate_report`

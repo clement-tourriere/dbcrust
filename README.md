@@ -172,7 +172,7 @@ mise run gui:build                     # production .app / .dmg / .msi
 
 ## Configuration
 
-Settings live in `~/.config/dbcrust/`, with user data kept in dedicated files:
+Settings live in `~/.config/dbcrust/` by default (override with `DBCRUST_CONFIG_DIR=/path/to/dbcrust-config-dir`), with user data kept in dedicated files:
 
 | File | Contents |
 |------|----------|

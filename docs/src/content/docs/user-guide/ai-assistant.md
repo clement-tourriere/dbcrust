@@ -197,7 +197,7 @@ with analyze() as a:
 print(a.investigate_ai("why are there so many queries here?"))
 ```
 
-Both reuse your `\ai setup` configuration and run the same read-only agent against your Django database (API-key or ChatGPT-subscription auth — same as `???`).
+Both reuse your `\ai setup` configuration and run the same read-only agent against your Django database (API-key or ChatGPT-subscription auth — same as `???`). If Django runs with a different `HOME` than your shell, point it at the CLI config directory with `DBCRUST_CONFIG_DIR=/path/to/.config/dbcrust` (or `DBCRUST_CONFIG_DIR = "/path/to/.config/dbcrust"` in Django settings). Auth secrets must also be available in that runtime; containers/services usually need API-key environment variables or their own `\ai setup` / `\ai login`.
 
 ## Privacy notes
 

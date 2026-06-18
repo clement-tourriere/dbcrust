@@ -4,7 +4,7 @@ title: "Configuration"
 
 # Configuration
 
-DBCrust stores its configuration in a TOML file located at `~/.config/dbcrust/config.toml`. The configuration is automatically created with sensible defaults when you first run DBCrust.
+DBCrust stores its configuration in a TOML file located at `~/.config/dbcrust/config.toml` by default. Set `DBCRUST_CONFIG_DIR=/path/to/dbcrust-config-dir` to make both the CLI and Python/Django integration use a different directory. The configuration is automatically created with sensible defaults when you first run DBCrust.
 
 ## 🎛️ Editing Configuration Interactively
 
@@ -32,7 +32,7 @@ The interactive menu includes a dedicated **SSH tunnel patterns** manager: list,
 ## 📍 Configuration Location
 
 ```bash
-# Default configuration directory
+# Default configuration directory (override with DBCRUST_CONFIG_DIR)
 ~/.config/dbcrust/
 ├── config.toml             # Main configuration file
 ├── recent.toml             # Recent connections storage

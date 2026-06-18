@@ -492,9 +492,15 @@ class DjangoAnalyzer:
 
         Returns the AI's analysis text.
         """
+        from .ai_context import (
+            _apply_dbcrust_config_dir_setting,
+            build_django_context,
+            load_project_models,
+        )
+
+        _apply_dbcrust_config_dir_setting()
         from dbcrust._internal import run_ai_investigation  # ty: ignore[unresolved-import]
 
-        from .ai_context import build_django_context, load_project_models
         from .utils import get_dbcrust_url
 
         queries = list(self.query_collector.queries)

@@ -1187,7 +1187,10 @@ pub fn get_value(config: &Config, key: Option<&str>) -> Result<String, String> {
 
 /// Schema-driven read-only summary (`\config show`, non-TTY fallback).
 pub fn render_summary(config: &Config) -> String {
-    let mut out = String::from("Configuration (~/.config/dbcrust/config.toml)\n");
+    let config_path = Config::get_config_file_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|_| "~/.config/dbcrust/config.toml".to_string());
+    let mut out = format!("Configuration ({config_path})\n");
     out.push_str(
         "Use \\config for the interactive menu, \\config set <key> <value> to change a value.\n",
     );

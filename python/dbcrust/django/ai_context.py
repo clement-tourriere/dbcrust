@@ -12,6 +12,7 @@ with exact ``file:line`` references — not just raw SQL.
 
 from __future__ import annotations
 
+import os
 from typing import Any, List, Optional, Sequence
 
 # Cap on the rendered context handed to the model — keeps token cost bounded.
@@ -40,6 +41,24 @@ def _default_project_root() -> Optional[str]:
         return str(base) if base else None
     except Exception:
         return None
+
+
+def _apply_dbcrust_config_dir_setting() -> None:
+    """Let Django settings point the Rust core at the same config as the CLI.
+
+    The Rust core reads ``DBCRUST_CONFIG_DIR`` at call time. This setting is
+    useful when ``runserver``/gunicorn/Docker runs with a different ``HOME`` than
+    the shell where ``dbcrust`` was configured.
+    """
+    try:
+        from django.conf import settings
+
+        config_dir = getattr(settings, "DBCRUST_CONFIG_DIR", None)
+    except Exception:
+        return
+
+    if config_dir:
+        os.environ["DBCRUST_CONFIG_DIR"] = str(config_dir)
 
 
 def _render_model(model: Any) -> str:
@@ -154,6 +173,7 @@ def ask_ai(
     ``stdout_progress=True`` to stream the agent's tool trace to stdout — the
     ``dbcrust_ai`` management command does this.
     """
+    _apply_dbcrust_config_dir_setting()
     from dbcrust._internal import run_ai_investigation  # ty: ignore[unresolved-import]
 
     from .utils import get_dbcrust_url
@@ -239,6 +259,7 @@ def investigate_report(
     ``progress_path`` is given, the agent's narration is streamed to that file
     for the dashboard to tail.
     """
+    _apply_dbcrust_config_dir_setting()
     from dbcrust._internal import run_ai_investigation  # ty: ignore[unresolved-import]
 
     from .utils import get_dbcrust_url
