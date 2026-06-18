@@ -1,3 +1,10 @@
+## v0.30.1 (2026-06-18)
+
+### Fix
+
+- share AI config with Django integration
+- **gui**: preserve TLS for Vault connections
+
 ## v0.30.0 (2026-06-15)
 
 ### Feat
