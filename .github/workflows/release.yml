@@ -81,6 +81,10 @@ jobs:
           CHANGELOG=$(awk "/^## v${VERSION}/{found=1; next} /^## v/{if(found) exit} found" CHANGELOG.md)
 
           {
+            echo "Fast Rust database workbench for the terminal: PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, SQL over Parquet/CSV/JSON, optional AI, SSH/Vault, Python API, and Django ORM analysis."
+            echo ""
+            echo "Docs: https://clement-tourriere.github.io/dbcrust/"
+            echo ""
             echo "## What's Changed"
             echo ""
             if [ -n "$CHANGELOG" ]; then
@@ -93,6 +97,12 @@ jobs:
             echo "---"
             echo ""
             echo "## Installation"
+            echo ""
+            echo "### Standalone CLI"
+            echo '```bash'
+            echo "curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh"
+            echo "dbc postgres://user:pass@localhost/mydb"
+            echo '```'
             echo ""
             echo "### Python/PyPI"
             echo '```bash'

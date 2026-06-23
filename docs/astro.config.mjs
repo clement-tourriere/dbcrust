@@ -35,7 +35,7 @@ export default defineConfig({
             { label: 'Desktop GUI', slug: 'user-guide/gui' },
             { label: 'Advanced Features', slug: 'user-guide/advanced-features' },
             { label: 'Performance Analysis', slug: 'user-guide/performance-analysis' },
-            { label: 'File Formats', slug: 'user-guide/file-formats' },
+            { label: 'Query files with SQL', slug: 'user-guide/file-formats' },
             { label: 'MongoDB', slug: 'user-guide/mongodb' },
             { label: 'Elasticsearch', slug: 'user-guide/elasticsearch' },
             { label: 'Password Management', slug: 'user-guide/password-management' },

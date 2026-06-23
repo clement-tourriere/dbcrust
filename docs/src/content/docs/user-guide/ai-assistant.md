@@ -3,7 +3,9 @@ title: AI Assistant
 description: Natural-language SQL generation with multi-provider AI support
 ---
 
-DBCrust includes an opt-in AI assistant that turns natural language into SQL, directly in the interactive session. Type `??` followed by what you want, and the assistant generates the query using your database's actual schema as context:
+DBCrust includes an opt-in AI assistant that turns natural language into SQL, directly in the interactive session. Type `??` followed by what you want, and the assistant generates the query using your database's actual schema as context.
+
+> **Privacy at a glance:** AI is disabled by default. `??` sends your question, recent AI history, and schema metadata — not row data. `???` and Django "Investigate with AI" can send bounded query results, query plans, captured SQL, and source/model context to the configured provider. Generated SQL is shown before execution; use a local provider or read-only role for sensitive databases.
 
 ```sql
 dbcrust postgres://localhost/shop
@@ -49,7 +51,7 @@ Pressing `Ctrl-C` anywhere in the wizard cancels the whole setup without saving;
 | `?? now only the active ones` | Follow-ups work — the last 5 exchanges are kept as conversation context |
 | `\ai clear` | Reset the conversation history |
 
-Schema context is built from your current database: table and column metadata for up to `max_schema_tables` tables (50 by default). **No row data is ever sent to the provider** — only schema metadata and your question.
+Schema context is built from your current database: table and column metadata for up to `max_schema_tables` tables (50 by default). For `??`, **row data is not sent to the provider** — only schema metadata, your question, and recent AI history.
 
 Responses stream to the terminal as they arrive (`streaming = true`); press `Ctrl-C` to cancel a generation in progress.
 

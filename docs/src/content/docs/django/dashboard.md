@@ -60,6 +60,7 @@ It can reuse your existing AI setup (`dbcrust` → `\ai setup`). In Docker, a mo
 - Requires API-key or ChatGPT-subscription auth (same as `??`/`???` in the CLI). If the assistant isn't configured, the panel shows a short error hint instead.
 - It can reuse the normal DBCrust config directory (`DBCRUST_CONFIG_DIR=/path/to/.config/dbcrust`), but Dockerized Django can also be config-free: mount `~/.codex` from the host to the container user's `~/.codex` read-only, and the Django AI entrypoints auto-detect it.
 - It connects to the `default` database alias by default; override with `DBCRUST_AI_DATABASE = "<alias>"` in settings.
+- Privacy: this feature can send captured SQL, model/source context, query plans, and bounded result rows to the configured AI provider. Review the [AI privacy notes](/dbcrust/user-guide/ai-assistant/#privacy-notes) before enabling it on sensitive data.
 
 ## Configuration
 
@@ -88,7 +89,7 @@ Worth knowing:
 
 - This is **not your project database** — no models, no migrations, no `DATABASES` entry. It's a self-managed file (WAL mode, capped at `DASHBOARD_MAX_REQUESTS`, schema migrated by drop-and-recreate since history is disposable).
 - **Multi-process servers work**: gunicorn workers all write to the same file, so the dashboard shows one combined timeline.
-- Nothing is ever sent anywhere; delete the file (or click **Clear**) to wipe history.
+- Dashboard storage stays local by default; delete the file (or click **Clear**) to wipe history. If you click **Investigate with AI**, the AI investigation may send captured SQL, model/source context, query plans, and bounded result rows to your configured provider.
 - Prefer zero filesystem footprint? Set `'DASHBOARD_PERSIST': False` to use a per-process in-memory ring buffer instead (history dies with the process).
 
 ## Security

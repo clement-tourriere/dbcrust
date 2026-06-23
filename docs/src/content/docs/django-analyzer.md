@@ -16,6 +16,8 @@ DBCrust's Django analyzer provides comprehensive performance analysis through mu
 - **📊 Database EXPLAIN Integration**: Deep query plan analysis through DBCrust
 - **🎯 Enhanced Recommendations**: Before/after code examples with difficulty ratings
 
+> **AI privacy note:** If you use the dashboard's **Investigate with AI** flow, DBCrust can include captured SQL, Django model/source context, query plans, and bounded result rows in the prompt sent to your configured provider. See the [AI privacy notes](/dbcrust/user-guide/ai-assistant/#privacy-notes) before using it on sensitive databases.
+
 ## Quick Start
 
 ### 🚀 **Instant Setup with Middleware (Recommended)**

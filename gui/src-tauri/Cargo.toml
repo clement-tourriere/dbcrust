@@ -2,7 +2,7 @@
 name = "dbcrust-gui"
 version = "0.1.0"
 edition = "2021"
-description = "DBCrust GUI — A modern database management interface powered by Tauri"
+description = "DBCrust desktop GUI — a Tauri workbench for databases, Docker connections, schemas, queries, and EXPLAIN plans"
 default-run = "dbcrust-gui"
 
 [lib]

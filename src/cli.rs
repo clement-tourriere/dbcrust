@@ -1,11 +1,13 @@
 use crate::password_sanitizer::{sanitize_connection_url, sanitize_ssh_tunnel_string};
 use clap::{Parser, Subcommand, ValueEnum};
 
-/// DBCrust - A blazing-fast multi-database client
+/// DBCrust - a fast psql-style database workbench
 #[derive(Parser, Clone)]
 #[command(name = "dbcrust")]
 #[command(version, long_about = None)]
-#[command(about = "A blazing-fast multi-database client with intelligent autocompletion")]
+#[command(
+    about = "A fast psql-style database workbench for databases, files, Docker, Vault, and optional AI"
+)]
 #[command(arg_required_else_help = false)]
 #[command(after_help = "Examples:
   dbcrust postgres://user:pass@localhost:5432/mydb
@@ -13,6 +15,7 @@ use clap::{Parser, Subcommand, ValueEnum};
   dbcrust session://prod            # open a saved session
   dbcrust docker://my-container/mydb
   dbcrust sqlite:///path/to/file.db
+  dbcrust 'parquet:///data/*.parquet'
   dbcrust config                    # interactive configuration menu (no connection)
   dbcrust config set logging.level debug
   dbcrust --update                  # update dbcrust to the latest release")]
@@ -25,6 +28,7 @@ pub struct Args {
     ///   SQLite:     sqlite:///path/to/database.db
     ///   ClickHouse: clickhouse://user:pass@localhost:8123/mydb
     ///   Docker:     docker://container_name/mydb
+    ///   Files:      parquet:///data/*.parquet | csv:///logs/*.csv | json:///events.ndjson
     ///   Session:    session://saved_session_name
     ///   Recent:     recent:// (interactive selection)
     #[arg(value_name = "URL")]

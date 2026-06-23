@@ -1,9 +1,9 @@
 ---
 title: DBCrust
-description: Fast multi-database CLI and desktop app built in Rust
+description: Fast psql-style terminal database workbench built in Rust
 template: splash
 hero:
-  tagline: Connect to PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch — or query Parquet, CSV, and JSON files with SQL.
+  tagline: One CLI for PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, Docker databases, Vault-backed connections, and SQL over Parquet/CSV/JSON files — with optional AI, Python/Django, and a desktop GUI.
   actions:
     - text: Get Started
       link: /dbcrust/quick-start/
@@ -25,13 +25,16 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
     Parquet · CSV · JSON — query with SQL via Apache DataFusion
   </Card>
   <Card title="Smart CLI" icon="rocket">
-    Autocompletion · syntax highlighting · EXPLAIN visualizer · 50+ commands
+    Autocompletion · syntax highlighting · EXPLAIN visualizer · 60+ commands
+  </Card>
+  <Card title="Optional AI" icon="rocket">
+    Text-to-SQL · read-only investigations · SQL shown before execution · local providers
   </Card>
   <Card title="Desktop GUI" icon="laptop">
     Tauri app — CodeMirror editor · schema explorer · Docker panel · multi-tab
   </Card>
-  <Card title="Security" icon="approve-check-circle">
-    SSH tunneling · HashiCorp Vault · encrypted password storage
+  <Card title="Security & privacy" icon="approve-check-circle">
+    SSH tunneling · HashiCorp Vault · encrypted passwords · explicit AI privacy modes
   </Card>
   <Card title="Python & Django" icon="open-book">
     Library API · Django middleware · N+1 query detection
@@ -68,6 +71,17 @@ dbcrust vault://readonly@database/postgres-prod    # Vault credentials
 \ns --global daily SELECT * FROM orders WHERE created_at >= current_date - interval '$1 days'
 daily 7                -- run named query with parameter
 ```
+
+## Optional AI with explicit privacy modes
+
+AI is disabled until you run `\ai setup`. Text-to-SQL (`??`) uses schema metadata and your question, shows the generated SQL, and asks before execution. Agentic investigations (`???`) can run bounded read-only inspection queries and may send limited result rows to the configured provider.
+
+```sql
+?? top 10 customers by total order value this year
+??? why is the orders join slow?
+```
+
+Use a local provider (Ollama / LM Studio) or a read-only database role for sensitive environments. See the [AI assistant guide](/dbcrust/user-guide/ai-assistant/) and [privacy notes](/dbcrust/user-guide/ai-assistant/#privacy-notes).
 
 ## Desktop GUI
 

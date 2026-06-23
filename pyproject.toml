@@ -5,19 +5,21 @@ build-backend = "maturin"
 [project]
 name = "dbcrust"
 version = "0.30.1"
-description = "High-performance database CLI engineered for Django developers — Advanced ORM analysis, performance optimization, SSH tunneling, and seamless multi-database support (PostgreSQL, MySQL, SQLite)"
+description = "Fast Rust database workbench for the terminal: PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, SQL over Parquet/CSV/JSON, optional AI, SSH/Vault, Python API, and Django ORM analysis."
 authors = [{ name = "Clément Tourrière", email = "clement.tourriere@gmail.com" }]
 requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = [
-    "dbcrust", "database", "postgres", "mysql", "sqlite", "cli", "interactive",
-    "sql", "postgresql", "mysql", "sqlite", "ssh-tunnel", "vault", "docker",
-    "django", "orm", "python-library", "performance-analysis", "n-plus-one"
+    "dbcrust", "database", "database-cli", "sql", "cli", "interactive", "repl",
+    "postgres", "postgresql", "mysql", "sqlite", "clickhouse", "mongodb",
+    "elasticsearch", "parquet", "csv", "json", "datafusion", "ssh-tunnel",
+    "vault", "docker", "ai", "llm", "gui", "django", "orm", "python-library",
+    "performance-analysis", "n-plus-one"
 ]
 readme = "README.md"
-homepage = "https://github.com/clement-tourriere/dbcrust"
+homepage = "https://clement-tourriere.github.io/dbcrust/"
 repository = "https://github.com/clement-tourriere/dbcrust"
-documentation = "https://github.com/clement-tourriere/dbcrust#readme"
+documentation = "https://clement-tourriere.github.io/dbcrust/"
 changelog = "https://github.com/clement-tourriere/dbcrust/blob/main/CHANGELOG.md"
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -44,9 +46,9 @@ classifiers = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/clement-tourriere/dbcrust"
+"Homepage" = "https://clement-tourriere.github.io/dbcrust/"
 "Repository" = "https://github.com/clement-tourriere/dbcrust"
-"Documentation" = "https://github.com/clement-tourriere/dbcrust#readme"
+"Documentation" = "https://clement-tourriere.github.io/dbcrust/"
 "Changelog" = "https://github.com/clement-tourriere/dbcrust/blob/main/CHANGELOG.md"
 "Bug Tracker" = "https://github.com/clement-tourriere/dbcrust/issues"
 "Source Code" = "https://github.com/clement-tourriere/dbcrust"

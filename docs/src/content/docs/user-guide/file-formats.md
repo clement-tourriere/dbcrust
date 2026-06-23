@@ -1,10 +1,10 @@
 ---
-title: "File Formats Guide"
+title: "Query files with SQL"
 ---
 
-# File Formats Guide
+# Query files with SQL
 
-DBCrust supports querying Parquet, CSV, and JSON files directly using Apache DataFusion 50.0, a powerful SQL query engine. This allows you to analyze file-based data using familiar SQL syntax without loading it into a database.
+DBCrust supports querying Parquet, CSV, and JSON files directly using Apache DataFusion 53.0, a powerful SQL query engine. This allows you to analyze file-based data using familiar SQL syntax without loading it into a database or opening a notebook.
 
 ## 🚀 Getting Started
 

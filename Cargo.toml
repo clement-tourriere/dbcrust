@@ -5,7 +5,7 @@ edition = "2024"
 # edition 2024 requires Rust >= 1.85 — declared so `cargo install` on older
 # toolchains fails with a clear message instead of an edition parse error
 rust-version = "1.85"
-description = "High-performance database CLI engineered for Django developers — Advanced ORM analysis, performance optimization, SSH tunneling, and seamless multi-database support"
+description = "Fast Rust database workbench for PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, SQL over Parquet/CSV/JSON, optional AI, SSH/Vault, and Django analysis"
 authors = ["dbcrust authors"]
 license = "MIT"
 repository = "https://github.com/clement-tourriere/dbcrust"

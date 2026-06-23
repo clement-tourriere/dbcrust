@@ -1,6 +1,6 @@
 # DBCrust
 
-**One fast client for every database.** PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch — and SQL over Parquet, CSV, and JSON files. Built in Rust, with an AI assistant, smart autocompletion, SSH tunneling, Vault integration, and a desktop GUI.
+**A fast psql-style database workbench for your terminal.** One CLI for PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, Docker databases, Vault-backed connections, and SQL over Parquet/CSV/JSON files — with optional AI, Django ORM analysis, Python bindings, and a desktop GUI.
 
 [![CI](https://github.com/clement-tourriere/dbcrust/actions/workflows/ci.yml/badge.svg)](https://github.com/clement-tourriere/dbcrust/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/dbcrust.svg)](https://pypi.org/project/dbcrust/)
@@ -9,19 +9,22 @@
 
 ```bash
 curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
-dbcrust postgres://user:pass@localhost/mydb
+dbc postgres://user:pass@localhost/mydb
 ```
 
-[Documentation](https://clement-tourriere.github.io/dbcrust/) · [Quick start](https://clement-tourriere.github.io/dbcrust/quick-start/) · [Command reference](https://clement-tourriere.github.io/dbcrust/reference/backslash-commands/) · [Python API](https://clement-tourriere.github.io/dbcrust/python-api/overview/)
+> **AI is optional and disabled by default.** DBCrust works with zero AI setup. `??` sends schema metadata and your question, not row data; `???` and Django AI investigations can inspect bounded query results. Generated SQL is shown before execution.
+
+[Documentation](https://clement-tourriere.github.io/dbcrust/) · [Quick start](https://clement-tourriere.github.io/dbcrust/quick-start/) · [AI/privacy](https://clement-tourriere.github.io/dbcrust/user-guide/ai-assistant/#privacy-notes) · [Django analyzer](https://clement-tourriere.github.io/dbcrust/django-analyzer/) · [Python API](https://clement-tourriere.github.io/dbcrust/python-api/overview/)
 
 ## Why DBCrust
 
-- **Every database, one tool** — the same REPL, commands, and muscle memory across PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, and Elasticsearch.
-- **AI assistant built in** — type `?? top 10 customers by revenue` and get SQL generated from your actual schema, shown before it runs. Works with Anthropic, OpenAI, Gemini, Ollama, and 20+ other providers.
-- **Files are databases too** — run SQL directly on Parquet, CSV, and JSON via Apache DataFusion.
+- **One workflow across databases** — the same REPL, commands, and muscle memory across PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, and Elasticsearch.
+- **Files are databases too** — inspect Parquet, CSV, and JSON with SQL via Apache DataFusion, no import step or notebook required.
+- **Optional AI you control** — type `?? top 10 customers by revenue` to generate SQL from schema context, or use `???` for bounded read-only investigations. Supports Anthropic, OpenAI, Gemini, Ollama, and 20+ other providers.
+- **DBCrust for Django** — catch N+1 queries, missing `select_related` / `prefetch_related`, slow views, and index opportunities before production.
 - **Production-friendly plumbing** — SSH tunnels (with auto-tunnel patterns), HashiCorp Vault dynamic credentials, Docker container auto-discovery, encrypted password storage.
 - **A REPL that helps** — context-aware autocompletion, syntax highlighting, history search, external editor, EXPLAIN visualization (including an interactive TUI), named queries, saved sessions.
-- **Scriptable and embeddable** — `-c` for one-shot queries, a Python API powered by the same Rust core, and a Django ORM performance analyzer.
+- **Scriptable and embeddable** — `-c` for one-shot queries and a Python API powered by the same Rust core.
 
 ## Install
 
@@ -73,6 +76,26 @@ Every connection type is a URL:
 
 Full details: [URL schemes reference](https://clement-tourriere.github.io/dbcrust/reference/url-schemes/).
 
+## SQL over local files
+
+Inspect production exports, logs, and data drops without importing them into a database or opening a notebook.
+
+```bash
+dbc 'parquet:///warehouse/events/*.parquet'
+dbc 'csv:///logs/*.csv?header=true'
+dbc json:///tmp/api-responses.ndjson
+```
+
+```sql
+SELECT date_trunc('hour', ts) AS hour, count(*)
+FROM events
+WHERE level = 'ERROR'
+GROUP BY hour
+ORDER BY hour DESC;
+```
+
+DBCrust registers matching files as SQL tables and lets DataFusion handle filtering, aggregations, joins, nested JSON fields, and glob patterns. See the [file formats guide](https://clement-tourriere.github.io/dbcrust/user-guide/file-formats/).
+
 ## The interactive session
 
 Connecting drops you into a REPL with context-aware SQL autocompletion, syntax highlighting, searchable history, and 60+ psql-style backslash commands. The most used:
@@ -103,9 +126,9 @@ Turn natural language into SQL without leaving your session. The assistant uses 
 ```
 
 - **Providers**: Anthropic, OpenAI, Gemini, Ollama, Groq, DeepSeek, xAI, OpenRouter, and more — 25+ via [genai](https://crates.io/crates/genai), including any OpenAI-compatible endpoint for self-hosted models.
-- **Private by design**: disabled by default; only schema metadata and your question are sent — never row data. API keys live in your OS keychain, an encrypted file, or environment variables.
+- **Privacy controls**: AI is opt-in. `??` sends schema metadata and your prompt/history; query results stay local. `???` and Django "Investigate with AI" can send bounded result rows, query plans, captured SQL, and source context. API keys live in your OS keychain, an encrypted file, or environment variables.
 
-More in the [AI assistant guide](https://clement-tourriere.github.io/dbcrust/user-guide/ai-assistant/).
+More in the [AI assistant guide](https://clement-tourriere.github.io/dbcrust/user-guide/ai-assistant/) and [privacy notes](https://clement-tourriere.github.io/dbcrust/user-guide/ai-assistant/#privacy-notes).
 
 ## Tunnels, Vault & Docker
 
@@ -125,7 +148,7 @@ dbcrust postgres://user@db.internal/app --ssh-tunnel jumphost.example.com
 
 **Docker** — `dbcrust docker://` lists running database containers and connects without you hunting for ports or credentials.
 
-## Python & Django
+## Python API & DBCrust for Django
 
 The Python package wraps the same Rust core via PyO3 — identical URLs, commands, and behavior.
 
@@ -140,7 +163,7 @@ client = PostgresClient(host="localhost", user="postgres", dbname="myapp")
 tables = client.list_tables()
 ```
 
-The Django integration detects N+1 queries and other ORM performance issues:
+DBCrust for Django catches ORM performance bugs before production: N+1 queries, duplicate queries, missing `select_related` / `prefetch_related`, slow views, and index opportunities, with recommendations tied back to code locations.
 
 ```python
 # settings.py
