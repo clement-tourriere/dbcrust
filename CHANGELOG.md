@@ -1,3 +1,9 @@
+## v0.31.2 (2026-06-23)
+
+### Fix
+
+- resolve relative DataFusion file paths before URL encoding
+
 ## v0.31.1 (2026-06-23)
 
 ### Fix
