@@ -2,17 +2,39 @@ use crate::db::{ColumnFilteringInfo, TableDetails};
 use chrono;
 use prettytable::{Cell, Row, Table};
 
-/// Sanitize a cell value for table display by replacing newlines and control characters
-/// This prevents table formatting from being broken by embedded newlines in query results
+const MAX_FORMAT_CELL_CHARS: usize = 4_096;
+const MAX_FORMAT_DATA_ROWS: usize = 10_000;
+const MAX_FORMAT_OUTPUT_BYTES: usize = 32 * 1024 * 1024;
+
+fn bounded_cell_prefix(value: &str, max_chars: usize) -> (&str, bool) {
+    match value.char_indices().nth(max_chars) {
+        Some((split_at, _)) => (&value[..split_at], true),
+        None => (value, false),
+    }
+}
+
+/// Sanitize a cell value for table display by replacing newlines and control characters.
+///
+/// This also caps cell display size before allocating replacements. Without this,
+/// a single huge text cell (for example a Parquet `file_content` column) can make
+/// dbcrust allocate a massive formatted table and freeze the terminal/machine.
 fn sanitize_cell_for_display(value: &str) -> String {
-    // Replace various newline formats with a visual indicator
-    // Use ↵ (U+21B5) as a visual newline indicator
-    // Handle \r\n first to avoid double replacement, then handle remaining \n and \r
-    value
+    let (prefix, truncated) = bounded_cell_prefix(value, MAX_FORMAT_CELL_CHARS);
+
+    // Replace various newline formats with a visual indicator.
+    // Use ↵ (U+21B5) as a visual newline indicator.
+    // Handle \r\n first to avoid double replacement, then handle remaining \n and \r.
+    let mut sanitized = prefix
         .replace("\r\n", "↵")
         .replace(['\n', '\r'], "↵")
-        // Also handle tabs which can mess up column alignment
-        .replace('\t', "→")
+        // Also handle tabs which can mess up column alignment.
+        .replace('\t', "→");
+
+    if truncated {
+        sanitized.push_str(&format!("… [truncated; {} bytes]", value.len()));
+    }
+
+    sanitized
 }
 
 /// Format a data type with enum values if available
@@ -56,8 +78,9 @@ pub fn format_query_results_expanded(data: &[Vec<String>]) -> Vec<Table> {
 
     let header = &data[0]; // First row is header
 
-    // For each data row, create a separate vertical table
-    for (i, row) in data.iter().skip(1).enumerate() {
+    // For each data row, create a separate vertical table, bounded so expanded
+    // mode cannot create an unbounded number of prettytable allocations.
+    for (i, row) in data.iter().skip(1).take(MAX_FORMAT_DATA_ROWS).enumerate() {
         let mut table = Table::new();
 
         // Add title row indicating record number
@@ -70,13 +93,23 @@ pub fn format_query_results_expanded(data: &[Vec<String>]) -> Vec<Table> {
         for (col_idx, col_name) in header.iter().enumerate() {
             // Make sure we don't go out of bounds
             if col_idx < row.len() {
-                table.add_row(Row::new(vec![
-                    Cell::new(col_name),
-                    Cell::new(&row[col_idx]),
-                ]));
+                let cell_value = sanitize_cell_for_display(&row[col_idx]);
+                table.add_row(Row::new(vec![Cell::new(col_name), Cell::new(&cell_value)]));
             }
         }
 
+        tables.push(table);
+    }
+
+    if data.len().saturating_sub(1) > MAX_FORMAT_DATA_ROWS {
+        let mut table = Table::new();
+        table.add_row(Row::new(vec![
+            Cell::new("⚠ Output truncated"),
+            Cell::new(&format!(
+                "showing first {MAX_FORMAT_DATA_ROWS} rows out of {} returned rows",
+                data.len() - 1
+            )),
+        ]));
         tables.push(table);
     }
 
@@ -152,8 +185,19 @@ fn format_query_results_psql_internal(
         return String::new();
     }
 
-    // Find the maximum number of columns across ALL rows (header + data)
-    let max_cols = data.iter().map(|row| row.len()).max().unwrap_or(0);
+    let total_data_rows = data.len().saturating_sub(1);
+    let display_data_rows = total_data_rows.min(MAX_FORMAT_DATA_ROWS);
+    let display_row_limit = display_data_rows + 1; // include header
+
+    // Find the maximum number of columns across displayed rows (header + data).
+    // Very large result sets are already in memory by this point, but formatting
+    // them all into one terminal string is still dangerous; bound display work.
+    let max_cols = data
+        .iter()
+        .take(display_row_limit)
+        .map(|row| row.len())
+        .max()
+        .unwrap_or(0);
     let header_cols = header.len();
 
     // Create an extended header if some rows have more columns than the original header
@@ -169,7 +213,7 @@ fn format_query_results_psql_internal(
 
     // Validate data consistency with the extended header
     let mut inconsistent_rows = 0usize;
-    for (row_idx, row) in data.iter().enumerate() {
+    for (row_idx, row) in data.iter().take(display_row_limit).enumerate() {
         if row.len() != max_cols && row.len() != header_cols {
             inconsistent_rows += 1;
             tracing::debug!(
@@ -203,7 +247,7 @@ fn format_query_results_psql_internal(
 
     // Calculate widths for all data cells
     // Use sanitized values to get accurate display widths (newlines replaced with single char)
-    for row in data.iter() {
+    for row in data.iter().take(display_row_limit) {
         for (i, cell) in row.iter().enumerate() {
             if i < col_widths.len() {
                 let sanitized = sanitize_cell_for_display(cell);
@@ -234,7 +278,13 @@ fn format_query_results_psql_internal(
     result.push('\n');
 
     // Add data rows (skip header which is data[0])
-    for row in data.iter().skip(1) {
+    let mut output_truncated = false;
+    for row in data.iter().skip(1).take(display_data_rows) {
+        if result.len() >= MAX_FORMAT_OUTPUT_BYTES {
+            output_truncated = true;
+            break;
+        }
+
         for i in 0..max_cols {
             if i > 0 {
                 result.push_str(" | ");
@@ -258,10 +308,26 @@ fn format_query_results_psql_internal(
             }
         }
         result.push('\n');
+
+        if result.len() >= MAX_FORMAT_OUTPUT_BYTES {
+            output_truncated = true;
+            break;
+        }
+    }
+
+    if total_data_rows > display_data_rows {
+        result.push_str(&format!(
+            "⚠ dbcrust formatted output truncated: showing first {display_data_rows} of {total_data_rows} returned rows. Add LIMIT or narrow the SELECT list.\n"
+        ));
+    }
+    if output_truncated {
+        result.push_str(&format!(
+            "⚠ dbcrust formatted output truncated after {MAX_FORMAT_OUTPUT_BYTES} bytes. Add LIMIT or select fewer/smaller columns.\n"
+        ));
     }
 
     // Add row count
-    let row_count = data.len() - 1;
+    let row_count = total_data_rows;
     result.push_str(&format!(
         "({} {})\n",
         row_count,
@@ -1012,6 +1078,30 @@ mod tests {
             sanitize_cell_for_display("col1\tcol2\tcol3"),
             "col1→col2→col3"
         );
+    }
+
+    #[test]
+    fn test_sanitize_cell_for_display_truncates_huge_cells() {
+        let huge = "x".repeat(MAX_FORMAT_CELL_CHARS + 100);
+        let sanitized = sanitize_cell_for_display(&huge);
+
+        assert!(sanitized.starts_with(&"x".repeat(MAX_FORMAT_CELL_CHARS)));
+        assert!(sanitized.contains("[truncated;"));
+        assert!(sanitized.len() < huge.len());
+    }
+
+    #[test]
+    fn test_psql_format_limits_displayed_rows() {
+        let mut data = vec![vec!["id".to_string()]];
+        for i in 0..(MAX_FORMAT_DATA_ROWS + 2) {
+            data.push(vec![i.to_string()]);
+        }
+
+        let result = format_query_results_psql(&data);
+
+        assert!(result.contains("formatted output truncated"));
+        assert!(result.contains(&format!("showing first {MAX_FORMAT_DATA_ROWS}")));
+        assert!(result.contains(&format!("({} rows)", MAX_FORMAT_DATA_ROWS + 2)));
     }
 
     #[test]

@@ -181,6 +181,28 @@ Use `file://` to open an interactive picker for compatible files in the current 
 dbc file://
 ```
 
+**Safety limits for large files**
+
+File-format connections run with conservative DataFusion safeguards to reduce the risk of an exploratory query against a huge Parquet/CSV/JSON file overwhelming your machine or terminal. Defaults include a 512 MiB DataFusion memory pool, at most 2 execution partitions, 256-row batches, a cooperative 60s query timeout, 10,000 returned rows, 2,048 displayed characters per cell, and 16 MiB of raw result text before dbcrust truncates with a warning row. Note: regular non-NDJSON JSON files may still be read once during registration to convert them to NDJSON.
+
+You can raise limits for intentional heavy scans with URL parameters or environment variables:
+
+| URL parameter | Environment variable | Default |
+| --- | --- | --- |
+| `datafusion_memory_limit_bytes` | `DBCRUST_DATAFUSION_MEMORY_LIMIT_BYTES` | `536870912` |
+| `datafusion_target_partitions` | `DBCRUST_DATAFUSION_TARGET_PARTITIONS` | `min(available CPUs, 2)` |
+| `datafusion_batch_size` | `DBCRUST_DATAFUSION_BATCH_SIZE` | `256` |
+| `datafusion_max_query_seconds` | `DBCRUST_DATAFUSION_MAX_QUERY_SECONDS` | `60` |
+| `datafusion_max_result_rows` | `DBCRUST_DATAFUSION_MAX_RESULT_ROWS` | `10000` |
+| `datafusion_max_cell_chars` | `DBCRUST_DATAFUSION_MAX_CELL_CHARS` | `2048` |
+| `datafusion_max_output_bytes` | `DBCRUST_DATAFUSION_MAX_OUTPUT_BYTES` | `16777216` |
+
+Example:
+
+```bash
+dbc 'parquet:///data/warehouse.parquet?datafusion_max_query_seconds=180&datafusion_max_result_rows=50000'
+```
+
 
 **Parquet**
 
