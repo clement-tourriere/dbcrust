@@ -1,3 +1,14 @@
+## v0.31.0 (2026-06-23)
+
+### Feat
+
+- improve file connection shortcuts
+- **ai**: auto-detect Codex auth for Django
+
+### Fix
+
+- bound DataFusion file query resources
+
 ## v0.30.1 (2026-06-18)
 
 ### Fix
