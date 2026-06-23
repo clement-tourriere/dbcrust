@@ -24,6 +24,15 @@ if settings.DEBUG:
 
 Then open `http://localhost:8000/__dbcrust__/`.
 
+### AI in Docker
+
+For the dashboard's **Investigate with AI** button, containerized Django can avoid a dbcrust-specific persistent volume. Run `codex login` on the host, then mount your Codex/ChatGPT login directory to the container user's normal home path and dbcrust auto-detects it:
+
+```yaml
+volumes:
+  - ~/.codex:/home/app/.codex:ro  # adjust /home/app to the container user's HOME
+```
+
 ## Quick Start
 
 ### Installation

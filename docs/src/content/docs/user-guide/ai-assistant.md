@@ -197,7 +197,19 @@ with analyze() as a:
 print(a.investigate_ai("why are there so many queries here?"))
 ```
 
-Both reuse your `\ai setup` configuration and run the same read-only agent against your Django database (API-key or ChatGPT-subscription auth — same as `???`). If Django runs with a different `HOME` than your shell, point it at the CLI config directory with `DBCRUST_CONFIG_DIR=/path/to/.config/dbcrust` (or `DBCRUST_CONFIG_DIR = "/path/to/.config/dbcrust"` in Django settings). Auth secrets must also be available in that runtime; containers/services usually need API-key environment variables or their own `\ai setup` / `\ai login`.
+Django AI entrypoints normally reuse your `\ai setup` configuration and run the same read-only agent against your Django database (API-key or ChatGPT-subscription auth — same as `???`). If Django runs with a different `HOME` than your shell, point it at the CLI config directory with `DBCRUST_CONFIG_DIR=/path/to/.config/dbcrust` (or `DBCRUST_CONFIG_DIR = "/path/to/.config/dbcrust"` in Django settings).
+
+For Dockerized Django debug with a ChatGPT subscription, you can skip dbcrust config entirely: run `codex login` on the host, then make that Codex login available at the container user's normal `~/.codex/auth.json`. The Django AI entrypoints auto-detect it and use subscription auth.
+
+```yaml
+# docker-compose.yml — adjust /home/app to the container user's HOME
+services:
+  web:
+    volumes:
+      - ~/.codex:/home/app/.codex:ro
+```
+
+That's the only required mount. If you prefer file-based dbcrust configuration, a mounted `DBCRUST_CONFIG_DIR` still works.
 
 ## Privacy notes
 

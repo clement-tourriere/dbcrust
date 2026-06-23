@@ -2957,9 +2957,15 @@ impl CommandExecutor for Command {
                                 tokens.account_id
                             ));
                         }
-                        None => {
-                            output.push_str("  ChatGPT: NOT signed in (run \\ai login)\n");
-                        }
+                        None => match crate::ai::chatgpt_auth::load_codex_tokens() {
+                            Ok(tokens) => output.push_str(&format!(
+                                "  ChatGPT: signed in via Codex auth file (account {})\n",
+                                tokens.account_id
+                            )),
+                            Err(_) => output.push_str(
+                                "  ChatGPT: NOT signed in (run \\ai login or mount ~/.codex/auth.json)\n",
+                            ),
+                        },
                     }
                 } else {
                     match crate::ai::key_storage::detect_key_storage(adapter) {

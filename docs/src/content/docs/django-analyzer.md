@@ -1880,6 +1880,17 @@ DATABASES = {
 docker exec -it myapp-web python manage.py dbcrust
 ```
 
+For the dashboard's **Investigate with AI** button or `python manage.py dbcrust_ai`, you do not need a full dbcrust config volume to use a ChatGPT/Codex subscription. Run `codex login` on the host, then mount the Codex login directory at the container user's normal home path and dbcrust auto-detects it:
+
+```yaml
+services:
+  web:
+    volumes:
+      - ~/.codex:/home/app/.codex:ro  # adjust /home/app to the container user's HOME
+```
+
+A mounted `DBCRUST_CONFIG_DIR` remains supported when you want to share the normal CLI config.
+
 ---
 
 ## Summary: Enhanced Django ORM Analyzer

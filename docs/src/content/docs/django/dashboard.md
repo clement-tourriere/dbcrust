@@ -53,12 +53,12 @@ The dashboard's own polling requests are recognized (by URL namespace) and exclu
 
 When a request has slow queries or flagged issues, the detail pane shows a **🤖 Investigate with AI** button. One click hands the request's slow queries, detected issues, and your Django models to the [AI assistant](/dbcrust/user-guide/ai-assistant/#investigating-with-), which investigates the **live database** read-only (running `EXPLAIN`, inspecting indexes) and returns a Django-aware analysis — root cause plus the concrete fix (`select_related` / `db_index` / …) and the underlying SQL.
 
-It reuses your existing AI setup, so configure it once via the CLI (`dbcrust` → `\ai setup`). Notes:
+It can reuse your existing AI setup (`dbcrust` → `\ai setup`). In Docker, a mounted Codex login (`codex login` on the host, mounted to the Django user's `~/.codex/auth.json`) is enough for ChatGPT-subscription auth. Notes:
 
 - The investigation runs in a **background thread** and the panel **streams the agent's progress live** (the tools it runs, rows seen) via htmx polling — the dashboard stays responsive the whole time, then swaps in the final analysis. A full investigation takes ~30s.
 - It runs **read-only** queries only — writes, DDL, and side-effecting statements are rejected. (Best-effort SQL inspection, not a hard sandbox; for sensitive databases use a read-only role or replica.)
 - Requires API-key or ChatGPT-subscription auth (same as `??`/`???` in the CLI). If the assistant isn't configured, the panel shows a short error hint instead.
-- It uses the same DBCrust config directory as the Rust core. By default that is `~/.config/dbcrust` for the user running Django; if `dbcrust` works in your shell but the dashboard says AI is disabled, your Django process is likely running with a different `HOME` (Docker, systemd, IDE, another user). Set `DBCRUST_CONFIG_DIR=/path/to/.config/dbcrust` in the Django process, or set `DBCRUST_CONFIG_DIR = "/path/to/.config/dbcrust"` in Django settings. Auth secrets must also be available to that runtime; for containers/services, prefer provider API-key environment variables or run `\ai setup` / `\ai login` there.
+- It can reuse the normal DBCrust config directory (`DBCRUST_CONFIG_DIR=/path/to/.config/dbcrust`), but Dockerized Django can also be config-free: mount `~/.codex` from the host to the container user's `~/.codex` read-only, and the Django AI entrypoints auto-detect it.
 - It connects to the `default` database alias by default; override with `DBCRUST_AI_DATABASE = "<alias>"` in settings.
 
 ## Configuration

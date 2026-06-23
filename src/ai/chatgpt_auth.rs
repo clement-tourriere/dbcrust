@@ -414,10 +414,28 @@ pub async fn login_with(config: &OAuthConfig) -> Result<ChatGptTokens, AiError> 
     Ok(tokens)
 }
 
-/// Access token + account id for one request, refreshing (and persisting)
-/// when the stored token has no known expiry or is within 60s of it.
+enum TokenSource {
+    DbcrustStore,
+    CodexFile,
+}
+
+fn load_request_tokens() -> Result<(ChatGptTokens, TokenSource), AiError> {
+    if let Some(tokens) = load_tokens() {
+        return Ok((tokens, TokenSource::DbcrustStore));
+    }
+
+    Ok((load_codex_tokens()?, TokenSource::CodexFile))
+}
+
+/// Access token + account id for one request, refreshing (and persisting when
+/// possible) when the stored token has no known expiry or is within 60s of it.
+///
+/// In addition to dbcrust's own token store, this accepts a read-only Codex CLI
+/// auth file (`~/.codex/auth.json`). That makes Dockerized Django debug
+/// setups usable without a dbcrust-specific persistent volume: mount the Codex
+/// directory into the Django user's home.
 pub async fn current_access() -> Result<(String, String), AiError> {
-    let tokens = load_tokens().ok_or(AiError::NotLoggedIn)?;
+    let (tokens, source) = load_request_tokens()?;
     let fresh = tokens
         .expires_at
         .map(|exp| exp > now_unix() + 60)
@@ -431,28 +449,46 @@ pub async fn current_access() -> Result<(String, String), AiError> {
     let refreshed = refresh(&config, &http, &tokens)
         .await
         .map_err(|e| AiError::TokenRefreshFailed(e.to_string()))?;
-    store_tokens(&refreshed)?;
+
+    match source {
+        TokenSource::DbcrustStore => store_tokens(&refreshed)?,
+        TokenSource::CodexFile => {
+            // Best effort: a container may intentionally run without a writable
+            // dbcrust config volume. The refreshed access token is still valid
+            // for this request/process even if persistence fails.
+            let _ = store_tokens(&refreshed);
+        }
+    }
+
     Ok((refreshed.access_token, refreshed.account_id))
 }
 
-// --- Codex CLI import ---
+// --- Codex CLI import / live fallback ---
 
 /// Codex CLI's auth store, when present on this machine.
+///
+/// Looks for `~/.codex/auth.json` for the user running dbcrust/Django.
 pub fn codex_auth_path() -> Option<PathBuf> {
     dirs::home_dir()
         .map(|home| home.join(".codex").join("auth.json"))
         .filter(|path| path.exists())
 }
 
-/// Import an existing `codex login` session into dbcrust's own token store.
-/// The Codex file is only read — dbcrust never writes it back.
-pub fn import_from_codex() -> Result<ChatGptTokens, AiError> {
+/// Load an existing `codex login` session without copying it into dbcrust's
+/// token store. Used as a live read-only fallback for Docker/service runtimes.
+pub fn load_codex_tokens() -> Result<ChatGptTokens, AiError> {
     let path = codex_auth_path().ok_or_else(|| {
         AiError::OAuth("no Codex CLI login found (~/.codex/auth.json)".to_string())
     })?;
     let content = std::fs::read_to_string(&path)
         .map_err(|e| AiError::OAuth(format!("could not read {}: {e}", path.display())))?;
-    let tokens = parse_codex_auth(&content)?;
+    parse_codex_auth(&content)
+}
+
+/// Import an existing `codex login` session into dbcrust's own token store.
+/// The Codex file is only read — dbcrust never writes it back.
+pub fn import_from_codex() -> Result<ChatGptTokens, AiError> {
+    let tokens = load_codex_tokens()?;
     store_tokens(&tokens)?;
     Ok(tokens)
 }
@@ -487,7 +523,6 @@ fn parse_codex_auth(content: &str) -> Result<ChatGptTokens, AiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     /// JWT with the given JSON payload and a dummy header/signature.
     fn fake_jwt(payload: &serde_json::Value) -> String {
         let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","typ":"JWT"}"#);

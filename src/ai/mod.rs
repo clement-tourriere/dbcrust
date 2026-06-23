@@ -43,7 +43,9 @@ pub enum AiError {
     Cancelled,
     #[error("OAuth error: {0}")]
     OAuth(String),
-    #[error("Not signed in to ChatGPT. Run \\ai login first.")]
+    #[error(
+        "Not signed in to ChatGPT. Run \\ai login first, or make ~/.codex/auth.json available to this process."
+    )]
     NotLoggedIn,
     #[error("ChatGPT token refresh failed: {0} Run \\ai login again.")]
     TokenRefreshFailed(String),

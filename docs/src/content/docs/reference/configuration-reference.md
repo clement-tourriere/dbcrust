@@ -269,6 +269,8 @@ agentic_max_rows_per_tool = 50      # Rows from one tool query fed back to the m
 
 API keys are **not** stored in `config.toml` — they resolve from environment variables, the OS keychain, or an encrypted file (in that order).
 
+For Python/Django AI entrypoints, ChatGPT-subscription auth can also be auto-detected from `~/.codex/auth.json`. In Docker, run `codex login` on the host and mount the host `~/.codex` directory read-only to the container user's home to avoid a dbcrust-specific config volume.
+
 ### `[ssh_tunnel_patterns]` - SSH Tunnel Configuration
 
 Automatic SSH tunnel patterns based on hostname matching.

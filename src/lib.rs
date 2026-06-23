@@ -912,7 +912,8 @@ pub fn ai_config_status(py: Python<'_>) -> PyResult<Py<PyAny>> {
         DbcrustConfigError::new_err(format!("Failed to resolve config directory: {e}"))
     })?;
     let config_path = config_dir.join("config.toml");
-    let config = crate::config::Config::load();
+    let mut config = crate::config::Config::load();
+    apply_python_ai_autodiscovery(&mut config);
 
     let dict = PyDict::new(py);
     dict.set_item("config_dir", config_dir.display().to_string())?;
@@ -921,6 +922,12 @@ pub fn ai_config_status(py: Python<'_>) -> PyResult<Py<PyAny>> {
     dict.set_item(
         "dbcrust_config_dir_env",
         std::env::var("DBCRUST_CONFIG_DIR").unwrap_or_default(),
+    )?;
+    dict.set_item(
+        "codex_auth_file",
+        crate::ai::chatgpt_auth::codex_auth_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
     )?;
     dict.set_item("enabled", config.ai.enabled)?;
     dict.set_item("provider", &config.ai.provider)?;
@@ -931,6 +938,21 @@ pub fn ai_config_status(py: Python<'_>) -> PyResult<Py<PyAny>> {
     Ok(dict.into_any().unbind())
 }
 
+#[cfg(feature = "python")]
+fn apply_python_ai_autodiscovery(config: &mut crate::config::Config) {
+    if config.ai.enabled || crate::ai::chatgpt_auth::codex_auth_path().is_none() {
+        return;
+    }
+
+    // A Django dashboard/management-command click is already an explicit AI
+    // action. If the user has a Codex/ChatGPT login mounted in the container,
+    // use it directly instead of requiring a dbcrust config volume.
+    config.ai.enabled = true;
+    config.ai.provider = "openai".to_string();
+    config.ai.auth_method = crate::ai::config::AiAuthMethod::ChatgptSubscription;
+    config.ai.model = "gpt-5-codex".to_string();
+}
+
 /// Run an AI investigation against a database, optionally seeded with extra
 /// context (e.g. Django models + ORM code). Returns the final analysis text.
 ///
@@ -938,7 +960,8 @@ pub fn ai_config_status(py: Python<'_>) -> PyResult<Py<PyAny>> {
 /// as the REPL's `???`: the model calls read-only tools, observes results, and
 /// iterates until it produces a structured analysis. With `agentic=false` it does
 /// a single-shot text-to-SQL generation with the extra context prepended. Reuses
-/// the on-disk AI config — the user runs `\ai setup` once via the CLI.
+/// the on-disk AI config when present; for Django/Python calls, a mounted Codex
+/// login at `~/.codex/auth.json` is enough to use ChatGPT subscription auth.
 ///
 /// The GIL is **released** for the whole (multi-second) investigation, so a
 /// caller running this in a background thread (e.g. the Django dashboard) does
@@ -967,13 +990,14 @@ pub fn run_ai_investigation(
         let rt = Runtime::new().map_err(|e| format!("Failed to create Tokio runtime: {e}"))?;
 
         rt.block_on(async move {
-            let config = crate::config::Config::load();
+            let mut config = crate::config::Config::load();
+            apply_python_ai_autodiscovery(&mut config);
             if !config.ai.enabled {
                 let config_path = crate::config::Config::get_config_file_path()
                     .map(|path| path.display().to_string())
                     .unwrap_or_else(|_| "<unknown config path>".to_string());
                 return Err(format!(
-                    "AI assistant is disabled in {config_path}. If `dbcrust` shows AI enabled, the Django/Python process is using a different config directory (often a different HOME, Docker container, or service user). Set DBCRUST_CONFIG_DIR to the CLI config directory, or run `dbcrust` then `\\ai setup` from that same environment."
+                    "AI assistant is disabled in {config_path}. If `dbcrust` shows AI enabled, the Django/Python process is using a different config directory (often a different HOME, Docker container, or service user). Set DBCRUST_CONFIG_DIR to the CLI config directory, or mount ~/.codex/auth.json into the Django user's home to use your ChatGPT subscription without a dbcrust config volume."
                 ));
             }
 
