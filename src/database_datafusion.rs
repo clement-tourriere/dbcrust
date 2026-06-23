@@ -1367,4 +1367,115 @@ mod tests {
         assert_eq!(details.columns[0].name, "id");
         assert_eq!(details.columns[1].name, "value");
     }
+
+    /// Helper: write a tiny parquet file using DataFusion's own writer so the
+    /// regression tests below don't need an external fixture or the `parquet`
+    /// crate as a direct dev-dependency.
+    async fn write_parquet_fixture(path: &std::path::Path) {
+        use datafusion::arrow::array::{Int32Array, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["alice", "bob"])),
+            ],
+        )
+        .unwrap();
+
+        // `tempdir_in(".")` keeps the temp fixture on the same filesystem as
+        // cwd so a relative path resolves identically during the test run.
+        let ctx = SessionContext::new();
+        let df = ctx.read_batch(batch).unwrap();
+        df.write_parquet(
+            path.to_str().unwrap(),
+            datafusion::dataframe::DataFrameWriteOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Regression test: relative Parquet paths must resolve to absolute before
+    /// registration. This mirrors `datafusion_client_resolves_relative_csv_path`
+    /// but exercises `register_parquet`, which previous CSV-only coverage missed.
+    #[tokio::test]
+    async fn datafusion_client_resolves_relative_parquet_path() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let file_path = dir.path().join("data.parquet");
+        write_parquet_fixture(&file_path).await;
+
+        let dir_name = dir.path().file_name().unwrap().to_str().unwrap();
+        let relative_path = format!("./{dir_name}/data.parquet");
+
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::Parquet,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: Some(relative_path),
+            options: std::collections::HashMap::new(),
+            docker_container: None,
+            use_tls: false,
+        };
+
+        let client = DataFusionClient::new(connection_info).await.unwrap();
+        let results = client
+            .execute_query("SELECT * FROM data LIMIT 100")
+            .await
+            .unwrap();
+
+        assert_eq!(results[0], vec!["id".to_string(), "name".to_string()]);
+        assert_eq!(results[1], vec!["1".to_string(), "alice".to_string()]);
+        assert_eq!(results[2], vec!["2".to_string(), "bob".to_string()]);
+    }
+
+    /// Regression test: `\d <table>` on a Parquet file opened via a relative
+    /// path must report the columns read from the parquet schema, not an empty
+    /// listing-table result. Reproduces the user-reported v0.31.1 regression
+    /// where `dbc export.parquet` showed zero columns.
+    #[tokio::test]
+    async fn datafusion_client_relative_parquet_table_details() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let file_path = dir.path().join("metrics.parquet");
+        write_parquet_fixture(&file_path).await;
+
+        let dir_name = dir.path().file_name().unwrap().to_str().unwrap();
+        let relative_path = format!("./{dir_name}/metrics.parquet");
+
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::Parquet,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: Some(relative_path),
+            options: std::collections::HashMap::new(),
+            docker_container: None,
+            use_tls: false,
+        };
+
+        let client = DataFusionClient::new(connection_info).await.unwrap();
+        let details = client
+            .metadata_provider
+            .get_table_details("metrics", None)
+            .await
+            .unwrap();
+
+        assert_eq!(details.schema, "public");
+        assert_eq!(
+            details.columns.len(),
+            2,
+            "parquet relative path reported zero columns"
+        );
+        assert_eq!(details.columns[0].name, "id");
+        assert_eq!(details.columns[1].name, "name");
+    }
 }

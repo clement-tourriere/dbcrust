@@ -217,6 +217,43 @@ const SQL_KEYWORDS: &[&str] = &[
     "TABLE",
 ];
 
+/// Expand a leading `~` or `~user` to the matching home directory.
+///
+/// Only a tilde that begins the path (optionally followed by a username and a
+/// separator) is expanded, mirroring how a shell expands paths like `~/data`
+/// or `~alice/warehouse`. Tildes that appear later in the path (e.g. in a file
+/// name) are left untouched.
+fn expand_tilde(path: &str) -> String {
+    if !path.starts_with('~') {
+        return path.to_string();
+    }
+    let after_tilde = &path[1..];
+    // `~/...` -> current user's home. `~` alone -> home.
+    if after_tilde.is_empty() || after_tilde.starts_with('/') {
+        return match dirs::home_dir() {
+            Some(home) => format!("{}{after_tilde}", home.to_string_lossy()),
+            None => path.to_string(),
+        };
+    }
+    // `~user/...`: resolve that user's home directory. `dirs` only exposes the
+    // current user's home, so for other users fall back to leaving the path
+    // unchanged rather than silently rewriting it to the wrong directory.
+    let (user, rest) = match after_tilde.find('/') {
+        Some(idx) => (&after_tilde[..idx], &after_tilde[idx..]),
+        None => (after_tilde, ""),
+    };
+    if let Some(home) = dirs::home_dir() {
+        if home
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|name| name == user)
+        {
+            return format!("{}{rest}", home.to_string_lossy());
+        }
+    }
+    path.to_string()
+}
+
 /// Check if user input matches a named query invocation.
 /// Returns `Some((name, args))` if the first word matches a stored named query,
 /// or `None` if it looks like SQL or doesn't match any named query.
@@ -912,25 +949,76 @@ impl CliCore {
         url
     }
 
+    /// Resolve a user-supplied file path into an absolute, filesystem-resolvable
+    /// path string suitable for embedding into a `scheme:///path` URL.
+    ///
+    /// Why this exists: the `url` crate normalizes dot-segments, so a URL like
+    /// `parquet:///./data.parquet` round-trips through `Url::parse` as the
+    /// path `/data.parquet` — a *root*-absolute path that no longer points at
+    /// the caller's working directory. Downstream code (DataFusion's
+    /// object_store layer, and our own `parse_url`) then sees a path that is
+    /// syntactically absolute but doesn't exist, registering an empty listing
+    /// table (`\d` shows zero columns, `SELECT *` returns nothing).
+    ///
+    /// Resolving to a true absolute path *before* encoding keeps the URL stable
+    /// across the `url` round-trip and makes the resulting `file_path` point at
+    /// the real file regardless of the backend's own path handling. This also
+    /// expands a leading `~`/`~user` to the home directory for parity with a
+    /// shell-style CLI.
+    ///
+    /// Globs are canonicalized as far as possible (the wildcard characters make
+    /// `canonicalize()` fail, so we join the literal portion against cwd and
+    /// leave the wildcards intact).
+    fn resolve_to_absolute_file_path(path: &str) -> String {
+        // Expand a leading tilde (~ or ~user) to the home directory. We only
+        // expand when `~` begins a path segment, to avoid mangling file names
+        // that legitimately contain a tilde later in the path.
+        let expanded = expand_tilde(path);
+
+        let path_obj = Path::new(&expanded);
+        if path_obj.is_absolute() {
+            return expanded;
+        }
+
+        // Choose the resolution strategy based on whether the path is a glob.
+        // `canonicalize` collapses `.`/`..`/symlinks but errors on wildcards.
+        let is_glob = expanded.contains('*') || expanded.contains('?') || expanded.contains('[');
+        if !is_glob {
+            if let Ok(abs) = std::fs::canonicalize(&expanded) {
+                return abs.to_string_lossy().into_owned();
+            }
+        }
+
+        // Fall back to joining against the current working directory. This still
+        // yields an absolute path for relative paths and globs that don't yet
+        // exist or that `canonicalize` can't resolve.
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(_) => return expanded,
+        };
+        cwd.join(&expanded).to_string_lossy().into_owned()
+    }
+
     fn build_file_url(
         database_type: DatabaseType,
         path: &str,
         query: Option<&str>,
         default_params: &[(&'static str, &'static str)],
     ) -> String {
-        let mut path_for_url = path.to_string();
-        let is_absolute = Path::new(path).is_absolute();
-
-        if !is_absolute && !path_for_url.starts_with("./") {
-            path_for_url = format!("./{}", path_for_url.trim_start_matches('/'));
-        }
-
-        let encoded_path = utf8_percent_encode(&path_for_url, FILE_PATH_ENCODE_SET).to_string();
-        let url = if is_absolute {
-            format!("{}://{}", database_type.url_scheme(), encoded_path)
-        } else {
-            format!("{}:///{}", database_type.url_scheme(), encoded_path)
-        };
+        // Resolve relative and tilde paths to a true absolute path before
+        // encoding. Without this, the `url` crate's dot-segment normalization
+        // mangles `scheme:///./relative` into a root-absolute `/relative` path
+        // that doesn't exist — the root cause of the v0.31.1 regression where
+        // `dbc data.parquet` registered an empty listing table.
+        let resolved = Self::resolve_to_absolute_file_path(path);
+        // `resolve_to_absolute_file_path` returns an absolute path (leading
+        // `/`), so we build `scheme://<absolute path>` — the path's leading
+        // slash supplies the third slash expected by `scheme:///`. Strip any
+        // additional leading slashes on the resolved path to avoid producing
+        // `scheme:////path`, which `Url::parse` treats as a network path.
+        let trimmed = resolved.trim_start_matches('/');
+        let encoded_path = utf8_percent_encode(trimmed, FILE_PATH_ENCODE_SET).to_string();
+        let url = format!("{}:///{}", database_type.url_scheme(), encoded_path);
 
         Self::append_file_query_parameters(url, query, default_params)
     }
@@ -3155,21 +3243,28 @@ mod tests {
 
     #[test]
     fn test_normalize_connection_target_infers_file_formats() {
+        // Relative paths resolve to an absolute path joined against cwd, so the
+        // built URL is stable across the `url` round-trip (the previous
+        // `csv:///./data.csv` shape was silently collapsed to a root-absolute
+        // `/data.csv` by the `url` crate). The expected URL embeds cwd, so the
+        // assertion stays accurate regardless of where the suite is invoked from.
+        let cwd = std::env::current_dir().unwrap();
+
         assert_eq!(
             CliCore::normalize_connection_target("data.csv"),
-            "csv:///./data.csv"
+            format!("csv://{}/data.csv", cwd.to_string_lossy())
         );
         assert_eq!(
             CliCore::normalize_connection_target("events.ndjson"),
-            "json:///./events.ndjson"
+            format!("json://{}/events.ndjson", cwd.to_string_lossy())
         );
         assert_eq!(
             CliCore::normalize_connection_target("warehouse.parquet"),
-            "parquet:///./warehouse.parquet"
+            format!("parquet://{}/warehouse.parquet", cwd.to_string_lossy())
         );
         assert_eq!(
             CliCore::normalize_connection_target("app.sqlite"),
-            "sqlite:///./app.sqlite"
+            format!("sqlite://{}/app.sqlite", cwd.to_string_lossy())
         );
     }
 
@@ -3187,21 +3282,32 @@ mod tests {
 
     #[test]
     fn test_file_url_builder_preserves_queries_and_relative_paths() {
+        // Relative paths are resolved to absolute against cwd before encoding,
+        // so the resulting URL survives `Url::parse` without the `./` dot-segment
+        // being collapsed into a root-absolute path. Query params are preserved.
+        let cwd = std::env::current_dir().unwrap();
         assert_eq!(
             CliCore::build_file_url_from_path("logs/*.csv?header=false"),
-            Some("csv:///./logs/*.csv?header=false".to_string())
+            Some(format!(
+                "csv://{}/logs/*.csv?header=false",
+                cwd.to_string_lossy()
+            ))
         );
         assert_eq!(
             CliCore::build_file_url_from_path("exports/data.tsv?header=true"),
-            Some("csv:///./exports/data.tsv?header=true&delimiter=%09".to_string())
+            Some(format!(
+                "csv://{}/exports/data.tsv?header=true&delimiter=%09",
+                cwd.to_string_lossy()
+            ))
         );
     }
 
     #[test]
     fn test_file_url_builder_encodes_spaces() {
+        let cwd = std::env::current_dir().unwrap();
         assert_eq!(
             CliCore::build_file_url_from_path("my data.csv"),
-            Some("csv:///./my%20data.csv".to_string())
+            Some(format!("csv://{}/my%20data.csv", cwd.to_string_lossy()))
         );
     }
 
@@ -3221,6 +3327,68 @@ mod tests {
             CliCore::normalize_file_scheme_path("/tmp/my%20data.csv"),
             "/tmp/my data.csv"
         );
+    }
+
+    /// Regression test for the v0.31.1 bug where a relative `dbc data.parquet`
+    /// produced `parquet:///./data.parquet`, which `Url::parse` collapsed to the
+    /// root-absolute path `/data.parquet`. DataFusion then registered an empty
+    /// listing table for the nonexistent root-level file, so `\d` and `SELECT *`
+    /// returned nothing even though the file existed under cwd.
+    ///
+    /// The fix resolves relative paths to absolute before encoding, so the
+    /// `parse_url` round-trip must yield a `file_path` that actually points at
+    /// the file the user named (resolved against cwd).
+    #[test]
+    fn test_file_url_round_trips_relative_path_to_existing_file() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let file_path = dir.path().join("data.csv");
+        std::fs::write(&file_path, "id,name\n1,Alice\n").unwrap();
+
+        let dir_name = dir.path().file_name().unwrap().to_str().unwrap();
+        let relative = format!("{dir_name}/data.csv");
+
+        let url = CliCore::build_file_url_from_path(&relative).unwrap();
+        // The built URL must not contain a `./` segment, which the `url` crate
+        // would collapse into a root-absolute path.
+        assert!(
+            !url.contains("/./"),
+            "file URL still contains a dot-segment: {url}"
+        );
+
+        let info = ConnectionInfo::parse_url(&url).unwrap();
+        let resolved = info.file_path.expect("file_path was None after round-trip");
+        // The round-tripped path must resolve to a real file identical to the
+        // one we created under cwd.
+        let canonical_created = std::fs::canonicalize(&file_path).unwrap();
+        let canonical_resolved = std::fs::canonicalize(&resolved)
+            .unwrap_or_else(|_| panic!("round-tripped path did not resolve: {resolved}"));
+        assert_eq!(canonical_created, canonical_resolved);
+    }
+
+    /// Same regression guard as above, but for the bare-filename form
+    /// (`dbc data.parquet`) and the explicit-dot form (`./data.parquet`),
+    /// both of which triggered the bug under v0.31.1.
+    #[test]
+    fn test_file_url_round_trips_bare_and_dot_relative_paths() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let file_path = dir.path().join("metrics.csv");
+        std::fs::write(&file_path, "id,value\n1,42\n").unwrap();
+
+        let dir_name = dir.path().file_name().unwrap().to_str().unwrap();
+        for relative in [
+            format!("{dir_name}/metrics.csv"),
+            format!("./{dir_name}/metrics.csv"),
+        ] {
+            let url = CliCore::build_file_url_from_path(&relative).unwrap();
+            assert!(!url.contains("/./"), "dot-segment survived in {url}");
+            let info = ConnectionInfo::parse_url(&url).unwrap();
+            let resolved = info.file_path.expect("file_path was None");
+            assert_eq!(
+                std::fs::canonicalize(&file_path).unwrap(),
+                std::fs::canonicalize(&resolved).unwrap(),
+                "round-trip mismatch for input {relative:?}"
+            );
+        }
     }
 
     #[test]
