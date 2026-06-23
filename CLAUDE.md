@@ -48,9 +48,11 @@ mise run gui:install && mise run gui:build
 postgres://user:pass@host:5432/db?sslmode=require
 mysql://  sqlite:///path  mongodb://  clickhouse://
 session://name          # saved session
-recent://               # interactive picker
+recent://               # recent-connection picker
+file://                 # compatible-file picker in current directory
 docker://container/db
 vault://role@mount/database
+path/to/file.csv        # infer CSV/Parquet/JSON/SQLite from extension
 parquet:///path/*.parquet
 csv:///path/file.csv?header=true&delimiter=,
 json:///path/file.json

@@ -47,13 +47,15 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 dbcrust postgres://user:pass@localhost/mydb       # PostgreSQL
 dbcrust mysql://root:pass@localhost:3306/app       # MySQL
 dbcrust sqlite:///data/app.db                      # SQLite
+# or simply: dbcrust ./data/app.db
 dbcrust clickhouse://user:pass@localhost:8123/db   # ClickHouse
 dbcrust mongodb://user:pass@localhost:27017/app    # MongoDB
 dbcrust elasticsearch://localhost:9200             # Elasticsearch
 
-dbcrust parquet:///data/sales.parquet              # Parquet
-dbcrust csv:///logs/*.csv?header=true              # CSV with globs
-dbcrust json:///events.json                        # JSON / NDJSON
+dbcrust ./data/sales.parquet                       # Parquet (scheme inferred)
+dbcrust './logs/*.csv?header=true'                 # CSV with globs (scheme inferred)
+dbcrust file://                                    # pick a compatible local file
+dbcrust json:///events.json                        # JSON / NDJSON (explicit scheme still works)
 
 dbcrust docker://my-postgres                       # Docker container
 dbcrust session://production_db                    # Saved session

@@ -25,10 +25,12 @@ dbc pos[TAB] → postgres://
 dbc docker://my[TAB] → docker://my-postgres-container
 dbc session://prod[TAB] → session://production_db
 
-# File formats (Parquet, CSV, JSON)
-dbcrust parquet:///data/sales_2024.parquet
-dbcrust csv:///logs/*.csv?header=true
-dbcrust json:///api_responses.json
+# File formats (Parquet, CSV, JSON) and SQLite files
+dbcrust ./data/sales_2024.parquet          # inferred from extension
+dbcrust './logs/*.csv?header=true'         # globs work too
+dbcrust ./app.sqlite                       # SQLite inferred from extension
+dbcrust file://                            # interactive compatible-file picker
+dbcrust json:///api_responses.json         # explicit schemes still work
 
 # With options
 dbcrust --ssh-tunnel jumphost.com postgres://user@db.internal/app

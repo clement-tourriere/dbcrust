@@ -8,7 +8,7 @@ DBCrust provides a comprehensive URL scheme system for connecting to databases w
 
 ## 🔗 Supported URL Schemes
 
-DBCrust supports 8 different URL schemes, each optimized for specific use cases:
+DBCrust supports database URLs, file-format URLs, bare local file paths, and special picker schemes optimized for common connection workflows:
 
 ### Standard Database Schemes
 
@@ -166,7 +166,20 @@ dbcrust docker://my-elasticsearch-container
 
 ### File Format Schemes
 
-DBCrust can query file formats directly using Apache DataFusion, a powerful SQL query engine that operates on Parquet, CSV, and JSON files.
+DBCrust can query file formats directly using Apache DataFusion, a powerful SQL query engine that operates on Parquet, CSV, and JSON files. You can either use the explicit scheme or pass a local path with a known extension:
+
+```bash
+dbc sales.parquet
+dbc './logs/*.csv?header=true'
+dbc events.ndjson
+dbc app.sqlite
+```
+
+Use `file://` to open an interactive picker for compatible files in the current directory:
+
+```bash
+dbc file://
+```
 
 
 **Parquet**
@@ -411,6 +424,25 @@ dbcrust recent://
 ```
 
 
+**Generic File Picker**
+
+
+**Scheme:** `file://`
+
+```bash
+# Pick a compatible file from the current directory
+dbcrust file://
+
+# Pick from a specific directory
+dbcrust file:///data/exports
+
+# Open a specific file while still inferring its backend
+dbcrust file://./sales.csv
+```
+
+`file://` lists compatible Parquet, CSV/TSV, JSON/NDJSON, and SQLite files using the interactive prompt. If you already know the file path, you can usually omit the scheme entirely (`dbc sales.csv`, `dbc app.sqlite`).
+
+
 **HashiCorp Vault**
 
 
@@ -564,12 +596,13 @@ dbc session://loc[TAB]  → session://local_dev
 - Matches sessions that start with your input
 
 
-**SQLite Files**
+**SQLite and generic file picker**
 
 
 ```bash
 # Delegates to shell file completion
 dbc sqlite://[TAB]
+dbc file://[TAB]
 # → Uses your shell's built-in file completion
 
 dbc sqlite://./[TAB] → sqlite://./myapp.db sqlite://./test.db
@@ -580,7 +613,7 @@ dbc sqlite://./[TAB] → sqlite://./myapp.db sqlite://./test.db
 ```bash
 # Scheme completion
 dbc [TAB]
-# → postgres:// mysql:// sqlite:// clickhouse:// mongodb:// docker:// session:// recent:// vault://
+# → postgres:// mysql:// sqlite:// docker:// file:// session:// recent:// vault://
 
 # Docker container completion
 dbc docker://[TAB]

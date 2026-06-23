@@ -41,7 +41,7 @@ impl ParsedUrl {
     pub fn is_special_scheme(&self) -> bool {
         matches!(
             self.scheme,
-            UrlScheme::Session | UrlScheme::Recent | UrlScheme::Vault
+            UrlScheme::File | UrlScheme::Session | UrlScheme::Recent | UrlScheme::Vault
         )
     }
 
@@ -72,6 +72,8 @@ pub enum UrlScheme {
     SQLite,
     #[strum(serialize = "docker")]
     Docker,
+    #[strum(serialize = "file")]
+    File,
     #[strum(serialize = "session")]
     Session,
     #[strum(serialize = "recent")]
@@ -93,6 +95,7 @@ impl UrlScheme {
             Self::MySQL => "MySQL database connection",
             Self::SQLite => "SQLite database file",
             Self::Docker => "Docker container database",
+            Self::File => "Interactive local file picker",
             Self::Session => "Saved session connection",
             Self::Recent => "Recent connection from history",
             Self::Vault => "HashiCorp Vault dynamic credentials",
@@ -101,7 +104,10 @@ impl UrlScheme {
 
     /// Returns whether this scheme supports contextual completion
     pub fn supports_contextual_completion(&self) -> bool {
-        matches!(self, Self::Docker | Self::Session | Self::SQLite)
+        matches!(
+            self,
+            Self::Docker | Self::File | Self::Session | Self::SQLite
+        )
     }
 
     /// Parse a URL string and return the scheme and parsed URL
@@ -126,7 +132,7 @@ impl UrlScheme {
         // For special schemes, don't parse with url crate
         if matches!(
             scheme,
-            Self::Session | Self::Recent | Self::Vault | Self::Docker
+            Self::File | Self::Session | Self::Recent | Self::Vault | Self::Docker
         ) {
             return Ok(ParsedUrl::new(scheme, full_url, None));
         }
@@ -150,6 +156,7 @@ impl UrlScheme {
             "mysql" => Ok(Self::MySQL),
             "sqlite" => Ok(Self::SQLite),
             "docker" => Ok(Self::Docker),
+            "file" => Ok(Self::File),
             "session" => Ok(Self::Session),
             "recent" => Ok(Self::Recent),
             "vault" => Ok(Self::Vault),
@@ -168,7 +175,7 @@ impl UrlScheme {
             Self::Postgres | Self::Docker => Some("PostgreSQL"),
             Self::MySQL => Some("MySQL"),
             Self::SQLite => Some("SQLite"),
-            Self::Session | Self::Recent | Self::Vault => None, // Resolved later
+            Self::File | Self::Session | Self::Recent | Self::Vault => None, // Resolved later
         }
     }
 
@@ -298,6 +305,24 @@ impl UrlSchemeCompleter for SQLiteSchemeCompleter {
     }
 }
 
+/// File scheme completer - shell file completion is the best UX here.
+pub struct FileSchemeCompleter;
+
+#[async_trait]
+impl UrlSchemeCompleter for FileSchemeCompleter {
+    fn scheme(&self) -> UrlScheme {
+        UrlScheme::File
+    }
+
+    async fn get_completions(&self, _partial: &str) -> Result<Vec<String>, Box<dyn Error>> {
+        Ok(vec![])
+    }
+
+    fn is_async(&self) -> bool {
+        false
+    }
+}
+
 /// Manager for URL scheme completion
 pub struct UrlSchemeManager {
     completers: HashMap<UrlScheme, Box<dyn UrlSchemeCompleter>>,
@@ -315,6 +340,7 @@ impl UrlSchemeManager {
             Box::new(SessionSchemeCompleter::new(config)),
         );
         completers.insert(UrlScheme::SQLite, Box::new(SQLiteSchemeCompleter));
+        completers.insert(UrlScheme::File, Box::new(FileSchemeCompleter));
 
         Self { completers }
     }
@@ -395,7 +421,7 @@ mod tests {
     #[test]
     fn test_url_scheme_iteration() {
         let schemes: Vec<_> = UrlScheme::iter().collect();
-        assert_eq!(schemes.len(), 7); // All 7 schemes
+        assert_eq!(schemes.len(), 8); // All 8 schemes
 
         // Verify all schemes have proper string representation
         for scheme in schemes {
@@ -424,6 +450,7 @@ mod tests {
     #[test]
     fn test_contextual_completion_support() {
         assert!(UrlScheme::Docker.supports_contextual_completion());
+        assert!(UrlScheme::File.supports_contextual_completion());
         assert!(UrlScheme::Session.supports_contextual_completion());
         assert!(UrlScheme::SQLite.supports_contextual_completion());
 
@@ -487,6 +514,12 @@ mod tests {
         assert!(parsed.is_special_scheme());
         assert!(parsed.parsed_url.is_none()); // Special schemes don't use url crate parsing
 
+        // Test file picker scheme
+        let parsed = UrlScheme::parse_url("file://").unwrap();
+        assert_eq!(parsed.scheme, UrlScheme::File);
+        assert!(parsed.is_special_scheme());
+        assert!(parsed.parsed_url.is_none());
+
         // Test docker scheme
         let parsed = UrlScheme::parse_url("docker://my-container/db").unwrap();
         assert_eq!(parsed.scheme, UrlScheme::Docker);
@@ -519,6 +552,7 @@ mod tests {
         );
         assert_eq!(UrlScheme::from_str("mysql").unwrap(), UrlScheme::MySQL);
         assert_eq!(UrlScheme::from_str("docker").unwrap(), UrlScheme::Docker);
+        assert_eq!(UrlScheme::from_str("file").unwrap(), UrlScheme::File);
         assert_eq!(UrlScheme::from_str("session").unwrap(), UrlScheme::Session);
 
         // Case insensitive
@@ -540,6 +574,7 @@ mod tests {
         assert_eq!(UrlScheme::Docker.to_database_type(), Some("PostgreSQL")); // Default for docker
 
         // Special schemes return None (resolved later)
+        assert_eq!(UrlScheme::File.to_database_type(), None);
         assert_eq!(UrlScheme::Session.to_database_type(), None);
         assert_eq!(UrlScheme::Recent.to_database_type(), None);
         assert_eq!(UrlScheme::Vault.to_database_type(), None);

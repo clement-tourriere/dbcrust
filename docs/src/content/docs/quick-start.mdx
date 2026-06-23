@@ -65,6 +65,7 @@ dbc session://[TAB] → lists saved sessions
   <TabItem label="SQLite">
     ```bash
     dbcrust sqlite:///path/to/db.sqlite
+    dbcrust ./path/to/db.sqlite      # scheme inferred from extension
     ```
   </TabItem>
   <TabItem label="ClickHouse">
@@ -93,9 +94,10 @@ dbc session://[TAB] → lists saved sessions
   </TabItem>
   <TabItem label="Files">
     ```bash
-    dbcrust parquet:///data/sales.parquet
-    dbcrust csv:///logs/*.csv?header=true
-    dbcrust json:///events.json
+    dbcrust ./data/sales.parquet               # scheme inferred
+    dbcrust './logs/*.csv?header=true'         # globs work too
+    dbcrust file://                            # interactive compatible-file picker
+    dbcrust json:///events.json                # explicit schemes still work
     ```
   </TabItem>
   <TabItem label="Docker">

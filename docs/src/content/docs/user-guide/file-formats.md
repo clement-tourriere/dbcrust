@@ -19,18 +19,23 @@ DBCrust supports the following file formats via Apache DataFusion:
 ### Quick Start
 
 ```bash
-# Query a Parquet file
-dbcrust parquet:///data/sales_2024.parquet
+# Query a Parquet file (scheme inferred from extension)
+dbcrust ./data/sales_2024.parquet
 > SELECT COUNT(*), AVG(amount) FROM sales_2024;
 
 # Query multiple CSV files
-dbcrust 'csv:///logs/*.csv?header=true'
+dbcrust './logs/*.csv?header=true'
 > SELECT date, COUNT(*) FROM logs WHERE level = 'ERROR' GROUP BY date;
+
+# Pick a compatible file from the current directory
+dbcrust file://
 
 # Query JSON with nested structures
 dbcrust json:///api_responses.json
 > SELECT data.customer.name, data.order.total FROM api_responses LIMIT 10;
 ```
+
+Bare local paths with supported extensions are accepted as shortcuts for the full URL (`dbc users.csv`, `dbc app.sqlite`, `dbc warehouse.parquet`). Use `dbc file://` to choose a compatible file interactively from the current directory.
 
 ## 📦 Connection URLs
 
@@ -626,7 +631,7 @@ For complete DataFusion SQL documentation, see the [Apache Arrow DataFusion SQL 
 ```
 Error: File not found: /data/sales.parquet
 ```
-- Verify file path is absolute (`///` prefix for `file://`)
+- Verify the path is correct. Bare paths such as `./sales.parquet` are inferred automatically; explicit URLs use `parquet:///absolute/path`, `csv:///absolute/path`, or `json:///absolute/path`.
 - Check file permissions
 - Ensure file exists: `ls -la /data/sales.parquet`
 
@@ -652,7 +657,7 @@ Table 'logs' not found
 ```
 - Verify glob pattern matches files: `ls /path/*.csv`
 - Check directory exists and contains matching files
-- Ensure proper quoting: `dbcrust 'csv:///logs/*.csv'`
+- Ensure proper quoting: `dbcrust './logs/*.csv'` or `dbcrust 'csv:///logs/*.csv'`
 
 ### Performance Issues
 

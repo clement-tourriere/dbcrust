@@ -14,8 +14,10 @@ use clap::{Parser, Subcommand, ValueEnum};
   dbcrust recent://                 # pick from recent connections
   dbcrust session://prod            # open a saved session
   dbcrust docker://my-container/mydb
+  dbcrust ./data.csv                # infer CSV from extension
   dbcrust sqlite:///path/to/file.db
   dbcrust 'parquet:///data/*.parquet'
+  dbcrust file://                   # pick a compatible file from the current directory
   dbcrust config                    # interactive configuration menu (no connection)
   dbcrust config set logging.level debug
   dbcrust --update                  # update dbcrust to the latest release")]
@@ -25,10 +27,10 @@ pub struct Args {
     /// Examples:
     ///   PostgreSQL: postgresql://user:pass@localhost:5432/mydb
     ///   MySQL:      mysql://user:pass@localhost:3306/mydb
-    ///   SQLite:     sqlite:///path/to/database.db
+    ///   SQLite:     sqlite:///path/to/database.db or ./database.sqlite
     ///   ClickHouse: clickhouse://user:pass@localhost:8123/mydb
     ///   Docker:     docker://container_name/mydb
-    ///   Files:      parquet:///data/*.parquet | csv:///logs/*.csv | json:///events.ndjson
+    ///   Files:      ./data.csv | parquet:///data/*.parquet | csv:///logs/*.csv | file://
     ///   Session:    session://saved_session_name
     ///   Recent:     recent:// (interactive selection)
     #[arg(value_name = "URL")]

@@ -55,6 +55,7 @@ dbcrust --completions zsh        # shell completions (bash, zsh, fish, powershel
 ```bash
 dbcrust postgres://user:pass@localhost/mydb     # interactive session
 dbcrust recent://                               # pick from recent connections
+dbc ./users.csv                                 # infer CSV from the extension
 dbcrust sqlite:///path/to/db.sqlite -c "SELECT count(*) FROM users"   # run and exit
 ```
 
@@ -64,11 +65,11 @@ Every connection type is a URL:
 |--------|---------|
 | PostgreSQL | `postgres://user:pass@localhost:5432/mydb?sslmode=require` |
 | MySQL | `mysql://root:pass@localhost:3306/mydb` |
-| SQLite | `sqlite:///path/to/db.sqlite` |
+| SQLite | `sqlite:///path/to/db.sqlite` or `./path/to/db.sqlite` |
 | ClickHouse | `clickhouse://user:pass@localhost:8123/default` |
 | MongoDB | `mongodb://user:pass@localhost:27017/mydb` |
 | Elasticsearch | `elasticsearch://localhost:9200` |
-| Parquet / CSV / JSON | `parquet:///data/*.parquet` · `csv:///logs/app.csv?header=true` · `json:///events.json` |
+| Parquet / CSV / JSON | `./data.parquet` · `./logs/app.csv` · `file://` picker · `json:///events.json` |
 | Docker container | `docker://` (interactive picker) · `docker://my-postgres/mydb` |
 | Saved session | `session://production_db` |
 | Recent connections | `recent://` |
@@ -81,8 +82,9 @@ Full details: [URL schemes reference](https://clement-tourriere.github.io/dbcrus
 Inspect production exports, logs, and data drops without importing them into a database or opening a notebook.
 
 ```bash
-dbc 'parquet:///warehouse/events/*.parquet'
-dbc 'csv:///logs/*.csv?header=true'
+dbc warehouse/events.parquet      # inferred from extension
+dbc 'logs/*.csv?header=true'      # globs work too
+dbc file://                       # interactive compatible-file picker
 dbc json:///tmp/api-responses.ndjson
 ```
 

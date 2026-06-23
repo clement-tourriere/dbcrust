@@ -175,6 +175,8 @@ File formats (via Apache DataFusion):
 | CSV | `csv://` |
 | JSON | `json://` |
 
+Bare paths such as `users.csv`, `warehouse.parquet`, and `app.sqlite` are also accepted and inferred from the extension.
+
 Special schemes:
 
 | Scheme | Purpose |
@@ -182,6 +184,7 @@ Special schemes:
 | `docker://` | Connect to database containers |
 | `session://` | Saved sessions |
 | `recent://` | Recent connections |
+| `file://` | Interactive compatible-file picker |
 | `vault://` | HashiCorp Vault credentials |
 
 ## Updating

@@ -114,8 +114,8 @@ _{bin_name}_complete_url() {{
                     done
                 fi
                 ;;
-            sqlite)
-                # For SQLite, use file completion
+            sqlite|file)
+                # For SQLite and generic file://, use shell file completion
                 compopt -o default 2>/dev/null || true
                 ;;
         esac
@@ -220,6 +220,7 @@ _{bin_name}_complete_url() {{
             'mysql://'
             'sqlite://'
             'docker://'
+            'file://'
             'session://'
             'recent://'
             'vault://'
@@ -259,6 +260,9 @@ _{bin_name}_complete_url() {{
                 ;;
             sqlite)
                 _files -g "*.db *.sqlite *.sqlite3"
+                ;;
+            file)
+                _files -g "*.db *.sqlite *.sqlite3 *.parquet *.parq *.csv *.tsv *.json *.jsonl *.ndjson"
                 ;;
         esac
     fi

@@ -12,12 +12,28 @@ use clap::CommandFactory;
 use dirs;
 use inquire;
 use nu_ansi_term::{Color, Style};
+use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use std::error::Error as StdError;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tracing::debug;
 use url;
+
+const FILE_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'"')
+    .add(b'#')
+    .add(b'%')
+    .add(b'<')
+    .add(b'>')
+    .add(b'?')
+    .add(b'[')
+    .add(b']')
+    .add(b'`')
+    .add(b'{')
+    .add(b'}');
 
 /// Core CLI functionality shared between Rust and Python interfaces
 pub struct CliCore {
@@ -801,17 +817,254 @@ impl CliCore {
         Ok(parsed_url.to_string())
     }
 
+    fn normalize_connection_target(connection_url: &str) -> String {
+        if connection_url.contains("://") {
+            return connection_url.to_string();
+        }
+
+        Self::build_file_url_from_path(connection_url)
+            .unwrap_or_else(|| format!("postgres://{connection_url}"))
+    }
+
+    fn split_path_and_query(input: &str) -> (&str, Option<&str>) {
+        match input.split_once('?') {
+            Some((path, query)) => (path, Some(query)),
+            None => (input, None),
+        }
+    }
+
+    fn detect_file_database_type(
+        path: &str,
+    ) -> Option<(DatabaseType, Vec<(&'static str, &'static str)>)> {
+        let file_name = Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(path)
+            .to_ascii_lowercase();
+
+        let mut logical_name = file_name.as_str();
+        for compression_suffix in [".gz", ".gzip", ".bz2", ".xz", ".zst"] {
+            if let Some(stripped) = logical_name.strip_suffix(compression_suffix) {
+                logical_name = stripped;
+                break;
+            }
+        }
+
+        if logical_name.ends_with(".parquet") || logical_name.ends_with(".parq") {
+            Some((DatabaseType::Parquet, vec![]))
+        } else if logical_name.ends_with(".csv") {
+            Some((DatabaseType::CSV, vec![]))
+        } else if logical_name.ends_with(".tsv") || logical_name.ends_with(".tab") {
+            Some((DatabaseType::CSV, vec![("delimiter", "%09")]))
+        } else if logical_name.ends_with(".json")
+            || logical_name.ends_with(".jsonl")
+            || logical_name.ends_with(".ndjson")
+        {
+            Some((DatabaseType::JSON, vec![]))
+        } else if logical_name.ends_with(".sqlite")
+            || logical_name.ends_with(".sqlite3")
+            || logical_name.ends_with(".db")
+            || logical_name.ends_with(".db3")
+        {
+            Some((DatabaseType::SQLite, vec![]))
+        } else {
+            None
+        }
+    }
+
+    fn supported_file_extensions() -> &'static str {
+        "*.parquet, *.parq, *.csv, *.tsv, *.json, *.jsonl, *.ndjson, *.sqlite, *.sqlite3, *.db"
+    }
+
+    fn query_has_parameter(query: Option<&str>, key: &str) -> bool {
+        query
+            .map(|query| {
+                query.split('&').any(|part| {
+                    let param_key = part.split_once('=').map(|(k, _)| k).unwrap_or(part);
+                    param_key.eq_ignore_ascii_case(key)
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    fn append_file_query_parameters(
+        mut url: String,
+        query: Option<&str>,
+        default_params: &[(&'static str, &'static str)],
+    ) -> String {
+        let mut params = Vec::new();
+
+        if let Some(query) = query.filter(|query| !query.is_empty()) {
+            params.push(query.to_string());
+        }
+
+        for (key, value) in default_params {
+            if !Self::query_has_parameter(query, key) {
+                params.push(format!("{key}={value}"));
+            }
+        }
+
+        if !params.is_empty() {
+            url.push('?');
+            url.push_str(&params.join("&"));
+        }
+
+        url
+    }
+
+    fn build_file_url(
+        database_type: DatabaseType,
+        path: &str,
+        query: Option<&str>,
+        default_params: &[(&'static str, &'static str)],
+    ) -> String {
+        let mut path_for_url = path.to_string();
+        let is_absolute = Path::new(path).is_absolute();
+
+        if !is_absolute && !path_for_url.starts_with("./") {
+            path_for_url = format!("./{}", path_for_url.trim_start_matches('/'));
+        }
+
+        let encoded_path = utf8_percent_encode(&path_for_url, FILE_PATH_ENCODE_SET).to_string();
+        let url = if is_absolute {
+            format!("{}://{}", database_type.url_scheme(), encoded_path)
+        } else {
+            format!("{}:///{}", database_type.url_scheme(), encoded_path)
+        };
+
+        Self::append_file_query_parameters(url, query, default_params)
+    }
+
+    fn build_file_url_from_parts(path: &str, query: Option<&str>) -> Option<String> {
+        let trimmed_path = path.trim();
+        if trimmed_path.is_empty() {
+            return None;
+        }
+
+        let (database_type, default_params) = Self::detect_file_database_type(trimmed_path)?;
+        Some(Self::build_file_url(
+            database_type,
+            trimmed_path,
+            query,
+            &default_params,
+        ))
+    }
+
+    fn build_file_url_from_path(path_with_query: &str) -> Option<String> {
+        let (path, query) = Self::split_path_and_query(path_with_query);
+        Self::build_file_url_from_parts(path, query)
+    }
+
+    fn normalize_file_scheme_path(raw_path: &str) -> String {
+        let decoded = percent_encoding::percent_decode_str(raw_path)
+            .decode_utf8_lossy()
+            .into_owned();
+
+        if decoded.starts_with("/./") || decoded.starts_with("/../") || decoded.starts_with("//") {
+            decoded[1..].to_string()
+        } else {
+            decoded
+        }
+    }
+
+    fn compatible_files_in_directory(dir: &Path) -> Result<Vec<(String, PathBuf)>, CliError> {
+        let entries = std::fs::read_dir(dir).map_err(|e| {
+            CliError::ConnectionError(format!("Failed to read directory '{}': {e}", dir.display()))
+        })?;
+
+        let mut files = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|e| {
+                CliError::ConnectionError(format!(
+                    "Failed to read directory entry in '{}': {e}",
+                    dir.display()
+                ))
+            })?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+
+            let path_text = path.to_string_lossy();
+            if let Some((database_type, _)) = Self::detect_file_database_type(&path_text) {
+                let file_name = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_else(|| path_text.as_ref());
+                files.push((
+                    format!("{} ({})", file_name, database_type.display_name()),
+                    path,
+                ));
+            }
+        }
+
+        files.sort_by_key(|(display, _)| display.to_ascii_lowercase());
+        Ok(files)
+    }
+
+    fn select_compatible_file(dir: &Path) -> Result<PathBuf, CliError> {
+        if !crate::config_editor::can_run_interactive() {
+            return Err(CliError::ConnectionError(
+                "file:// requires an interactive terminal when no file path is provided"
+                    .to_string(),
+            ));
+        }
+
+        let files = Self::compatible_files_in_directory(dir)?;
+        if files.is_empty() {
+            return Err(CliError::ConnectionError(format!(
+                "No compatible files found in '{}'. Supported extensions: {}",
+                dir.display(),
+                Self::supported_file_extensions()
+            )));
+        }
+
+        let options: Vec<String> = files.iter().map(|(display, _)| display.clone()).collect();
+        let selected = inquire::Select::new("Select a file to open:", options)
+            .prompt()
+            .map_err(|e| CliError::ConnectionError(format!("File selection cancelled: {e}")))?;
+
+        files
+            .into_iter()
+            .find(|(display, _)| display == &selected)
+            .map(|(_, path)| path)
+            .ok_or_else(|| CliError::ConnectionError("Invalid file selection".to_string()))
+    }
+
+    async fn handle_file_url(&mut self, url: &str) -> Result<String, CliError> {
+        let after_scheme = url.strip_prefix("file://").unwrap_or("");
+        let (raw_path, query) = Self::split_path_and_query(after_scheme);
+        let normalized_path = Self::normalize_file_scheme_path(raw_path);
+
+        let selected_path = if normalized_path.trim().is_empty() {
+            Self::select_compatible_file(Path::new("."))?
+        } else {
+            let candidate = PathBuf::from(&normalized_path);
+            if candidate.is_dir() {
+                Self::select_compatible_file(&candidate)?
+            } else {
+                candidate
+            }
+        };
+
+        let selected_path_text = selected_path.to_string_lossy();
+        Self::build_file_url_from_parts(&selected_path_text, query).ok_or_else(|| {
+            CliError::ConnectionError(format!(
+                "Unsupported file extension for '{}'. Supported extensions: {}",
+                selected_path.display(),
+                Self::supported_file_extensions()
+            ))
+        })
+    }
+
     pub async fn handle_database_connection(&mut self, args: &Args) -> Result<(), CliError> {
         let connection_url = args.connection_url.clone().ok_or_else(|| {
             CliError::ArgumentError("No database connection specified".to_string())
         })?;
 
-        // Normalize URL if it doesn't have a scheme
-        let mut full_url_str = if !connection_url.contains("://") {
-            format!("postgres://{connection_url}")
-        } else {
-            connection_url
-        };
+        // Normalize bare targets: known local file extensions open as file-backed
+        // connections, everything else keeps the historical PostgreSQL default.
+        let mut full_url_str = Self::normalize_connection_target(&connection_url);
 
         // Handle different URL schemes
         full_url_str = self.handle_special_url_schemes(full_url_str).await?;
@@ -2462,8 +2715,13 @@ impl CliCore {
         Ok(())
     }
 
-    /// Handle special URL schemes like session:// and recent://
+    /// Handle special URL schemes like file://, session:// and recent://
     async fn handle_special_url_schemes(&mut self, mut url: String) -> Result<String, CliError> {
+        // Handle file picker / generic file URLs before database URL parsing
+        if url.starts_with("file://") {
+            url = self.handle_file_url(&url).await?;
+        }
+
         // Handle session URLs
         if url.starts_with("session://") {
             url = self.handle_session_url(&url).await?;
@@ -2893,6 +3151,76 @@ mod tests {
             .add_named_query_with_scope(name, query, scope)
             .unwrap();
         config
+    }
+
+    #[test]
+    fn test_normalize_connection_target_infers_file_formats() {
+        assert_eq!(
+            CliCore::normalize_connection_target("data.csv"),
+            "csv:///./data.csv"
+        );
+        assert_eq!(
+            CliCore::normalize_connection_target("events.ndjson"),
+            "json:///./events.ndjson"
+        );
+        assert_eq!(
+            CliCore::normalize_connection_target("warehouse.parquet"),
+            "parquet:///./warehouse.parquet"
+        );
+        assert_eq!(
+            CliCore::normalize_connection_target("app.sqlite"),
+            "sqlite:///./app.sqlite"
+        );
+    }
+
+    #[test]
+    fn test_normalize_connection_target_keeps_postgres_default_for_non_files() {
+        assert_eq!(
+            CliCore::normalize_connection_target("localhost:5432/mydb"),
+            "postgres://localhost:5432/mydb"
+        );
+        assert_eq!(
+            CliCore::normalize_connection_target("postgres://localhost/mydb"),
+            "postgres://localhost/mydb"
+        );
+    }
+
+    #[test]
+    fn test_file_url_builder_preserves_queries_and_relative_paths() {
+        assert_eq!(
+            CliCore::build_file_url_from_path("logs/*.csv?header=false"),
+            Some("csv:///./logs/*.csv?header=false".to_string())
+        );
+        assert_eq!(
+            CliCore::build_file_url_from_path("exports/data.tsv?header=true"),
+            Some("csv:///./exports/data.tsv?header=true&delimiter=%09".to_string())
+        );
+    }
+
+    #[test]
+    fn test_file_url_builder_encodes_spaces() {
+        assert_eq!(
+            CliCore::build_file_url_from_path("my data.csv"),
+            Some("csv:///./my%20data.csv".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_file_scheme_path_variants() {
+        assert_eq!(CliCore::normalize_file_scheme_path(""), "");
+        assert_eq!(CliCore::normalize_file_scheme_path("data.csv"), "data.csv");
+        assert_eq!(
+            CliCore::normalize_file_scheme_path("/./data.csv"),
+            "./data.csv"
+        );
+        assert_eq!(
+            CliCore::normalize_file_scheme_path("/tmp/data.csv"),
+            "/tmp/data.csv"
+        );
+        assert_eq!(
+            CliCore::normalize_file_scheme_path("/tmp/my%20data.csv"),
+            "/tmp/my data.csv"
+        );
     }
 
     #[test]
