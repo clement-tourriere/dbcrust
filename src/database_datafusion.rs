@@ -214,6 +214,28 @@ impl DataFusionClient {
             path
         );
 
+        // DataFusion's object_store layer requires absolute paths to resolve
+        // local files. Relative paths (e.g. "./data.csv" or "data.csv") silently
+        // register an empty listing table — queries return no rows and \d shows
+        // no columns — because the directory walk finds nothing at the relative
+        // location. Resolve to an absolute path before handing it to DataFusion.
+        // Mirrors the path resolution SqliteClient already does.
+        let resolved_path = if std::path::Path::new(path).is_absolute() {
+            path.to_string()
+        } else {
+            let cwd = std::env::current_dir().map_err(|e| {
+                DatabaseError::ConnectionError(format!("Could not get current directory: {e}"))
+            })?;
+            // canonicalize() collapses "./", "../", and symlinks for non-glob
+            // paths. For glob patterns it fails on the wildcard characters, so
+            // fall back to cwd.join(path) which still yields an absolute path.
+            match std::fs::canonicalize(path) {
+                Ok(abs) => abs.to_string_lossy().into_owned(),
+                Err(_) => cwd.join(path).to_string_lossy().into_owned(),
+            }
+        };
+        let path: &str = &resolved_path;
+
         // Check if path contains glob patterns
         let is_glob = path.contains('*') || path.contains('?') || path.contains('[');
 
@@ -1258,5 +1280,91 @@ mod tests {
         assert_eq!(results[2], vec!["2".to_string(), "Bob".to_string()]);
         assert!(results[3][0].contains("result row safety cap reached"));
         assert_eq!(results.len(), 4);
+    }
+
+    /// Regression test: relative paths (e.g. `./data.csv` or `data.csv`) must
+    /// be resolved to absolute before handing to DataFusion. Without this,
+    /// `register_parquet`/`register_csv` silently creates an empty listing
+    /// table and both `\d` and `SELECT *` return nothing.
+    #[tokio::test]
+    async fn datafusion_client_resolves_relative_csv_path() {
+        // Create a temp directory under cwd so relative paths resolve without
+        // mutating the process-wide working directory (which would race with
+        // parallel tests).
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let file_path = dir.path().join("data.csv");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        use std::io::Write;
+        writeln!(file, "id,name").unwrap();
+        writeln!(file, "1,Alice").unwrap();
+        writeln!(file, "2,Bob").unwrap();
+        file.flush().unwrap();
+
+        let dir_name = dir.path().file_name().unwrap().to_str().unwrap();
+        let relative_path = format!("./{dir_name}/data.csv");
+
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::CSV,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: Some(relative_path),
+            options: std::collections::HashMap::new(),
+            docker_container: None,
+            use_tls: false,
+        };
+
+        let client = DataFusionClient::new(connection_info).await.unwrap();
+        let results = client
+            .execute_query("SELECT * FROM data LIMIT 100")
+            .await
+            .unwrap();
+
+        assert_eq!(results[0], vec!["id".to_string(), "name".to_string()]);
+        assert_eq!(results[1], vec!["1".to_string(), "Alice".to_string()]);
+        assert_eq!(results[2], vec!["2".to_string(), "Bob".to_string()]);
+    }
+
+    /// Regression test: `\d <table>` (get_table_details) must return the
+    /// correct column list when the file was opened via a relative path.
+    #[tokio::test]
+    async fn datafusion_client_relative_path_table_details() {
+        let dir = tempfile::tempdir_in(".").unwrap();
+        let file_path = dir.path().join("metrics.csv");
+        let mut file = std::fs::File::create(&file_path).unwrap();
+        use std::io::Write;
+        writeln!(file, "id,value").unwrap();
+        writeln!(file, "1,42").unwrap();
+        file.flush().unwrap();
+
+        let dir_name = dir.path().file_name().unwrap().to_str().unwrap();
+        let relative_path = format!("./{dir_name}/metrics.csv");
+
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::CSV,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: Some(relative_path),
+            options: std::collections::HashMap::new(),
+            docker_container: None,
+            use_tls: false,
+        };
+
+        let client = DataFusionClient::new(connection_info).await.unwrap();
+        let details = client
+            .metadata_provider
+            .get_table_details("metrics", None)
+            .await
+            .unwrap();
+
+        assert_eq!(details.schema, "public");
+        assert_eq!(details.columns.len(), 2);
+        assert_eq!(details.columns[0].name, "id");
+        assert_eq!(details.columns[1].name, "value");
     }
 }
