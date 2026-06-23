@@ -1,0 +1,69 @@
+name: Bug report
+description: Report a reproducible DBCrust problem
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve DBCrust. Please avoid sharing passwords, tokens, or production data.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      description: Include the smallest command/query/config that reproduces the issue.
+      placeholder: |
+        1. Run `dbc ...`
+        2. Execute `...`
+        3. See `...`
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI / REPL
+        - PostgreSQL
+        - MySQL
+        - SQLite
+        - ClickHouse
+        - MongoDB
+        - Elasticsearch
+        - SQL over files (Parquet/CSV/JSON)
+        - AI assistant
+        - Django analyzer
+        - Python API
+        - Desktop GUI
+        - Installation / packaging
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: DBCrust version
+      placeholder: "dbc --version"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, shell, install method, database/version, and anything relevant.
+      placeholder: "macOS 15, zsh, install.sh, PostgreSQL 17"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Paste relevant output with secrets redacted.
+      render: text

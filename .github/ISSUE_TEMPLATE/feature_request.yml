@@ -1,0 +1,51 @@
+name: Feature request or feedback
+description: Suggest a connector, workflow, packaging target, or docs improvement
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea. Concrete workflows help most: what are you trying to do, with which database or file format, and what would make DBCrust better?
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: What are you trying to accomplish?
+      placeholder: "I want to inspect production Parquet exports from the terminal without..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should DBCrust do differently?
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Database connector
+        - SQL over files
+        - AI assistant
+        - Django analyzer
+        - Python API
+        - Desktop GUI
+        - Installation / packaging
+        - Documentation
+        - Security / production safety
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing tools or workarounds you use today, if any.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, links, examples, or constraints.
