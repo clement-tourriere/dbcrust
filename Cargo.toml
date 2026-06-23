@@ -1,6 +1,6 @@
 [package]
 name = "dbcrust"
-version = "0.31.0"
+version = "0.31.1"
 edition = "2024"
 # edition 2024 requires Rust >= 1.85 — declared so `cargo install` on older
 # toolchains fails with a clear message instead of an edition parse error

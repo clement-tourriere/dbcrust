@@ -1,3 +1,9 @@
+## v0.31.1 (2026-06-23)
+
+### Fix
+
+- resolve relative file paths for DataFusion backends
+
 ## v0.31.0 (2026-06-23)
 
 ### Feat
