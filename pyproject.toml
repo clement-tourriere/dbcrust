@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "dbcrust"
-version = "0.31.2"
+version = "0.32.0"
 description = "Fast Rust database workbench for the terminal: PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, SQL over Parquet/CSV/JSON, optional AI, SSH/Vault, Python API, and Django ORM analysis."
 authors = [{ name = "Clément Tourrière", email = "clement.tourriere@gmail.com" }]
 requires-python = ">=3.10"

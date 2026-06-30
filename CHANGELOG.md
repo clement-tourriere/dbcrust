@@ -1,3 +1,9 @@
+## v0.32.0 (2026-06-30)
+
+### Feat
+
+- support password commands in saved sessions
+
 ## v0.31.2 (2026-06-23)
 
 ### Fix
