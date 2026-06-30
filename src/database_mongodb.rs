@@ -242,6 +242,9 @@ impl MongoDBClient {
 
         // Add user-provided options
         for (k, v) in &connection_info.options {
+            if crate::config::is_dbcrust_internal_connection_option(k) {
+                continue;
+            }
             params.push(format!("{k}={v}"));
         }
 

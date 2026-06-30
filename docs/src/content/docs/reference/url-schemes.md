@@ -411,6 +411,9 @@ dbcrust session://local_dev
 # Save current connection as a session
 \ss production_db
 
+# Save with a dynamic password command (stdout becomes the password on reconnect)
+\ss chpprd --password-command vault kv get -mount=secret -field=password preprod/gim/admin/clickhouse/default-user
+
 # List all saved sessions
 \s
 

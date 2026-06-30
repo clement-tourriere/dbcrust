@@ -81,6 +81,7 @@ pub enum Command {
     ListSessions,
     SaveSession {
         name: String,
+        password_command: Option<String>,
     },
     DeleteSession {
         name: String,
@@ -621,6 +622,47 @@ impl CommandParser {
         Self
     }
 
+    fn parse_save_session_args(args: &str) -> Result<Command, CommandError> {
+        if args.is_empty() {
+            return Err(CommandError::MissingArgument("session name".to_string()));
+        }
+
+        let mut parts = args.splitn(2, char::is_whitespace);
+        let first_token = parts.next().unwrap_or("");
+        let rest = parts.next().unwrap_or("").trim();
+
+        if matches!(rest, "--password-command" | "--password-cmd") {
+            return Err(CommandError::MissingArgument(
+                "password command".to_string(),
+            ));
+        }
+
+        let password_command = rest
+            .strip_prefix("--password-command ")
+            .or_else(|| rest.strip_prefix("--password-command="))
+            .or_else(|| rest.strip_prefix("--password-cmd "))
+            .or_else(|| rest.strip_prefix("--password-cmd="));
+
+        if let Some(command) = password_command {
+            let command = command.trim();
+            if command.is_empty() {
+                return Err(CommandError::MissingArgument(
+                    "password command".to_string(),
+                ));
+            }
+
+            return Ok(Command::SaveSession {
+                name: first_token.to_string(),
+                password_command: Some(command.to_string()),
+            });
+        }
+
+        Ok(Command::SaveSession {
+            name: args.to_string(),
+            password_command: None,
+        })
+    }
+
     /// Parse a string command into a typed Command enum
     pub fn parse(input: &str) -> Result<Command, CommandError> {
         let trimmed = input.trim();
@@ -891,15 +933,7 @@ impl CommandParser {
                     })
                 }
             }
-            "ss" => {
-                if args.is_empty() {
-                    Err(CommandError::MissingArgument("session name".to_string()))
-                } else {
-                    Ok(Command::SaveSession {
-                        name: args.to_string(),
-                    })
-                }
-            }
+            "ss" => Self::parse_save_session_args(args),
             "sd" => {
                 if args.is_empty() {
                     Err(CommandError::MissingArgument("session name".to_string()))
@@ -1555,7 +1589,10 @@ impl CommandExecutor for Command {
                 }
             }
 
-            Command::SaveSession { name } => {
+            Command::SaveSession {
+                name,
+                password_command,
+            } => {
                 // Extract connection info from database and use the proper save method
                 let db = database.lock().unwrap();
                 let connection_info = match db.get_connection_info() {
@@ -1567,10 +1604,21 @@ impl CommandExecutor for Command {
                     }
                 };
 
-                match config.save_session_from_connection_info(name, connection_info) {
-                    Ok(_) => Ok(CommandResult::Output(format!(
-                        "Session '{name}' saved successfully."
-                    ))),
+                match config.save_session_from_connection_info_with_password_command(
+                    name,
+                    connection_info,
+                    password_command.as_deref(),
+                ) {
+                    Ok(_) => {
+                        let suffix = if password_command.is_some() {
+                            " Password command configured."
+                        } else {
+                            ""
+                        };
+                        Ok(CommandResult::Output(format!(
+                            "Session '{name}' saved successfully.{suffix}"
+                        )))
+                    }
                     Err(e) => Ok(CommandResult::Error(format!(
                         "Failed to save session '{name}': {e}"
                     ))),
@@ -3182,7 +3230,7 @@ impl CommandExecutor for Command {
             Command::ExecuteNamedQuery { .. } => "\\n <name> [args...]",
             Command::ListNamedQueries => "\\n",
             Command::ListSessions => "\\s",
-            Command::SaveSession { .. } => "\\ss <name>",
+            Command::SaveSession { .. } => "\\ss <name> [--password-command <command>]",
             Command::DeleteSession { .. } => "\\sd <name>",
             Command::ConnectSession { .. } => "\\s <name>",
             Command::ListRecentConnections => "\\r",
@@ -3482,6 +3530,7 @@ mod tests {
             },
             Command::SaveSession {
                 name: "test".to_string(),
+                password_command: None,
             },
             Command::ListNamedQueries,
         ];
@@ -3514,7 +3563,16 @@ mod tests {
         assert_eq!(
             CommandParser::parse("\\ss staging").unwrap(),
             Command::SaveSession {
-                name: "staging".to_string()
+                name: "staging".to_string(),
+                password_command: None
+            }
+        );
+
+        assert_eq!(
+            CommandParser::parse("\\ss staging --password-command vault kv get secret/db").unwrap(),
+            Command::SaveSession {
+                name: "staging".to_string(),
+                password_command: Some("vault kv get secret/db".to_string())
             }
         );
 

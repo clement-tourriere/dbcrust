@@ -13,16 +13,30 @@ use tracing::debug;
 use url::Url;
 
 const VAULT_OPTION_KEYS: [&str; 3] = ["vault_mount", "vault_database", "vault_role"];
+const PASSWORD_COMMAND_OPTION_KEYS: [&str; 3] =
+    ["password_command", "password_cmd", "password-command"];
 const DBCRUST_CONFIG_DIR_ENV: &str = "DBCRUST_CONFIG_DIR";
 
 fn is_vault_option_key(key: &str) -> bool {
     VAULT_OPTION_KEYS.contains(&key)
 }
 
+/// Return true when a URL/session option is one of DBCrust's password command keys.
+pub fn is_password_command_option_key(key: &str) -> bool {
+    PASSWORD_COMMAND_OPTION_KEYS
+        .iter()
+        .any(|option_key| key.eq_ignore_ascii_case(option_key))
+}
+
+/// Return true for DBCrust-only options that must not be forwarded to database drivers.
+pub fn is_dbcrust_internal_connection_option(key: &str) -> bool {
+    is_vault_option_key(key) || is_password_command_option_key(key)
+}
+
 fn append_connection_options(url: &str, options: &HashMap<String, String>) -> String {
     let filtered_options: Vec<_> = options
         .iter()
-        .filter(|(key, _)| !is_vault_option_key(key))
+        .filter(|(key, _)| !is_dbcrust_internal_connection_option(key))
         .collect();
 
     if filtered_options.is_empty() {
@@ -41,6 +55,97 @@ fn append_connection_options(url: &str, options: &HashMap<String, String>) -> St
     }
 
     parsed_url.to_string()
+}
+
+/// Extract a configured password command from URL/session options, if present.
+pub fn password_command_from_options(options: &HashMap<String, String>) -> Option<&str> {
+    for key in PASSWORD_COMMAND_OPTION_KEYS {
+        if let Some(value) = options.get(key)
+            && !value.trim().is_empty()
+        {
+            return Some(value.as_str());
+        }
+    }
+
+    options
+        .iter()
+        .find(|(key, value)| is_password_command_option_key(key) && !value.trim().is_empty())
+        .map(|(_, value)| value.as_str())
+}
+
+/// Execute a password command and return stdout with trailing line endings removed.
+pub fn resolve_password_command(command_str: &str) -> Result<String, String> {
+    use std::process::Command;
+
+    let command_str = command_str.trim();
+    if command_str.is_empty() {
+        return Err("Password command is empty".to_string());
+    }
+
+    let output = if cfg!(target_os = "windows") {
+        Command::new("cmd").args(["/C", command_str]).output()
+    } else {
+        Command::new("sh").args(["-c", command_str]).output()
+    }
+    .map_err(|e| format!("Failed to execute password command: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr.lines().next().unwrap_or("").trim();
+        let detail = if detail.is_empty() {
+            String::new()
+        } else {
+            format!(": {detail}")
+        };
+        return Err(format!(
+            "Password command failed with exit code {}{}",
+            output.status.code().unwrap_or(-1),
+            detail
+        ));
+    }
+
+    let password = String::from_utf8_lossy(&output.stdout)
+        .trim_end_matches(&['\r', '\n'][..])
+        .to_string();
+
+    if password.is_empty() {
+        return Err("Password command produced no output".to_string());
+    }
+
+    Ok(password)
+}
+
+/// Remove password command control options from a connection URL before driver use.
+pub fn strip_password_command_options_from_url(url: &str) -> Result<String, String> {
+    let mut parsed_url =
+        Url::parse(url).map_err(|e| format!("Failed to parse connection URL '{url}': {e}"))?;
+
+    let mut removed_password_command = false;
+    let retained_query_pairs: Vec<(String, String)> = parsed_url
+        .query_pairs()
+        .filter_map(|(key, value)| {
+            if is_password_command_option_key(key.as_ref()) {
+                removed_password_command = true;
+                None
+            } else {
+                Some((key.into_owned(), value.into_owned()))
+            }
+        })
+        .collect();
+
+    if !removed_password_command {
+        return Ok(url.to_string());
+    }
+
+    parsed_url.set_query(None);
+    if !retained_query_pairs.is_empty() {
+        let mut query_pairs = parsed_url.query_pairs_mut();
+        for (key, value) in retained_query_pairs {
+            query_pairs.append_pair(&key, &value);
+        }
+    }
+
+    Ok(parsed_url.to_string())
 }
 
 fn lookup_connection_password(
@@ -144,7 +249,7 @@ pub struct RecentConnection {
     pub timestamp: DateTime<Utc>,
     pub database_type: DatabaseType,
     pub success: bool,
-    // Additional connection options (includes vault metadata for vault connections)
+    // Additional connection options (includes vault metadata and password commands)
     #[serde(default)]
     pub options: HashMap<String, String>,
 }
@@ -188,17 +293,33 @@ impl RecentConnection {
             .map_err(|e| format!("Failed to parse recent connection URL '{original_url}': {e}"))?;
 
         let host = parsed_url.host_str().unwrap_or("localhost").to_string();
-        let port = parsed_url.port().unwrap_or(match parsed_url.scheme() {
-            "postgres" | "postgresql" => 5432,
-            "mysql" => 3306,
-            _ => return Ok(original_url.clone()),
-        });
+        let port = match parsed_url
+            .port()
+            .or_else(|| self.database_type.default_port())
+        {
+            Some(port) => port,
+            None => return Ok(original_url.clone()),
+        };
         let username = parsed_url.username().to_string();
         let database = parsed_url.path().trim_start_matches('/').to_string();
+        let password_command = password_command_from_options(&self.options)
+            .map(str::to_string)
+            .or_else(|| {
+                parsed_url
+                    .query_pairs()
+                    .find(|(key, value)| {
+                        is_password_command_option_key(key.as_ref()) && !value.trim().is_empty()
+                    })
+                    .map(|(_, value)| value.into_owned())
+            });
 
-        if let Some(password) =
+        let password = if let Some(command) = password_command {
+            Some(resolve_password_command(&command)?)
+        } else {
             lookup_connection_password(&self.database_type, &host, port, &database, &username)
-        {
+        };
+
+        if let Some(password) = password {
             parsed_url
                 .set_password(Some(&password))
                 .map_err(|_| format!("Failed to reconstruct credentials for '{original_url}'"))?;
@@ -208,7 +329,7 @@ impl RecentConnection {
             })?;
         }
 
-        Ok(parsed_url.to_string())
+        strip_password_command_options_from_url(parsed_url.as_str())
     }
 }
 
@@ -267,7 +388,7 @@ pub struct SavedSession {
     // File path for SQLite databases
     #[serde(default)]
     pub file_path: Option<String>,
-    // Additional connection options (query parameters)
+    // Additional connection options (query parameters plus DBCrust-only password_command)
     #[serde(default)]
     pub options: HashMap<String, String>,
 }
@@ -331,27 +452,38 @@ impl SavedSession {
         }
 
         let url_scheme = self.database_type.url_scheme();
-        let password = lookup_connection_password(
-            &self.database_type,
-            &self.host,
-            self.port,
-            &self.dbname,
-            &self.user,
-        );
-
-        let url = if let Some(password) = password {
-            format!(
-                "{url_scheme}://{}:{}@{}:{}/{}",
-                self.user, password, self.host, self.port, self.dbname
-            )
+        let password = if let Some(command) = password_command_from_options(&self.options) {
+            Some(resolve_password_command(command)?)
         } else {
-            format!(
-                "{url_scheme}://{}@{}:{}/{}",
-                self.user, self.host, self.port, self.dbname
+            lookup_connection_password(
+                &self.database_type,
+                &self.host,
+                self.port,
+                &self.dbname,
+                &self.user,
             )
         };
 
-        Ok(append_connection_options(&url, &self.options))
+        let mut parsed_url = Url::parse(&format!("{url_scheme}://{}:{}/", self.host, self.port))
+            .map_err(|e| format!("Failed to build session URL: {e}"))?;
+        if !self.user.is_empty() {
+            parsed_url
+                .set_username(&self.user)
+                .map_err(|_| "Failed to set session username".to_string())?;
+        }
+        if let Some(password) = password {
+            parsed_url
+                .set_password(Some(&password))
+                .map_err(|_| "Failed to set session password".to_string())?;
+        }
+        if !self.dbname.is_empty() {
+            parsed_url.set_path(&self.dbname);
+        }
+
+        Ok(append_connection_options(
+            parsed_url.as_str(),
+            &self.options,
+        ))
     }
 }
 
@@ -2120,6 +2252,16 @@ impl Config {
         name: &str,
         connection_info: &crate::database::ConnectionInfo,
     ) -> Result<(), Box<dyn Error>> {
+        self.save_session_from_connection_info_with_password_command(name, connection_info, None)
+    }
+
+    /// Save session from actual connection info with an optional password retrieval command.
+    pub fn save_session_from_connection_info_with_password_command(
+        &mut self,
+        name: &str,
+        connection_info: &crate::database::ConnectionInfo,
+        password_command: Option<&str>,
+    ) -> Result<(), Box<dyn Error>> {
         // For Docker connections, we want to save a special marker that can be re-resolved
         let (host, port, user, dbname) = if connection_info.is_docker_connection() {
             // For Docker connections, save a special format that can be re-resolved
@@ -2175,6 +2317,15 @@ impl Config {
             connection_info.file_path.clone()
         };
 
+        let mut options = connection_info.options.clone();
+        if let Some(command) = password_command
+            .map(str::trim)
+            .filter(|command| !command.is_empty())
+        {
+            options.retain(|key, _| !is_password_command_option_key(key));
+            options.insert("password_command".to_string(), command.to_string());
+        }
+
         let session = SavedSession {
             host,
             port,
@@ -2183,7 +2334,7 @@ impl Config {
             ssh_tunnel: None, // SSH tunnel info not available in ConnectionInfo
             database_type: connection_info.database_type.clone(),
             file_path: normalized_file_path,
-            options: connection_info.options.clone(),
+            options,
         };
 
         self.saved_sessions_storage
@@ -3760,6 +3911,49 @@ mod tests {
         assert_eq!(
             session.reconstruct_connection_url().unwrap(),
             "mysql://dbuser:mysql-secret@mysql.example.com:3306/analytics"
+        );
+    }
+
+    #[rstest]
+    fn test_saved_session_reconstructs_with_password_command() {
+        let mut options = HashMap::new();
+        options.insert("secure".to_string(), "true".to_string());
+        options.insert(
+            "password_command".to_string(),
+            if cfg!(target_os = "windows") {
+                "echo ch-secret".to_string()
+            } else {
+                "printf ch-secret".to_string()
+            },
+        );
+
+        let session = SavedSession {
+            host: "clickhouse.example.com".to_string(),
+            port: 8443,
+            user: "default".to_string(),
+            dbname: "analytics".to_string(),
+            ssh_tunnel: None,
+            database_type: DatabaseType::ClickHouse,
+            file_path: None,
+            options,
+        };
+
+        let reconstructed = session.reconstruct_connection_url().unwrap();
+        assert_eq!(
+            reconstructed,
+            "clickhouse://default:ch-secret@clickhouse.example.com:8443/analytics?secure=true"
+        );
+        assert!(!reconstructed.contains("password_command"));
+    }
+
+    #[rstest]
+    fn test_strip_password_command_options_from_url() {
+        assert_eq!(
+            strip_password_command_options_from_url(
+                "clickhouse://default@host:8443/db?secure=true&password_command=echo%20secret"
+            )
+            .unwrap(),
+            "clickhouse://default@host:8443/db?secure=true"
         );
     }
 

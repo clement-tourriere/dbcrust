@@ -658,16 +658,53 @@ impl CliCore {
             original_url
         );
 
-        // First attempt: Try connection as-is
+        let parsed_original_connection = ConnectionInfo::parse_url(original_url).ok();
+        let password_command = parsed_original_connection
+            .as_ref()
+            .and_then(|info| crate::config::password_command_from_options(&info.options))
+            .map(str::to_string);
+        let password_command_connection_info = if password_command.is_some() {
+            parsed_original_connection.clone()
+        } else {
+            None
+        };
+
+        let initial_connection_url = if let Some(command) = password_command.as_deref() {
+            if parsed_original_connection
+                .as_ref()
+                .is_some_and(|info| info.password.is_none())
+            {
+                debug!("🔐 Resolving password from configured password command");
+                let command_password = crate::config::resolve_password_command(command)
+                    .map_err(CliError::ConnectionError)?;
+                let url_with_password =
+                    Self::inject_password_into_url(original_url, &command_password).map_err(
+                        |e| CliError::ConnectionError(format!("Failed to inject password: {e}")),
+                    )?;
+                crate::config::strip_password_command_options_from_url(&url_with_password)
+                    .map_err(CliError::ConnectionError)?
+            } else {
+                crate::config::strip_password_command_options_from_url(original_url)
+                    .map_err(CliError::ConnectionError)?
+            }
+        } else {
+            original_url.to_string()
+        };
+
+        // First attempt: Try connection as-is, or with a configured password command.
         match crate::db::Database::from_url(
-            original_url,
+            &initial_connection_url,
             Some(self.config.default_limit),
             Some(self.config.expanded_display_default),
         )
         .await
         {
-            Ok(database) => {
+            Ok(mut database) => {
                 debug!("✅ Initial connection successful");
+                if let Some(connection_info) = password_command_connection_info {
+                    database.set_connection_info_override(connection_info.clone());
+                    return Ok((database, Some(connection_info)));
+                }
                 return Ok((database, None));
             }
             Err(e) => {
@@ -736,6 +773,9 @@ impl CliCore {
                         .map_err(|e| {
                             CliError::ConnectionError(format!("Failed to inject password: {e}"))
                         })?;
+                    let url_with_password =
+                        crate::config::strip_password_command_options_from_url(&url_with_password)
+                            .map_err(CliError::ConnectionError)?;
 
                     // Try connection with looked-up password
                     match crate::db::Database::from_url(
@@ -773,6 +813,9 @@ impl CliCore {
         // Try connection with prompted password
         let url_with_password = Self::inject_password_into_url(original_url, &prompted_password)
             .map_err(|e| CliError::ConnectionError(format!("Failed to inject password: {e}")))?;
+        let url_with_password =
+            crate::config::strip_password_command_options_from_url(&url_with_password)
+                .map_err(CliError::ConnectionError)?;
 
         match crate::db::Database::from_url(
             &url_with_password,

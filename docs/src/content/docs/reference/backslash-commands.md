@@ -66,7 +66,7 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
 | Command | Description | Example |
 |---------|-------------|---------|
 | `\s [name]` | List saved sessions or connect | `\s` or `\s prod` |
-| `\ss <name>` | Save current connection as session | `\ss production` |
+| `\ss <name> [--password-command <cmd>]` | Save current connection as session | `\ss production` |
 | `\sd <name>` | Delete saved session | `\sd oldprod` |
 | `\r` | List recent connections | `\r` |
 | `\rc` | Clear recent connections | `\rc` |
@@ -798,13 +798,21 @@ Connecting to saved session 'production'...
 ✓ Successfully connected to database
 ```
 
-#### `\ss <name>` - Save Session
+#### `\ss <name> [--password-command <command>]` - Save Session
 
 Saves the current connection as a named session for quick reconnection.
 
 ```sql
 \ss production
 ```
+
+For secrets that must be retrieved dynamically, store a password command instead of a password:
+
+```sql
+\ss chpprd --password-command vault kv get -mount=secret -field=password preprod/gim/admin/clickhouse/default-user
+```
+
+DBCrust runs the command only when reconnecting to the saved session, uses stdout as the password, and trims the trailing newline.
 
 **Output:**
 ```
@@ -813,8 +821,10 @@ Session 'production' saved successfully
 
 :::note[Password Security]
 Sessions never store passwords. DBCrust integrates with:
+- Universal `.dbcrust` encrypted password file
 - PostgreSQL: `.pgpass` file
 - MySQL: `.my.cnf` file
+- Saved-session `password_command` for dynamic secret stores
 - SQLite: No authentication needed
 :::
 

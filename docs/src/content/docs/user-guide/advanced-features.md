@@ -216,6 +216,9 @@ Save and reuse database connections.
 -- Save current connection as session
 \ss production_db
 
+-- Save with a dynamic password command
+\ss chpprd --password-command vault kv get -mount=secret -field=password preprod/gim/admin/clickhouse/default-user
+
 -- List saved sessions
 \s
 
@@ -241,28 +244,23 @@ dbcrust session://
 Sessions store connection parameters (not passwords):
 
 ```toml
-# ~/.config/dbcrust/config.toml
+# ~/.config/dbcrust/sessions.toml
 
-[saved_sessions.production]
+[sessions.production]
 host = "prod.example.com"
 port = 5432
 user = "app_user"
 dbname = "myapp_prod"
 database_type = "PostgreSQL"
-created_at = "2024-01-15T10:30:00Z"
 
-[saved_sessions.analytics]
-host = "analytics.company.com"
-port = 5432
-user = "analyst"
-dbname = "data_warehouse"
-database_type = "PostgreSQL"
-created_at = "2024-01-15T15:45:00Z"
+# Optional dynamic password retrieval command.
+[sessions.production.options]
+password_command = "vault kv get -mount=secret -field=password prod/db/app_user"
 ```
 
 ### Password Integration
 
-Sessions integrate with credential stores:
+Sessions integrate with credential stores and dynamic password commands:
 
 ```bash
 # PostgreSQL: Uses ~/.pgpass

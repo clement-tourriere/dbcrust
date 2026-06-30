@@ -605,6 +605,7 @@ impl MySqlClient {
             let params: Vec<String> = connection_info
                 .options
                 .iter()
+                .filter(|(k, _)| !crate::config::is_dbcrust_internal_connection_option(k))
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect();
             additional_params.extend(params);

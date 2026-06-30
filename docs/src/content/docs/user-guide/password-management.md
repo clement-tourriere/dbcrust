@@ -116,6 +116,37 @@ graph TD
 ✓ Successfully connected to database  # Uses saved password
 ```
 
+## Saved Sessions with Dynamic Password Commands
+
+Saved sessions never store password values, but they can store a command that prints the password to stdout. This is useful for Vault, cloud CLIs, password managers, and other rotating-secret workflows.
+
+```sql
+\ss chpprd --password-command vault kv get -mount=secret -field=password preprod/gim/admin/clickhouse/default-user
+```
+
+Then reconnect normally:
+
+```bash
+dbc session://chpprd
+```
+
+DBCrust runs the command only during reconnection, trims the trailing newline, injects the result as the password, and does not persist the command output. Only configure commands you trust in `sessions.toml`.
+
+You can also edit `~/.config/dbcrust/sessions.toml` directly:
+
+```toml
+[sessions.chpprd]
+host = "hh8mmc7lqc.us-west-2.aws.clickhouse.cloud"
+port = 8443
+user = "default"
+dbname = "gim"
+database_type = "ClickHouse"
+
+[sessions.chpprd.options]
+secure = "true"
+password_command = "vault kv get -mount=secret -field=password preprod/gim/admin/clickhouse/default-user"
+```
+
 ## 🛠️ Interactive Commands
 
 ### `\savepass` - Save Password
