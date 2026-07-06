@@ -3513,6 +3513,89 @@ mod tests {
     use super::*;
     use crate::config::NamedQueryScope;
 
+    fn one_shot_args(url: &str, commands: Vec<String>) -> Args {
+        Args {
+            connection_url: Some(url.to_string()),
+            command: commands,
+            file: Vec::new(),
+            ssh_tunnel: None,
+            completions: None,
+            update: false,
+            format: None,
+            read_only: None,
+            timeout: None,
+            max_rows: None,
+            no_input: true,
+            ordered_sources: Vec::new(),
+            subcommand: None,
+        }
+    }
+
+    /// End-to-end one-shot contract over a real (temp) SQLite database:
+    /// exit codes 0/1/4, \ddl, and the read-only choke point.
+    #[tokio::test]
+    async fn test_one_shot_exit_codes_over_sqlite() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("e2e.db");
+        std::fs::File::create(&db_path).unwrap();
+        let url = format!("sqlite://{}", db_path.display());
+
+        let mut core = CliCore::new();
+        let args = one_shot_args(
+            &url,
+            vec!["CREATE TABLE t(a int, b text); INSERT INTO t VALUES (1,'x'),(2,NULL);".into()],
+        );
+        core.handle_database_connection(&args)
+            .await
+            .expect("sqlite connection must succeed");
+        assert_eq!(core.handle_command_mode(&args).await.unwrap(), 0);
+
+        // A failing statement exits 1
+        let args = one_shot_args(&url, vec!["SELEC nonsense".into()]);
+        assert_eq!(core.handle_command_mode(&args).await.unwrap(), 1);
+
+        // ...and does not poison later runs
+        let args = one_shot_args(&url, vec!["SELECT count(*) FROM t".into()]);
+        assert_eq!(core.handle_command_mode(&args).await.unwrap(), 0);
+
+        // \ddl dumps the schema (backslash path in command mode)
+        let args = one_shot_args(&url, vec!["\\ddl".into()]);
+        assert_eq!(core.handle_command_mode(&args).await.unwrap(), 0);
+
+        // Read-only: writes are blocked with the dedicated exit code,
+        // reads still pass
+        if let Some(db) = core.database.as_mut() {
+            db.set_read_only(true);
+        }
+        let args = one_shot_args(&url, vec!["INSERT INTO t VALUES (3,'y')".into()]);
+        assert_eq!(core.handle_command_mode(&args).await.unwrap(), 4);
+        let args = one_shot_args(&url, vec!["SELECT count(*) FROM t".into()]);
+        assert_eq!(core.handle_command_mode(&args).await.unwrap(), 0);
+    }
+
+    /// -f files execute as pure SQL and missing files fail with exit 1.
+    #[tokio::test]
+    async fn test_one_shot_file_sources_over_sqlite() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("files.db");
+        std::fs::File::create(&db_path).unwrap();
+        let url = format!("sqlite://{}", db_path.display());
+        let script = dir.path().join("setup.sql");
+        std::fs::write(&script, "CREATE TABLE f(x int); INSERT INTO f VALUES (42);").unwrap();
+
+        let mut core = CliCore::new();
+        let mut args = one_shot_args(&url, vec!["SELECT x FROM f".into()]);
+        args.file = vec![script.display().to_string()];
+        // Fallback ordering runs files before commands, so the SELECT sees
+        // the table the script created
+        core.handle_database_connection(&args).await.unwrap();
+        assert_eq!(core.handle_command_mode(&args).await.unwrap(), 0);
+
+        let mut args = one_shot_args(&url, vec![]);
+        args.file = vec![dir.path().join("missing.sql").display().to_string()];
+        assert_eq!(core.handle_command_mode(&args).await.unwrap(), 1);
+    }
+
     fn make_test_config_with_query(
         name: &str,
         query: &str,
