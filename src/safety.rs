@@ -114,7 +114,11 @@ fn check_mongodb(query: &str) -> Result<(), String> {
                 return Ok(());
             }
             Some(before_paren) => {
-                let method = before_paren.rsplit('.').next().unwrap_or(before_paren).trim();
+                let method = before_paren
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(before_paren)
+                    .trim();
                 if READ_METHODS.contains(&method) {
                     return Ok(());
                 }

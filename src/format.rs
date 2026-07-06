@@ -1549,7 +1549,10 @@ mod tests {
             parsed["rows"][0][0].as_str().unwrap(),
             "he said \"hi\"\nline2\ttab\u{1}ctrl é✓"
         );
-        assert!(!out.contains('\n'), "escaped newline must not break the line");
+        assert!(
+            !out.contains('\n'),
+            "escaped newline must not break the line"
+        );
     }
 
     #[test]
@@ -1574,7 +1577,10 @@ mod tests {
         }
         let out = format_query_results_json(&data);
         let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(parsed["rows"].as_array().unwrap().len(), MAX_FORMAT_DATA_ROWS);
+        assert_eq!(
+            parsed["rows"].as_array().unwrap().len(),
+            MAX_FORMAT_DATA_ROWS
+        );
         assert_eq!(parsed["row_count"], MAX_FORMAT_DATA_ROWS + 1);
         assert_eq!(parsed["truncated"], true);
     }
@@ -1678,8 +1684,6 @@ mod tests {
             render_query_results(&data, None, OutputFormat::Table, true)
         );
         // The expanded toggle also wins when a structured format is not requested
-        assert!(
-            render_query_results(&data, None, OutputFormat::Table, true).contains("Record 1")
-        );
+        assert!(render_query_results(&data, None, OutputFormat::Table, true).contains("Record 1"));
     }
 }

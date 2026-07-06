@@ -548,9 +548,7 @@ impl CommandShortcut {
             | CommandShortcut::Dt
             | CommandShortcut::D
             | CommandShortcut::Ddl
-            | CommandShortcut::C => {
-                CommandCategory::DatabaseNavigation
-            }
+            | CommandShortcut::C => CommandCategory::DatabaseNavigation,
             // Display options (including some advanced display commands)
             CommandShortcut::X
             | CommandShortcut::E
@@ -1275,12 +1273,7 @@ impl CommandParser {
 /// Render tabular command results honoring the session's output format
 /// (`-o/--format`) and the `\x` expanded toggle.
 fn render_command_results(db: &Database, results: &[Vec<String>]) -> String {
-    crate::format::render_query_results(
-        results,
-        None,
-        db.output_format(),
-        db.is_expanded_display(),
-    )
+    crate::format::render_query_results(results, None, db.output_format(), db.is_expanded_display())
 }
 
 impl CommandExecutor for Command {
@@ -1487,9 +1480,7 @@ impl CommandExecutor for Command {
                                 if results.is_empty() {
                                     Ok(CommandResult::Output("No tables found.".to_string()))
                                 } else {
-                                    Ok(CommandResult::Output(render_command_results(
-                                        &db, &results,
-                                    )))
+                                    Ok(CommandResult::Output(render_command_results(&db, &results)))
                                 }
                             }
                             Err(e) => {
@@ -1525,9 +1516,7 @@ impl CommandExecutor for Command {
                             }
                         }
                         Err(e) => {
-                            return Ok(CommandResult::Error(format!(
-                                "Failed to list tables: {e}"
-                            )));
+                            return Ok(CommandResult::Error(format!("Failed to list tables: {e}")));
                         }
                     }
                 } else {
@@ -1897,9 +1886,7 @@ impl CommandExecutor for Command {
                                         "Query executed successfully (no results).".to_string(),
                                     ))
                                 } else {
-                                    Ok(CommandResult::Output(render_command_results(
-                                        &db, &results,
-                                    )))
+                                    Ok(CommandResult::Output(render_command_results(&db, &results)))
                                 }
                             }
                             Err(e) => Ok(CommandResult::Error(format!(

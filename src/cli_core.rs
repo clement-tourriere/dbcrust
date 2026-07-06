@@ -437,7 +437,8 @@ impl CliCore {
         // configured query timeout for them (0 disables it); --timeout
         // overrides for this run
         crate::database::set_query_timeout_seconds(
-            args.timeout.unwrap_or(cli_core.config.query_timeout_seconds),
+            args.timeout
+                .unwrap_or(cli_core.config.query_timeout_seconds),
         );
 
         let stdin_is_terminal = std::io::IsTerminal::is_terminal(&std::io::stdin());
