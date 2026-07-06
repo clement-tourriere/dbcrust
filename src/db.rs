@@ -91,6 +91,7 @@ pub struct Database {
 
     // Application settings and state
     expanded_display: bool,
+    output_format: crate::cli::OutputFormat,
     default_limit: usize,
     autocomplete_enabled: bool,
     explain_mode: bool,
@@ -558,6 +559,7 @@ impl Database {
             connection_info_override: None,
             ssh_tunnel,
             expanded_display: expanded_display_default.unwrap_or(false),
+            output_format: crate::cli::OutputFormat::Table,
             default_limit: default_limit.unwrap_or(100),
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: config.explain_mode_default,
@@ -576,8 +578,12 @@ impl Database {
         debug!("[Database::from_connection_info] Validating connection");
         db.validate_connection().await?;
 
-        // Display server info if enabled in config and supported by this frontend.
-        if config.show_server_info && frontend_mode.allows_stdout_status() {
+        // Display server info if enabled in config and supported by this
+        // frontend — never in one-shot mode, where stdout must stay parseable.
+        if config.show_server_info
+            && frontend_mode.allows_stdout_status()
+            && !crate::database::one_shot_mode()
+        {
             db.display_server_info().await;
         }
 
@@ -1676,6 +1682,18 @@ impl Database {
         self.expanded_display
     }
 
+    pub fn set_expanded_display(&mut self, enabled: bool) {
+        self.expanded_display = enabled;
+    }
+
+    pub fn output_format(&self) -> crate::cli::OutputFormat {
+        self.output_format
+    }
+
+    pub fn set_output_format(&mut self, format: crate::cli::OutputFormat) {
+        self.output_format = format;
+    }
+
     pub fn is_explain_mode(&self) -> bool {
         self.explain_mode
     }
@@ -1850,6 +1868,7 @@ impl Database {
             connection_info_override: None,
             ssh_tunnel: None, // No SSH tunnel in test mode
             expanded_display: false,
+            output_format: crate::cli::OutputFormat::Table,
             default_limit: 100,
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: false,
@@ -2172,7 +2191,7 @@ impl Database {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct TableDetails {
     pub name: String,
     pub schema: String,
@@ -2187,7 +2206,7 @@ pub struct TableDetails {
     pub nested_field_details: std::collections::HashMap<String, Vec<String>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct ColumnInfo {
     pub name: String,
     pub data_type: String,
@@ -2197,7 +2216,7 @@ pub struct ColumnInfo {
     pub enum_values: Option<Vec<String>>, // For enum types, contains the possible values
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone, serde::Serialize)]
 pub struct IndexInfo {
     pub name: String,
     pub index_type: String,
@@ -2209,19 +2228,19 @@ pub struct IndexInfo {
     pub constraint_def: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct ForeignKeyInfo {
     pub name: String,
     pub definition: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct CheckConstraintInfo {
     pub name: String,
     pub definition: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub struct ReferencedByInfo {
     pub schema: String,
     pub table: String,

@@ -1259,6 +1259,17 @@ impl CommandParser {
     }
 }
 
+/// Render tabular command results honoring the session's output format
+/// (`-o/--format`) and the `\x` expanded toggle.
+fn render_command_results(db: &Database, results: &[Vec<String>]) -> String {
+    crate::format::render_query_results(
+        results,
+        None,
+        db.output_format(),
+        db.is_expanded_display(),
+    )
+}
+
 impl CommandExecutor for Command {
     async fn execute(
         &self,
@@ -1412,17 +1423,7 @@ impl CommandExecutor for Command {
                         if results.is_empty() {
                             Ok(CommandResult::Output("No databases found.".to_string()))
                         } else {
-                            let output = if db.is_expanded_display() {
-                                let tables = crate::format::format_query_results_expanded(&results);
-                                tables
-                                    .into_iter()
-                                    .map(|t| t.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            } else {
-                                crate::format::format_query_results_psql(&results)
-                            };
-                            Ok(CommandResult::Output(output))
+                            Ok(CommandResult::Output(render_command_results(&db, &results)))
                         }
                     }
                     Err(e) => Ok(CommandResult::Error(format!(
@@ -1438,17 +1439,7 @@ impl CommandExecutor for Command {
                         if results.is_empty() {
                             Ok(CommandResult::Output("No tables found.".to_string()))
                         } else {
-                            let output = if db.is_expanded_display() {
-                                let tables = crate::format::format_query_results_expanded(&results);
-                                tables
-                                    .into_iter()
-                                    .map(|t| t.to_string())
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            } else {
-                                crate::format::format_query_results_psql(&results)
-                            };
-                            Ok(CommandResult::Output(output))
+                            Ok(CommandResult::Output(render_command_results(&db, &results)))
                         }
                     }
                     Err(e) => Ok(CommandResult::Error(format!("Failed to list tables: {e}"))),
@@ -1459,10 +1450,19 @@ impl CommandExecutor for Command {
                 let mut db = database.lock().unwrap();
                 match table_name {
                     Some(name) => match db.get_table_details(name).await {
-                        Ok(details) => {
-                            let output = crate::format::format_table_details(&details);
-                            Ok(CommandResult::Output(output))
-                        }
+                        Ok(details) => match db.output_format() {
+                            crate::cli::OutputFormat::Json | crate::cli::OutputFormat::Jsonl => {
+                                match serde_json::to_string(&details) {
+                                    Ok(json) => Ok(CommandResult::Output(json)),
+                                    Err(e) => Ok(CommandResult::Error(format!(
+                                        "Failed to serialize table details: {e}"
+                                    ))),
+                                }
+                            }
+                            _ => Ok(CommandResult::Output(crate::format::format_table_details(
+                                &details,
+                            ))),
+                        },
                         Err(e) => Ok(CommandResult::Error(format!(
                             "Failed to describe table '{name}': {e}"
                         ))),
@@ -1474,18 +1474,9 @@ impl CommandExecutor for Command {
                                 if results.is_empty() {
                                     Ok(CommandResult::Output("No tables found.".to_string()))
                                 } else {
-                                    let output = if db.is_expanded_display() {
-                                        let tables =
-                                            crate::format::format_query_results_expanded(&results);
-                                        tables
-                                            .into_iter()
-                                            .map(|t| t.to_string())
-                                            .collect::<Vec<_>>()
-                                            .join("\n")
-                                    } else {
-                                        crate::format::format_query_results_psql(&results)
-                                    };
-                                    Ok(CommandResult::Output(output))
+                                    Ok(CommandResult::Output(render_command_results(
+                                        &db, &results,
+                                    )))
                                 }
                             }
                             Err(e) => {
@@ -1831,18 +1822,9 @@ impl CommandExecutor for Command {
                                         "Query executed successfully (no results).".to_string(),
                                     ))
                                 } else {
-                                    let output = if db.is_expanded_display() {
-                                        let tables =
-                                            crate::format::format_query_results_expanded(&results);
-                                        tables
-                                            .into_iter()
-                                            .map(|t| t.to_string())
-                                            .collect::<Vec<_>>()
-                                            .join("\n")
-                                    } else {
-                                        crate::format::format_query_results_psql(&results)
-                                    };
-                                    Ok(CommandResult::Output(output))
+                                    Ok(CommandResult::Output(render_command_results(
+                                        &db, &results,
+                                    )))
                                 }
                             }
                             Err(e) => Ok(CommandResult::Error(format!(

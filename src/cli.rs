@@ -53,6 +53,16 @@ pub struct Args {
     #[arg(long)]
     pub update: bool,
 
+    /// Output format for query results
+    #[arg(
+        short = 'o',
+        long = "format",
+        value_enum,
+        env = "DBCRUST_FORMAT",
+        value_name = "FORMAT"
+    )]
+    pub format: Option<OutputFormat>,
+
     /// Utility subcommands that run without a database connection
     #[command(subcommand)]
     pub subcommand: Option<CliCommand>,
@@ -111,6 +121,7 @@ impl std::fmt::Debug for Args {
             .field("completions", &self.completions)
             .field("command", &self.command)
             .field("update", &self.update)
+            .field("format", &self.format)
             .field("subcommand", &self.subcommand)
             .finish()
     }
@@ -256,6 +267,21 @@ mod tests {
             panic!("expected config set subcommand");
         };
         assert_eq!(value, "less -RFX");
+    }
+
+    #[test]
+    fn test_format_flag() {
+        let args = Args::try_parse_from(["dbcrust", "-o", "json", "sqlite://test.db"]).unwrap();
+        assert_eq!(args.format, Some(OutputFormat::Json));
+        assert_eq!(args.connection_url.as_deref(), Some("sqlite://test.db"));
+
+        let args = Args::try_parse_from(["dbcrust", "--format", "csv"]).unwrap();
+        assert_eq!(args.format, Some(OutputFormat::Csv));
+
+        let args = Args::try_parse_from(["dbcrust"]).unwrap();
+        assert_eq!(args.format, None);
+
+        assert!(Args::try_parse_from(["dbcrust", "-o", "yaml"]).is_err());
     }
 
     #[test]

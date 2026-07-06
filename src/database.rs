@@ -27,6 +27,19 @@ pub fn query_timeout() -> Option<std::time::Duration> {
     }
 }
 
+/// Process-wide one-shot mode flag (`-c`/`-f`/stdin scripts). Set at startup
+/// before any connection is made; deep call sites read it here to keep stdout
+/// free of status chatter so machine-readable output stays parseable.
+static ONE_SHOT_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_one_shot_mode(enabled: bool) {
+    ONE_SHOT_MODE.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn one_shot_mode() -> bool {
+    ONE_SHOT_MODE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Process-wide interrupt flag. Set by the interactive Ctrl-C handler while a
 /// query is running; database clients poll it to cancel server-side. One
 /// shared flag is correct for a CLI: there is a single foreground query.

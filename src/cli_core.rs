@@ -35,9 +35,22 @@ const FILE_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'{')
     .add(b'}');
 
+/// Per-run overrides from CLI flags, distinct from the persisted Config.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunOverrides {
+    /// Output format for query results (`-o/--format`); Expanded is
+    /// normalized to Table + `force_expanded` at startup.
+    pub format: crate::cli::OutputFormat,
+    pub force_expanded: bool,
+    /// One-shot execution (`-c`/`-f`/stdin script): stdout carries results
+    /// only, status chatter is suppressed and the pager never engages.
+    pub one_shot: bool,
+}
+
 /// Core CLI functionality shared between Rust and Python interfaces
 pub struct CliCore {
     pub config: DbCrustConfig,
+    pub run_overrides: RunOverrides,
     pub database: Option<Database>,
     pub connection_info: Option<ConnectionInfo>,
     pub ai_conversation: crate::ai::conversation::AiConversation,
@@ -152,6 +165,7 @@ impl Default for CliCore {
         let ai_history_len = config.ai.history_length;
         Self {
             config,
+            run_overrides: RunOverrides::default(),
             database: None,
             connection_info: None,
             ai_conversation: crate::ai::conversation::AiConversation::new(ai_history_len),
@@ -352,6 +366,19 @@ impl CliCore {
         // Database clients are constructed without Config access — publish the
         // configured query timeout for them (0 disables it)
         crate::database::set_query_timeout_seconds(cli_core.config.query_timeout_seconds);
+
+        // Per-run overrides: `-o expanded` is sugar for table + \x; one-shot
+        // mode keeps stdout parseable (no status chatter, no pager)
+        let (format, force_expanded) = match args.format.unwrap_or_default() {
+            crate::cli::OutputFormat::Expanded => (crate::cli::OutputFormat::Table, true),
+            other => (other, false),
+        };
+        cli_core.run_overrides = RunOverrides {
+            format,
+            force_expanded,
+            one_shot: !args.command.is_empty(),
+        };
+        crate::database::set_one_shot_mode(cli_core.run_overrides.one_shot);
 
         // Handle shell completion generation if requested
         if let Some(shell) = args.completions {
@@ -838,7 +865,8 @@ impl CliCore {
                     true,
                 ) {
                     Ok(()) => {
-                        println!("✅ Password saved to .dbcrust file (encrypted)");
+                        // stderr: must not pollute one-shot stdout results
+                        eprintln!("✅ Password saved to .dbcrust file (encrypted)");
                     }
                     Err(e) => {
                         debug!("⚠️  Failed to save password: {e}");
@@ -1297,8 +1325,17 @@ impl CliCore {
         self.database = Some(database);
         self.connection_info = connection_info;
 
-        // Show success message
-        println!("✓ Successfully connected to database");
+        if let Some(db) = self.database.as_mut() {
+            db.set_output_format(self.run_overrides.format);
+            if self.run_overrides.force_expanded {
+                db.set_expanded_display(true);
+            }
+        }
+
+        // Show success message — but keep one-shot stdout results-only
+        if !self.run_overrides.one_shot {
+            println!("✓ Successfully connected to database");
+        }
         Ok(())
     }
 
@@ -1359,22 +1396,16 @@ impl CliCore {
                     {
                         Ok(results_with_info) => {
                             if !results_with_info.data.is_empty() {
-                                let is_expanded = database.is_expanded_display();
-                                if is_expanded {
-                                    let tables =
-                                        format_query_results_expanded(&results_with_info.data);
-                                    let mut combined_output = String::new();
-                                    for table in tables {
-                                        combined_output.push_str(&format!("{table}\n"));
-                                    }
-                                    Self::page_or_print(&combined_output, &self.config)?;
-                                } else {
-                                    let formatted_output = format_query_results_psql_with_info(
-                                        &results_with_info.data,
-                                        results_with_info.column_info.as_ref(),
-                                    );
-                                    Self::page_or_print(&formatted_output, &self.config)?;
-                                }
+                                // One-shot output is printed plain: the pager
+                                // must never engage (it would hang piped/agent
+                                // callers waiting on a keypress)
+                                let output = crate::format::render_query_results(
+                                    &results_with_info.data,
+                                    results_with_info.column_info.as_ref(),
+                                    database.output_format(),
+                                    database.is_expanded_display(),
+                                );
+                                println!("{output}");
                             }
                         }
                         Err(e) => {
@@ -1447,7 +1478,8 @@ impl CliCore {
             .await
         {
             Ok(CommandResult::Output(output)) => {
-                Self::page_or_print(&output, &self.config)?;
+                // Plain print: no pager in one-shot mode
+                println!("{output}");
                 CommandModeOutcome::Success
             }
             Ok(CommandResult::Error(error)) => {

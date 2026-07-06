@@ -1160,6 +1160,7 @@ pub async fn run_interactive_cli(url: &str) -> Result<(), Box<dyn std::error::Er
         ssh_tunnel: None,
         completions: None,
         update: false,
+        format: None,
         subcommand: None,
     };
 
