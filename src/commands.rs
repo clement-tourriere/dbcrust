@@ -2749,6 +2749,11 @@ impl CommandExecutor for Command {
                 index_type,
             } => {
                 let mut db = database.lock().unwrap();
+                if db.is_read_only() {
+                    return Ok(CommandResult::Error(
+                        "read-only mode: index creation is disabled".to_string(),
+                    ));
+                }
                 match db
                     .create_mongo_index(collection, field, index_type.as_deref())
                     .await
@@ -2765,6 +2770,11 @@ impl CommandExecutor for Command {
                 index_name,
             } => {
                 let mut db = database.lock().unwrap();
+                if db.is_read_only() {
+                    return Ok(CommandResult::Error(
+                        "read-only mode: index removal is disabled".to_string(),
+                    ));
+                }
                 match db.drop_mongo_index(collection, index_name).await {
                     Ok(_) => Ok(CommandResult::Output(format!(
                         "Index '{index_name}' dropped successfully from collection '{collection}'"

@@ -68,6 +68,19 @@ pub struct Args {
     )]
     pub format: Option<OutputFormat>,
 
+    /// Reject statements that could write or cause side effects (best-effort
+    /// guard; use a read-only DB role for hard guarantees). Overrides the
+    /// read_only_default config; `--read-only=false` re-enables writes.
+    /// `require_equals` keeps `--read-only <url>` from swallowing the URL.
+    #[arg(
+        long,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true,
+        value_name = "BOOL"
+    )]
+    pub read_only: Option<bool>,
+
     /// Query timeout in seconds for this run (0 disables; overrides the
     /// query_timeout_seconds config)
     #[arg(long, value_name = "SECS")]
@@ -195,6 +208,7 @@ impl std::fmt::Debug for Args {
             .field("file", &self.file)
             .field("update", &self.update)
             .field("format", &self.format)
+            .field("read_only", &self.read_only)
             .field("timeout", &self.timeout)
             .field("max_rows", &self.max_rows)
             .field("no_input", &self.no_input)
@@ -384,6 +398,25 @@ mod tests {
                 OneShotSource::Command("SELECT 1".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn test_read_only_flag_forms() {
+        // Bare flag must NOT swallow the URL
+        let args = Args::parse_from_argv(["dbcrust", "--read-only", "postgres://h/db"]).unwrap();
+        assert_eq!(args.read_only, Some(true));
+        assert_eq!(args.connection_url.as_deref(), Some("postgres://h/db"));
+
+        // Explicit override of a config default
+        let args = Args::parse_from_argv(["dbcrust", "--read-only=false", "url"]).unwrap();
+        assert_eq!(args.read_only, Some(false));
+
+        // Absent → defer to config
+        let args = Args::parse_from_argv(["dbcrust", "url"]).unwrap();
+        assert_eq!(args.read_only, None);
+
+        // Space-separated value is rejected (require_equals)
+        assert!(Args::parse_from_argv(["dbcrust", "--read-only", "false", "url"]).is_err());
     }
 
     #[test]

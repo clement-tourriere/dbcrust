@@ -129,7 +129,7 @@ async fn main() -> Result<(), Box<dyn StdError>> {
         Err(e) => {
             // Display user-friendly error message instead of Debug representation
             eprintln!("Error: {e}");
-            std::process::exit(1);
+            std::process::exit(e.exit_code());
         }
     }
 }

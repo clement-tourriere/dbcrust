@@ -65,6 +65,8 @@ pub struct RunOverrides {
     pub force_expanded: bool,
     /// `--max-rows`: per-run override of the auto-LIMIT (`default_limit`).
     pub max_rows: Option<usize>,
+    /// Effective `--read-only` (flag wins over `read_only_default` config).
+    pub read_only: bool,
     /// One-shot execution (`-c`/`-f`/stdin script): stdout carries results
     /// only, status chatter is suppressed and the pager never engages.
     pub one_shot: bool,
@@ -76,6 +78,8 @@ enum SqlBatchOutcome {
     Completed,
     /// A statement failed; the rest of the batch was skipped.
     Failed,
+    /// A statement was blocked by `--read-only` (exit code 4).
+    ReadOnlyViolation,
     /// User-initiated stop (column-selection abort) — not an error.
     Aborted,
 }
@@ -105,6 +109,19 @@ pub enum CliError {
     CommandError(String),
     ConfigError(String),
     ArgumentError(String),
+}
+
+impl CliError {
+    /// Process exit code for the one-shot contract: 0 success, 1 statement
+    /// failure, 2 usage/config (clap itself also exits 2), 3 connection,
+    /// 4 read-only violation (produced in command mode, not from a variant).
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            CliError::ConnectionError(_) => 3,
+            CliError::ArgumentError(_) | CliError::ConfigError(_) => 2,
+            CliError::CommandError(_) => 1,
+        }
+    }
 }
 
 impl std::error::Error for CliError {}
@@ -385,6 +402,19 @@ impl CliCore {
             .unwrap_or(self.config.default_limit)
     }
 
+    /// Emit a one-shot error to stderr — a single JSON line
+    /// (`{"error":{"code":…,"message":…}}`) when the output format is
+    /// json/jsonl, plain text otherwise.
+    fn emit_one_shot_error(&self, code: &str, message: &str) {
+        match self.run_overrides.format {
+            crate::cli::OutputFormat::Json | crate::cli::OutputFormat::Jsonl => {
+                let error = serde_json::json!({"error": {"code": code, "message": message}});
+                eprintln!("{error}");
+            }
+            _ => eprintln!("{message}"),
+        }
+    }
+
     /// Main entry point for CLI execution - replaces async_main_with_args
     pub async fn run_with_args(args: Args) -> Result<i32, CliError> {
         Self::run_with_args_and_original(args, None).await
@@ -426,9 +456,13 @@ impl CliCore {
             format,
             force_expanded,
             max_rows: args.max_rows,
+            read_only: args.read_only.unwrap_or(cli_core.config.read_only_default),
             one_shot: !args.one_shot_sources().is_empty() || stdin_script,
         };
         crate::database::set_one_shot_mode(cli_core.run_overrides.one_shot);
+        // Must be published BEFORE connecting: backends read it to harden at
+        // connect-options level, and Database inits its guard from it
+        crate::database::set_read_only_requested(cli_core.run_overrides.read_only);
         set_prompts_allowed(!args.no_input && stdin_is_terminal);
 
         // Handle shell completion generation if requested
@@ -479,7 +513,21 @@ impl CliCore {
 
         // Handle connection and database setup if connection URL provided
         if args.connection_url.is_some() {
-            cli_core.handle_database_connection(&args).await?;
+            if let Err(e) = cli_core.handle_database_connection(&args).await {
+                // One-shot mode maps the failure to the exit-code contract
+                // itself (JSON on stderr under -o json) so the Rust binary
+                // and the Python CLI behave identically
+                if cli_core.run_overrides.one_shot {
+                    let (kind, code) = match e.exit_code() {
+                        3 => ("connection_error", 3),
+                        2 => ("usage_error", 2),
+                        _ => ("error", 1),
+                    };
+                    cli_core.emit_one_shot_error(kind, &e.to_string());
+                    return Ok(code);
+                }
+                return Err(e);
+            }
 
             // Handle -c/-f sources if provided (execute and exit)
             if !args.one_shot_sources().is_empty() {
@@ -1412,7 +1460,7 @@ impl CliCore {
     /// failed, so scripts chaining `dbcrust ... -c "..." && next-step` can
     /// rely on it.
     async fn handle_command_mode(&mut self, args: &Args) -> Result<i32, CliError> {
-        let mut failed = false;
+        let mut exit_code = 0;
         'sources: for source in args.one_shot_sources() {
             match source {
                 crate::cli::OneShotSource::Command(command) => {
@@ -1422,7 +1470,7 @@ impl CliCore {
                         // Handle backslash commands
                         match self.execute_backslash_command(command_trimmed).await? {
                             CommandModeOutcome::Success => {}
-                            CommandModeOutcome::Failed => failed = true,
+                            CommandModeOutcome::Failed => exit_code = exit_code.max(1),
                             // \q is a clean stop, not an error
                             CommandModeOutcome::Exit => break 'sources,
                         }
@@ -1435,12 +1483,16 @@ impl CliCore {
                             .await?
                             == CommandModeOutcome::Failed
                         {
-                            failed = true;
+                            exit_code = exit_code.max(1);
                         }
                     } else {
                         match self.execute_sql_batch(command_trimmed).await? {
                             SqlBatchOutcome::Completed => {}
-                            SqlBatchOutcome::Failed => failed = true,
+                            SqlBatchOutcome::Failed => exit_code = exit_code.max(1),
+                            SqlBatchOutcome::ReadOnlyViolation => {
+                                exit_code = 4;
+                                break 'sources;
+                            }
                             // User-initiated abort: stop without an error
                             SqlBatchOutcome::Aborted => break 'sources,
                         }
@@ -1449,25 +1501,33 @@ impl CliCore {
                 crate::cli::OneShotSource::File(path) => match std::fs::read_to_string(&path) {
                     Ok(script) => match self.execute_sql_batch(&script).await? {
                         SqlBatchOutcome::Completed => {}
-                        SqlBatchOutcome::Failed => failed = true,
+                        SqlBatchOutcome::Failed => exit_code = exit_code.max(1),
+                        SqlBatchOutcome::ReadOnlyViolation => {
+                            exit_code = 4;
+                            break 'sources;
+                        }
                         SqlBatchOutcome::Aborted => break 'sources,
                     },
                     Err(e) => {
-                        eprintln!("Error reading SQL file '{path}': {e}");
-                        failed = true;
+                        self.emit_one_shot_error(
+                            "file_error",
+                            &format!("Error reading SQL file '{path}': {e}"),
+                        );
+                        exit_code = exit_code.max(1);
                         break 'sources;
                     }
                 },
             }
         }
 
-        Ok(if failed { 1 } else { 0 })
+        Ok(exit_code)
     }
 
     /// Execute a piped-stdin script (psql-style `dbcrust <url> < file.sql`).
     async fn run_sql_script(&mut self, script: &str) -> Result<i32, CliError> {
         match self.execute_sql_batch(script).await? {
             SqlBatchOutcome::Failed => Ok(1),
+            SqlBatchOutcome::ReadOnlyViolation => Ok(4),
             SqlBatchOutcome::Completed | SqlBatchOutcome::Aborted => Ok(0),
         }
     }
@@ -1522,11 +1582,19 @@ impl CliCore {
                     }
                 }
                 Err(e) => {
+                    let message = e.to_string();
                     // Check if this is a column selection abort
-                    if e.to_string().contains("Column selection aborted") {
+                    if message.contains("Column selection aborted") {
                         return Ok(SqlBatchOutcome::Aborted);
                     }
-                    eprintln!("Error executing query: {e}");
+                    if crate::safety::is_read_only_violation_message(&message) {
+                        self.emit_one_shot_error("read_only_violation", &message);
+                        return Ok(SqlBatchOutcome::ReadOnlyViolation);
+                    }
+                    self.emit_one_shot_error(
+                        "query_error",
+                        &format!("Error executing query: {message}"),
+                    );
                     // Stop the batch at the first failing statement
                     return Ok(SqlBatchOutcome::Failed);
                 }

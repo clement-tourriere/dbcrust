@@ -853,6 +853,13 @@ impl PostgreSQLClient {
             .unwrap_or_else(|| "postgres".to_string());
         connect_options = connect_options.database(&database_name);
 
+        // --read-only hardening at connect-options level so every pooled
+        // connection starts its transactions read-only (server-enforced,
+        // unlike the textual statement guard)
+        if crate::database::read_only_requested() {
+            connect_options = connect_options.options([("default_transaction_read_only", "on")]);
+        }
+
         // Handle SSL mode from options
         if let Some(sslmode) = connection_info.options.get("sslmode") {
             let ssl_mode = match sslmode.as_str() {

@@ -90,40 +90,9 @@ pub fn extract_sql(response: &str) -> String {
 }
 
 /// Check if SQL is likely a read-only query, used to decide whether
-/// AI-generated SQL may run without confirmation.
-///
-/// A prefix check alone is NOT enough: `WITH d AS (DELETE FROM t RETURNING *)
-/// SELECT * FROM d` starts with WITH, and `SELECT 1; DROP TABLE t` starts
-/// with SELECT. Conservative by design — false negatives only cost an extra
-/// confirmation prompt.
-pub fn is_select_query(sql: &str) -> bool {
-    let upper = sql.trim().to_uppercase();
-
-    let read_only_prefix = upper.starts_with("SELECT")
-        || upper.starts_with("WITH")
-        || upper.starts_with("EXPLAIN")
-        || upper.starts_with("SHOW")
-        || upper.starts_with("DESCRIBE")
-        || upper.starts_with("PRAGMA");
-    if !read_only_prefix {
-        return false;
-    }
-
-    // Reject multi-statement strings: anything after a ';' could be DML
-    if upper.split(';').skip(1).any(|rest| !rest.trim().is_empty()) {
-        return false;
-    }
-
-    // Reject if any write keyword appears as a word anywhere (data-modifying
-    // CTEs, EXPLAIN ANALYZE on writes, …)
-    const WRITE_KEYWORDS: [&str; 10] = [
-        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE",
-        "MERGE",
-    ];
-    !upper
-        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-        .any(|token| WRITE_KEYWORDS.contains(&token))
-}
+/// AI-generated SQL may run without confirmation. The classification logic
+/// lives in [`crate::safety`], shared with the CLI `--read-only` guard.
+pub use crate::safety::is_read_only_sql as is_select_query;
 
 #[cfg(test)]
 mod tests {
@@ -145,32 +114,6 @@ mod tests {
     fn test_extract_sql_with_plain_fences() {
         let response = "```\nSELECT * FROM users;\n```";
         assert_eq!(extract_sql(response), "SELECT * FROM users;");
-    }
-
-    #[test]
-    fn test_is_select_query() {
-        assert!(is_select_query("SELECT * FROM users"));
-        assert!(is_select_query("WITH cte AS (SELECT 1) SELECT * FROM cte"));
-        assert!(is_select_query("EXPLAIN SELECT * FROM users"));
-        assert!(is_select_query("SELECT * FROM users;"));
-        assert!(!is_select_query("INSERT INTO users VALUES (1)"));
-        assert!(!is_select_query("DELETE FROM users WHERE id = 1"));
-        assert!(!is_select_query("UPDATE users SET name = 'test'"));
-        assert!(!is_select_query("DROP TABLE users"));
-    }
-
-    #[test]
-    fn test_is_select_query_rejects_disguised_writes() {
-        // Data-modifying CTE starts with WITH but writes
-        assert!(!is_select_query(
-            "WITH d AS (DELETE FROM users RETURNING *) SELECT * FROM d"
-        ));
-        // Multi-statement smuggling
-        assert!(!is_select_query("SELECT 1; DROP TABLE users"));
-        // EXPLAIN ANALYZE executes the statement
-        assert!(!is_select_query("EXPLAIN ANALYZE DELETE FROM users"));
-        // Identifiers merely containing a keyword are fine
-        assert!(is_select_query("SELECT updated_at FROM user_inserts"));
     }
 
     #[test]

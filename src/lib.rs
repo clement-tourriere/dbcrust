@@ -38,6 +38,7 @@ pub mod performance_analyzer; // Performance analysis for EXPLAIN queries
 pub mod pgpass;
 pub mod prompt;
 pub mod regex_operators; // Cross-backend translation of PG-style regex operators (~, ~*, !~, !~*)
+pub mod safety; // Read-only statement classification (--read-only + AI agent guard)
 pub mod schema_tui;
 pub mod script;
 pub mod shell_completion; // Custom shell completion with URL schemes
@@ -1162,6 +1163,7 @@ pub async fn run_interactive_cli(url: &str) -> Result<(), Box<dyn std::error::Er
         completions: None,
         update: false,
         format: None,
+        read_only: None,
         timeout: None,
         max_rows: None,
         no_input: false,

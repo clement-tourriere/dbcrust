@@ -40,6 +40,22 @@ pub fn one_shot_mode() -> bool {
     ONE_SHOT_MODE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Process-wide `--read-only` request. Set at startup BEFORE any connection so
+/// backend clients can harden at connect-options level (SQLite
+/// `PRAGMA query_only`, PostgreSQL `default_transaction_read_only`) — a
+/// post-connect `SET`/`PRAGMA` would only reach one pooled connection.
+/// `Database` instances also initialize their statement guard from it.
+static READ_ONLY_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_read_only_requested(enabled: bool) {
+    READ_ONLY_REQUESTED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn read_only_requested() -> bool {
+    READ_ONLY_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Process-wide interrupt flag. Set by the interactive Ctrl-C handler while a
 /// query is running; database clients poll it to cancel server-side. One
 /// shared flag is correct for a CLI: there is a single foreground query.

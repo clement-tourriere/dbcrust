@@ -396,58 +396,9 @@ fn rejected_outcome(detail: &str) -> ToolOutcome {
     }
 }
 
-/// Best-effort secondary guard: flags read-only statements that can still mutate
-/// or cause side effects. Returns a short reason when the statement should be
-/// rejected.
-///
-/// `is_select_query` already blocks DML/DDL and `SELECT … FOR UPDATE` (UPDATE is a
-/// write keyword); this closes the remaining SELECT-side holes it misses:
-/// `SELECT … INTO new_table` (PostgreSQL table creation), `INTO OUTFILE/DUMPFILE`
-/// (MySQL file write), mutating `PRAGMA` (SQLite), sequence bumps, locks, and
-/// known side-effecting functions. It is NOT a complete guarantee — a SELECT can
-/// still call a user-defined side-effecting function — so for hard enforcement run
-/// under a read-only database role or a replica.
-fn side_effect_guard(sql: &str) -> Option<&'static str> {
-    let upper = sql.to_uppercase();
-
-    // SQLite PRAGMA can mutate (`PRAGMA user_version = 1`, `journal_mode = WAL`, …).
-    // The agent doesn't need it — describe_table covers schema introspection.
-    if upper.trim_start().starts_with("PRAGMA") {
-        return Some("uses PRAGMA (use describe_table for schema instead)");
-    }
-
-    // Whole-word keyword tokens (so identifiers like `into_count` don't match):
-    // `SELECT … INTO <table>` creates a table on PostgreSQL; `INTO OUTFILE` /
-    // `INTO DUMPFILE` writes a server-side file on MySQL.
-    let has_token = |kw: &str| {
-        upper
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .any(|t| t == kw)
-    };
-    if has_token("INTO") {
-        return Some("uses INTO (can create a table or write a file)");
-    }
-
-    // Side-effecting function / locking patterns (distinctive substrings).
-    const FLAGGED: &[(&str, &str)] = &[
-        ("NEXTVAL", "advances a sequence"),
-        ("SETVAL", "resets a sequence"),
-        ("PG_ADVISORY", "acquires an advisory lock"),
-        ("PG_NOTIFY", "sends a notification"),
-        ("GET_LOCK", "acquires a named lock"),
-        ("FOR SHARE", "acquires row-share locks"),
-        ("FOR KEY SHARE", "acquires row-share locks"),
-        ("DBLINK", "can issue writes via dblink"),
-        ("PG_TERMINATE_BACKEND", "terminates a backend"),
-        ("PG_CANCEL_BACKEND", "cancels a backend"),
-        ("LO_IMPORT", "writes a large object"),
-        ("LO_EXPORT", "writes a server-side file"),
-    ];
-    FLAGGED
-        .iter()
-        .find(|(needle, _)| upper.contains(needle))
-        .map(|(_, why)| *why)
-}
+// The secondary side-effect guard lives in crate::safety (shared with the
+// CLI --read-only path); see safety::side_effect_guard.
+use crate::safety::side_effect_guard;
 
 // ==================== Database-backed tool executor ====================
 
@@ -654,27 +605,6 @@ mod tests {
     fn test_agent_tools_shape() {
         let tools = agent_tools();
         assert_eq!(tools.len(), 4);
-    }
-
-    #[test]
-    fn test_side_effect_guard_flags_known_cases() {
-        assert!(side_effect_guard("SELECT nextval('s')").is_some());
-        assert!(side_effect_guard("select SETVAL('s', 1)").is_some());
-        assert!(side_effect_guard("SELECT pg_advisory_lock(1)").is_some());
-        assert!(side_effect_guard("SELECT pg_notify('ch', 'm')").is_some());
-        assert!(side_effect_guard("SELECT GET_LOCK('x', 10)").is_some());
-        assert!(side_effect_guard("SELECT * FROM t FOR SHARE").is_some());
-        assert!(side_effect_guard("SELECT * FROM t FOR KEY SHARE").is_some());
-        // SELECT INTO (PostgreSQL table creation) and INTO OUTFILE (MySQL file write).
-        assert!(side_effect_guard("SELECT * INTO new_t FROM old_t").is_some());
-        assert!(side_effect_guard("SELECT a INTO OUTFILE '/tmp/x' FROM t").is_some());
-        // Mutating PRAGMA (SQLite), including leading whitespace.
-        assert!(side_effect_guard("PRAGMA user_version = 1").is_some());
-        assert!(side_effect_guard("  pragma journal_mode = WAL").is_some());
-        // Plain reads are not flagged — including identifiers that contain "into".
-        assert!(side_effect_guard("SELECT count(*) FROM orders").is_none());
-        assert!(side_effect_guard("SELECT id, created_at FROM users LIMIT 10").is_none());
-        assert!(side_effect_guard("SELECT into_count FROM stats").is_none());
     }
 
     #[test]

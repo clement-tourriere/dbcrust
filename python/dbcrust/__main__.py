@@ -80,11 +80,18 @@ def main(db_url=None):
         # Only add sys.argv arguments when no db_url is provided programmatically
         cmd_args.extend(sys.argv[1:])
 
-    # Run the CLI using the shared Rust library
+    # Run the CLI using the shared Rust library. Exit codes mirror the Rust
+    # binary's one-shot contract: 1 command failure, 2 usage/config,
+    # 3 connection, 130 SIGINT.
     try:
         return run_command(cmd_args)
-    except (DbcrustConnectionError, DbcrustCommandError, DbcrustConfigError,
-            DbcrustArgumentError, DbcrustError) as e:
+    except DbcrustConnectionError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 3
+    except (DbcrustArgumentError, DbcrustConfigError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 2
+    except (DbcrustCommandError, DbcrustError) as e:
         # For CLI usage, print the error message to stderr
         print(f"Error: {e}", file=sys.stderr)
         return 1

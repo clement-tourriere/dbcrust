@@ -712,6 +712,8 @@ pub struct Config {
     pub autocomplete_enabled: bool,
     #[serde(default = "default_explain_mode_default")]
     pub explain_mode_default: bool,
+    #[serde(default = "default_read_only_default")]
+    pub read_only_default: bool,
     #[serde(default = "default_column_selection_threshold")]
     pub column_selection_threshold: usize,
     #[serde(default = "default_column_selection_default_all")]
@@ -799,6 +801,7 @@ impl Default for Config {
             expanded_display_default: false,
             autocomplete_enabled: true,
             explain_mode_default: false,
+            read_only_default: false,
             column_selection_threshold: default_column_selection_threshold(),
             column_selection_default_all: default_column_selection_default_all(),
             test_named_query_before_saving: default_test_named_query_before_saving(),
@@ -877,6 +880,10 @@ fn default_autocomplete_enabled() -> bool {
 }
 
 fn default_explain_mode_default() -> bool {
+    false
+}
+
+fn default_read_only_default() -> bool {
     false
 }
 
@@ -1715,6 +1722,14 @@ impl Config {
                 self.explain_mode_default
             ));
 
+            content.push_str(
+                "# Reject write statements by default (best-effort guard; per-run override: --read-only[=false]) (default: false)\n",
+            );
+            content.push_str(&format!(
+                "read_only_default = {}\n\n",
+                self.read_only_default
+            ));
+
             content.push_str("# Maximum number of recent connections to remember (default: 10)\n");
             content.push_str(&format!(
                 "max_recent_connections = {}\n\n",
@@ -2080,6 +2095,7 @@ impl Config {
             "expanded_display_default",
             "autocomplete_enabled",
             "explain_mode_default",
+            "read_only_default",
             "column_selection_threshold",
             "pager_enabled",
             "pager_command",

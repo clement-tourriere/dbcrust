@@ -327,9 +327,15 @@ impl SqliteClient {
 
         // with_regexp registers a REGEXP function on every connection, which
         // powers the translated `~` / `~*` regex operators
-        let connect_options = SqliteConnectOptions::from_str(&database_url)
+        let mut connect_options = SqliteConnectOptions::from_str(&database_url)
             .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?
             .with_regexp();
+
+        // --read-only hardening at connect-options level: the pragma applies
+        // to EVERY pooled connection (a post-connect PRAGMA would reach one)
+        if crate::database::read_only_requested() {
+            connect_options = connect_options.pragma("query_only", "ON");
+        }
 
         // Configure connection pool with SQLite-specific optimizations
         let pool = SqlitePoolOptions::new()
@@ -341,8 +347,12 @@ impl SqliteClient {
             .await
             .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?;
 
-        // Apply SQLite-specific optimizations
-        Self::apply_sqlite_optimizations(&pool).await?;
+        // Apply SQLite-specific optimizations — skipped in read-only mode,
+        // where the journal-mode conversion (a write) would fail under
+        // query_only
+        if !crate::database::read_only_requested() {
+            Self::apply_sqlite_optimizations(&pool).await?;
+        }
 
         let metadata_provider = SqliteMetadataProvider::new(pool.clone());
 

@@ -429,6 +429,19 @@ static SCHEMA: &[FieldSpec] = &[
         },
     },
     FieldSpec {
+        path: "read_only_default",
+        label: "Read-only by default",
+        help: "Reject write statements unless --read-only=false is passed (best-effort guard; default: false)",
+        kind: FieldKind::Bool,
+        section: ConfigSection::Features,
+        sensitive: false,
+        get: |c| c.read_only_default.to_string(),
+        set: |c, v| {
+            c.read_only_default = pbool(v);
+            Ok(())
+        },
+    },
+    FieldSpec {
         path: "max_recent_connections",
         label: "Max recent connections",
         help: "Number of recent connections to remember (default: 10)",

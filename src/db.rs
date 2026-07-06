@@ -92,6 +92,7 @@ pub struct Database {
     // Application settings and state
     expanded_display: bool,
     output_format: crate::cli::OutputFormat,
+    read_only: bool,
     default_limit: usize,
     autocomplete_enabled: bool,
     explain_mode: bool,
@@ -560,6 +561,9 @@ impl Database {
             ssh_tunnel,
             expanded_display: expanded_display_default.unwrap_or(false),
             output_format: crate::cli::OutputFormat::Table,
+            // Every construction path (direct URL, docker, vault, session)
+            // picks up --read-only from the process-wide request
+            read_only: crate::database::read_only_requested(),
             default_limit: default_limit.unwrap_or(100),
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: config.explain_mode_default,
@@ -1397,6 +1401,13 @@ impl Database {
         query: &str,
         interrupt_flag: &std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> std::result::Result<QueryResultsWithInfo, Box<dyn StdError>> {
+        // --read-only guard: this is the single choke point every execution
+        // path funnels through (-c/-f/stdin, REPL, named queries, AI run_sql,
+        // Python API)
+        if self.read_only {
+            crate::safety::check_read_only(query, &self.get_database_type())?;
+        }
+
         // Check if we should EXPLAIN this query (applies to all database types)
         if self.explain_mode && is_query_explainable(query) {
             debug!("EXPLAIN mode is enabled, executing EXPLAIN query");
@@ -1694,6 +1705,14 @@ impl Database {
         self.output_format = format;
     }
 
+    pub fn is_read_only(&self) -> bool {
+        self.read_only
+    }
+
+    pub fn set_read_only(&mut self, enabled: bool) {
+        self.read_only = enabled;
+    }
+
     pub fn is_explain_mode(&self) -> bool {
         self.explain_mode
     }
@@ -1869,6 +1888,7 @@ impl Database {
             ssh_tunnel: None, // No SSH tunnel in test mode
             expanded_display: false,
             output_format: crate::cli::OutputFormat::Table,
+            read_only: false,
             default_limit: 100,
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: false,
