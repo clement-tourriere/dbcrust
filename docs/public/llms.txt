@@ -1,0 +1,28 @@
+# DBCrust
+
+> A fast psql-style database workbench for the terminal with an agent-ready one-shot mode: one CLI for PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, and SQL over Parquet/CSV/JSON files — structured JSON output, stable exit codes, a `--read-only` guard, and prompt-free operation for programmatic callers.
+
+Installed locally, `dbcrust agents` prints the compact usage contract (URL grammar, `-c`/`-f`/stdin execution, `-o json` envelope shape, exit codes, safety flags). Recommended agent invocation: `dbcrust <url> --read-only --no-input -o json -c "<sql>"`.
+
+## AI agent docs
+
+- [DBCrust for AI agents](https://clement-tourriere.github.io/dbcrust/ai-agents/overview/): why agents drive dbcrust as a CLI instead of an MCP server, and the agent-grade feature map
+- [Agent quickstart](https://clement-tourriere.github.io/dbcrust/ai-agents/quickstart/): install, paste-ready CLAUDE.md/AGENTS.md snippet, credential setup, the discover-query-branch loop
+- [Safety & guardrails](https://clement-tourriere.github.io/dbcrust/ai-agents/safety/): read-only guard semantics per backend, limits, exit codes, output contract, privacy
+
+## Reference
+
+- [URL schemes](https://clement-tourriere.github.io/dbcrust/reference/url-schemes/): every connection type (postgres://, mysql://, sqlite://, clickhouse://, mongodb://, elasticsearch://, session://, docker://, vault://, files and globs)
+- [Backslash commands](https://clement-tourriere.github.io/dbcrust/reference/backslash-commands/): the 60+ psql-style commands, all usable via `-c`, including `\ddl` (compact schema dump) and `\d` (JSON-aware table detail)
+- [Configuration](https://clement-tourriere.github.io/dbcrust/reference/configuration-reference/): config.toml keys incl. read_only_default, default_limit, query_timeout_seconds
+
+## Other docs
+
+- [Quick start (human-oriented)](https://clement-tourriere.github.io/dbcrust/quick-start/)
+- [Python API](https://clement-tourriere.github.io/dbcrust/python-api/overview/): the same engine as a Python library (`dbcrust.run_command`)
+- [Built-in AI assistant](https://clement-tourriere.github.io/dbcrust/user-guide/ai-assistant/): dbcrust's own opt-in `??` text-to-SQL — distinct from external agents driving dbcrust
+
+## Source
+
+- [GitHub repository](https://github.com/clement-tourriere/dbcrust)
+- [Embedded agent guide source](https://github.com/clement-tourriere/dbcrust/blob/main/src/agent_guide.md): the exact text `dbcrust agents` prints

@@ -27,14 +27,16 @@ mise run gui:install && mise run gui:build
 | `src/main.rs` | Entry point, Tokio runtime, CLI orchestration |
 | `src/lib.rs` | PyO3 bindings (`PyDatabase`, `PyConfig`, `run_cli_loop`) |
 | `src/commands.rs` | **Enum-based command system** — all `\cmd` logic lives here |
-| `src/cli.rs` | Clap arg parsing (no args → prints help; `--update` self-updates) |
+| `src/cli.rs` | Clap arg parsing incl. one-shot flags (`-c`/`-f`, `-o/--format`, `--read-only`, `--no-input`); `OutputFormat`/`OneShotSource` live here |
+| `src/safety.rs` | Read-only statement classification — `--read-only` guard + AI agent guard share it |
+| `src/agent_guide.md` | Embedded `dbcrust agents` guide (the one-shot contract for AI coding agents) |
 | `src/ai/` | AI assistant (`??` text-to-SQL, `\ai`) — multi-provider via `genai` |
 | `src/update.rs` | `--update`: install-channel detection + GitHub release check |
 | `src/config.rs` | TOML config, `save_with_documentation` must be updated for new fields |
 | `src/config_editor.rs` | Schema-driven `\config` menu/get/set + SSH tunnel manager (`dbcrust config` CLI) |
 | `src/prompt.rs` | Reedline interactive REPL |
 | `src/completion.rs` | SQL autocomplete with metadata caching |
-| `src/format.rs` | Output formatting (table, expanded, JSON, CSV) |
+| `src/format.rs` | Output formatting (table, expanded, CSV, JSON, JSONL) — `render_query_results` is the dispatch |
 | `src/database.rs` | `DatabaseClient` + `MetadataProvider` traits |
 | `src/database_postgresql.rs` | PG implementation (`format_postgresql_value` ~line 1390) |
 | `src/database_datafusion.rs` | File format queries (Parquet, CSV, JSON) |

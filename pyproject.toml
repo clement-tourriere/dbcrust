@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "dbcrust"
 version = "0.33.0"
-description = "Fast Rust database workbench for the terminal: PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, SQL over Parquet/CSV/JSON, optional AI, SSH/Vault, Python API, and Django ORM analysis."
+description = "Fast Rust database workbench for the terminal: PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, SQL over Parquet/CSV/JSON — agent-ready one-shot mode (JSON output, stable exit codes, read-only guard), optional AI, SSH/Vault, Python API, and Django ORM analysis."
 authors = [{ name = "Clément Tourrière", email = "clement.tourriere@gmail.com" }]
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -13,7 +13,8 @@ keywords = [
     "dbcrust", "database", "database-cli", "sql", "cli", "interactive", "repl",
     "postgres", "postgresql", "mysql", "sqlite", "clickhouse", "mongodb",
     "elasticsearch", "parquet", "csv", "json", "datafusion", "ssh-tunnel",
-    "vault", "docker", "ai", "llm", "gui", "django", "orm", "python-library",
+    "vault", "docker", "ai", "llm", "ai-agents", "coding-agents", "claude-code",
+    "gui", "django", "orm", "python-library",
     "performance-analysis", "n-plus-one"
 ]
 readme = "README.md"

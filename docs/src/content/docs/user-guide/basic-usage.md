@@ -198,6 +198,48 @@ The rewrite only happens when a query actually uses a regex operator; anything D
 `RLIKE` compiles to a standard Lucene `regexp` query, so plugins that accelerate regex search on custom field types (e.g. trigram/sparse-ngram indexes) benefit automatically.
 :::
 
+## 🤖 One-Shot Mode (Scripts & Agents)
+
+Everything DBCrust does interactively also works non-interactively — the foundation for shell scripts, CI checks, and [AI coding agents](/dbcrust/ai-agents/overview/):
+
+```bash
+# Inline SQL (repeatable; one -c may hold several ;-separated statements)
+dbcrust postgres://localhost/mydb -c "SELECT count(*) FROM users"
+
+# Backslash commands work too
+dbcrust session://prod -c '\dt' -c '\ddl users orders'
+
+# SQL files (pure SQL; interleaves with -c in command-line order)
+dbcrust session://prod -f checks.sql -c "SELECT 'done'"
+
+# Piped stdin runs as a SQL script
+echo "SELECT 1" | dbcrust ./data.sqlite
+```
+
+### Structured output
+
+`-o/--format` selects `table` (default), `expanded`, `csv`, `json`, or `jsonl` — also settable via the `DBCRUST_FORMAT` environment variable:
+
+```bash
+dbcrust session://prod -o json -c "SELECT id, email FROM users LIMIT 2"
+# {"columns":["id","email"],"rows":[["1","a@x.com"],["2","b@x.com"]],"row_count":2,"truncated":false}
+
+dbcrust session://prod -o csv -c "SELECT * FROM users" > users.csv
+```
+
+In one-shot mode stdout carries results only (status messages go to stderr and the pager never engages), so output pipes cleanly into `jq`, files, and other tools.
+
+### Guardrails and exit codes
+
+```bash
+dbcrust session://prod --read-only --timeout 30 --max-rows 500 --no-input -o json -c "…"
+```
+
+- `--read-only` rejects write statements (exit code 4); `--timeout` and `--max-rows` bound each run; `--no-input` fails fast instead of ever opening a prompt.
+- Exit codes are stable: `0` success · `1` statement failed · `2` usage · `3` connection failure · `4` blocked by `--read-only` · `130` interrupted.
+
+The full programmatic contract lives in `dbcrust agents` and the [AI agents section](/dbcrust/ai-agents/overview/).
+
 ## 🧠 Smart Autocompletion
 
 DBCrust provides intelligent, context-aware autocompletion that understands both your database schema and SQL syntax context:

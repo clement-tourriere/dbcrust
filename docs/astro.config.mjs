@@ -44,6 +44,14 @@ export default defineConfig({
           ],
         },
         {
+          label: 'AI Agents',
+          items: [
+            { label: 'Overview', slug: 'ai-agents/overview' },
+            { label: 'Quickstart', slug: 'ai-agents/quickstart' },
+            { label: 'Safety & Guardrails', slug: 'ai-agents/safety' },
+          ],
+        },
+        {
           label: 'Django Integration',
           items: [
             { label: 'ORM Analyzer', slug: 'django-analyzer' },

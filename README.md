@@ -24,7 +24,7 @@ dbc postgres://user:pass@localhost/mydb
 - **DBCrust for Django** — catch N+1 queries, missing `select_related` / `prefetch_related`, slow views, and index opportunities before production.
 - **Production-friendly plumbing** — SSH tunnels (with auto-tunnel patterns), HashiCorp Vault dynamic credentials, Docker container auto-discovery, encrypted password storage.
 - **A REPL that helps** — context-aware autocompletion, syntax highlighting, history search, external editor, EXPLAIN visualization (including an interactive TUI), named queries, saved sessions.
-- **Scriptable and embeddable** — `-c` for one-shot queries and a Python API powered by the same Rust core.
+- **Scriptable, embeddable, agent-ready** — `-c`/`-f`/stdin one-shots with `-o json|csv` output, stable exit codes, a `--read-only` guard, and a Python API powered by the same Rust core.
 
 ## Install
 
@@ -77,6 +77,21 @@ Every connection type is a URL:
 
 Full details: [URL schemes reference](https://clement-tourriere.github.io/dbcrust/reference/url-schemes/).
 
+## Built for AI agents
+
+Coding agents work best with CLIs they can shell out to — no MCP server to run, no per-tool token overhead, composable with pipes and exit codes. DBCrust's one-shot mode gives them **one binary for every data service**:
+
+```bash
+dbcrust session://prod -c '\ddl'                            # whole schema as compact DDL, one call
+dbcrust session://prod --read-only --no-input -o json \
+  -c "SELECT status, count(*) FROM orders GROUP BY status"  # single-line {"columns","rows",...} envelope
+echo "SELECT count(*) FROM logs" | dbcrust ./logs.parquet   # stdin scripts; files are databases too
+```
+
+The contract is built for programmatic callers: results-only stdout (status goes to stderr, the pager never engages), JSON errors on stderr under `-o json`, stable exit codes (`0` ok · `1` SQL error · `2` usage · `3` connection · `4` blocked by `--read-only`), `--timeout`/`--max-rows` limits, and `--no-input` so no prompt can ever hang an agent. The binary documents itself: run **`dbcrust agents`** for the full ~100-line contract, and paste the ready-made snippet into your project's `CLAUDE.md`/`AGENTS.md` from the [agent quickstart](https://clement-tourriere.github.io/dbcrust/ai-agents/quickstart/).
+
+`--read-only` is a best-effort statement guard backed by connect-level hardening (SQLite `query_only`, PostgreSQL `default_transaction_read_only`); for hard guarantees use a read-only database role — details in [safety & guardrails](https://clement-tourriere.github.io/dbcrust/ai-agents/safety/).
+
 ## SQL over local files
 
 Inspect production exports, logs, and data drops without importing them into a database or opening a notebook.
@@ -104,7 +119,7 @@ Connecting drops you into a REPL with context-aware SQL autocompletion, syntax h
 
 | | Commands |
 |---|---|
-| **Explore** | `\l` databases · `\c <db>` switch · `\dt` tables · `\d <table>` describe |
+| **Explore** | `\l` databases · `\c <db>` switch · `\dt` tables · `\d <table>` describe · `\ddl` schema dump |
 | **Display** | `\x` expanded · `\cs` column selection · `\e` EXPLAIN mode · `\ev` interactive EXPLAIN TUI |
 | **Edit & run** | `\ed` open `$EDITOR` · `\i <file>` run SQL file · `\w <file>` write last query |
 | **Named queries** | `\n` list · `\ns <name> <sql>` save · `\nd <name>` delete |

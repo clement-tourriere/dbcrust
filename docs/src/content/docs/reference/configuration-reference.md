@@ -50,6 +50,10 @@ Controls database connection behavior and query execution.
 # Default query result limit
 default_limit = 1000
 
+# Reject write statements by default (best-effort guard;
+# per-run override: --read-only[=false])
+read_only_default = false
+
 # Connection timeout in seconds
 timeout = 30
 
@@ -74,6 +78,7 @@ query_timeout = 300
 | Setting | Type | Default | Description |
 |---------|------|---------|-------------|
 | `default_limit` | Integer | `1000` | Default LIMIT for queries without explicit limit |
+| `read_only_default` | Boolean | `false` | Reject write statements unless `--read-only=false` is passed (best-effort guard; see [Safety & Guardrails](/dbcrust/ai-agents/safety/)) |
 | `timeout` | Integer | `30` | Database connection timeout (seconds) |
 | `max_retries` | Integer | `3` | Maximum connection retry attempts |
 | `show_execution_time` | Boolean | `true` | Display query execution time |
