@@ -494,6 +494,12 @@ impl CliCore {
             return Ok(0);
         }
 
+        // Handle `dbcrust agents` — print the embedded agent guide and exit
+        if let Some(crate::cli::CliCommand::Agents) = &args.subcommand {
+            println!("{}", include_str!("agent_guide.md"));
+            return Ok(0);
+        }
+
         // Log system information
         cli_core.log_system_info(&args);
 

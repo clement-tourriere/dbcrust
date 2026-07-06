@@ -20,6 +20,7 @@ use clap::{Parser, Subcommand, ValueEnum};
   dbcrust file://                   # pick a compatible file from the current directory
   dbcrust config                    # interactive configuration menu (no connection)
   dbcrust config set logging.level debug
+  dbcrust agents                    # print the guide for AI coding agents
   dbcrust --update                  # update dbcrust to the latest release")]
 pub struct Args {
     /// Database connection URL
@@ -163,6 +164,9 @@ pub enum CliCommand {
         #[command(subcommand)]
         action: Option<ConfigAction>,
     },
+    /// Print the guide for AI coding agents (URL schemes, one-shot flags,
+    /// output formats, exit codes, safety rails)
+    Agents,
 }
 
 #[derive(Subcommand, Clone, Debug)]
@@ -308,6 +312,13 @@ mod tests {
     fn test_completions() {
         let args = Args::try_parse_from(["dbcrust", "--completions", "bash"]).unwrap();
         assert_eq!(args.completions, Some(Shell::Bash));
+    }
+
+    #[test]
+    fn test_agents_subcommand() {
+        let args = Args::parse_from_argv(["dbcrust", "agents"]).unwrap();
+        assert!(matches!(args.subcommand, Some(CliCommand::Agents)));
+        assert!(args.connection_url.is_none());
     }
 
     #[test]
