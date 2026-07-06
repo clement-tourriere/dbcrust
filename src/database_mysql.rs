@@ -8,6 +8,7 @@ use crate::db::TableDetails;
 use crate::geojson_display::GeoJsonDisplayAdapter;
 use crate::json_display::JsonDisplayAdapter;
 use crate::performance_analyzer::PerformanceAnalyzer;
+use crate::regex_operators::{RegexTarget, translate_regex_operators};
 use async_trait::async_trait;
 use sqlx::mysql::{MySqlPool, MySqlPoolOptions, MySqlRow};
 use sqlx::types::Decimal;
@@ -904,7 +905,8 @@ impl DatabaseClient for MySqlClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[MySqlClient::execute_query] Executing query");
 
-        let rows = sqlx::query(sql).fetch_all(&self.pool).await?;
+        let sql = translate_regex_operators(sql, RegexTarget::MySql)?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
 
         if rows.is_empty() {
             return Ok(vec![]);
@@ -940,6 +942,7 @@ impl DatabaseClient for MySqlClient {
 
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
         debug!("[MySqlClient::test_query] Testing query for validation");
+        let sql = translate_regex_operators(sql, RegexTarget::MySql)?;
         // For MySQL, we can use EXPLAIN to validate query syntax without executing it
         let explain_sql = format!("EXPLAIN {sql}");
 
@@ -954,6 +957,7 @@ impl DatabaseClient for MySqlClient {
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[MySqlClient::explain_query] Executing EXPLAIN for query");
 
+        let sql = translate_regex_operators(sql, RegexTarget::MySql)?;
         // Try EXPLAIN FORMAT=JSON first for better structured output
         let json_explain_sql = format!("EXPLAIN FORMAT=JSON {sql}");
         let json_result = sqlx::query(&json_explain_sql).fetch_all(&self.pool).await;
@@ -985,6 +989,7 @@ impl DatabaseClient for MySqlClient {
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[MySqlClient::explain_query_raw] Executing raw EXPLAIN for query");
 
+        let sql = translate_regex_operators(sql, RegexTarget::MySql)?;
         // Try EXPLAIN FORMAT=JSON first for raw structured output
         let json_explain_sql = format!("EXPLAIN FORMAT=JSON {sql}");
         let json_result = self.execute_query(&json_explain_sql).await;

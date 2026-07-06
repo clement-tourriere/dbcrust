@@ -9,6 +9,7 @@ use crate::database::{
 use crate::db::TableDetails;
 use crate::geojson_display::GeoJsonDisplayAdapter;
 use crate::json_display::JsonDisplayAdapter;
+use crate::regex_operators::{RegexTarget, translate_regex_operators};
 use async_trait::async_trait;
 use clickhouse::{Client, Row};
 use serde::Deserialize;
@@ -543,8 +544,9 @@ impl ClickHouseClient {
             sql
         );
 
+        let sql = translate_regex_operators(sql, RegexTarget::ClickHouse)?;
         // Use HTTP interface for all user queries to handle dynamic results
-        self.execute_http_user_query(sql).await
+        self.execute_http_user_query(&sql).await
     }
 
     /// Format a row of data with complex display adapters
@@ -681,6 +683,7 @@ impl DatabaseClient for ClickHouseClient {
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
         debug!("[ClickHouseClient::test_query] Testing query: {}", sql);
 
+        let sql = translate_regex_operators(sql, RegexTarget::ClickHouse)?;
         // For ClickHouse, we can test by trying to explain the query
         let explain_query = format!("EXPLAIN {sql}");
         self.client
@@ -698,6 +701,7 @@ impl DatabaseClient for ClickHouseClient {
             sql
         );
 
+        let sql = translate_regex_operators(sql, RegexTarget::ClickHouse)?;
         let explain_sql = format!("EXPLAIN PLAN {sql}");
         self.execute_raw_query(&explain_sql).await
     }
@@ -708,6 +712,7 @@ impl DatabaseClient for ClickHouseClient {
             sql
         );
 
+        let sql = translate_regex_operators(sql, RegexTarget::ClickHouse)?;
         // ClickHouse EXPLAIN with more details
         let explain_sql = format!("EXPLAIN SYNTAX {sql}");
         self.execute_raw_query(&explain_sql).await

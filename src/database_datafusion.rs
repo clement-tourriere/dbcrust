@@ -1282,6 +1282,64 @@ mod tests {
         assert_eq!(results.len(), 4);
     }
 
+    /// Regex operators (~, ~*, !~, !~*) are native DataFusion SQL and need no
+    /// translation for file backends (CSV, Parquet, JSON).
+    #[tokio::test]
+    async fn datafusion_regex_operators_are_native() {
+        let mut file = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
+        use std::io::Write;
+        writeln!(file, "line").unwrap();
+        writeln!(file, "key=AKIAIOSFODNN7EXAMPLE").unwrap();
+        writeln!(file, "hello world").unwrap();
+        writeln!(file, "GHP token").unwrap();
+        file.flush().unwrap();
+
+        let path = file.path().to_string_lossy().to_string();
+        let mut options = std::collections::HashMap::new();
+        options.insert("header".to_string(), "true".to_string());
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::CSV,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: Some(path.clone()),
+            options,
+            docker_container: None,
+            use_tls: false,
+        };
+
+        let client = DataFusionClient::new(connection_info).await.unwrap();
+        let table_name = DataFusionClient::extract_table_name(&path);
+
+        let results = client
+            .execute_query(&format!(
+                "SELECT line FROM {table_name} WHERE line ~ 'AKIA[0-9A-Z]{{16}}'"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2); // header + 1 match
+        assert!(results[1][0].contains("AKIA"));
+
+        let results = client
+            .execute_query(&format!(
+                "SELECT line FROM {table_name} WHERE line ~* 'ghp'"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[1][0], "GHP token");
+
+        let results = client
+            .execute_query(&format!(
+                "SELECT count(*) AS c FROM {table_name} WHERE line !~ 'AKIA'"
+            ))
+            .await
+            .unwrap();
+        assert_eq!(results[1][0], "2");
+    }
+
     /// Regression test: relative paths (e.g. `./data.csv` or `data.csv`) must
     /// be resolved to absolute before handing to DataFusion. Without this,
     /// `register_parquet`/`register_csv` silently creates an empty listing

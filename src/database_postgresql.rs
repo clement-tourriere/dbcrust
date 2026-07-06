@@ -2845,4 +2845,63 @@ mod tests {
             }
         }
     }
+
+    /// Regex operators are native PostgreSQL syntax and must reach the server
+    /// untranslated (unlike the other backends, which rewrite them).
+    #[tokio::test]
+    async fn test_regex_operators_are_native() {
+        let database_url = match std::env::var("DATABASE_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Skipping test_regex_operators_are_native: DATABASE_URL not set");
+                return;
+            }
+        };
+
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::PostgreSQL,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: None,
+            options: HashMap::new(),
+            docker_container: None,
+            use_tls: false,
+        };
+
+        let pool = match PgPoolOptions::new()
+            .max_connections(2)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&database_url)
+            .await
+        {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Skipping: could not connect to database: {}", e);
+                return;
+            }
+        };
+
+        let metadata_provider = PostgreSQLMetadataProvider::new(pool.clone());
+        let client = PostgreSQLClient {
+            pool,
+            connection_info,
+            current_database: "test".to_string(),
+            metadata_provider,
+            session: tokio::sync::Mutex::new(SessionState {
+                conn: None,
+                backend_pid: None,
+                clean: true,
+            }),
+        };
+
+        let sql = "SELECT \
+            CASE WHEN 'key=AKIAIOSFODNN7EXAMPLE' ~ 'AKIA[0-9A-Z]{16}' THEN 'yes' ELSE 'no' END AS m, \
+            CASE WHEN 'ABC' ~* 'abc' THEN 'yes' ELSE 'no' END AS ci, \
+            CASE WHEN 'abc' !~ 'xyz' THEN 'yes' ELSE 'no' END AS n";
+        let rows = client.execute_query(sql).await.unwrap();
+        assert_eq!(rows[1], vec!["yes", "yes", "yes"]);
+    }
 }

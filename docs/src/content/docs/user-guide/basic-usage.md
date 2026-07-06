@@ -160,6 +160,44 @@ HAVING COUNT(o.id) > 5;
 -- Press Enter to execute
 ```
 
+### Regex Matching on Any Backend
+
+DBCrust understands the PostgreSQL regex operators on **every** backend, so the same query syntax works whether you are connected to PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, or a Parquet/CSV/JSON file:
+
+```sql
+-- Find leaked AWS access keys, on any backend
+SELECT * FROM logs WHERE line ~ 'AKIA[0-9A-Z]{16}';
+
+SELECT * FROM users WHERE email ~* '@example\.(com|org)$';  -- case-insensitive
+SELECT * FROM logs WHERE line !~ '^DEBUG';                   -- negated
+SELECT * FROM logs WHERE line !~* 'heartbeat';               -- negated, case-insensitive
+```
+
+| Operator | Meaning |
+|----------|---------|
+| `~` | Regex match (case-sensitive) |
+| `~*` | Regex match (case-insensitive) |
+| `!~` | Does **not** match |
+| `!~*` | Does **not** match (case-insensitive) |
+
+PostgreSQL and file formats (DataFusion) support these operators natively. For the other backends, DBCrust rewrites the operator into the native equivalent before sending the query:
+
+| Backend | `line ~ 'p'` becomes | Notes |
+|---------|----------------------|-------|
+| PostgreSQL | `line ~ 'p'` (unchanged) | Native operators |
+| Parquet/CSV/JSON | `line ~ 'p'` (unchanged) | Native in DataFusion |
+| MySQL/MariaDB | `line REGEXP 'p'` | `~` case-sensitivity follows the column collation; `~*` forces `(?i)` |
+| SQLite | `line REGEXP 'p'` | Powered by a built-in `regexp()` function (Rust regex syntax) |
+| ClickHouse | `match(line, 'p')` | RE2 syntax |
+| MongoDB | `{line: {$regex: 'p'}}` | In `SELECT ... WHERE` translation |
+| Elasticsearch | `line RLIKE 'p'` | Lucene regex syntax; `~*`/`!~*` are rejected (Lucene has no case-insensitive flag) |
+
+The rewrite only happens when a query actually uses a regex operator; anything DBCrust cannot parse is passed to the backend unchanged.
+
+:::tip[Elasticsearch]
+`RLIKE` compiles to a standard Lucene `regexp` query, so plugins that accelerate regex search on custom field types (e.g. trigram/sparse-ngram indexes) benefit automatically.
+:::
+
 ## 🧠 Smart Autocompletion
 
 DBCrust provides intelligent, context-aware autocompletion that understands both your database schema and SQL syntax context:

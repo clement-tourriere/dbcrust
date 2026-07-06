@@ -9,7 +9,7 @@ use crate::database::{
 use crate::geojson_display::GeoJsonDisplayAdapter;
 use crate::json_display::JsonDisplayAdapter;
 use async_trait::async_trait;
-use bson::{Document, doc};
+use bson::{Bson, Document, doc};
 use futures_util::stream::{StreamExt, TryStreamExt};
 use mongodb::{Client, Database as MongoDatabase, options::ClientOptions};
 use tracing::debug;
@@ -1010,6 +1010,12 @@ impl MongoDBClient {
             condition
         );
 
+        // Regex operators (~, ~*, !~, !~*) must be checked before the generic
+        // comparison scan: a regex pattern may itself contain =, < or >
+        if let Some(filter) = parse_regex_condition(condition) {
+            return Ok(filter);
+        }
+
         // Handle simple comparison operators
         let operators = [
             (">=", "$gte"),
@@ -1519,5 +1525,139 @@ impl DatabaseClient for MongoDBClient {
             supports_roles: true,        // MongoDB supports role-based auth
             additional_info,
         })
+    }
+}
+
+/// Parse a PostgreSQL-style regex condition (`field ~ 'pattern'`, `~*`
+/// case-insensitive, `!~` / `!~*` negated) into a MongoDB `$regex` filter.
+///
+/// Returns `None` when the condition is not a single regex comparison (no
+/// unquoted `~`, or extra content after the pattern) so combined conditions
+/// fall through to the AND/OR handlers.
+fn parse_regex_condition(condition: &str) -> Option<Document> {
+    // Locate the first tilde outside of quotes
+    let mut in_quote: Option<char> = None;
+    let mut tilde = None;
+    for (i, ch) in condition.char_indices() {
+        match in_quote {
+            Some(q) if ch == q => in_quote = None,
+            Some(_) => {}
+            None => match ch {
+                '\'' | '"' => in_quote = Some(ch),
+                '~' => {
+                    tilde = Some(i);
+                    break;
+                }
+                _ => {}
+            },
+        }
+    }
+    let tilde = tilde?;
+
+    let bytes = condition.as_bytes();
+    let negated = tilde > 0 && bytes[tilde - 1] == b'!';
+    let case_insensitive = tilde + 1 < bytes.len() && bytes[tilde + 1] == b'*';
+
+    let field = condition[..if negated { tilde - 1 } else { tilde }].trim();
+    if field.is_empty() || field.contains(char::is_whitespace) {
+        return None;
+    }
+
+    let raw_pattern = condition[tilde + if case_insensitive { 2 } else { 1 }..].trim();
+    // The pattern must be a single quoted literal (or bare token) reaching the
+    // end of the condition
+    let pattern = if let Some(quote) = ['\'', '"'].iter().find(|q| raw_pattern.starts_with(**q)) {
+        let inner = raw_pattern.strip_prefix(*quote)?.strip_suffix(*quote)?;
+        if inner.contains(*quote) {
+            return None;
+        }
+        inner
+    } else if raw_pattern.is_empty() || raw_pattern.contains(char::is_whitespace) {
+        return None;
+    } else {
+        raw_pattern
+    };
+
+    let filter = if negated {
+        doc! {
+            field: {
+                "$not": Bson::RegularExpression(bson::Regex {
+                    pattern: pattern.to_string(),
+                    options: if case_insensitive { "i".to_string() } else { String::new() },
+                })
+            }
+        }
+    } else if case_insensitive {
+        doc! { field: { "$regex": pattern, "$options": "i" } }
+    } else {
+        doc! { field: { "$regex": pattern } }
+    };
+    Some(filter)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[test]
+    fn test_parse_regex_condition_match() {
+        assert_eq!(
+            parse_regex_condition("name ~ 'AKIA[0-9A-Z]{16}'"),
+            Some(doc! { "name": { "$regex": "AKIA[0-9A-Z]{16}" } })
+        );
+    }
+
+    #[test]
+    fn test_parse_regex_condition_case_insensitive() {
+        assert_eq!(
+            parse_regex_condition("name ~* 'akia'"),
+            Some(doc! { "name": { "$regex": "akia", "$options": "i" } })
+        );
+    }
+
+    #[rstest]
+    #[case("name !~ 'x'", "")]
+    #[case("name !~* 'x'", "i")]
+    fn test_parse_regex_condition_negated(#[case] condition: &str, #[case] options: &str) {
+        assert_eq!(
+            parse_regex_condition(condition),
+            Some(doc! {
+                "name": {
+                    "$not": Bson::RegularExpression(bson::Regex {
+                        pattern: "x".to_string(),
+                        options: options.to_string(),
+                    })
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_regex_condition_pattern_may_contain_comparison_chars() {
+        assert_eq!(
+            parse_regex_condition("line ~ 'a=b<c>'"),
+            Some(doc! { "line": { "$regex": "a=b<c>" } })
+        );
+    }
+
+    #[test]
+    fn test_parse_regex_condition_dotted_field() {
+        assert_eq!(
+            parse_regex_condition("address.city ~ '^Par'"),
+            Some(doc! { "address.city": { "$regex": "^Par" } })
+        );
+    }
+
+    #[rstest]
+    // No regex operator at all
+    #[case("name = 'joe'")]
+    // Tilde inside a quoted value is not an operator
+    #[case("name = 'a ~ b'")]
+    // Combined conditions must fall through to the AND/OR handlers
+    #[case("name ~ 'x' AND age > 3")]
+    #[case("age > 3 AND name ~ 'x'")]
+    fn test_parse_regex_condition_rejects(#[case] condition: &str) {
+        assert_eq!(parse_regex_condition(condition), None);
     }
 }

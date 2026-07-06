@@ -133,6 +133,24 @@ SELECT * FROM codes WHERE code LIKE 'A_B%';
 - Case-insensitive by default with `$options: "i"`
 - Regex special characters are automatically escaped
 
+#### Regex Operators
+
+```sql
+-- PostgreSQL-style regex operators translate to $regex
+SELECT * FROM logs WHERE line ~ 'AKIA[0-9A-Z]{16}';
+-- → {"line": {"$regex": "AKIA[0-9A-Z]{16}"}}
+
+SELECT * FROM users WHERE name ~* '^john';
+-- → {"name": {"$regex": "^john", "$options": "i"}}
+
+SELECT * FROM logs WHERE line !~ '^DEBUG';
+-- → {"line": {"$not": /^DEBUG/}}
+```
+
+- `~` case-sensitive match, `~*` case-insensitive (`$options: "i"`)
+- `!~` / `!~*` negate the match via `$not`
+- Unlike `LIKE`, the pattern is used as-is (no escaping, full regex syntax)
+
 #### IN Operator
 
 ```sql

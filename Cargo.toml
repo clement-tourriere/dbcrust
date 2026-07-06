@@ -37,6 +37,7 @@ sqlx = { version = "0.8", features = [
     "uuid",
     "ipnetwork",
     "rust_decimal",
+    "regexp",
 ], default-features = false }
 prettytable-rs = { version = "0.10", default-features = false }
 clap = { version = "4.6", features = [

@@ -3,6 +3,7 @@ use crate::complex_display::ComplexDisplayConfig;
 use crate::database::{
     ConnectionInfo, DatabaseClient, DatabaseError, DatabaseTypeExt, MetadataProvider, ServerInfo,
 };
+use crate::regex_operators::{RegexTarget, translate_regex_operators};
 use async_trait::async_trait;
 use elasticsearch::{
     Elasticsearch, SearchParts,
@@ -864,6 +865,10 @@ impl ElasticsearchClient {
             );
         }
 
+        // Translate PG-style regex operators (~, !~) to RLIKE after quoting,
+        // so index names with dashes/dots are already parseable
+        final_sql = translate_regex_operators(&final_sql, RegexTarget::ElasticsearchSql)?;
+
         // Handle SELECT * queries by rewriting them to exclude array fields
         let mut excluded_fields = Vec::new();
         if Self::is_select_star_query(&final_sql) {
@@ -1319,6 +1324,7 @@ impl DatabaseClient for ElasticsearchClient {
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
         debug!("[ElasticsearchClient::test_query] Testing query: {}", sql);
 
+        let sql = translate_regex_operators(sql, RegexTarget::ElasticsearchSql)?;
         // Use SQL translate API to validate query without executing
         let _response = self
             .client
@@ -1340,6 +1346,7 @@ impl DatabaseClient for ElasticsearchClient {
             sql
         );
 
+        let sql = translate_regex_operators(sql, RegexTarget::ElasticsearchSql)?;
         // Use SQL translate API to show the underlying Elasticsearch query
         let response = self
             .client

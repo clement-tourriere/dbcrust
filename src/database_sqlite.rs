@@ -2,9 +2,11 @@
 use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
 use crate::db::TableDetails;
 use crate::performance_analyzer::PerformanceAnalyzer;
+use crate::regex_operators::{RegexTarget, translate_regex_operators};
 use async_trait::async_trait;
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions, SqliteRow};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions, SqliteRow};
 use sqlx::{Column, Row};
+use std::str::FromStr;
 use tracing::debug;
 
 /// SQLite metadata provider implementation
@@ -323,13 +325,19 @@ impl SqliteClient {
 
         debug!("[SqliteClient::new] Connecting to: {}", database_url);
 
+        // with_regexp registers a REGEXP function on every connection, which
+        // powers the translated `~` / `~*` regex operators
+        let connect_options = SqliteConnectOptions::from_str(&database_url)
+            .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?
+            .with_regexp();
+
         // Configure connection pool with SQLite-specific optimizations
         let pool = SqlitePoolOptions::new()
             .max_connections(5) // SQLite doesn't need as many connections as network databases
             .min_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(10))
             .idle_timeout(std::time::Duration::from_secs(600)) // Keep connections alive longer
-            .connect(&database_url)
+            .connect_with(connect_options)
             .await
             .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?;
 
@@ -603,7 +611,8 @@ impl DatabaseClient for SqliteClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[SqliteClient::execute_query] Executing query");
 
-        let rows = sqlx::query(sql).fetch_all(&self.pool).await?;
+        let sql = translate_regex_operators(sql, RegexTarget::Sqlite)?;
+        let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
 
         if rows.is_empty() {
             return Ok(vec![]);
@@ -638,6 +647,7 @@ impl DatabaseClient for SqliteClient {
 
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
         debug!("[SqliteClient::test_query] Testing query for validation");
+        let sql = translate_regex_operators(sql, RegexTarget::Sqlite)?;
         // For SQLite, we can use EXPLAIN QUERY PLAN to validate query syntax without executing it
         let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
 
@@ -652,6 +662,7 @@ impl DatabaseClient for SqliteClient {
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[SqliteClient::explain_query] Executing EXPLAIN QUERY PLAN for query");
 
+        let sql = translate_regex_operators(sql, RegexTarget::Sqlite)?;
         let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
         let raw_results = self.execute_query(&explain_sql).await?;
 
@@ -662,6 +673,7 @@ impl DatabaseClient for SqliteClient {
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[SqliteClient::explain_query_raw] Executing raw EXPLAIN QUERY PLAN for query");
 
+        let sql = translate_regex_operators(sql, RegexTarget::Sqlite)?;
         let explain_sql = format!("EXPLAIN QUERY PLAN {sql}");
         self.execute_query(&explain_sql).await
     }
@@ -1119,5 +1131,64 @@ mod tests {
                 .iter()
                 .any(|col| col.contains("SQLite Query Plan"))
         );
+    }
+
+    #[tokio::test]
+    async fn test_regex_operators_end_to_end() {
+        // Fresh database file; an empty file is a valid empty SQLite database
+        let db_path =
+            std::env::temp_dir().join(format!("dbcrust_regex_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        std::fs::File::create(&db_path).unwrap();
+
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::SQLite,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: Some(db_path.to_string_lossy().to_string()),
+            options: HashMap::new(),
+            docker_container: None,
+            use_tls: false,
+        };
+
+        let client = SqliteClient::new(connection_info).await.unwrap();
+        client
+            .execute_query("CREATE TABLE secrets (line TEXT)")
+            .await
+            .unwrap();
+        client
+            .execute_query(
+                "INSERT INTO secrets VALUES ('key=AKIAIOSFODNN7EXAMPLE'), ('hello world'), ('GHP token')",
+            )
+            .await
+            .unwrap();
+
+        // ~ is translated to REGEXP, answered by the regexp function sqlx registers
+        let rows = client
+            .execute_query("SELECT line FROM secrets WHERE line ~ 'AKIA[0-9A-Z]{16}'")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2); // header + 1 match
+        assert!(rows[1][0].contains("AKIA"));
+
+        // ~* forces case-insensitive matching via an inline (?i)
+        let rows = client
+            .execute_query("SELECT line FROM secrets WHERE line ~* 'ghp'")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1][0], "GHP token");
+
+        // !~ negates the match
+        let rows = client
+            .execute_query("SELECT count(*) AS c FROM secrets WHERE line !~ 'AKIA'")
+            .await
+            .unwrap();
+        assert_eq!(rows[1][0], "2");
+
+        std::fs::remove_file(&db_path).ok();
     }
 }

@@ -138,7 +138,17 @@ WHERE timestamp BETWEEN '2024-01-01' AND '2024-01-02';
 -- Text search (use text fields)
 SELECT commit.message FROM commits-2020.01.01
 WHERE commit.message LIKE '%fix%';
+
+-- Regex matching: ~ translates to RLIKE (Lucene regex).
+-- Compiles to a standard regexp query, so plugins accelerating regex
+-- on custom field types (e.g. sparse ngrams/trigrams) kick in automatically
+SELECT * FROM logs-2024.01.01
+WHERE message ~ 'AKIA[0-9A-Z]{16}';
 ```
+
+:::note
+Lucene regex has no case-insensitive flag, so the case-insensitive operators `~*` / `!~*` are rejected on Elasticsearch. Use `~` with explicit character classes instead.
+:::
 
 ## Advanced Features
 
