@@ -126,6 +126,26 @@ pub enum Shell {
     Elvish,
 }
 
+/// Output format for query results (`-o/--format`, env `DBCRUST_FORMAT`).
+///
+/// Defined here rather than in `format.rs` because cli.rs is also compiled
+/// standalone into the binaries (`mod cli;` in main.rs) and must not depend
+/// on lib-only modules.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, ValueEnum)]
+pub enum OutputFormat {
+    /// psql-style aligned table (default)
+    #[default]
+    Table,
+    /// Vertical one-record-per-block layout (same as `\x`)
+    Expanded,
+    /// RFC 4180 CSV with a header row
+    Csv,
+    /// One `{"columns":[…],"rows":[[…]],"row_count":n,"truncated":bool}` envelope per statement
+    Json,
+    /// One JSON object per data row, keys in column order
+    Jsonl,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,3 +1,4 @@
+use crate::cli::OutputFormat;
 use crate::db::{ColumnFilteringInfo, TableDetails};
 use chrono;
 use prettytable::{Cell, Row, Table};
@@ -168,6 +169,173 @@ pub fn format_query_results_psql_with_info(
             fallback
         }
     }
+}
+
+/// Render one result set in the requested output format.
+///
+/// This is the single dispatch point for query-result rendering. `Expanded`
+/// as a format is equivalent to `Table` with `expanded = true` (the `\x`
+/// toggle), so both spellings render identically.
+pub fn render_query_results(
+    data: &[Vec<String>],
+    column_info: Option<&ColumnFilteringInfo>,
+    format: OutputFormat,
+    expanded: bool,
+) -> String {
+    match format {
+        OutputFormat::Table | OutputFormat::Expanded => {
+            if expanded || format == OutputFormat::Expanded {
+                let mut out = String::new();
+                for table in format_query_results_expanded(data) {
+                    out.push_str(&format!("{table}\n"));
+                }
+                out
+            } else {
+                format_query_results_psql_with_info(data, column_info)
+            }
+        }
+        OutputFormat::Csv => format_query_results_csv(data),
+        OutputFormat::Json => format_query_results_json(data),
+        OutputFormat::Jsonl => format_query_results_jsonl(data),
+    }
+}
+
+/// Escape a value as a JSON string literal (infallible for UTF-8 input).
+fn json_string(value: &str) -> String {
+    serde_json::Value::String(value.to_string()).to_string()
+}
+
+fn push_json_string_array(out: &mut String, cells: &[String]) {
+    out.push('[');
+    for (i, cell) in cells.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&json_string(cell));
+    }
+    out.push(']');
+}
+
+/// One compact JSON envelope per result set, on a single line:
+/// `{"columns":[…],"rows":[[…]],"row_count":n,"truncated":bool}`.
+///
+/// Cells are the pre-stringified values as returned by the backend (SQL NULL
+/// arrives as the literal string "NULL"). `row_count` is the total number of
+/// data rows in the result; `truncated` is true when the row/byte guards
+/// dropped rows from `rows`.
+pub fn format_query_results_json(data: &[Vec<String>]) -> String {
+    let total_rows = data.len().saturating_sub(1);
+    let mut out = String::from("{\"columns\":");
+    match data.first() {
+        Some(header) => push_json_string_array(&mut out, header),
+        None => out.push_str("[]"),
+    }
+    out.push_str(",\"rows\":[");
+    let mut emitted = 0usize;
+    for row in data.iter().skip(1).take(MAX_FORMAT_DATA_ROWS) {
+        let mut row_buf = String::new();
+        push_json_string_array(&mut row_buf, row);
+        if out.len() + row_buf.len() > MAX_FORMAT_OUTPUT_BYTES {
+            break;
+        }
+        if emitted > 0 {
+            out.push(',');
+        }
+        out.push_str(&row_buf);
+        emitted += 1;
+    }
+    let truncated = emitted < total_rows;
+    out.push_str(&format!(
+        "],\"row_count\":{total_rows},\"truncated\":{truncated}}}"
+    ));
+    out
+}
+
+/// One JSON object per data row (`{"col":"val",…}`), keys in column order.
+/// Duplicate column names get `_2`, `_3`, … suffixes. When the row/byte
+/// guards truncate the stream, the final line is
+/// `{"_truncated":true,"_row_count":n}` so consumers can detect it.
+pub fn format_query_results_jsonl(data: &[Vec<String>]) -> String {
+    let Some(header) = data.first() else {
+        return String::new();
+    };
+    let keys = dedup_column_names(header);
+    let total_rows = data.len().saturating_sub(1);
+    let mut lines: Vec<String> = Vec::new();
+    let mut bytes = 0usize;
+    for row in data.iter().skip(1).take(MAX_FORMAT_DATA_ROWS) {
+        let mut line = String::from("{");
+        for (i, (key, cell)) in keys.iter().zip(row.iter()).enumerate() {
+            if i > 0 {
+                line.push(',');
+            }
+            line.push_str(&json_string(key));
+            line.push(':');
+            line.push_str(&json_string(cell));
+        }
+        line.push('}');
+        bytes += line.len() + 1;
+        if bytes > MAX_FORMAT_OUTPUT_BYTES {
+            break;
+        }
+        lines.push(line);
+    }
+    if lines.len() < total_rows {
+        lines.push(format!(
+            "{{\"_truncated\":true,\"_row_count\":{total_rows}}}"
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Suffix duplicate column names (`a, b, a` → `a, b, a_2`) so JSONL objects
+/// keep one key per column.
+fn dedup_column_names(header: &[String]) -> Vec<String> {
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    header
+        .iter()
+        .map(|name| {
+            let count = seen.entry(name.as_str()).or_insert(0);
+            *count += 1;
+            if *count == 1 {
+                name.clone()
+            } else {
+                format!("{name}_{count}")
+            }
+        })
+        .collect()
+}
+
+fn csv_field(value: &str) -> String {
+    if value.contains(['"', ',', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_string()
+    }
+}
+
+/// RFC 4180 CSV with a header row. Capped by the same row/byte guards as the
+/// table renderers; truncation is silent here — use `-o json` when it must be
+/// detectable.
+pub fn format_query_results_csv(data: &[Vec<String>]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut bytes = 0usize;
+    for (i, row) in data.iter().enumerate() {
+        if i > MAX_FORMAT_DATA_ROWS {
+            break;
+        }
+        let line = row
+            .iter()
+            .map(|cell| csv_field(cell))
+            .collect::<Vec<_>>()
+            .join(",");
+        bytes += line.len() + 1;
+        if bytes > MAX_FORMAT_OUTPUT_BYTES {
+            break;
+        }
+        lines.push(line);
+    }
+    lines.join("\n")
 }
 
 fn format_query_results_psql_internal(
@@ -1350,6 +1518,168 @@ mod tests {
         assert!(
             output.contains("orders_user_id_fkey"),
             "Should contain referenced-by constraint name"
+        );
+    }
+
+    fn rows(data: &[&[&str]]) -> Vec<Vec<String>> {
+        data.iter()
+            .map(|row| row.iter().map(|cell| cell.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn test_json_envelope_basic() {
+        let data = rows(&[&["id", "name"], &["1", "Alice"], &["2", "NULL"]]);
+        let out = format_query_results_json(&data);
+        assert_eq!(
+            out,
+            r#"{"columns":["id","name"],"rows":[["1","Alice"],["2","NULL"]],"row_count":2,"truncated":false}"#
+        );
+        // Must be a single line of valid JSON
+        assert!(!out.contains('\n'));
+        serde_json::from_str::<serde_json::Value>(&out).expect("envelope must be valid JSON");
+    }
+
+    #[test]
+    fn test_json_escaping() {
+        let data = rows(&[&["col"], &["he said \"hi\"\nline2\ttab\u{1}ctrl é✓"]]);
+        let out = format_query_results_json(&data);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            parsed["rows"][0][0].as_str().unwrap(),
+            "he said \"hi\"\nline2\ttab\u{1}ctrl é✓"
+        );
+        assert!(!out.contains('\n'), "escaped newline must not break the line");
+    }
+
+    #[test]
+    fn test_json_empty_and_header_only() {
+        let empty: Vec<Vec<String>> = vec![];
+        assert_eq!(
+            format_query_results_json(&empty),
+            r#"{"columns":[],"rows":[],"row_count":0,"truncated":false}"#
+        );
+        let header_only = rows(&[&["a", "b"]]);
+        assert_eq!(
+            format_query_results_json(&header_only),
+            r#"{"columns":["a","b"],"rows":[],"row_count":0,"truncated":false}"#
+        );
+    }
+
+    #[test]
+    fn test_json_row_cap_sets_truncated() {
+        let mut data = vec![vec!["n".to_string()]];
+        for i in 0..(MAX_FORMAT_DATA_ROWS + 1) {
+            data.push(vec![i.to_string()]);
+        }
+        let out = format_query_results_json(&data);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["rows"].as_array().unwrap().len(), MAX_FORMAT_DATA_ROWS);
+        assert_eq!(parsed["row_count"], MAX_FORMAT_DATA_ROWS + 1);
+        assert_eq!(parsed["truncated"], true);
+    }
+
+    #[test]
+    fn test_json_byte_budget_sets_truncated() {
+        let huge = "a".repeat(MAX_FORMAT_OUTPUT_BYTES + 1024);
+        let data = vec![vec!["c".to_string()], vec![huge]];
+        let out = format_query_results_json(&data);
+        let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(parsed["rows"].as_array().unwrap().len(), 0);
+        assert_eq!(parsed["truncated"], true);
+    }
+
+    #[test]
+    fn test_jsonl_basic_and_duplicate_columns() {
+        let data = rows(&[&["id", "v", "v"], &["1", "x", "y"], &["2", "a", "b"]]);
+        let out = format_query_results_jsonl(&data);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], r#"{"id":"1","v":"x","v_2":"y"}"#);
+        assert_eq!(lines[1], r#"{"id":"2","v":"a","v_2":"b"}"#);
+    }
+
+    #[test]
+    fn test_jsonl_ragged_rows_and_empty() {
+        // Shorter row → fewer keys; longer row → extra cells dropped
+        let data = rows(&[&["a", "b"], &["1"], &["1", "2", "3"]]);
+        let out = format_query_results_jsonl(&data);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], r#"{"a":"1"}"#);
+        assert_eq!(lines[1], r#"{"a":"1","b":"2"}"#);
+
+        let empty: Vec<Vec<String>> = vec![];
+        assert_eq!(format_query_results_jsonl(&empty), "");
+        assert_eq!(format_query_results_jsonl(&rows(&[&["a"]])), "");
+    }
+
+    #[test]
+    fn test_jsonl_truncation_sentinel() {
+        let mut data = vec![vec!["n".to_string()]];
+        for i in 0..(MAX_FORMAT_DATA_ROWS + 5) {
+            data.push(vec![i.to_string()]);
+        }
+        let out = format_query_results_jsonl(&data);
+        let last = out.lines().last().unwrap();
+        assert_eq!(
+            last,
+            &format!(
+                "{{\"_truncated\":true,\"_row_count\":{}}}",
+                MAX_FORMAT_DATA_ROWS + 5
+            )
+        );
+    }
+
+    #[rstest::rstest]
+    #[case("plain", "plain")]
+    #[case("with,comma", "\"with,comma\"")]
+    #[case("with\"quote", "\"with\"\"quote\"")]
+    #[case("with\nnewline", "\"with\nnewline\"")]
+    #[case("with\r\ncrlf", "\"with\r\ncrlf\"")]
+    #[case("", "")]
+    fn test_csv_field_quoting(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(csv_field(input), expected);
+    }
+
+    #[test]
+    fn test_csv_output() {
+        let data = rows(&[&["id", "note"], &["1", "a,b"], &["2", "NULL"]]);
+        assert_eq!(
+            format_query_results_csv(&data),
+            "id,note\n1,\"a,b\"\n2,NULL"
+        );
+        let empty: Vec<Vec<String>> = vec![];
+        assert_eq!(format_query_results_csv(&empty), "");
+        assert_eq!(format_query_results_csv(&rows(&[&["a", "b"]])), "a,b");
+    }
+
+    #[test]
+    fn test_render_query_results_dispatch() {
+        let data = rows(&[&["id"], &["1"]]);
+        assert_eq!(
+            render_query_results(&data, None, OutputFormat::Json, false),
+            format_query_results_json(&data)
+        );
+        assert_eq!(
+            render_query_results(&data, None, OutputFormat::Csv, false),
+            format_query_results_csv(&data)
+        );
+        assert_eq!(
+            render_query_results(&data, None, OutputFormat::Jsonl, false),
+            format_query_results_jsonl(&data)
+        );
+        assert_eq!(
+            render_query_results(&data, None, OutputFormat::Table, false),
+            format_query_results_psql_with_info(&data, None)
+        );
+        // Expanded as a format and expanded-as-toggle render identically
+        assert_eq!(
+            render_query_results(&data, None, OutputFormat::Expanded, false),
+            render_query_results(&data, None, OutputFormat::Table, true)
+        );
+        // The expanded toggle also wins when a structured format is not requested
+        assert!(
+            render_query_results(&data, None, OutputFormat::Table, true).contains("Record 1")
         );
     }
 }
