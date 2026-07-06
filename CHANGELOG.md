@@ -1,3 +1,9 @@
+## v0.33.0 (2026-07-06)
+
+### Feat
+
+- support PostgreSQL regex operators (~, ~*, !~, !~*) on all backends
+
 ## v0.32.0 (2026-06-30)
 
 ### Feat
