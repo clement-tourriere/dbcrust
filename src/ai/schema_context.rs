@@ -138,9 +138,9 @@ pub async fn build_agent_seed_context(db: &mut Database) -> String {
 /// Collect the table list for AI context. PostgreSQL with non-public schemas gets
 /// schema-qualified names (`schema.table`); public tables and every other backend
 /// stay unqualified — and the per-schema round-trips are skipped entirely when
-/// there is nothing to disambiguate. Shared by the `??` schema context and the
-/// `???` seed so both describe non-public tables correctly.
-async fn collect_table_names(
+/// there is nothing to disambiguate. Shared by the `??` schema context, the
+/// `???` seed, and the `\ddl` command so all describe non-public tables correctly.
+pub(crate) async fn collect_table_names(
     db: &mut Database,
     db_type: &DatabaseType,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {

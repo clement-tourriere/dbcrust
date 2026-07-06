@@ -17,6 +17,7 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
 | `\l` | List databases | `\l` |
 | `\dt` | List tables | `\dt` |
 | `\d [table]` | Describe table or list all tables | `\d users` |
+| `\ddl [table ...]` | Dump compact schema DDL (all tables by default, capped at 100) | `\ddl users orders` |
 | `\c <database>` | Connect to database | `\c production` |
 | `\config` | Interactive configuration menu (TTY) | `\config` |
 | `\config show` | Read-only configuration summary | `\config show` |
@@ -207,6 +208,36 @@ Indexes:
     "users_email_key" UNIQUE CONSTRAINT, btree (email)
     "idx_users_status" btree (status)
 ```
+
+#### `\ddl [table ...]` - Dump Compact Schema DDL
+
+Prints a compact `CREATE TABLE`-style summary (columns, keys, indexes,
+foreign keys) for the named tables — or for every table when called without
+arguments (capped at 100 tables). This is the same token-efficient
+serialization DBCrust's AI assistant uses, which makes it the fastest way for
+an AI coding agent to load a database's schema in one call:
+
+```sql
+-- Everything (up to 100 tables)
+\ddl
+
+-- Specific tables (schema-qualified names work too)
+\ddl users orders analytics.events
+```
+
+**Output:**
+```sql
+CREATE TABLE users (
+  id integer NOT NULL DEFAULT nextval('users_id_seq'),
+  email character varying NOT NULL,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+-- PRIMARY KEY: users_pkey (id)
+-- UNIQUE: users_email_key (email)
+-- FK: orders.user_id -> users.id
+```
+
+Works in one-shot mode: `dbcrust session://prod -c '\ddl users orders'`.
 
 #### `\c <database>` - Connect to Database
 

@@ -28,6 +28,9 @@ pub enum Command {
     DescribeTable {
         table_name: Option<String>,
     },
+    DumpDdl {
+        tables: Vec<String>,
+    },
     ConnectDatabase {
         database_name: String,
     },
@@ -297,6 +300,7 @@ pub enum CommandShortcut {
     L,
     Dt,
     D,
+    Ddl,
     C,
     // Display options
     X,
@@ -378,6 +382,7 @@ impl CommandShortcut {
             CommandShortcut::L => "\\l",
             CommandShortcut::Dt => "\\dt",
             CommandShortcut::D => "\\d",
+            CommandShortcut::Ddl => "\\ddl",
             CommandShortcut::C => "\\c",
             // Display options
             CommandShortcut::X => "\\x",
@@ -459,6 +464,7 @@ impl CommandShortcut {
             CommandShortcut::L => "List databases",
             CommandShortcut::Dt => "List tables",
             CommandShortcut::D => "Describe table or list all tables",
+            CommandShortcut::Ddl => "Dump compact schema DDL (all tables by default)",
             CommandShortcut::C => "Connect to database",
             // Display options
             CommandShortcut::X => "Toggle expanded display",
@@ -538,7 +544,11 @@ impl CommandShortcut {
             // Core commands
             CommandShortcut::Q | CommandShortcut::H => CommandCategory::Core,
             // Database navigation
-            CommandShortcut::L | CommandShortcut::Dt | CommandShortcut::D | CommandShortcut::C => {
+            CommandShortcut::L
+            | CommandShortcut::Dt
+            | CommandShortcut::D
+            | CommandShortcut::Ddl
+            | CommandShortcut::C => {
                 CommandCategory::DatabaseNavigation
             }
             // Display options (including some advanced display commands)
@@ -693,6 +703,9 @@ impl CommandParser {
                     })
                 }
             }
+            "ddl" => Ok(Command::DumpDdl {
+                tables: args.split_whitespace().map(|s| s.to_string()).collect(),
+            }),
             "c" => {
                 if args.is_empty() {
                     Err(CommandError::MissingArgument("database name".to_string()))
@@ -1485,6 +1498,68 @@ impl CommandExecutor for Command {
                         }
                     }
                 }
+            }
+
+            Command::DumpDdl { tables } => {
+                let mut db = database.lock().unwrap();
+                let db_type = db.get_database_type();
+
+                // With no explicit tables, dump everything up to a cap so a
+                // huge catalog can't produce an unbounded dump
+                const DDL_TABLE_CAP: usize = 100;
+                let (names, overflow_note) = if tables.is_empty() {
+                    match crate::ai::schema_context::collect_table_names(&mut db, &db_type).await {
+                        Ok(mut names) => {
+                            let total = names.len();
+                            if total > DDL_TABLE_CAP {
+                                names.truncate(DDL_TABLE_CAP);
+                                (
+                                    names,
+                                    Some(format!(
+                                        "-- …and {} more tables; run \\ddl <table …> for specific tables",
+                                        total - DDL_TABLE_CAP
+                                    )),
+                                )
+                            } else {
+                                (names, None)
+                            }
+                        }
+                        Err(e) => {
+                            return Ok(CommandResult::Error(format!(
+                                "Failed to list tables: {e}"
+                            )));
+                        }
+                    }
+                } else {
+                    (tables.clone(), None)
+                };
+
+                if names.is_empty() {
+                    return Ok(CommandResult::Output("-- no tables found".to_string()));
+                }
+
+                // Parallel fetch (bounded concurrency) + the same compact DDL
+                // serialization the AI agent uses
+                let details = db.get_table_details_bulk(&names).await;
+                let mut out = String::new();
+                for (name, detail) in details {
+                    match detail {
+                        Some(d) => {
+                            out.push_str(&crate::ai::schema_context::format_table_ddl(
+                                &d, &db_type,
+                            ));
+                            out.push('\n');
+                        }
+                        None => {
+                            out.push_str(&format!("-- {name}: no details available\n"));
+                        }
+                    }
+                }
+                if let Some(note) = overflow_note {
+                    out.push_str(&note);
+                    out.push('\n');
+                }
+                Ok(CommandResult::Output(out.trim_end().to_string()))
             }
 
             Command::ConnectDatabase { database_name } => {
@@ -3105,6 +3180,7 @@ impl CommandExecutor for Command {
             Command::ListDatabases => "List all databases",
             Command::ListTables => "List tables in current database",
             Command::DescribeTable { .. } => "Describe table structure",
+            Command::DumpDdl { .. } => "Dump compact schema DDL (all tables by default)",
             Command::ConnectDatabase { .. } => "Connect to a different database",
             Command::ToggleExpandedDisplay => "Toggle expanded/vertical display mode",
             Command::ToggleExplainMode => "Toggle automatic EXPLAIN for queries",
@@ -3203,6 +3279,7 @@ impl CommandExecutor for Command {
             Command::ListDatabases => "\\l",
             Command::ListTables => "\\dt",
             Command::DescribeTable { .. } => "\\d [table_name]",
+            Command::DumpDdl { .. } => "\\ddl [table ...]",
             Command::ConnectDatabase { .. } => "\\c <database_name>",
             Command::ToggleExpandedDisplay => "\\x",
             Command::ToggleExplainMode => "\\e",
@@ -3296,6 +3373,7 @@ impl CommandExecutor for Command {
             Command::ListDatabases
             | Command::ListTables
             | Command::DescribeTable { .. }
+            | Command::DumpDdl { .. }
             | Command::ConnectDatabase { .. } => CommandCategory::DatabaseNavigation,
             Command::ToggleExpandedDisplay
             | Command::ToggleExplainMode
@@ -3411,6 +3489,16 @@ mod tests {
         // Test database navigation
         assert_eq!(CommandParser::parse("\\l").unwrap(), Command::ListDatabases);
         assert_eq!(CommandParser::parse("\\dt").unwrap(), Command::ListTables);
+        assert_eq!(
+            CommandParser::parse("\\ddl").unwrap(),
+            Command::DumpDdl { tables: vec![] }
+        );
+        assert_eq!(
+            CommandParser::parse("\\ddl users orders").unwrap(),
+            Command::DumpDdl {
+                tables: vec!["users".to_string(), "orders".to_string()]
+            }
+        );
         assert_eq!(
             CommandParser::parse("\\d").unwrap(),
             Command::DescribeTable { table_name: None }
