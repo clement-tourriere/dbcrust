@@ -1,3 +1,14 @@
+## v0.34.0 (2026-07-06)
+
+### Feat
+
+- **cli**: dbcrust agents embedded guide
+- **commands**: \ddl compact schema dump
+- **safety**: --read-only guard, read_only_default, exit-code taxonomy
+- **cli**: -f files, stdin scripts, timeout/max-rows/no-input
+- **cli**: -o/--format one-shot output with clean stdout
+- **format**: JSON/JSONL/CSV result emitters
+
 ## v0.33.0 (2026-07-06)
 
 ### Feat
