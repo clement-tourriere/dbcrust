@@ -1122,8 +1122,8 @@ async fn run_main_cli_workflow(args: Vec<String>) -> PyResult<i32> {
     // Store the original args for shell completion generation
     let original_args = args.clone();
 
-    // Parse arguments
-    let args = match Args::try_parse_from(args) {
+    // Parse arguments (argv-order aware for interleaved -c/-f sources)
+    let args = match Args::parse_from_argv(args) {
         Ok(args) => args,
         Err(e) => {
             // Handle help and version display (which clap treats as "errors")
@@ -1157,10 +1157,15 @@ pub async fn run_interactive_cli(url: &str) -> Result<(), Box<dyn std::error::Er
     let args = Args {
         connection_url: Some(url.to_string()),
         command: Vec::new(),
+        file: Vec::new(),
         ssh_tunnel: None,
         completions: None,
         update: false,
         format: None,
+        timeout: None,
+        max_rows: None,
+        no_input: false,
+        ordered_sources: Vec::new(),
         subcommand: None,
     };
 

@@ -1365,9 +1365,12 @@ pub fn validate_tunnel_target(config: &Config, target: &str) -> Result<(), Strin
 // Interactive menu
 // ---------------------------------------------------------------------------
 
-/// True when stdin and stdout are TTYs, i.e. inquire prompts can run.
+/// True when stdin and stdout are TTYs and prompts are not disabled
+/// (`--no-input`), i.e. inquire prompts can run.
 pub fn can_run_interactive() -> bool {
-    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+    std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && crate::cli_core::prompts_allowed()
 }
 
 /// Navigation outcome of a nested prompt: Esc goes back, Ctrl-C exits the menu.

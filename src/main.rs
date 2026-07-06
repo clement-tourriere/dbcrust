@@ -1,14 +1,8 @@
 extern crate dbcrust;
-mod cli;
-// completion is now in lib.rs
-mod highlighter;
-mod named_queries;
-mod pager;
-mod password_sanitizer;
-mod pgpass;
-mod script;
+// All modules are used from the lib (dbcrust::*) — bin-local `mod` decls
+// would be a second compilation of the same files whose items are dead code
+// in the binaries.
 
-use clap::Parser;
 use dbcrust::cli::Args;
 use dbcrust::config::{Config, LogLevel};
 use std::error::Error as StdError;
@@ -101,7 +95,7 @@ pub async fn async_main() -> Result<(), Box<dyn StdError>> {
         eprintln!("Failed to initialize logging: {e}");
     }
 
-    let args = Args::parse();
+    let args = Args::parse_from_argv(std::env::args()).unwrap_or_else(|e| e.exit());
     dbcrust::cli_core::CliCore::run_with_args(args)
         .await
         .map_err(|e| -> Box<dyn StdError> { Box::new(e) })?;
@@ -129,7 +123,7 @@ async fn main() -> Result<(), Box<dyn StdError>> {
         // Continue without logging rather than exit
     }
 
-    let args = Args::parse();
+    let args = Args::parse_from_argv(std::env::args()).unwrap_or_else(|e| e.exit());
     match dbcrust::cli_core::CliCore::run_with_args(args).await {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(e) => {

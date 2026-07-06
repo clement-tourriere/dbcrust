@@ -35,6 +35,27 @@ const FILE_PATH_ENCODE_SET: &AsciiSet = &CONTROLS
     .add(b'{')
     .add(b'}');
 
+/// Process-wide gate for interactive prompts. Cleared by `--no-input` or a
+/// non-terminal stdin so one-shot/agent callers fail fast with a clear error
+/// instead of hanging on an inquire prompt waiting for a keypress.
+static PROMPTS_ALLOWED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_prompts_allowed(allowed: bool) {
+    PROMPTS_ALLOWED.store(allowed, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn prompts_allowed() -> bool {
+    PROMPTS_ALLOWED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Error for a prompt site reached while prompts are disabled.
+fn prompt_blocked_error(what: &str, hint: &str) -> CliError {
+    CliError::ConnectionError(format!(
+        "{what} requires an interactive prompt, but prompts are disabled \
+         (--no-input or non-interactive stdin). {hint}"
+    ))
+}
+
 /// Per-run overrides from CLI flags, distinct from the persisted Config.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RunOverrides {
@@ -42,9 +63,21 @@ pub struct RunOverrides {
     /// normalized to Table + `force_expanded` at startup.
     pub format: crate::cli::OutputFormat,
     pub force_expanded: bool,
+    /// `--max-rows`: per-run override of the auto-LIMIT (`default_limit`).
+    pub max_rows: Option<usize>,
     /// One-shot execution (`-c`/`-f`/stdin script): stdout carries results
     /// only, status chatter is suppressed and the pager never engages.
     pub one_shot: bool,
+}
+
+/// Outcome of one pure-SQL batch in one-shot mode.
+#[derive(Debug, PartialEq, Eq)]
+enum SqlBatchOutcome {
+    Completed,
+    /// A statement failed; the rest of the batch was skipped.
+    Failed,
+    /// User-initiated stop (column-selection abort) — not an error.
+    Aborted,
 }
 
 /// Core CLI functionality shared between Rust and Python interfaces
@@ -345,6 +378,13 @@ impl CliCore {
         Self::default()
     }
 
+    /// The auto-LIMIT for this run: `--max-rows` wins over `default_limit`.
+    fn effective_default_limit(&self) -> usize {
+        self.run_overrides
+            .max_rows
+            .unwrap_or(self.config.default_limit)
+    }
+
     /// Main entry point for CLI execution - replaces async_main_with_args
     pub async fn run_with_args(args: Args) -> Result<i32, CliError> {
         Self::run_with_args_and_original(args, None).await
@@ -364,21 +404,32 @@ impl CliCore {
         let mut cli_core = Self::new();
 
         // Database clients are constructed without Config access — publish the
-        // configured query timeout for them (0 disables it)
-        crate::database::set_query_timeout_seconds(cli_core.config.query_timeout_seconds);
+        // configured query timeout for them (0 disables it); --timeout
+        // overrides for this run
+        crate::database::set_query_timeout_seconds(
+            args.timeout.unwrap_or(cli_core.config.query_timeout_seconds),
+        );
+
+        let stdin_is_terminal = std::io::IsTerminal::is_terminal(&std::io::stdin());
 
         // Per-run overrides: `-o expanded` is sugar for table + \x; one-shot
-        // mode keeps stdout parseable (no status chatter, no pager)
+        // mode keeps stdout parseable (no status chatter, no pager). A piped
+        // stdin with a URL and no -c/-f runs as a SQL script (psql-style).
         let (format, force_expanded) = match args.format.unwrap_or_default() {
             crate::cli::OutputFormat::Expanded => (crate::cli::OutputFormat::Table, true),
             other => (other, false),
         };
+        let stdin_script = args.connection_url.is_some()
+            && args.one_shot_sources().is_empty()
+            && !stdin_is_terminal;
         cli_core.run_overrides = RunOverrides {
             format,
             force_expanded,
-            one_shot: !args.command.is_empty(),
+            max_rows: args.max_rows,
+            one_shot: !args.one_shot_sources().is_empty() || stdin_script,
         };
         crate::database::set_one_shot_mode(cli_core.run_overrides.one_shot);
+        set_prompts_allowed(!args.no_input && stdin_is_terminal);
 
         // Handle shell completion generation if requested
         if let Some(shell) = args.completions {
@@ -415,7 +466,9 @@ impl CliCore {
         // SSH tunnel debug output now handled by tracing system
 
         // Check if commands can be handled without database connection first
+        // (-f files always need a connection)
         if !args.command.is_empty()
+            && args.file.is_empty()
             && cli_core.can_handle_commands_without_connection(&args.command)
         {
             cli_core
@@ -428,9 +481,18 @@ impl CliCore {
         if args.connection_url.is_some() {
             cli_core.handle_database_connection(&args).await?;
 
-            // Handle -c commands if provided (execute and exit)
-            if !args.command.is_empty() {
+            // Handle -c/-f sources if provided (execute and exit)
+            if !args.one_shot_sources().is_empty() {
                 let exit_code = cli_core.handle_command_mode(&args).await?;
+                return Ok(exit_code);
+            }
+
+            // psql-style: a piped stdin is executed as a SQL script
+            if !stdin_is_terminal {
+                let mut script = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut script)
+                    .map_err(|e| CliError::CommandError(format!("Failed to read stdin: {e}")))?;
+                let exit_code = cli_core.run_sql_script(&script).await?;
                 return Ok(exit_code);
             }
 
@@ -438,7 +500,7 @@ impl CliCore {
             cli_core.run_interactive_mode().await?;
         } else {
             // No connection URL provided
-            if !args.command.is_empty() {
+            if !args.one_shot_sources().is_empty() {
                 return Err(CliError::ArgumentError(
                     "Database connection required for SQL commands. Use backslash commands like \\h for help without connection.".to_string()
                 ));
@@ -721,7 +783,7 @@ impl CliCore {
         // First attempt: Try connection as-is, or with a configured password command.
         match crate::db::Database::from_url(
             &initial_connection_url,
-            Some(self.config.default_limit),
+            Some(self.effective_default_limit()),
             Some(self.config.expanded_display_default),
         )
         .await
@@ -807,7 +869,7 @@ impl CliCore {
                     // Try connection with looked-up password
                     match crate::db::Database::from_url(
                         &url_with_password,
-                        Some(self.config.default_limit),
+                        Some(self.effective_default_limit()),
                         Some(self.config.expanded_display_default),
                     )
                     .await
@@ -832,6 +894,12 @@ impl CliCore {
         }
 
         // Prompt for password interactively using inquire
+        if !prompts_allowed() {
+            return Err(prompt_blocked_error(
+                "Password entry",
+                "Put the password in the URL, ~/.dbcrust, pgpass/myconf, or use a saved session://.",
+            ));
+        }
         let prompted_password = inquire::Password::new("🔐 Password:")
             .without_confirmation()
             .prompt()
@@ -846,7 +914,7 @@ impl CliCore {
 
         match crate::db::Database::from_url(
             &url_with_password,
-            Some(self.config.default_limit),
+            Some(self.effective_default_limit()),
             Some(self.config.expanded_display_default),
         )
         .await
@@ -1276,7 +1344,7 @@ impl CliCore {
         let (database, connection_info) = if full_url_str.starts_with("docker://") {
             crate::db::Database::from_docker_url_with_tracking(
                 &full_url_str,
-                Some(self.config.default_limit),
+                Some(self.effective_default_limit()),
                 Some(self.config.expanded_display_default),
             )
             .await
@@ -1339,92 +1407,133 @@ impl CliCore {
         Ok(())
     }
 
-    /// Handle -c command mode (execute commands and exit).
-    /// Returns the process exit code: non-zero when any command failed, so
-    /// scripts chaining `dbcrust ... -c "..." && next-step` can rely on it.
+    /// Handle -c/-f command mode (execute sources in command-line order and
+    /// exit). Returns the process exit code: non-zero when any command
+    /// failed, so scripts chaining `dbcrust ... -c "..." && next-step` can
+    /// rely on it.
     async fn handle_command_mode(&mut self, args: &Args) -> Result<i32, CliError> {
         let mut failed = false;
-        for command in &args.command {
-            let command_trimmed = command.trim();
+        'sources: for source in args.one_shot_sources() {
+            match source {
+                crate::cli::OneShotSource::Command(command) => {
+                    let command_trimmed = command.trim();
 
-            if command_trimmed.starts_with('\\') {
-                // Handle backslash commands
-                match self.execute_backslash_command(command_trimmed).await? {
-                    CommandModeOutcome::Success => {}
-                    CommandModeOutcome::Failed => failed = true,
-                    // \q is a clean stop, not an error
-                    CommandModeOutcome::Exit => break,
-                }
-            } else if let Some((name, args)) =
-                self.resolve_named_query_for_command_mode(command_trimmed)
-            {
-                // Execute named query
-                if self.execute_named_query_command_mode(name, args).await?
-                    == CommandModeOutcome::Failed
-                {
-                    failed = true;
-                }
-            } else {
-                // Execute SQL — psql-style: a single -c argument may carry
-                // several semicolon-separated statements
-                let database = self
-                    .database
-                    .as_ref()
-                    .ok_or_else(|| CliError::CommandError("No database connection".to_string()))?;
-                let splittable = !matches!(
-                    database
-                        .get_connection_info()
-                        .map(|info| info.database_type.clone()),
-                    Some(
-                        crate::database::DatabaseType::MongoDB
-                            | crate::database::DatabaseType::Elasticsearch
-                    )
-                );
-                let statements = if splittable {
-                    crate::sql_buffer::split_statements(command_trimmed)
-                } else {
-                    vec![command_trimmed.to_string()]
-                };
-
-                'statements: for statement in &statements {
-                    let database = self.database.as_mut().ok_or_else(|| {
-                        CliError::CommandError("No database connection".to_string())
-                    })?;
-                    match database
-                        .execute_query_with_info_no_column_selection(statement)
-                        .await
-                    {
-                        Ok(results_with_info) => {
-                            if !results_with_info.data.is_empty() {
-                                // One-shot output is printed plain: the pager
-                                // must never engage (it would hang piped/agent
-                                // callers waiting on a keypress)
-                                let output = crate::format::render_query_results(
-                                    &results_with_info.data,
-                                    results_with_info.column_info.as_ref(),
-                                    database.output_format(),
-                                    database.is_expanded_display(),
-                                );
-                                println!("{output}");
-                            }
+                    if command_trimmed.starts_with('\\') {
+                        // Handle backslash commands
+                        match self.execute_backslash_command(command_trimmed).await? {
+                            CommandModeOutcome::Success => {}
+                            CommandModeOutcome::Failed => failed = true,
+                            // \q is a clean stop, not an error
+                            CommandModeOutcome::Exit => break 'sources,
                         }
-                        Err(e) => {
-                            // Check if this is a column selection abort
-                            if e.to_string().contains("Column selection aborted") {
-                                // User-initiated abort: stop without an error
-                                return Ok(if failed { 1 } else { 0 });
-                            }
-                            eprintln!("Error executing query: {e}");
+                    } else if let Some((name, query_args)) =
+                        self.resolve_named_query_for_command_mode(command_trimmed)
+                    {
+                        // Execute named query
+                        if self
+                            .execute_named_query_command_mode(name, query_args)
+                            .await?
+                            == CommandModeOutcome::Failed
+                        {
                             failed = true;
-                            // Stop the batch at the first failing statement
-                            break 'statements;
+                        }
+                    } else {
+                        match self.execute_sql_batch(command_trimmed).await? {
+                            SqlBatchOutcome::Completed => {}
+                            SqlBatchOutcome::Failed => failed = true,
+                            // User-initiated abort: stop without an error
+                            SqlBatchOutcome::Aborted => break 'sources,
                         }
                     }
                 }
+                crate::cli::OneShotSource::File(path) => match std::fs::read_to_string(&path) {
+                    Ok(script) => match self.execute_sql_batch(&script).await? {
+                        SqlBatchOutcome::Completed => {}
+                        SqlBatchOutcome::Failed => failed = true,
+                        SqlBatchOutcome::Aborted => break 'sources,
+                    },
+                    Err(e) => {
+                        eprintln!("Error reading SQL file '{path}': {e}");
+                        failed = true;
+                        break 'sources;
+                    }
+                },
             }
         }
 
         Ok(if failed { 1 } else { 0 })
+    }
+
+    /// Execute a piped-stdin script (psql-style `dbcrust <url> < file.sql`).
+    async fn run_sql_script(&mut self, script: &str) -> Result<i32, CliError> {
+        match self.execute_sql_batch(script).await? {
+            SqlBatchOutcome::Failed => Ok(1),
+            SqlBatchOutcome::Completed | SqlBatchOutcome::Aborted => Ok(0),
+        }
+    }
+
+    /// Execute a pure-SQL batch: psql-style, one batch may carry several
+    /// semicolon-separated statements (MongoDB/Elasticsearch queries run
+    /// unsplit — their command syntax is not `;`-separated SQL). Stops at
+    /// the first failing statement. `-f` files and stdin scripts go through
+    /// here, so they carry SQL only — no backslash commands, no named
+    /// queries.
+    async fn execute_sql_batch(&mut self, sql: &str) -> Result<SqlBatchOutcome, CliError> {
+        let database = self
+            .database
+            .as_ref()
+            .ok_or_else(|| CliError::CommandError("No database connection".to_string()))?;
+        let splittable = !matches!(
+            database
+                .get_connection_info()
+                .map(|info| info.database_type.clone()),
+            Some(
+                crate::database::DatabaseType::MongoDB
+                    | crate::database::DatabaseType::Elasticsearch
+            )
+        );
+        let statements = if splittable {
+            crate::sql_buffer::split_statements(sql)
+        } else {
+            vec![sql.to_string()]
+        };
+
+        for statement in &statements {
+            let database = self
+                .database
+                .as_mut()
+                .ok_or_else(|| CliError::CommandError("No database connection".to_string()))?;
+            match database
+                .execute_query_with_info_no_column_selection(statement)
+                .await
+            {
+                Ok(results_with_info) => {
+                    if !results_with_info.data.is_empty() {
+                        // One-shot output is printed plain: the pager must
+                        // never engage (it would hang piped/agent callers
+                        // waiting on a keypress)
+                        let output = crate::format::render_query_results(
+                            &results_with_info.data,
+                            results_with_info.column_info.as_ref(),
+                            database.output_format(),
+                            database.is_expanded_display(),
+                        );
+                        println!("{output}");
+                    }
+                }
+                Err(e) => {
+                    // Check if this is a column selection abort
+                    if e.to_string().contains("Column selection aborted") {
+                        return Ok(SqlBatchOutcome::Aborted);
+                    }
+                    eprintln!("Error executing query: {e}");
+                    // Stop the batch at the first failing statement
+                    return Ok(SqlBatchOutcome::Failed);
+                }
+            }
+        }
+
+        Ok(SqlBatchOutcome::Completed)
     }
 
     /// Check if input matches a named query in command mode (non-interactive).
@@ -2932,6 +3041,12 @@ impl CliCore {
             }
 
             // Use inquire for interactive selection
+            if !prompts_allowed() {
+                return Err(prompt_blocked_error(
+                    "session:// selection",
+                    "Pass the session name directly: session://name (list with `dbcrust -c '\\s'`).",
+                ));
+            }
             let selected_option = inquire::Select::new("Select a saved session:", options)
                 .prompt()
                 .map_err(|e| CliError::ConnectionError(format!("Selection cancelled: {e}")))?;
@@ -2961,7 +3076,9 @@ impl CliCore {
             session_name.to_string()
         };
 
-        println!("🔗 Connecting to saved session '{final_session_name}'...");
+        // Status on stderr: session:// is a primary one-shot target and
+        // stdout must stay parseable
+        eprintln!("🔗 Connecting to saved session '{final_session_name}'...");
 
         // Get the saved session from config and reconstruct URL
         match self.config.get_session(&final_session_name) {
@@ -2970,7 +3087,7 @@ impl CliCore {
                     .reconstruct_connection_url()
                     .map_err(CliError::ConnectionError)?;
 
-                println!("✓ Successfully retrieved session '{final_session_name}'");
+                eprintln!("✓ Successfully retrieved session '{final_session_name}'");
 
                 // Track this connection in history
                 let sanitized_url =
@@ -3015,6 +3132,12 @@ impl CliCore {
         }
 
         // Use inquire for interactive selection
+        if !prompts_allowed() {
+            return Err(prompt_blocked_error(
+                "recent:// selection",
+                "recent:// is interactive-only; pass an explicit connection URL or session://name.",
+            ));
+        }
         let selected_option = inquire::Select::new("Select a recent connection:", options)
             .prompt()
             .map_err(|e| CliError::ConnectionError(format!("Selection cancelled: {e}")))?;
@@ -3035,7 +3158,7 @@ impl CliCore {
             })
             .ok_or_else(|| CliError::ConnectionError("Invalid selection".to_string()))?;
 
-        println!(
+        eprintln!(
             "🔗 Connecting to recent connection: {}",
             selected_connection.display_name
         );
@@ -3064,7 +3187,7 @@ impl CliCore {
         let (role, mount_path, database_name) = crate::vault_client::parse_vault_url(url)
             .ok_or_else(|| CliError::ConnectionError(format!("Invalid vault URL format: {url}")))?;
 
-        println!("🔐 Connecting to Vault...");
+        eprintln!("🔐 Connecting to Vault...");
 
         // Handle optional parameters - if None, prompt user to select
         let db_name = match database_name {
@@ -3092,6 +3215,12 @@ impl CliCore {
                     ));
                 }
 
+                if !prompts_allowed() {
+                    return Err(prompt_blocked_error(
+                        "Vault database selection",
+                        "Name the database in the URL: vault://role@mount/database.",
+                    ));
+                }
                 inquire::Select::new("Select a database:", databases)
                     .prompt()
                     .map_err(|e| {
@@ -3117,6 +3246,12 @@ impl CliCore {
                     )));
                 }
 
+                if !prompts_allowed() {
+                    return Err(prompt_blocked_error(
+                        "Vault role selection",
+                        "Name the role in the URL: vault://role@mount/database.",
+                    ));
+                }
                 inquire::Select::new(&format!("Select role for database '{db_name}':"), roles)
                     .prompt()
                     .map_err(|e| {
@@ -3135,8 +3270,8 @@ impl CliCore {
         .await
         .map_err(|e| CliError::ConnectionError(format!("Failed to get Vault credentials: {e}")))?;
 
-        println!("✅ Successfully obtained dynamic credentials from Vault");
-        println!("🔗 Connecting to PostgreSQL with temporary credentials...");
+        eprintln!("✅ Successfully obtained dynamic credentials from Vault");
+        eprintln!("🔗 Connecting to PostgreSQL with temporary credentials...");
 
         // Get the database configuration from Vault to build the connection URL
         let db_config = crate::vault_client::get_vault_database_config(&mount_path, &db_name)
@@ -3169,7 +3304,7 @@ impl CliCore {
         // Create database connection using the dynamic credentials
         let mut database = Database::from_url(
             &postgres_url,
-            Some(self.config.default_limit),
+            Some(self.effective_default_limit()),
             Some(self.config.expanded_display_default),
         )
         .await
@@ -3208,8 +3343,8 @@ impl CliCore {
         // Set the connection info in the database so it's accessible via get_connection_info()
         database.set_connection_info_override(connection_info.clone());
 
-        println!("✅ Successfully connected to PostgreSQL via Vault");
-        println!("👤 Connected as temporary user: {}", credentials.username);
+        eprintln!("✅ Successfully connected to PostgreSQL via Vault");
+        eprintln!("👤 Connected as temporary user: {}", credentials.username);
 
         Ok((database, Some(connection_info)))
     }
