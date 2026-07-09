@@ -82,11 +82,13 @@ impl SSHTunnel {
         target_service_port: u16,
     ) -> Result<u16, SSHTunnelError> {
         self.ssh_host = conn_config.ssh_host.clone();
+        if self.ssh_host.trim().is_empty() {
+            return Err(SSHTunnelError::ConfigError(
+                "SSH host is required".to_string(),
+            ));
+        }
         self.ssh_port = conn_config.ssh_port;
-        self.ssh_user = conn_config
-            .ssh_username
-            .clone()
-            .ok_or_else(|| SSHTunnelError::ConfigError("SSH username is required".to_string()))?;
+        self.ssh_user = conn_config.ssh_username.clone().unwrap_or_default();
         self.ssh_key = conn_config.ssh_key_path.clone().map(PathBuf::from);
         self.remote_host = target_service_host.to_string();
         self.remote_port = target_service_port;
@@ -125,7 +127,17 @@ impl SSHTunnel {
         cmd.arg("-p");
         cmd.arg(self.ssh_port.to_string());
 
-        cmd.arg(format!("{}@{}", self.ssh_user, self.ssh_host));
+        let ssh_target = if self.ssh_user.is_empty() {
+            self.ssh_host.clone()
+        } else {
+            format!("{}@{}", self.ssh_user, self.ssh_host)
+        };
+        let ssh_target_display = if self.ssh_user.is_empty() {
+            format!("(current user)@{}", self.ssh_host)
+        } else {
+            ssh_target.clone()
+        };
+        cmd.arg(&ssh_target);
 
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::piped());
@@ -133,7 +145,7 @@ impl SSHTunnel {
 
         // Create a user-friendly representation of the SSH command for debug output
         let ssh_command_str = format!(
-            "ssh -L{}:{}:{} -N -o ExitOnForwardFailure=yes -o BatchMode=yes -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=accept-new -o PasswordAuthentication=no -o LogLevel=ERROR {}{}@{} -p {}",
+            "ssh -L{}:{}:{} -N -o ExitOnForwardFailure=yes -o BatchMode=yes -o ConnectTimeout=3 -o ServerAliveInterval=10 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=accept-new -o PasswordAuthentication=no -o LogLevel=ERROR {}{} -p {}",
             self.local_port,
             self.remote_host,
             self.remote_port,
@@ -142,15 +154,14 @@ impl SSHTunnel {
             } else {
                 String::new()
             },
-            self.ssh_user,
-            self.ssh_host,
+            ssh_target,
             self.ssh_port
         );
 
         // Log that we're initiating the SSH tunnel
         info!(
-            "Initiating SSH tunnel to {}:{} via {}@{}...",
-            self.remote_host, self.remote_port, self.ssh_user, self.ssh_host
+            "Initiating SSH tunnel to {}:{} via {}...",
+            self.remote_host, self.remote_port, ssh_target_display
         );
 
         debug!(
@@ -273,12 +284,11 @@ impl SSHTunnel {
                     // Connected successfully
                     drop(stream);
                     debug!(
-                        "TCP check successful! SSH tunnel ready on {} -> {}:{} (via {}@{}:{})",
+                        "TCP check successful! SSH tunnel ready on {} -> {}:{} (via {}:{})",
                         local_addr,
                         self.remote_host,
                         self.remote_port,
-                        self.ssh_user,
-                        self.ssh_host,
+                        ssh_target_display,
                         self.ssh_port
                     );
                     return Ok(self.local_port);

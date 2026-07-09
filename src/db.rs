@@ -513,6 +513,7 @@ impl Database {
         debug!("[Database::from_connection_info] Creating database from connection info");
 
         let config = crate::config::Config::load();
+        let original_connection_info = connection_info.clone();
 
         // For SSH tunnel scenarios, we need to create a modified connection info
         let (final_connection_info, ssh_tunnel) = if let Some(ref tunnel_config) = ssh_tunnel_config
@@ -554,10 +555,11 @@ impl Database {
         let database_client = create_database_client(final_connection_info)
             .await
             .map_err(|e| format!("Failed to create database client: {e}"))?;
+        let connection_info_override = ssh_tunnel.as_ref().map(|_| original_connection_info);
 
         let db = Self {
             database_client: Some(database_client),
-            connection_info_override: None,
+            connection_info_override,
             ssh_tunnel,
             expanded_display: expanded_display_default.unwrap_or(false),
             output_format: crate::cli::OutputFormat::Table,

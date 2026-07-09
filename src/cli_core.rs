@@ -788,11 +788,102 @@ impl CliCore {
         );
     }
 
+    fn parse_explicit_ssh_tunnel(
+        &self,
+        ssh_tunnel: Option<&str>,
+    ) -> Result<Option<crate::config::SSHTunnelConfig>, CliError> {
+        let Some(tunnel) = ssh_tunnel else {
+            return Ok(None);
+        };
+
+        let trimmed = tunnel.trim();
+        if trimmed.is_empty() {
+            return Err(CliError::ArgumentError(
+                "--ssh-tunnel cannot be empty".to_string(),
+            ));
+        }
+
+        let config = self
+            .config
+            .parse_ssh_tunnel_string(trimmed)
+            .ok_or_else(|| {
+                CliError::ArgumentError(
+                    "Invalid --ssh-tunnel value (expected [user[:password]@]host[:port])"
+                        .to_string(),
+                )
+            })?;
+
+        if config.ssh_host.trim().is_empty() {
+            return Err(CliError::ArgumentError(
+                "Invalid --ssh-tunnel value: SSH host cannot be empty".to_string(),
+            ));
+        }
+
+        Ok(Some(config))
+    }
+
+    async fn database_from_url_with_explicit_tunnel(
+        &self,
+        url: &str,
+        ssh_tunnel_config: Option<&crate::config::SSHTunnelConfig>,
+    ) -> std::result::Result<Database, Box<dyn StdError>> {
+        if let Some(tunnel_config) = ssh_tunnel_config {
+            let connection_info = ConnectionInfo::parse_url(url)?;
+            if !connection_info.supports_ssh_tunnel() {
+                return Err(format!(
+                    "--ssh-tunnel is not supported for {} connections",
+                    connection_info.database_type.display_name()
+                )
+                .into());
+            }
+
+            let database_type = connection_info.database_type.clone();
+            let target_host = connection_info.host.clone();
+            let ssh_host = tunnel_config.ssh_host.clone();
+
+            return Database::from_connection_info(
+                connection_info,
+                Some(self.effective_default_limit()),
+                Some(self.config.expanded_display_default),
+                Some(tunnel_config.clone()),
+            )
+            .await
+            .map_err(|e| {
+                if database_type == DatabaseType::Elasticsearch {
+                    let mut message = e.to_string();
+                    message.push_str(
+                        "\n\nSSH tunnel hint: the connection URL host is the remote Elasticsearch host as seen from the SSH server. \
+                         If Elasticsearch runs on the SSH server itself, use elasticsearch://127.0.0.1:9200 (or localhost) as the URL host. \
+                         Also verify the protocol: use ssl=true only for HTTPS Elasticsearch; omit it for plain HTTP.",
+                    );
+
+                    if target_host.as_deref() == Some(ssh_host.as_str()) {
+                        message.push_str(
+                            "\nYour URL target host is the same as the SSH host, which often fails when Elasticsearch only listens on localhost.",
+                        );
+                    }
+
+                    message.into()
+                } else {
+                    e
+                }
+            });
+        }
+
+        Database::from_url(
+            url,
+            Some(self.effective_default_limit()),
+            Some(self.config.expanded_display_default),
+        )
+        .await
+    }
+
     /// Handle database connection setup - core connection logic
     /// Connect to database with password management (lookup from .dbcrust, prompt on failure, save option)
     async fn connect_with_password_management(
         &mut self,
         original_url: &str,
+        ssh_tunnel_config: Option<&crate::config::SSHTunnelConfig>,
     ) -> Result<(crate::db::Database, Option<ConnectionInfo>), CliError> {
         use crate::database::ConnectionInfo;
         use crate::dbcrust_pass::{DatabaseType, lookup_password, save_password};
@@ -836,12 +927,9 @@ impl CliCore {
         };
 
         // First attempt: Try connection as-is, or with a configured password command.
-        match crate::db::Database::from_url(
-            &initial_connection_url,
-            Some(self.effective_default_limit()),
-            Some(self.config.expanded_display_default),
-        )
-        .await
+        match self
+            .database_from_url_with_explicit_tunnel(&initial_connection_url, ssh_tunnel_config)
+            .await
         {
             Ok(mut database) => {
                 debug!("✅ Initial connection successful");
@@ -922,12 +1010,12 @@ impl CliCore {
                             .map_err(CliError::ConnectionError)?;
 
                     // Try connection with looked-up password
-                    match crate::db::Database::from_url(
-                        &url_with_password,
-                        Some(self.effective_default_limit()),
-                        Some(self.config.expanded_display_default),
-                    )
-                    .await
+                    match self
+                        .database_from_url_with_explicit_tunnel(
+                            &url_with_password,
+                            ssh_tunnel_config,
+                        )
+                        .await
                     {
                         Ok(database) => {
                             debug!("✅ Connection successful with looked-up password");
@@ -967,12 +1055,9 @@ impl CliCore {
             crate::config::strip_password_command_options_from_url(&url_with_password)
                 .map_err(CliError::ConnectionError)?;
 
-        match crate::db::Database::from_url(
-            &url_with_password,
-            Some(self.effective_default_limit()),
-            Some(self.config.expanded_display_default),
-        )
-        .await
+        match self
+            .database_from_url_with_explicit_tunnel(&url_with_password, ssh_tunnel_config)
+            .await
         {
             Ok(database) => {
                 debug!("✅ Connection successful with prompted password");
@@ -1351,9 +1436,14 @@ impl CliCore {
         // Handle different URL schemes
         full_url_str = self.handle_special_url_schemes(full_url_str).await?;
 
+        let explicit_ssh_tunnel_config =
+            self.parse_explicit_ssh_tunnel(args.ssh_tunnel.as_deref())?;
+
         // Handle vault URLs
         if full_url_str.starts_with("vault://") {
-            let (database, connection_info) = self.handle_vault_connection(&full_url_str).await?;
+            let (database, connection_info) = self
+                .handle_vault_connection(&full_url_str, explicit_ssh_tunnel_config.as_ref())
+                .await?;
 
             // Track vault connection in history with vault metadata
             // Reconstruct the complete vault URL from metadata (like saved sessions do)
@@ -1397,6 +1487,12 @@ impl CliCore {
 
         // Create database connection with password management
         let (database, connection_info) = if full_url_str.starts_with("docker://") {
+            if explicit_ssh_tunnel_config.is_some() {
+                return Err(CliError::ArgumentError(
+                    "--ssh-tunnel cannot be combined with docker:// URLs".to_string(),
+                ));
+            }
+
             crate::db::Database::from_docker_url_with_tracking(
                 &full_url_str,
                 Some(self.effective_default_limit()),
@@ -1413,7 +1509,11 @@ impl CliCore {
             })?
         } else {
             // Try connection with password management and retry logic
-            self.connect_with_password_management(&full_url_str).await?
+            self.connect_with_password_management(
+                &full_url_str,
+                explicit_ssh_tunnel_config.as_ref(),
+            )
+            .await?
         };
 
         // Track connection in history
@@ -3258,6 +3358,7 @@ impl CliCore {
     async fn handle_vault_connection(
         &mut self,
         url: &str,
+        ssh_tunnel_config: Option<&crate::config::SSHTunnelConfig>,
     ) -> Result<(Database, Option<ConnectionInfo>), CliError> {
         let (role, mount_path, database_name) = crate::vault_client::parse_vault_url(url)
             .ok_or_else(|| CliError::ConnectionError(format!("Invalid vault URL format: {url}")))?;
@@ -3377,15 +3478,12 @@ impl CliCore {
         })?;
 
         // Create database connection using the dynamic credentials
-        let mut database = Database::from_url(
-            &postgres_url,
-            Some(self.effective_default_limit()),
-            Some(self.config.expanded_display_default),
-        )
-        .await
-        .map_err(|e| {
-            CliError::ConnectionError(format!("Failed to connect with Vault credentials: {e}"))
-        })?;
+        let mut database = self
+            .database_from_url_with_explicit_tunnel(&postgres_url, ssh_tunnel_config)
+            .await
+            .map_err(|e| {
+                CliError::ConnectionError(format!("Failed to connect with Vault credentials: {e}"))
+            })?;
 
         // Create connection info for the Vault connection
         // Parse the original connection URL template to get the real host/port (not tunneled)
@@ -3607,6 +3705,33 @@ mod tests {
             .add_named_query_with_scope(name, query, scope)
             .unwrap();
         config
+    }
+
+    #[test]
+    fn test_parse_explicit_ssh_tunnel() {
+        let mut core = CliCore::new();
+        core.config = DbCrustConfig::default();
+
+        let tunnel = core
+            .parse_explicit_ssh_tunnel(Some("root@62.210.39.121"))
+            .unwrap()
+            .unwrap();
+        assert!(tunnel.enabled);
+        assert_eq!(tunnel.ssh_username.as_deref(), Some("root"));
+        assert_eq!(tunnel.ssh_host, "62.210.39.121");
+        assert_eq!(tunnel.ssh_port, 22);
+
+        let tunnel = core
+            .parse_explicit_ssh_tunnel(Some("admin@bastion.example.com:2222"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(tunnel.ssh_username.as_deref(), Some("admin"));
+        assert_eq!(tunnel.ssh_host, "bastion.example.com");
+        assert_eq!(tunnel.ssh_port, 2222);
+
+        assert!(core.parse_explicit_ssh_tunnel(None).unwrap().is_none());
+        assert!(core.parse_explicit_ssh_tunnel(Some("")).is_err());
+        assert!(core.parse_explicit_ssh_tunnel(Some("root@")).is_err());
     }
 
     #[test]
