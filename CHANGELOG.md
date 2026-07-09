@@ -1,3 +1,9 @@
+## v0.34.1 (2026-07-09)
+
+### Fix
+
+- **cli**: apply explicit ssh tunnel flag
+
 ## v0.34.0 (2026-07-06)
 
 ### Feat
