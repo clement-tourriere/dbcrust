@@ -44,6 +44,12 @@ impl AppState {
     }
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Dedicated Database Thread
 // ══════════════════════════════════════════════════════════════════════════════
@@ -151,7 +157,7 @@ fn rebuild_tray_menu<M: Manager<Wry>>(manager: &M) {
             .take(10)
             .enumerate()
             .map(|(i, c)| {
-                let emoji = db_type_emoji(&c.database_type.display_name());
+                let emoji = db_type_emoji(c.database_type.display_name());
                 (i, format!("{} {}", emoji, c.display_name))
             })
             .collect()
@@ -163,7 +169,7 @@ fn rebuild_tray_menu<M: Manager<Wry>>(manager: &M) {
             .list_sessions()
             .iter()
             .map(|(name, s)| {
-                let emoji = db_type_emoji(&s.database_type.display_name());
+                let emoji = db_type_emoji(s.database_type.display_name());
                 (name.clone(), format!("{} {}", emoji, name))
             })
             .collect();
@@ -437,7 +443,9 @@ pub struct ConnectionResponse {
 #[derive(Serialize, Debug)]
 pub struct QueryResponse {
     pub columns: Vec<String>,
-    pub rows: Vec<Vec<String>>,
+    /// `None` cells are SQL NULL (serialized as JSON `null`), distinct from
+    /// `Some("")` — an actual empty string.
+    pub rows: Vec<Vec<Option<String>>>,
     pub row_count: usize,
     pub elapsed_ms: u128,
 }
@@ -455,6 +463,9 @@ pub struct TableDetailResponse {
 pub struct ColumnDetailResponse {
     pub name: String,
     pub data_type: String,
+    /// Elasticsearch stores field capabilities in the core column collation
+    /// slot. The GUI exposes them explicitly when browsing an index.
+    pub capabilities: Option<String>,
     pub nullable: bool,
     pub default_value: Option<String>,
 }
@@ -542,20 +553,20 @@ pub struct VaultEnvironmentResponse {
 
 // ── Helper: build QueryResponse from Vec<Vec<String>> ────────────────────────
 fn to_query_response(results: Vec<Vec<String>>, elapsed: u128) -> QueryResponse {
-    if results.is_empty() {
-        return QueryResponse {
-            columns: vec![],
-            rows: vec![],
-            row_count: 0,
-            elapsed_ms: elapsed,
-        };
-    }
-    let columns = results[0].clone();
-    let rows: Vec<Vec<String>> = results.into_iter().skip(1).collect();
-    let row_count = rows.len();
+    to_query_response_structured(
+        dbcrust::database::StructuredQueryResult::from_display_rows(results),
+        elapsed,
+    )
+}
+
+fn to_query_response_structured(
+    results: dbcrust::database::StructuredQueryResult,
+    elapsed: u128,
+) -> QueryResponse {
+    let row_count = results.rows.len();
     QueryResponse {
-        columns,
-        rows,
+        columns: results.columns,
+        rows: results.rows,
         row_count,
         elapsed_ms: elapsed,
     }
@@ -936,7 +947,7 @@ async fn execute_query(app: tauri::AppHandle, sql: String) -> Result<QueryRespon
 
         let (db, result) = run_db(&state.db_thread, db, move |db| {
             Box::pin(async move {
-                db.execute_query(&sql)
+                db.execute_query_structured(&sql)
                     .await
                     .map_err(|e| format!("Query error: {e}"))
             })
@@ -944,7 +955,10 @@ async fn execute_query(app: tauri::AppHandle, sql: String) -> Result<QueryRespon
 
         put_db(state.inner(), db);
         let results = result?;
-        Ok(to_query_response(results, start.elapsed().as_millis()))
+        Ok(to_query_response_structured(
+            results,
+            start.elapsed().as_millis(),
+        ))
     })
     .await
     .map_err(|e| format!("Task failed: {e}"))?
@@ -1046,6 +1060,7 @@ async fn describe_table(
                 .map(|c| ColumnDetailResponse {
                     name: c.name.clone(),
                     data_type: c.data_type.clone(),
+                    capabilities: (!c.collation.is_empty()).then(|| c.collation.clone()),
                     nullable: c.nullable,
                     default_value: c.default_value.clone(),
                 })
@@ -1754,7 +1769,7 @@ pub fn run() {
                     show_main_window(app);
                     let view = id.strip_prefix("tray_view_").unwrap_or("home");
                     if let Some(webview) = app.webview_windows().values().next() {
-                        let _ = webview.eval(&format!(
+                        let _ = webview.eval(format!(
                             "window.__DBCRUST_MENU__ && window.__DBCRUST_MENU__('view_{}')",
                             view
                         ));
@@ -1766,7 +1781,7 @@ pub fn run() {
                     show_main_window(app);
                     let idx = id.strip_prefix("tray_recent_").unwrap_or("0");
                     if let Some(webview) = app.webview_windows().values().next() {
-                        let _ = webview.eval(&format!(
+                        let _ = webview.eval(format!(
                             "window.__DBCRUST_MENU__ && window.__DBCRUST_MENU__('connect_recent_{}')",
                             idx
                         ));
@@ -1778,9 +1793,11 @@ pub fn run() {
                     show_main_window(app);
                     let name = id.strip_prefix("tray_session_").unwrap_or("");
                     if let Some(webview) = app.webview_windows().values().next() {
-                        let _ = webview.eval(&format!(
-                            "window.__DBCRUST_MENU__ && window.__DBCRUST_MENU__('connect_session_{}')",
-                            name
+                        let menu_id = format!("connect_session_{name}");
+                        let encoded_id = serde_json::to_string(&menu_id)
+                            .unwrap_or_else(|_| "\"\"".to_string());
+                        let _ = webview.eval(format!(
+                            "window.__DBCRUST_MENU__ && window.__DBCRUST_MENU__({encoded_id})"
                         ));
                     }
                     return;
@@ -1789,7 +1806,7 @@ pub fn run() {
             }
 
             if let Some(webview) = app.webview_windows().values().next() {
-                let _ = webview.eval(&format!(
+                let _ = webview.eval(format!(
                     "window.__DBCRUST_MENU__ && window.__DBCRUST_MENU__('{}')",
                     id
                 ));

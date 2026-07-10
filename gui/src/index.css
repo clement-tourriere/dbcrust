@@ -111,8 +111,17 @@
   cursor: row-resize;
 }
 .resize-handle-v:hover,
-.resize-handle-v.active {
+.resize-handle-v.active,
+.resize-handle:focus-visible {
   background-color: #3b82f6;
+  outline: none;
+}
+
+/* Keep the visual divider subtle while providing a forgiving drag target. */
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
 }
 
 /* ── Transitions ──────────────────────────────────────────────────────────── */
@@ -127,6 +136,17 @@
 .nav-rail button,
 .nav-rail .nav-item {
   -webkit-app-region: no-drag;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* ── Data Grid ────────────────────────────────────────────────────────────── */

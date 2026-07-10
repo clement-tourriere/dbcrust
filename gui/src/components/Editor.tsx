@@ -185,8 +185,8 @@ export const Editor = forwardRef<EditorHandle, EditorProps>(function Editor(
   );
   const dialect = useMemo(() => getSqlDialect(databaseType), [databaseType]);
   const columnCompletionSource = useMemo(
-    () => createColumnCompletionSource(tables),
-    [tables],
+    () => createColumnCompletionSource(tables, databaseType),
+    [tables, databaseType],
   );
   const schemaCompletion = useMemo(
     () => schemaCompletionSource(sqlCompletionConfig),

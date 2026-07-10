@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   Search,
   RefreshCw,
@@ -15,11 +15,17 @@ import {
 } from "lucide-react";
 import * as cmd from "../commands";
 import type { ConnectionState, TableDetail } from "../types";
+import {
+  formatIdentifier,
+  formatTableReference,
+  splitQualifiedIdentifier,
+  unquoteIdentifier,
+} from "../tableMetadata";
 
 interface SchemaExplorerProps {
   connection: ConnectionState;
   tables: string[];
-  onRefreshTables: () => void;
+  onRefreshTables: () => Promise<void>;
   onTableSelect: (tableName: string) => void;
   onLoadSnippet: (title: string, sql: string) => void;
 }
@@ -38,52 +44,114 @@ export function SchemaExplorer({
   const [detailError, setDetailError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const detailRequestRef = useRef(0);
 
-  const filteredTables = tables.filter((t) =>
-    t.toLowerCase().includes(search.toLowerCase()),
+  const filteredTables = useMemo(
+    () =>
+      tables.filter((table) =>
+        table.toLowerCase().includes(search.toLowerCase()),
+      ),
+    [search, tables],
   );
 
   const selectTable = useCallback(async (tableName: string) => {
+    const requestId = ++detailRequestRef.current;
     setSelectedTable(tableName);
     setLoading(true);
     setTableDetail(null);
     setDetailError(null);
     try {
       const detail = await cmd.describeTable(tableName);
-      setTableDetail(detail);
+      if (requestId === detailRequestRef.current) {
+        setTableDetail(detail);
+      }
     } catch (e) {
-      setDetailError(String(e));
-      setTableDetail(null);
+      if (requestId === detailRequestRef.current) {
+        setDetailError(String(e));
+        setTableDetail(null);
+      }
+    } finally {
+      if (requestId === detailRequestRef.current) {
+        setLoading(false);
+      }
     }
-    setLoading(false);
   }, []);
 
-  // Auto-select first table
+  // Keep the details pane aligned with the visible table list. Auto-select is
+  // debounced: each describe is a multi-round-trip backend call holding the
+  // exclusive db handle, so firing one per search keystroke lags the pane.
   useEffect(() => {
-    if (filteredTables.length > 0 && !selectedTable) {
-      selectTable(filteredTables[0]);
+    if (filteredTables.length === 0) {
+      detailRequestRef.current += 1;
+      setSelectedTable(null);
+      setTableDetail(null);
+      setLoading(false);
+      return;
     }
-  }, [tables]);
+    if (selectedTable && filteredTables.includes(selectedTable)) return;
+    const timeout = window.setTimeout(() => {
+      void selectTable(filteredTables[0]);
+    }, 250);
+    return () => window.clearTimeout(timeout);
+  }, [filteredTables, selectTable, selectedTable]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    onRefreshTables();
-    setRefreshing(false);
-  }, [onRefreshTables]);
+    try {
+      await onRefreshTables();
+      if (selectedTable) {
+        await selectTable(selectedTable);
+      }
+    } finally {
+      setRefreshing(false);
+    }
+  }, [onRefreshTables, selectTable, selectedTable]);
 
   const copyDDL = useCallback(() => {
     if (!selectedTable || !tableDetail) return;
     const cols = tableDetail.columns
       .map(
         (c) =>
-          `  ${c.name} ${c.data_type}${c.nullable ? "" : " NOT NULL"}${c.default_value ? ` DEFAULT ${c.default_value}` : ""}`,
+          `  ${formatIdentifier(c.name, connection.database_type)} ${c.data_type}${c.nullable ? "" : " NOT NULL"}${c.default_value ? ` DEFAULT ${c.default_value}` : ""}`,
       )
       .join(",\n");
-    const text = `CREATE TABLE ${selectedTable} (\n${cols}\n);`;
+    const tableReference = formatTableReference(
+      selectedTable,
+      connection.database_type,
+    );
+    const text = `CREATE TABLE ${tableReference} (\n${cols}\n);`;
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
-  }, [selectedTable, tableDetail]);
+  }, [connection.database_type, selectedTable, tableDetail]);
+
+  const selectedTableReference = selectedTable
+    ? formatTableReference(selectedTable, connection.database_type)
+    : "";
+  const isElasticsearch = connection.database_type === "Elasticsearch";
+  const isMongoDB = connection.database_type === "MongoDB";
+  const postgresMetadataQuery = (() => {
+    if (connection.database_type !== "PostgreSQL" || !selectedTable) return null;
+    // Quote-aware split, so `analytics."v1.events"` resolves to the right
+    // schema/table literals.
+    const parts = splitQualifiedIdentifier(selectedTable);
+    const schema = parts.length > 1 ? unquoteIdentifier(parts[0]) : "public";
+    const table = unquoteIdentifier(
+      parts.length > 1 ? parts.slice(1).join(".") : parts[0],
+    );
+    const escapeLiteral = (value: string) => value.replace(/'/g, "''");
+    return `SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = '${escapeLiteral(schema)}' AND table_name = '${escapeLiteral(table)}'`;
+  })();
+  const objectPlural = isElasticsearch
+    ? "indices"
+    : isMongoDB
+      ? "collections"
+      : "tables";
+  const objectSingular = isElasticsearch
+    ? "index"
+    : isMongoDB
+      ? "collection"
+      : "table";
 
   return (
     <div className="h-full flex bg-surface-300 animate-fade-in">
@@ -93,7 +161,7 @@ export function SchemaExplorer({
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
               <Table2 className="w-3.5 h-3.5" />
-              Tables
+              {objectPlural}
               <span className="text-zinc-600 font-normal">
                 ({filteredTables.length})
               </span>
@@ -115,7 +183,7 @@ export function SchemaExplorer({
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter tables..."
+              placeholder={`Filter ${objectPlural}...`}
               className="w-full bg-surface-300 border border-zinc-800 rounded-md pl-8 pr-3 py-1.5
                 text-xs text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors"
             />
@@ -125,7 +193,9 @@ export function SchemaExplorer({
         <div className="flex-1 overflow-y-auto py-1">
           {filteredTables.length === 0 ? (
             <div className="px-3 py-8 text-center text-zinc-600 text-xs">
-              {search ? "No matching tables" : "No tables found"}
+              {search
+                ? `No matching ${objectPlural}`
+                : `No ${objectPlural} found`}
             </div>
           ) : (
             <div className="space-y-px px-1">
@@ -154,7 +224,11 @@ export function SchemaExplorer({
           <div className="h-full flex items-center justify-center text-zinc-600">
             <div className="text-center">
               <Table2 className="w-10 h-10 mx-auto mb-3 text-zinc-700" />
-              <p className="text-sm">Select a table to view its schema</p>
+              <p className="text-sm">
+                Select {isElasticsearch || isMongoDB
+                  ? `a ${objectSingular} to inspect its fields`
+                  : "a table to view its schema"}
+              </p>
             </div>
           </div>
         ) : loading ? (
@@ -177,32 +251,47 @@ export function SchemaExplorer({
                   {selectedTable}
                 </h2>
                 <p className="text-xs text-zinc-500 mt-1">
-                  {tableDetail.schema && `Schema: ${tableDetail.schema} · `}
-                  {tableDetail.columns.length} columns ·{" "}
-                  {tableDetail.indexes.length} indexes ·{" "}
-                  {tableDetail.foreign_keys.length} foreign keys
+                  {isElasticsearch ? (
+                    <>
+                      {tableDetail.columns.length} fields · Elasticsearch index
+                    </>
+                  ) : isMongoDB ? (
+                    <>
+                      {tableDetail.columns.length} fields · {tableDetail.indexes.length} indexes
+                    </>
+                  ) : (
+                    <>
+                      {tableDetail.schema && `Schema: ${tableDetail.schema} · `}
+                      {tableDetail.columns.length} columns · {tableDetail.indexes.length} indexes ·{" "}
+                      {tableDetail.foreign_keys.length} foreign keys
+                    </>
+                  )}
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  onClick={copyDDL}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
-                    bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 transition-all"
-                >
-                  {copied ? (
-                    <Check className="w-3 h-3 text-emerald-500" />
-                  ) : (
-                    <Copy className="w-3 h-3" />
-                  )}
-                  {copied ? "Copied" : "Copy DDL"}
-                </button>
+                {/* DDL is meaningless for document stores: MongoDB "types"
+                    are inferred from a small sample and not valid SQL. */}
+                {!isElasticsearch && !isMongoDB && (
+                  <button
+                    onClick={copyDDL}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
+                      bg-zinc-800 hover:bg-zinc-700 text-zinc-400 hover:text-zinc-200 transition-all"
+                  >
+                    {copied ? (
+                      <Check className="w-3 h-3 text-emerald-500" />
+                    ) : (
+                      <Copy className="w-3 h-3" />
+                    )}
+                    {copied ? "Copied" : "Copy DDL"}
+                  </button>
+                )}
                 <button
                   onClick={() => onTableSelect(selectedTable)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium
                     bg-emerald-600 hover:bg-emerald-500 text-white transition-all"
                 >
                   <Play className="w-3 h-3" />
-                  Query Table
+                  Query {objectSingular}
                 </button>
               </div>
             </div>
@@ -212,7 +301,7 @@ export function SchemaExplorer({
               <div className="px-4 py-3 border-b border-zinc-800 bg-surface-100">
                 <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
                   <Columns3 className="w-3.5 h-3.5" />
-                  Columns
+                  {isElasticsearch || isMongoDB ? "Fields" : "Columns"}
                   <span className="text-zinc-600 font-normal">
                     ({tableDetail.columns.length})
                   </span>
@@ -230,12 +319,20 @@ export function SchemaExplorer({
                     <th className="text-left px-4 py-2 text-zinc-500 font-semibold">
                       Type
                     </th>
-                    <th className="text-left px-4 py-2 text-zinc-500 font-semibold w-20">
-                      Nullable
-                    </th>
-                    <th className="text-left px-4 py-2 text-zinc-500 font-semibold">
-                      Default
-                    </th>
+                    {isElasticsearch ? (
+                      <th className="text-left px-4 py-2 text-zinc-500 font-semibold">
+                        Capabilities
+                      </th>
+                    ) : (
+                      <>
+                        <th className="text-left px-4 py-2 text-zinc-500 font-semibold w-20">
+                          Nullable
+                        </th>
+                        <th className="text-left px-4 py-2 text-zinc-500 font-semibold">
+                          Default
+                        </th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
@@ -253,18 +350,35 @@ export function SchemaExplorer({
                       <td className="px-4 py-2 text-cyan-400 font-mono">
                         {col.data_type}
                       </td>
-                      <td className="px-4 py-2">
-                        {col.nullable ? (
-                          <span className="text-zinc-600">YES</span>
-                        ) : (
-                          <span className="text-amber-500 font-medium">NO</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-2 text-zinc-500 font-mono truncate max-w-xs">
-                        {col.default_value ?? (
-                          <span className="text-zinc-700 italic">—</span>
-                        )}
-                      </td>
+                      {isElasticsearch ? (
+                        <td className="px-4 py-2 text-zinc-500 font-mono">
+                          <div className="flex flex-wrap gap-1">
+                            {(col.capabilities ?? "basic").split(",").map((capability) => (
+                              <span
+                                key={capability}
+                                className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-400"
+                              >
+                                {capability}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      ) : (
+                        <>
+                          <td className="px-4 py-2">
+                            {col.nullable ? (
+                              <span className="text-zinc-600">YES</span>
+                            ) : (
+                              <span className="text-amber-500 font-medium">NO</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2 text-zinc-500 font-mono truncate max-w-xs">
+                            {col.default_value ?? (
+                              <span className="text-zinc-700 italic">—</span>
+                            )}
+                          </td>
+                        </>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -352,11 +466,9 @@ export function SchemaExplorer({
               </div>
               <div className="p-3 flex flex-wrap gap-2">
                 {[
-                  `SELECT * FROM ${selectedTable} LIMIT 100`,
-                  `SELECT COUNT(*) FROM ${selectedTable}`,
-                  ...(connection.database_type === "PostgreSQL"
-                    ? [`SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '${selectedTable}'`]
-                    : []),
+                  `SELECT * FROM ${selectedTableReference} LIMIT 100`,
+                  `SELECT COUNT(*) FROM ${selectedTableReference}`,
+                  ...(postgresMetadataQuery ? [postgresMetadataQuery] : []),
                 ].map((q) => (
                   <button
                     key={q}

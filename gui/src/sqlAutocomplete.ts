@@ -10,7 +10,14 @@ import {
   type SQLNamespace,
 } from "@codemirror/lang-sql";
 import * as cmd from "./commands";
-import { isSystemTableName, sortTablesForUi } from "./tableMetadata";
+import {
+  formatColumnReference,
+  formatIdentifier,
+  formatTableReference,
+  isSystemTableName,
+  sortTablesForUi,
+  splitQualifiedIdentifier,
+} from "./tableMetadata";
 
 const RESERVED_ALIASES = new Set([
   "WHERE",
@@ -49,18 +56,37 @@ function trimIdentifierQuotes(identifier: string): string {
 }
 
 function normalizeTableReference(identifier: string): string {
-  const parts = identifier
+  const trimmed = identifier.trim();
+  const unquoted = trimIdentifierQuotes(trimmed);
+
+  // A fully quoted Elasticsearch index such as "logs-2026.07" contains a dot
+  // that is part of the name, not a schema separator.
+  if (unquoted !== trimmed) {
+    return unquoted.toLowerCase();
+  }
+
+  const parts = trimmed
     .split(".")
     .map((part) => trimIdentifierQuotes(part))
     .filter(Boolean);
 
-  return (parts.length > 0 ? parts[parts.length - 1] : "").toLowerCase();
+  return parts.join(".").toLowerCase();
 }
 
 function buildTableLookup(tables: readonly string[]): Map<string, string> {
-  return new Map(
-    tables.map((tableName) => [normalizeTableReference(tableName), tableName]),
-  );
+  const lookup = new Map<string, string>();
+  for (const tableName of tables) {
+    const normalized = normalizeTableReference(tableName);
+    lookup.set(normalized, tableName);
+
+    const normalizedParts = normalized.split(".");
+    const tail = normalizedParts[normalizedParts.length - 1] ?? normalized;
+    // Prefer an unqualified/default-schema object for an unqualified query.
+    if (!lookup.has(tail) || !normalized.includes(".")) {
+      lookup.set(tail, tableName);
+    }
+  }
+  return lookup;
 }
 
 function extractTableReferences(
@@ -97,7 +123,7 @@ function extractTableReferences(
 }
 
 function isTableNameContext(sqlBeforeCursor: string): boolean {
-  return /\b(from|join|update|into|table|describe|desc|truncate)\s+[\w$".`\[\]]*$/i.test(
+  return /\b(from|join|update|into|table|describe|desc|truncate)\s+[\w$".`\[\]\-:@#]*$/i.test(
     sqlBeforeCursor,
   );
 }
@@ -125,10 +151,31 @@ export function buildSqlSchema(
   for (const tableName of sortTablesForUi(tables, databaseType)) {
     const systemObject = isSystemTableName(tableName, databaseType);
     const columns = columnsByTable?.get(tableName) ?? [];
+    // Quote-aware split so a packed `analytics."v1.events"` keeps its quoted
+    // part intact instead of splitting inside it.
+    const qualifiedParts =
+      databaseType === "PostgreSQL"
+        ? splitQualifiedIdentifier(tableName)
+        : [tableName];
+    const completionLabel =
+      qualifiedParts.length > 1
+        ? qualifiedParts[qualifiedParts.length - 1]
+        : tableName;
+    const queryReference =
+      completionLabel === tableName
+        ? formatTableReference(tableName, databaseType)
+        : formatIdentifier(completionLabel, databaseType);
+    // CodeMirror treats dots in namespace keys as schema separators unless
+    // escaped. Dots inside a part (Elasticsearch index names, quoted
+    // PostgreSQL parts) belong to the name, so escape those.
+    const namespaceKey = qualifiedParts
+      .map((part) => part.replace(/\./g, "\\."))
+      .join(".");
 
-    namespace[tableName] = {
+    namespace[namespaceKey] = {
       self: {
-        label: tableName,
+        label: completionLabel,
+        apply: queryReference,
         type: "type",
         detail: systemObject ? "system object" : "table",
         boost: systemObject ? 10 : 80,
@@ -136,6 +183,7 @@ export function buildSqlSchema(
       },
       children: columns.map((columnName) => ({
         label: columnName,
+        apply: formatColumnReference(columnName, databaseType, columns),
         type: "property",
         detail: tableName,
         boost: systemObject ? 0 : 45,
@@ -158,6 +206,7 @@ export function buildKeywordCompletionSource(
 
 export function createColumnCompletionSource(
   tables: readonly string[],
+  databaseType?: string,
 ): CompletionSource {
   const tableLookup = buildTableLookup(tables);
   const columnCache = new Map<string, Promise<string[]>>();
@@ -178,7 +227,7 @@ export function createColumnCompletionSource(
   }
 
   return async (context) => {
-    const token = context.matchBefore(/[\w$".`\[\]]*/);
+    const token = context.matchBefore(/[\w$".`\[\]\-:@#]*/);
     if (!token) return null;
     if (!context.explicit && token.from === token.to) return null;
 
@@ -209,11 +258,12 @@ export function createColumnCompletionSource(
           .filter((columnName) => columnName.toLowerCase().includes(columnPrefix))
           .map((columnName): Completion => ({
             label: `${qualifier}.${columnName}`,
+            apply: `${qualifier}.${formatColumnReference(columnName, databaseType, columns)}`,
             type: "property",
             detail: tableName,
             boost: 60,
           })),
-        validFor: /^[\w$".`\[\]]*$/,
+        validFor: /^[\w$".`\[\]\-:@#]*$/,
       };
     }
 
@@ -232,11 +282,12 @@ export function createColumnCompletionSource(
         .filter((columnName) => !prefix || columnName.toLowerCase().includes(prefix))
         .map((columnName): Completion => ({
           label: columnName,
+          apply: formatColumnReference(columnName, databaseType, columns),
           type: "property",
           detail: tableName,
           boost: 50,
         })),
-      validFor: /^[\w$"`\[\]]*$/,
+      validFor: /^[\w$"`\[\]\-:@#]*$/,
     };
   };
 }

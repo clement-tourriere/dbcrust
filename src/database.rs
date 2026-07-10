@@ -1106,11 +1106,64 @@ pub trait MetadataProvider: Send + Sync {
     fn default_schema(&self) -> Option<String>;
 }
 
+/// Query results with per-cell SQL NULL-ness preserved.
+///
+/// `rows[i][j] == None` means the cell is NULL, as opposed to `Some("")`
+/// (an actual empty string). The legacy `Vec<Vec<String>>` shape flattens
+/// both to the backend's historical sentinel and cannot tell them apart.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct StructuredQueryResult {
+    /// Column names (the legacy shape's header row).
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<Option<String>>>,
+}
+
+impl StructuredQueryResult {
+    /// Wrap legacy display rows (header first) with no NULL information.
+    pub fn from_display_rows(display_rows: Vec<Vec<String>>) -> Self {
+        let mut rows = display_rows.into_iter();
+        let columns = rows.next().unwrap_or_default();
+        Self {
+            columns,
+            rows: rows
+                .map(|row| row.into_iter().map(Some).collect())
+                .collect(),
+        }
+    }
+
+    /// Legacy display rows: header first, NULL cells rendered as `null_text`
+    /// (each backend's historical encoding, so CLI output stays identical).
+    pub fn into_display_rows(self, null_text: &str) -> Vec<Vec<String>> {
+        let mut display = Vec::with_capacity(self.rows.len() + 1);
+        display.push(self.columns);
+        display.extend(self.rows.into_iter().map(|row| {
+            row.into_iter()
+                .map(|cell| cell.unwrap_or_else(|| null_text.to_string()))
+                .collect()
+        }));
+        display
+    }
+}
+
 /// Trait for executing database queries and managing connections
 #[async_trait]
 pub trait DatabaseClient: Send + Sync {
     /// Execute a query and return results as Vec<Vec<String>>
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError>;
+
+    /// Execute a query preserving per-cell NULL-ness.
+    ///
+    /// The default falls back to [`DatabaseClient::execute_query`] with no
+    /// NULL information (every cell `Some`); backends override it so NULL
+    /// and empty string stay distinguishable for structured consumers (GUI).
+    async fn execute_query_structured(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
+        Ok(StructuredQueryResult::from_display_rows(
+            self.execute_query(sql).await?,
+        ))
+    }
 
     /// Test query execution without side effects (for validation)
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError>;

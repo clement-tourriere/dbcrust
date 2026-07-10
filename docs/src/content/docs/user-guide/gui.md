@@ -63,10 +63,10 @@ When you launch the app, you see the **Home** view with:
 
 After connecting, the **Query** view gives you:
 
-- **CodeMirror editor** with SQL syntax highlighting, bracket matching, and auto-indent
+- **CodeMirror editor** with SQL syntax highlighting, bracket matching, auto-indent, and metadata-aware table/column completion with backend-correct identifier quoting
 - **Run** (`Cmd+Enter` / `Ctrl+Enter`) and **Explain** (`Cmd+Shift+Enter` / `Ctrl+Shift+Enter`) buttons
 - **Multiple tabs** — open as many query tabs as you need
-- **Results table** — sortable columns, row count, execution time
+- **Results table and JSON views** — sortable columns, row count, execution time, and copy-as-JSON
 - **Error display** — inline error messages from the database
 
 ### EXPLAIN viewer
@@ -77,12 +77,12 @@ Click **Explain** (or use the keyboard shortcut) to see the query execution plan
 
 The **Schema** view lets you browse:
 
-- All **tables** in the connected database
-- **Columns** — name, type, nullable, default value
+- All database objects, including PostgreSQL tables across non-public schemas, MongoDB collections, and Elasticsearch indices
+- **Columns or fields** — name, inferred/native type, nullability, and default value where supported
 - **Indexes** — name, type, primary/unique
 - **Foreign keys** — constraint name and definition
 
-Click a table to see its full details.
+Click an object to see its full details. The explorer adapts its terminology for MongoDB and Elasticsearch, unions MongoDB fields across a bounded document sample, shows Elasticsearch field capabilities, and safely quotes reserved or punctuated identifiers for each backend in generated queries and autocomplete selections.
 
 ### Docker discovery
 

@@ -14,7 +14,8 @@ export interface ConnectionState {
 
 export interface QueryResult {
   columns: string[];
-  rows: string[][];
+  /** `null` cells are SQL NULL, distinct from `""` (an empty string). */
+  rows: (string | null)[][];
   row_count: number;
   elapsed_ms: number;
 }
@@ -30,6 +31,7 @@ export interface TableDetail {
 export interface ColumnDetail {
   name: string;
   data_type: string;
+  capabilities: string | null;
   nullable: boolean;
   default_value: string | null;
 }

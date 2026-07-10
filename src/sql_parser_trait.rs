@@ -358,58 +358,90 @@ pub mod parsing_utils {
         if !first_char.is_alphabetic() && first_char != '_' {
             return true;
         }
-
-        // Check for reserved keywords (simplified check)
-        let upper_identifier = identifier.to_uppercase();
-        match database_type {
-            DatabaseType::PostgreSQL => {
-                matches!(
-                    upper_identifier.as_str(),
-                    "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP"
-                )
-            }
-            DatabaseType::MySQL => {
-                matches!(
-                    upper_identifier.as_str(),
-                    "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP" | "LIMIT"
-                )
-            }
-            DatabaseType::SQLite => {
-                matches!(
-                    upper_identifier.as_str(),
-                    "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP"
-                )
-            }
-            DatabaseType::ClickHouse => {
-                matches!(
-                    upper_identifier.as_str(),
-                    "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP" | "LIMIT"
-                )
-            }
-            DatabaseType::MongoDB => {
-                // MongoDB doesn't have SQL keywords, but some field names might need quoting
-                false
-            }
-            DatabaseType::Elasticsearch => {
-                matches!(
-                    upper_identifier.as_str(),
-                    "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP" | "LIMIT" | "MATCH" | "QUERY"
-                )
-            }
-            DatabaseType::Parquet
-            | DatabaseType::CSV
-            | DatabaseType::JSON
-            | DatabaseType::DuckDB => {
-                // DataFusion uses standard SQL keywords
-                matches!(
-                    upper_identifier.as_str(),
-                    "SELECT" | "FROM" | "WHERE" | "ORDER" | "GROUP"
-                )
-            }
+        if identifier
+            .chars()
+            .any(|character| !is_identifier_char(character, database_type.clone()))
+        {
+            return true;
         }
+        // Unquoted PostgreSQL identifiers are folded to lower case.
+        if database_type == DatabaseType::PostgreSQL && identifier.chars().any(char::is_uppercase) {
+            return true;
+        }
+
+        let upper_identifier = identifier.to_uppercase();
+        matches!(
+            upper_identifier.as_str(),
+            "ALL"
+                | "ALTER"
+                | "AND"
+                | "AS"
+                | "ASC"
+                | "BETWEEN"
+                | "BY"
+                | "CASE"
+                | "CREATE"
+                | "CROSS"
+                | "DELETE"
+                | "DESC"
+                | "DISTINCT"
+                | "DROP"
+                | "ELSE"
+                | "END"
+                | "EXISTS"
+                | "FALSE"
+                | "FROM"
+                | "FULL"
+                | "GROUP"
+                | "HAVING"
+                | "IN"
+                | "INNER"
+                | "INSERT"
+                | "INTERSECT"
+                | "INTO"
+                | "IS"
+                | "JOIN"
+                | "LEFT"
+                | "LIKE"
+                | "LIMIT"
+                | "MATCH"
+                | "NOT"
+                | "NULL"
+                | "OFFSET"
+                | "ON"
+                | "OR"
+                | "ORDER"
+                | "OUTER"
+                | "PRIMARY"
+                | "QUERY"
+                | "REFERENCES"
+                | "RIGHT"
+                | "SELECT"
+                | "SET"
+                | "TABLE"
+                | "THEN"
+                | "TRUE"
+                | "UNION"
+                | "UNIQUE"
+                | "UPDATE"
+                | "VALUES"
+                | "VIEW"
+                | "WHEN"
+                | "WHERE"
+                | "WITH"
+        )
     }
 
     /// Get the appropriate quote character for identifiers
+    pub fn quote_identifier(identifier: &str, database_type: DatabaseType) -> String {
+        if !needs_quoting(identifier, database_type.clone()) {
+            return identifier.to_string();
+        }
+        let quote = get_quote_char(database_type);
+        let escaped = identifier.replace(quote, &format!("{quote}{quote}"));
+        format!("{quote}{escaped}{quote}")
+    }
+
     pub fn get_quote_char(database_type: DatabaseType) -> char {
         match database_type {
             DatabaseType::PostgreSQL => '"',
@@ -470,6 +502,22 @@ mod tests {
         assert!(!needs_quoting("table_name", DatabaseType::PostgreSQL));
         assert!(needs_quoting("select", DatabaseType::PostgreSQL));
         assert!(needs_quoting("123table", DatabaseType::PostgreSQL));
+        assert!(needs_quoting("OrderItems", DatabaseType::PostgreSQL));
+        assert!(needs_quoting("order-items", DatabaseType::MySQL));
+        // Kept in sync with SQL_RESERVED_WORDS in gui/src/tableMetadata.ts.
+        assert!(needs_quoting("unique", DatabaseType::PostgreSQL));
+        assert!(needs_quoting("primary", DatabaseType::MySQL));
+        assert!(needs_quoting("references", DatabaseType::SQLite));
+        assert!(needs_quoting("query", DatabaseType::Elasticsearch));
+        assert!(needs_quoting("match", DatabaseType::Elasticsearch));
+        assert_eq!(
+            quote_identifier("OrderItems", DatabaseType::PostgreSQL),
+            "\"OrderItems\""
+        );
+        assert_eq!(
+            quote_identifier("order-items", DatabaseType::MySQL),
+            "`order-items`"
+        );
     }
 
     #[test]

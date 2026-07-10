@@ -5,14 +5,21 @@ use crate::complex_display::{
 };
 use crate::database::{
     ConnectionInfo, DatabaseClient, DatabaseError, DatabaseTypeExt, MetadataProvider,
+    StructuredQueryResult,
 };
 use crate::geojson_display::GeoJsonDisplayAdapter;
 use crate::json_display::JsonDisplayAdapter;
 use async_trait::async_trait;
 use bson::{Bson, Document, doc};
-use futures_util::stream::{StreamExt, TryStreamExt};
+use futures_util::stream::TryStreamExt;
 use mongodb::{Client, Database as MongoDatabase, options::ClientOptions};
 use tracing::debug;
+
+#[derive(Default)]
+struct MongoFieldStats {
+    data_types: std::collections::BTreeSet<String>,
+    present_in_documents: usize,
+}
 
 /// MongoDB metadata provider implementation
 pub struct MongoDBMetadataProvider {
@@ -22,6 +29,94 @@ pub struct MongoDBMetadataProvider {
 impl MongoDBMetadataProvider {
     pub fn new(database: MongoDatabase) -> Self {
         Self { database }
+    }
+
+    async fn sample_documents(&self, collection: &str) -> Result<Vec<Document>, DatabaseError> {
+        // Server-side limit: without it the driver's first batch ships far
+        // more documents than the sample needs, plus a killCursors round trip.
+        let cursor = self
+            .database
+            .collection::<Document>(collection)
+            .find(Document::new())
+            .limit(10)
+            .await
+            .map_err(|e| DatabaseError::QueryError(format!("Failed to sample documents: {e}")))?;
+        cursor
+            .try_collect()
+            .await
+            .map_err(|e| DatabaseError::QueryError(format!("Failed while sampling documents: {e}")))
+    }
+
+    fn bson_type_name(value: &Bson) -> &'static str {
+        match value {
+            Bson::Double(_) => "double",
+            Bson::String(_) => "string",
+            Bson::Array(_) => "array",
+            Bson::Document(_) => "document",
+            Bson::Boolean(_) => "boolean",
+            Bson::Null => "null",
+            Bson::RegularExpression(_) => "regex",
+            Bson::JavaScriptCode(_) | Bson::JavaScriptCodeWithScope(_) => "javascript",
+            Bson::Int32(_) => "int32",
+            Bson::Int64(_) => "int64",
+            Bson::Timestamp(_) => "timestamp",
+            Bson::Binary(_) => "binary",
+            Bson::ObjectId(_) => "objectId",
+            Bson::DateTime(_) => "date",
+            Bson::Symbol(_) => "symbol",
+            Bson::Decimal128(_) => "decimal128",
+            Bson::Undefined => "undefined",
+            Bson::MaxKey => "maxKey",
+            Bson::MinKey => "minKey",
+            Bson::DbPointer(_) => "dbPointer",
+        }
+    }
+
+    fn collect_document_fields(
+        document: &Document,
+        prefix: &str,
+        fields: &mut Vec<(String, String)>,
+    ) {
+        for (name, value) in document {
+            let path = if prefix.is_empty() {
+                name.clone()
+            } else {
+                format!("{prefix}.{name}")
+            };
+            fields.push((path.clone(), Self::bson_type_name(value).to_string()));
+            if let Bson::Document(nested) = value {
+                Self::collect_document_fields(nested, &path, fields);
+            }
+        }
+    }
+
+    fn infer_columns(documents: &[Document]) -> Vec<crate::db::ColumnInfo> {
+        let mut stats = std::collections::BTreeMap::<String, MongoFieldStats>::new();
+        for document in documents {
+            let mut document_fields = Vec::new();
+            Self::collect_document_fields(document, "", &mut document_fields);
+            for (name, data_type) in document_fields {
+                let field = stats.entry(name).or_default();
+                field.data_types.insert(data_type);
+                field.present_in_documents += 1;
+            }
+        }
+
+        stats
+            .into_iter()
+            .map(|(name, field)| {
+                let nullable = field.present_in_documents < documents.len()
+                    || field.data_types.contains("null");
+                crate::db::ColumnInfo {
+                    name,
+                    data_type: field.data_types.into_iter().collect::<Vec<_>>().join(" | "),
+                    collation: String::new(),
+                    nullable,
+                    default_value: None,
+                    enum_values: None,
+                }
+            })
+            .collect()
     }
 }
 
@@ -47,32 +142,14 @@ impl MetadataProvider for MongoDBMetadataProvider {
         table: &str,
         _schema: Option<&str>,
     ) -> Result<Vec<String>, DatabaseError> {
-        // Get sample documents to infer schema
-        let collection_handle = self.database.collection::<Document>(table);
-        let sample_docs = collection_handle
-            .find(Document::new())
-            .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to sample documents: {e}")))?;
-
-        // Collect sample documents (limit to 10 for schema inference)
-        let mut sample_documents = Vec::new();
-        let mut cursor = sample_docs;
-        while let Some(Ok(doc)) = cursor.next().await {
-            if sample_documents.len() >= 10 {
-                break;
-            }
-            sample_documents.push(doc);
-        }
-
-        // Infer schema from sample documents
-        let mut columns = Vec::new();
-        if let Some(first_doc) = sample_documents.first() {
-            for (key, _value) in first_doc {
-                columns.push(key.clone());
-            }
-        }
-
-        Ok(columns)
+        // Infer the union of fields across a bounded sample rather than only
+        // looking at the first document. MongoDB documents in one collection
+        // commonly have optional and nested fields.
+        let sample_documents = self.sample_documents(table).await?;
+        Ok(Self::infer_columns(&sample_documents)
+            .into_iter()
+            .map(|column| column.name)
+            .collect())
     }
 
     async fn get_functions(&self, _schema: Option<&str>) -> Result<Vec<String>, DatabaseError> {
@@ -85,50 +162,9 @@ impl MetadataProvider for MongoDBMetadataProvider {
         collection: &str,
         _schema: Option<&str>,
     ) -> Result<crate::db::TableDetails, DatabaseError> {
-        // Get collection statistics (for future use)
-        let _stats = self
-            .database
-            .run_command({
-                let mut cmd = Document::new();
-                cmd.insert("collStats", collection);
-                cmd
-            })
-            .await
-            .map_err(|e| {
-                DatabaseError::QueryError(format!("Failed to get collection stats: {e}"))
-            })?;
-
-        // Get sample documents to infer schema
+        let sample_documents = self.sample_documents(collection).await?;
+        let columns = Self::infer_columns(&sample_documents);
         let collection_handle = self.database.collection::<Document>(collection);
-        let sample_docs = collection_handle
-            .find(Document::new())
-            .await
-            .map_err(|e| DatabaseError::QueryError(format!("Failed to sample documents: {e}")))?;
-
-        // Collect sample documents (limit to 10 for schema inference)
-        let mut sample_documents = Vec::new();
-        let mut cursor = sample_docs;
-        while let Some(Ok(doc)) = cursor.next().await {
-            if sample_documents.len() >= 10 {
-                break;
-            }
-            sample_documents.push(doc);
-        }
-
-        // Infer schema from sample documents
-        let mut columns = Vec::new();
-        if let Some(first_doc) = sample_documents.first() {
-            for (key, _value) in first_doc {
-                columns.push(crate::db::ColumnInfo {
-                    name: key.clone(),
-                    data_type: "BSON".to_string(), // MongoDB uses BSON types
-                    collation: "".to_string(),
-                    nullable: true, // MongoDB fields can be null
-                    default_value: None,
-                    enum_values: None, // MongoDB doesn't have native enum support
-                });
-            }
-        }
 
         // Get indexes via listIndexes — the legacy system.indexes collection
         // was removed in MongoDB 3.0, so querying it always returned nothing
@@ -325,7 +361,7 @@ impl MongoDBClient {
         filter: Option<&str>,
         projection: Option<&str>,
         limit: Option<i64>,
-    ) -> Result<Vec<Vec<String>>, DatabaseError> {
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         debug!(
             "[MongoDBClient::mongo_find] Executing find on collection: {}",
             collection
@@ -362,7 +398,7 @@ impl MongoDBClient {
         filter_doc: Document,
         projection: Option<&str>,
         limit: i64,
-    ) -> Result<Vec<Vec<String>>, DatabaseError> {
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         let collection_handle = self.database.collection::<Document>(collection);
 
         // Build find options with projection
@@ -383,8 +419,7 @@ impl MongoDBClient {
                 .await
                 .map_err(|e| DatabaseError::QueryError(format!("Failed to execute find: {e}")))?;
 
-            let mut results = Vec::new();
-            results.push(projected_columns.clone());
+            let mut rows = Vec::new();
 
             while let Some(doc) = cursor
                 .try_next()
@@ -393,13 +428,16 @@ impl MongoDBClient {
             {
                 let mut row = Vec::new();
                 for column in &projected_columns {
-                    let value = self.extract_field_value_with_complex_display(&doc, column);
+                    let value = Self::extract_field_value_with_complex_display(&doc, column);
                     row.push(value);
                 }
-                results.push(row);
+                rows.push(row);
             }
 
-            return Ok(results);
+            return Ok(StructuredQueryResult {
+                columns: projected_columns,
+                rows,
+            });
         }
 
         // Fallback to regular extraction
@@ -498,7 +536,7 @@ impl MongoDBClient {
     async fn execute_mongodb_command(
         &self,
         command: &str,
-    ) -> Result<Vec<Vec<String>>, DatabaseError> {
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         debug!(
             "[MongoDBClient::execute_mongodb_command] Executing command: {}",
             command
@@ -506,7 +544,9 @@ impl MongoDBClient {
 
         // Handle db.runCommand({ dbStats: 1 })
         if command.contains("dbStats") {
-            return self.mongo_stats().await;
+            return Ok(StructuredQueryResult::from_display_rows(
+                self.mongo_stats().await?,
+            ));
         }
 
         // Handle db.<collection>.find()
@@ -519,7 +559,9 @@ impl MongoDBClient {
 
         // Handle db.<collection>.aggregate()
         if let Some((collection, pipeline)) = self.parse_aggregate_command(command) {
-            return self.mongo_aggregate(&collection, &pipeline).await;
+            return Ok(StructuredQueryResult::from_display_rows(
+                self.mongo_aggregate(&collection, &pipeline).await?,
+            ));
         }
 
         // Fallback to simple find if it's just a collection name
@@ -528,10 +570,10 @@ impl MongoDBClient {
             return self.execute_simple_find(collection, 100).await;
         }
 
-        Ok(vec![
+        Ok(StructuredQueryResult::from_display_rows(vec![
             vec!["Error".to_string()],
             vec![format!("Unsupported MongoDB command: {}", command)],
-        ])
+        ]))
     }
 
     /// Parse MongoDB find command syntax
@@ -616,7 +658,7 @@ impl MongoDBClient {
         collection_name: &str,
         filter_doc: Document,
         limit: i64,
-    ) -> Result<Vec<Vec<String>>, DatabaseError> {
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         let collection = self.database.collection::<Document>(collection_name);
 
         // First, get column names by sampling documents (reuse the get_columns logic)
@@ -655,12 +697,9 @@ impl MongoDBClient {
             .await
             .map_err(|e| DatabaseError::QueryError(format!("Failed to execute find: {e}")))?;
 
-        let mut results = Vec::new();
+        let mut rows = Vec::new();
 
-        // Add header row with actual column names
-        results.push(columns.clone());
-
-        // Add data rows
+        // Add data rows (the column names above are the structured header)
         let mut row_count = 0;
         while let Some(doc) = cursor
             .try_next()
@@ -673,23 +712,27 @@ impl MongoDBClient {
 
             let mut row = Vec::new();
             for column in &columns {
-                let value = self.extract_field_value_with_complex_display(&doc, column);
+                let value = Self::extract_field_value_with_complex_display(&doc, column);
                 row.push(value);
             }
-            results.push(row);
+            rows.push(row);
             row_count += 1;
         }
 
         debug!(
             "[MongoDBClient::extract_columns_and_values] Query completed with {} columns and {} rows",
             columns.len(),
-            results.len() - 1
+            rows.len()
         );
-        Ok(results)
+        Ok(StructuredQueryResult { columns, rows })
     }
 
-    /// Extract a field value with complex display formatting
-    fn extract_field_value_with_complex_display(&self, doc: &Document, field: &str) -> String {
+    /// Extract a field value with complex display formatting.
+    ///
+    /// `None` means the field holds an explicit BSON `Null` (SQL NULL). A
+    /// field missing from the document stays `Some("")` so NULL and absent
+    /// remain distinguishable for structured consumers.
+    fn extract_field_value_with_complex_display(doc: &Document, field: &str) -> Option<String> {
         let raw_value = match doc.get(field) {
             Some(bson::Bson::String(s)) => s.clone(),
             Some(bson::Bson::Int32(i)) => i.to_string(),
@@ -707,7 +750,7 @@ impl MongoDBClient {
                             if let Some(detected_type) =
                                 GenericComplexTypeDetector::detect_type(&json_str)
                             {
-                                return self.format_complex_value(&json_str, detected_type);
+                                return Some(Self::format_complex_value(&json_str, detected_type));
                             }
                         }
                         json_str
@@ -724,7 +767,7 @@ impl MongoDBClient {
                             if let Some(detected_type) =
                                 GenericComplexTypeDetector::detect_type(&json_str)
                             {
-                                return self.format_complex_value(&json_str, detected_type);
+                                return Some(Self::format_complex_value(&json_str, detected_type));
                             }
                         }
                         json_str
@@ -732,26 +775,26 @@ impl MongoDBClient {
                     Err(_) => "{}".to_string(),
                 }
             }
-            Some(bson::Bson::Null) => return "NULL".to_string(),
+            Some(bson::Bson::Null) => return None,
             Some(other) => {
                 // For other BSON types, try to serialize as JSON
                 serde_json::to_string(other).unwrap_or_else(|_| format!("{other:?}"))
             }
-            None => return "".to_string(), // Field not present in this document
+            None => return Some(String::new()), // Field not present in this document
         };
 
         // Check if the raw value should use complex display
         if GenericComplexTypeDetector::should_use_complex_display(field, &raw_value) {
             if let Some(detected_type) = GenericComplexTypeDetector::detect_type(&raw_value) {
-                return self.format_complex_value(&raw_value, detected_type);
+                return Some(Self::format_complex_value(&raw_value, detected_type));
             }
         }
 
-        raw_value
+        Some(raw_value)
     }
 
     /// Format a value using the appropriate complex display adapter
-    fn format_complex_value(&self, value: &str, data_type: ComplexDataType) -> String {
+    fn format_complex_value(value: &str, data_type: ComplexDataType) -> String {
         let config = ComplexDisplayConfig::default();
 
         match data_type {
@@ -893,7 +936,7 @@ impl MongoDBClient {
         &self,
         collection_name: &str,
         limit: i64,
-    ) -> Result<Vec<Vec<String>>, DatabaseError> {
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         // Use the new dynamic column extraction method
         let filter_doc = Document::new();
         self.extract_columns_and_values(collection_name, filter_doc, limit)
@@ -979,18 +1022,17 @@ impl MongoDBClient {
 
     /// Parse SQL WHERE clause from a SQL query
     fn parse_sql_where_clause(&self, sql: &str) -> Option<String> {
-        let sql_upper = sql.to_uppercase();
-
-        // Find WHERE clause position
-        let where_start = sql_upper.find(" WHERE ")?;
-        let after_where = sql.get(where_start + 7..)?; // Skip " WHERE "
+        // Quote-aware scans, so quoted names and string literals containing
+        // WHERE/LIMIT/... don't truncate or invent clause boundaries.
+        let where_start = Self::find_sql_keyword(sql, "WHERE")?;
+        let after_where = sql.get(where_start + 5..)?;
 
         // Find the end of WHERE clause (before ORDER BY, GROUP BY, LIMIT, etc.)
         let end_keywords = ["ORDER BY", "GROUP BY", "HAVING", "LIMIT", "OFFSET"];
         let mut where_end = after_where.len();
 
         for keyword in end_keywords.iter() {
-            if let Some(pos) = after_where.to_uppercase().find(keyword) {
+            if let Some(pos) = Self::find_sql_keyword(after_where, keyword) {
                 where_end = where_end.min(pos);
             }
         }
@@ -1029,20 +1071,20 @@ impl MongoDBClient {
 
         for (sql_op, mongo_op) in operators.iter() {
             if let Some(op_pos) = condition.find(sql_op) {
-                let field = condition[..op_pos].trim();
+                let field = Self::unquote_field_path(condition[..op_pos].trim());
                 let value_str = condition[op_pos + sql_op.len()..].trim();
 
                 // Remove surrounding quotes if present
                 let value_str = value_str.trim_matches('\'').trim_matches('"');
 
-                let bson_value = self.convert_sql_value_to_bson(field, value_str)?;
+                let bson_value = self.convert_sql_value_to_bson(&field, value_str)?;
 
                 if mongo_op.is_empty() {
                     // Simple equality
-                    return Ok(doc! { field.to_string(): bson_value });
+                    return Ok(doc! { field: bson_value });
                 } else {
                     // Comparison operator
-                    return Ok(doc! { field.to_string(): { mongo_op.to_string(): bson_value } });
+                    return Ok(doc! { field: { mongo_op.to_string(): bson_value } });
                 }
             }
         }
@@ -1108,7 +1150,7 @@ impl MongoDBClient {
         condition: &str,
         like_pos: usize,
     ) -> Result<Document, DatabaseError> {
-        let field = condition[..like_pos].trim();
+        let field = Self::unquote_field_path(condition[..like_pos].trim());
         let pattern = condition[like_pos + 6..].trim(); // Skip " LIKE "
 
         // Remove surrounding quotes
@@ -1118,7 +1160,7 @@ impl MongoDBClient {
         let regex_pattern = self.sql_like_to_regex(pattern);
 
         Ok(doc! {
-            field.to_string(): {
+            field: {
                 "$regex": regex_pattern,
                 "$options": "i"  // Case insensitive by default
             }
@@ -1161,7 +1203,7 @@ impl MongoDBClient {
     /// Parse IN condition
     fn parse_in_condition(&self, condition: &str) -> Result<Document, DatabaseError> {
         if let Some(in_pos) = condition.to_uppercase().find(" IN ") {
-            let field = condition[..in_pos].trim();
+            let field = Self::unquote_field_path(condition[..in_pos].trim());
             let values_part = condition[in_pos + 4..].trim(); // Skip " IN "
 
             // Remove surrounding parentheses
@@ -1171,11 +1213,11 @@ impl MongoDBClient {
             let mut values = Vec::new();
             for value_str in values_part.split(',') {
                 let value_str = value_str.trim().trim_matches('\'').trim_matches('"');
-                let bson_value = self.convert_sql_value_to_bson(field, value_str)?;
+                let bson_value = self.convert_sql_value_to_bson(&field, value_str)?;
                 values.push(bson_value);
             }
 
-            return Ok(doc! { field.to_string(): { "$in": values } });
+            return Ok(doc! { field: { "$in": values } });
         }
 
         Err(DatabaseError::QueryError(
@@ -1186,7 +1228,7 @@ impl MongoDBClient {
     /// Parse BETWEEN condition
     fn parse_between_condition(&self, condition: &str) -> Result<Document, DatabaseError> {
         if let Some(between_pos) = condition.to_uppercase().find(" BETWEEN ") {
-            let field = condition[..between_pos].trim();
+            let field = Self::unquote_field_path(condition[..between_pos].trim());
             let range_part = condition[between_pos + 9..].trim(); // Skip " BETWEEN "
 
             if let Some(and_pos) = range_part.to_uppercase().find(" AND ") {
@@ -1199,11 +1241,11 @@ impl MongoDBClient {
                     .trim_matches('\'')
                     .trim_matches('"'); // Skip " AND "
 
-                let min_value = self.convert_sql_value_to_bson(field, min_str)?;
-                let max_value = self.convert_sql_value_to_bson(field, max_str)?;
+                let min_value = self.convert_sql_value_to_bson(&field, min_str)?;
+                let max_value = self.convert_sql_value_to_bson(&field, max_str)?;
 
                 return Ok(doc! {
-                    field.to_string(): {
+                    field: {
                         "$gte": min_value,
                         "$lte": max_value
                     }
@@ -1223,9 +1265,9 @@ impl MongoDBClient {
         is_not_null: bool,
     ) -> Result<Document, DatabaseError> {
         let field = if is_not_null {
-            condition.replace(" IS NOT NULL", "").trim().to_string()
+            Self::unquote_field_path(condition.replace(" IS NOT NULL", "").trim())
         } else {
-            condition.replace(" IS NULL", "").trim().to_string()
+            Self::unquote_field_path(condition.replace(" IS NULL", "").trim())
         };
 
         if is_not_null {
@@ -1289,28 +1331,145 @@ impl MongoDBClient {
         Ok(bson::Bson::String(value_str.to_string()))
     }
 
+    /// Find a keyword outside quoted identifiers (`"…"`, `` `…` ``, `[…]`) and
+    /// single-quoted string literals, so names like `"rate-limit-events"` or a
+    /// literal `'rate limit exceeded'` never match FROM/LIMIT/WHERE.
+    fn find_sql_keyword(query: &str, keyword: &str) -> Option<usize> {
+        let mut quote: Option<char> = None;
+        let mut characters = query.char_indices().peekable();
+        while let Some((index, character)) = characters.next() {
+            match quote {
+                Some(closing) if character == closing => {
+                    // `''`/`""`/`` `` `` escape a quote by doubling it.
+                    if closing != ']' && characters.peek().is_some_and(|(_, next)| *next == closing)
+                    {
+                        characters.next();
+                    } else {
+                        quote = None;
+                    }
+                }
+                Some(_) => {}
+                None => match character {
+                    '\'' | '"' | '`' => quote = Some(character),
+                    '[' => quote = Some(']'),
+                    _ => {
+                        let Some(candidate) = query.get(index..index + keyword.len()) else {
+                            continue;
+                        };
+                        if !candidate.eq_ignore_ascii_case(keyword) {
+                            continue;
+                        }
+                        let before = query[..index].chars().next_back();
+                        let after = query[index + keyword.len()..].chars().next();
+                        let is_boundary = |character: Option<char>| {
+                            character.is_none_or(|value| !value.is_alphanumeric() && value != '_')
+                        };
+                        if is_boundary(before) && is_boundary(after) {
+                            return Some(index);
+                        }
+                    }
+                },
+            }
+        }
+        None
+    }
+
+    /// Strip identifier quotes from a (possibly dotted) field path, so the
+    /// quoted completions the CLI/GUI generate (`"order"`, `profile."desc"`)
+    /// resolve to the actual document keys.
+    fn unquote_field_path(field: &str) -> String {
+        let field = field.trim();
+        let mut segments: Vec<String> = Vec::new();
+        let mut segment_start = 0;
+        let mut quote: Option<char> = None;
+        let mut characters = field.char_indices().peekable();
+        while let Some((index, character)) = characters.next() {
+            match quote {
+                Some(closing) if character == closing => {
+                    if closing != ']' && characters.peek().is_some_and(|(_, next)| *next == closing)
+                    {
+                        characters.next();
+                    } else {
+                        quote = None;
+                    }
+                }
+                Some(_) => {}
+                None => match character {
+                    '"' | '`' => quote = Some(character),
+                    '[' => quote = Some(']'),
+                    '.' => {
+                        segments.push(crate::db::unquote_metadata_identifier(
+                            &field[segment_start..index],
+                        ));
+                        segment_start = index + 1;
+                    }
+                    _ => {}
+                },
+            }
+        }
+        segments.push(crate::db::unquote_metadata_identifier(
+            &field[segment_start..],
+        ));
+        segments.join(".")
+    }
+
+    fn extract_collection_name_from_sql(query: &str) -> Option<String> {
+        let from_position = Self::find_sql_keyword(query, "FROM")?;
+        let after_from = query[from_position + 4..].trim_start();
+        let first = after_from.chars().next()?;
+        let closing = match first {
+            '"' => '"',
+            '`' => '`',
+            '[' => ']',
+            _ => {
+                return Some(
+                    after_from
+                        .split_whitespace()
+                        .next()?
+                        .trim_end_matches(';')
+                        .to_string(),
+                );
+            }
+        };
+
+        let mut name = String::new();
+        let mut characters = after_from[first.len_utf8()..].chars().peekable();
+        while let Some(character) = characters.next() {
+            if character == closing {
+                if characters.peek().is_some_and(|next| *next == closing) {
+                    name.push(character);
+                    characters.next();
+                    continue;
+                }
+                return Some(name);
+            }
+            name.push(character);
+        }
+        None
+    }
+
     /// Execute SQL SELECT query with proper WHERE clause handling
-    async fn execute_sql_select(&self, query: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+    async fn execute_sql_select(
+        &self,
+        query: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         debug!(
             "[MongoDBClient::execute_sql_select] Parsing SQL query: {}",
             query
         );
 
-        // Parse collection name from FROM clause
-        let collection_name = if let Some(from_pos) = query.to_uppercase().find("FROM") {
-            let after_from = &query[from_pos + 4..].trim();
-            let collection_end = after_from.find(' ').unwrap_or(after_from.len());
-            after_from[..collection_end].trim()
-        } else {
-            return Ok(vec![
+        // Parse collection name from the FROM clause, including quoted names
+        // generated by the GUI for spaces, reserved words, and punctuation.
+        let Some(collection_name) = Self::extract_collection_name_from_sql(query) else {
+            return Ok(StructuredQueryResult::from_display_rows(vec![
                 vec!["Error".to_string()],
-                vec!["Invalid SQL query format - missing FROM".to_string()],
-            ]);
+                vec!["Invalid SQL query format - missing or invalid FROM target".to_string()],
+            ]));
         };
 
         // Parse LIMIT clause
-        let limit = if let Some(limit_pos) = query.to_uppercase().find("LIMIT") {
-            let limit_str = &query[limit_pos + 5..].trim();
+        let limit = if let Some(limit_pos) = Self::find_sql_keyword(query, "LIMIT") {
+            let limit_str = query[limit_pos + 5..].trim().trim_end_matches(';').trim();
             limit_str.parse::<i64>().unwrap_or(100)
         } else {
             100 // Default limit
@@ -1328,10 +1487,10 @@ impl MongoDBClient {
                     filter
                 }
                 Err(e) => {
-                    return Ok(vec![
+                    return Ok(StructuredQueryResult::from_display_rows(vec![
                         vec!["Error".to_string()],
                         vec![format!("Failed to parse WHERE clause: {}", e)],
-                    ]);
+                    ]));
                 }
             }
         } else {
@@ -1340,7 +1499,7 @@ impl MongoDBClient {
         };
 
         // Execute the query with the filter
-        self.extract_columns_and_values(collection_name, filter_doc, limit)
+        self.extract_columns_and_values(&collection_name, filter_doc, limit)
             .await
     }
 }
@@ -1348,10 +1507,23 @@ impl MongoDBClient {
 #[async_trait]
 impl DatabaseClient for MongoDBClient {
     async fn execute_query(&self, query: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+        // "NULL" is this backend's historical display sentinel for BSON Null.
+        Ok(self
+            .execute_query_structured(query)
+            .await?
+            .into_display_rows("NULL"))
+    }
+
+    async fn execute_query_structured(
+        &self,
+        query: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         debug!("[MongoDBClient::execute_query] Executing query: {}", query);
 
         if query.trim().is_empty() {
-            return Ok(vec![vec!["No query provided".to_string()]]);
+            return Ok(StructuredQueryResult::from_display_rows(vec![vec![
+                "No query provided".to_string(),
+            ]]));
         }
 
         let query = query.trim();
@@ -1364,19 +1536,27 @@ impl DatabaseClient for MongoDBClient {
 
         // Handle database management SQL commands
         if query_upper.starts_with("DROP DATABASE") {
-            return self.handle_drop_database_sql(query).await;
+            return Ok(StructuredQueryResult::from_display_rows(
+                self.handle_drop_database_sql(query).await?,
+            ));
         }
 
         if query_upper.starts_with("CREATE DATABASE") {
-            return self.handle_create_database_sql(query).await;
+            return Ok(StructuredQueryResult::from_display_rows(
+                self.handle_create_database_sql(query).await?,
+            ));
         }
 
         if query_upper.starts_with("CREATE COLLECTION") {
-            return self.handle_create_collection_sql(query).await;
+            return Ok(StructuredQueryResult::from_display_rows(
+                self.handle_create_collection_sql(query).await?,
+            ));
         }
 
         if query_upper.starts_with("DROP COLLECTION") {
-            return self.handle_drop_collection_sql(query).await;
+            return Ok(StructuredQueryResult::from_display_rows(
+                self.handle_drop_collection_sql(query).await?,
+            ));
         }
 
         // Handle SQL-like queries for MongoDB collections
@@ -1558,10 +1738,16 @@ fn parse_regex_condition(condition: &str) -> Option<Document> {
     let negated = tilde > 0 && bytes[tilde - 1] == b'!';
     let case_insensitive = tilde + 1 < bytes.len() && bytes[tilde + 1] == b'*';
 
-    let field = condition[..if negated { tilde - 1 } else { tilde }].trim();
-    if field.is_empty() || field.contains(char::is_whitespace) {
+    let raw_field = condition[..if negated { tilde - 1 } else { tilde }].trim();
+    if raw_field.is_empty() {
         return None;
     }
+    // Whitespace is only valid inside a quoted identifier.
+    let quoted = matches!(raw_field.chars().next(), Some('"' | '`' | '['));
+    if !quoted && raw_field.contains(char::is_whitespace) {
+        return None;
+    }
+    let field = MongoDBClient::unquote_field_path(raw_field);
 
     let raw_pattern = condition[tilde + if case_insensitive { 2 } else { 1 }..].trim();
     // The pattern must be a single quoted literal (or bare token) reaching the
@@ -1601,10 +1787,98 @@ mod tests {
     use rstest::rstest;
 
     #[test]
+    fn metadata_inference_unions_optional_nested_fields() {
+        let documents = vec![
+            doc! { "_id": 1, "profile": { "name": "Ada" } },
+            doc! { "_id": 2, "profile": { "name": "Lin", "active": true }, "score": 4.5 },
+        ];
+
+        let columns = MongoDBMetadataProvider::infer_columns(&documents);
+        let by_name: std::collections::HashMap<_, _> = columns
+            .into_iter()
+            .map(|column| (column.name.clone(), column))
+            .collect();
+
+        assert_eq!(by_name["profile.name"].data_type, "string");
+        assert!(!by_name["profile.name"].nullable);
+        assert!(by_name["profile.active"].nullable);
+        assert_eq!(by_name["score"].data_type, "double");
+    }
+
+    #[rstest]
+    #[case("nil", None)] // explicit BSON Null -> SQL NULL
+    #[case("missing", Some(""))] // absent field stays an empty string, not NULL
+    #[case("text", Some("NULL"))] // a literal "NULL" string stays text
+    #[case("count", Some("7"))]
+    fn bson_cells_keep_null_distinct_from_missing(
+        #[case] field: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        let document = doc! { "nil": Bson::Null, "text": "NULL", "count": 7 };
+        assert_eq!(
+            MongoDBClient::extract_field_value_with_complex_display(&document, field),
+            expected.map(str::to_string)
+        );
+    }
+
+    #[rstest]
+    #[case(
+        "SELECT * FROM \"audit events.2026\" LIMIT 10",
+        Some("audit events.2026")
+    )]
+    #[case("SELECT * FROM events.archive", Some("events.archive"))]
+    #[case("SELECT from_date FROM events", Some("events"))]
+    #[case("SELECT * FROM \"limit\" LIMIT 5", Some("limit"))]
+    #[case("SELECT \"from\" FROM events", Some("events"))]
+    fn sql_collection_parser_supports_quoted_names(
+        #[case] query: &str,
+        #[case] expected: Option<&str>,
+    ) {
+        assert_eq!(
+            MongoDBClient::extract_collection_name_from_sql(query).as_deref(),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case("SELECT * FROM \"limit\" LIMIT 5", "LIMIT", Some(22))]
+    #[case("SELECT * FROM \"rate-limit-events\" LIMIT 10", "LIMIT", Some(34))]
+    #[case("SELECT * FROM logs WHERE msg = 'rate limit exceeded'", "LIMIT", None)]
+    #[case("SELECT \"from\" FROM events", "FROM", Some(14))]
+    #[case("SELECT * FROM logs", "LIMIT", None)]
+    fn keyword_scan_skips_quoted_regions(
+        #[case] query: &str,
+        #[case] keyword: &str,
+        #[case] expected: Option<usize>,
+    ) {
+        assert_eq!(MongoDBClient::find_sql_keyword(query, keyword), expected);
+    }
+
+    #[rstest]
+    #[case("\"order\"", "order")]
+    #[case("profile.\"desc\"", "profile.desc")]
+    #[case("`status-code`", "status-code")]
+    #[case("\"weird\"\"name\"", "weird\"name")]
+    #[case("plain_field", "plain_field")]
+    fn field_paths_lose_identifier_quotes(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(MongoDBClient::unquote_field_path(input), expected);
+    }
+
+    #[test]
     fn test_parse_regex_condition_match() {
         assert_eq!(
             parse_regex_condition("name ~ 'AKIA[0-9A-Z]{16}'"),
             Some(doc! { "name": { "$regex": "AKIA[0-9A-Z]{16}" } })
+        );
+        // Quoted identifiers (as generated by completion) resolve to the
+        // actual document key, including names with spaces.
+        assert_eq!(
+            parse_regex_condition("\"user-agent\" ~ 'bot'"),
+            Some(doc! { "user-agent": { "$regex": "bot" } })
+        );
+        assert_eq!(
+            parse_regex_condition("\"user agent\" ~ 'bot'"),
+            Some(doc! { "user agent": { "$regex": "bot" } })
         );
     }
 

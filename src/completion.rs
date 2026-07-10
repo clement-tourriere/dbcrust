@@ -328,18 +328,81 @@ impl SqlCompleter {
         }
     }
 
-    /// Check if an Elasticsearch table name needs quoting
-    fn elasticsearch_needs_quoting(&self, name: &str) -> bool {
-        name.contains('-')
-            || name.contains('.')
-            || name.contains(':')
-            || name.contains(' ')
-            || name.contains('@')
-            || name.contains('#')
-            || name.starts_with(char::is_numeric)
+    /// Format a metadata table name for insertion into SQL.
+    fn format_table_completion(name: &str, database_type: DatabaseType) -> String {
+        if database_type == DatabaseType::Elasticsearch
+            && crate::database_elasticsearch::ElasticsearchClient::needs_quoting(name)
+        {
+            return format!("\"{}\"", name.replace('"', "\"\""));
+        }
+        if database_type == DatabaseType::PostgreSQL {
+            // Quote-aware split so packed names like `analytics."v1.events"`
+            // round-trip instead of becoming a 3-part reference.
+            let (schema, table) = crate::db::metadata_table_parts(name, &database_type);
+            let quoted_table = crate::sql_parser_trait::parsing_utils::quote_identifier(
+                &table,
+                database_type.clone(),
+            );
+            return match schema {
+                Some(schema) => format!(
+                    "{}.{quoted_table}",
+                    crate::sql_parser_trait::parsing_utils::quote_identifier(
+                        &schema,
+                        database_type
+                    )
+                ),
+                None => quoted_table,
+            };
+        }
+        crate::sql_parser_trait::parsing_utils::quote_identifier(name, database_type)
     }
 
-    /// Build table name suggestions filtered by substring match, handling Elasticsearch quoting
+    /// Format a column/field name for insertion into SQL.
+    ///
+    /// `dotted_is_nested_path` says whether a dot means path traversal
+    /// (Elasticsearch/Mongo fields always; DataFusion struct access only when
+    /// the head segment is itself a column). A flat DataFusion column whose
+    /// name contains a literal dot must be quoted whole — `"price"."usd"`
+    /// resolves as relation.column, `"price.usd"` as the column.
+    fn format_column_completion(
+        name: &str,
+        database_type: DatabaseType,
+        dotted_is_nested_path: bool,
+    ) -> String {
+        let split_dotted = match database_type {
+            DatabaseType::MongoDB | DatabaseType::Elasticsearch => true,
+            DatabaseType::Parquet
+            | DatabaseType::CSV
+            | DatabaseType::JSON
+            | DatabaseType::DuckDB => dotted_is_nested_path,
+            _ => false,
+        };
+        if split_dotted && name.contains('.') {
+            return name
+                .split('.')
+                .map(|part| {
+                    crate::sql_parser_trait::parsing_utils::quote_identifier(
+                        part,
+                        database_type.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(".");
+        }
+        crate::sql_parser_trait::parsing_utils::quote_identifier(name, database_type)
+    }
+
+    /// True when a dotted name is a nested/struct path — its head segment
+    /// exists as a column of the same table (e.g. Parquet struct `data` with
+    /// path `data.inner`), as opposed to a flat name containing a dot.
+    fn dotted_head_is_known_column(name: &str, columns: &[String]) -> bool {
+        match name.split_once('.') {
+            Some((head, _)) => columns.iter().any(|column| column == head),
+            None => false,
+        }
+    }
+
+    /// Build table name suggestions filtered by substring match with backend quoting.
     fn build_table_suggestions(
         &mut self,
         lower_prefix: &str,
@@ -358,13 +421,7 @@ impl SqlCompleter {
                     &table.name
                 };
 
-                let value = if database_type == DatabaseType::Elasticsearch
-                    && self.elasticsearch_needs_quoting(clean_name)
-                {
-                    format!("\"{clean_name}\"")
-                } else {
-                    clean_name.to_string()
-                };
+                let value = Self::format_table_completion(clean_name, database_type.clone());
 
                 suggestions.push(Suggestion {
                     value,
@@ -790,6 +847,9 @@ impl SqlCompleter {
     ) -> Vec<Suggestion> {
         let mut suggestions = Vec::new();
         let lower_word = current_word.to_lowercase();
+        // Constant for the whole pass; fetching it per suggestion would lock
+        // the shared Database mutex once per emitted column.
+        let database_type = self.get_database_type();
 
         // PRIORITY 1: Columns first in WHERE clause, then handle specific context logic
         let mut columns_added = false;
@@ -853,7 +913,11 @@ impl SqlCompleter {
                                             .any(|s: &Suggestion| s.value == full_path)
                                     {
                                         suggestions.push(Suggestion {
-                                            value: full_path,
+                                            value: Self::format_column_completion(
+                                                &full_path,
+                                                database_type.clone(),
+                                                true,
+                                            ),
                                             description: Some(format!(
                                                 "Nested field from {parent_path}"
                                             )),
@@ -900,13 +964,22 @@ impl SqlCompleter {
 
                             if matches {
                                 let mut added_count = 0;
-                                for column in columns {
+                                for column in &columns {
                                     if column
                                         .to_lowercase()
                                         .contains(&column_prefix.to_lowercase())
                                     {
                                         suggestions.push(Suggestion {
-                                            value: format!("{table_prefix}.{column}"),
+                                            value: format!(
+                                                "{table_prefix}.{}",
+                                                Self::format_column_completion(
+                                                    column,
+                                                    database_type.clone(),
+                                                    Self::dotted_head_is_known_column(
+                                                        column, &columns
+                                                    ),
+                                                )
+                                            ),
                                             description: Some(format!(
                                                 "Column from {}",
                                                 table_ref.table
@@ -939,7 +1012,7 @@ impl SqlCompleter {
                     );
                     let mut added_count = 0;
 
-                    for column in columns {
+                    for column in &columns {
                         if lower_word.is_empty() || column.to_lowercase().contains(&lower_word) {
                             let desc = if let Some(alias) = &table_ref.alias {
                                 format!("Column from {} ({})", alias, table_ref.table)
@@ -952,7 +1025,11 @@ impl SqlCompleter {
                                 column, desc
                             );
                             suggestions.push(Suggestion {
-                                value: column,
+                                value: Self::format_column_completion(
+                                    column,
+                                    database_type.clone(),
+                                    Self::dotted_head_is_known_column(column, &columns),
+                                ),
                                 description: Some(desc),
                                 span: Span {
                                     start: word_start,
@@ -1106,7 +1183,11 @@ impl SqlCompleter {
                                                 .any(|s: &Suggestion| s.value == full_path)
                                         {
                                             suggestions.push(Suggestion {
-                                                value: full_path,
+                                                value: Self::format_column_completion(
+                                                    &full_path,
+                                                    database_type.clone(),
+                                                    true,
+                                                ),
                                                 description: Some(format!(
                                                     "Nested field from {parent_path}"
                                                 )),
@@ -1153,13 +1234,22 @@ impl SqlCompleter {
 
                                 if matches {
                                     let mut added_count = 0;
-                                    for column in columns {
+                                    for column in &columns {
                                         if column
                                             .to_lowercase()
                                             .contains(&column_prefix.to_lowercase())
                                         {
                                             suggestions.push(Suggestion {
-                                                value: format!("{table_prefix}.{column}"),
+                                                value: format!(
+                                                    "{table_prefix}.{}",
+                                                    Self::format_column_completion(
+                                                        column,
+                                                        database_type.clone(),
+                                                        Self::dotted_head_is_known_column(
+                                                            column, &columns
+                                                        ),
+                                                    )
+                                                ),
                                                 description: Some(format!(
                                                     "Column from {} (forward-looking)",
                                                     table_ref.table
@@ -1191,7 +1281,7 @@ impl SqlCompleter {
                         );
                         let mut added_count = 0;
 
-                        for column in columns {
+                        for column in &columns {
                             if lower_word.is_empty() || column.to_lowercase().contains(&lower_word)
                             {
                                 let desc = if let Some(alias) = &table_ref.alias {
@@ -1208,7 +1298,11 @@ impl SqlCompleter {
                                     column, desc
                                 );
                                 suggestions.push(Suggestion {
-                                    value: column,
+                                    value: Self::format_column_completion(
+                                        column,
+                                        database_type.clone(),
+                                        Self::dotted_head_is_known_column(column, &columns),
+                                    ),
                                     description: Some(desc),
                                     span: Span {
                                         start: word_start,
@@ -1442,7 +1536,11 @@ impl SqlCompleter {
                                                     .any(|s: &Suggestion| s.value == full_path)
                                             {
                                                 suggestions.push(Suggestion {
-                                                    value: full_path,
+                                                    value: Self::format_column_completion(
+                                                        &full_path,
+                                                        database_type.clone(),
+                                                        true,
+                                                    ),
                                                     description: Some(format!(
                                                         "Nested field from {parent_path}"
                                                     )),
@@ -1489,13 +1587,22 @@ impl SqlCompleter {
 
                                     if matches {
                                         let mut added_count = 0;
-                                        for column in columns {
+                                        for column in &columns {
                                             if column
                                                 .to_lowercase()
                                                 .contains(&column_prefix.to_lowercase())
                                             {
                                                 suggestions.push(Suggestion {
-                                                    value: format!("{table_prefix}.{column}"),
+                                                    value: format!(
+                                                        "{table_prefix}.{}",
+                                                        Self::format_column_completion(
+                                                            column,
+                                                            database_type.clone(),
+                                                            Self::dotted_head_is_known_column(
+                                                                column, &columns
+                                                            ),
+                                                        )
+                                                    ),
                                                     description: Some(format!(
                                                         "Column from {}",
                                                         table_ref.table
@@ -1535,7 +1642,7 @@ impl SqlCompleter {
                                 );
                             }
 
-                            for column in columns {
+                            for column in &columns {
                                 if lower_word.is_empty()
                                     || column.to_lowercase().contains(&lower_word)
                                 {
@@ -1550,7 +1657,11 @@ impl SqlCompleter {
                                         column, desc
                                     );
                                     suggestions.push(Suggestion {
-                                        value: column,
+                                        value: Self::format_column_completion(
+                                            column,
+                                            database_type.clone(),
+                                            Self::dotted_head_is_known_column(column, &columns),
+                                        ),
                                         description: Some(desc),
                                         span: Span {
                                             start: word_start,
@@ -1821,6 +1932,7 @@ impl SqlCompleter {
                 };
 
                 let tables = self.get_tables(None);
+                let database_type = self.get_database_type();
                 let mut suggestions = Vec::new();
                 for table in tables {
                     if current_word.is_empty()
@@ -1836,15 +1948,9 @@ impl SqlCompleter {
                             &table.name
                         };
 
-                        // Auto-quote Elasticsearch table names with special characters
-                        let database_type = self.get_database_type();
-                        let value = if database_type == DatabaseType::Elasticsearch
-                            && self.elasticsearch_needs_quoting(clean_name)
-                        {
-                            format!("\"{clean_name}\"")
-                        } else {
-                            clean_name.to_string()
-                        };
+                        // Quote identifiers according to the active backend.
+                        let value =
+                            Self::format_table_completion(clean_name, database_type.clone());
 
                         suggestions.push(Suggestion {
                             value,
@@ -2301,6 +2407,60 @@ impl SqlCompleter {
 mod tests {
     use super::*;
     use crate::db::Database;
+    use rstest::rstest;
+
+    #[rstest]
+    // Flat DataFusion column with a literal dot must be quoted whole:
+    // "price"."usd" resolves as relation.column, "price.usd" as the column.
+    #[case(DatabaseType::CSV, "price.usd", false, "\"price.usd\"")]
+    #[case(DatabaseType::Parquet, "data.city", true, "data.city")]
+    #[case(DatabaseType::Parquet, "data.select", true, "data.\"select\"")]
+    #[case(
+        DatabaseType::Elasticsearch,
+        "message.keyword",
+        false,
+        "message.keyword"
+    )]
+    #[case(DatabaseType::MongoDB, "profile.desc", false, "profile.\"desc\"")]
+    #[case(DatabaseType::PostgreSQL, "order", false, "\"order\"")]
+    fn column_completion_quoting(
+        #[case] database_type: DatabaseType,
+        #[case] name: &str,
+        #[case] nested_path: bool,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            SqlCompleter::format_column_completion(name, database_type, nested_path),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case("analytics.orders", "analytics.orders")]
+    #[case("analytics.\"v1.events\"", "analytics.\"v1.events\"")]
+    #[case("\"v1.events\"", "\"v1.events\"")]
+    #[case("orders", "orders")]
+    #[case("OrderItems", "\"OrderItems\"")]
+    fn postgres_table_completion_is_quote_aware(#[case] name: &str, #[case] expected: &str) {
+        assert_eq!(
+            SqlCompleter::format_table_completion(name, DatabaseType::PostgreSQL),
+            expected
+        );
+    }
+
+    #[test]
+    fn dotted_head_detection_requires_matching_column() {
+        let columns = vec!["data".to_string(), "data.inner".to_string()];
+        assert!(SqlCompleter::dotted_head_is_known_column(
+            "data.inner",
+            &columns
+        ));
+        assert!(!SqlCompleter::dotted_head_is_known_column(
+            "price.usd",
+            &columns
+        ));
+        assert!(!SqlCompleter::dotted_head_is_known_column("data", &columns));
+    }
 
     async fn create_test_database_and_config() -> (Arc<Mutex<Database>>, Arc<Mutex<Config>>) {
         let db = Database::new_for_test();

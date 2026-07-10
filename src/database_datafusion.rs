@@ -1,7 +1,7 @@
 //! DataFusion implementation for file format support (Parquet, CSV, JSON)
 use crate::database::{
     ConnectionInfo, DatabaseClient, DatabaseError, DatabaseType, DatabaseTypeExt, MetadataProvider,
-    ServerInfo,
+    ServerInfo, StructuredQueryResult,
 };
 use crate::db::TableDetails;
 use async_trait::async_trait;
@@ -28,6 +28,10 @@ const DEFAULT_DATAFUSION_MAX_RESULT_ROWS: usize = 10_000;
 const DEFAULT_DATAFUSION_MAX_CELL_CHARS: usize = 2_048;
 const DEFAULT_DATAFUSION_MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 const DEFAULT_DATAFUSION_MAX_QUERY_SECONDS: usize = 60;
+
+/// Text DataFusion results have always used for a top-level SQL NULL cell.
+/// Structured `None` cells render back to this in the legacy display path.
+const DATAFUSION_NULL_DISPLAY: &str = "NULL";
 
 #[derive(Debug, Clone)]
 struct DataFusionSafetyLimits {
@@ -645,14 +649,18 @@ impl DataFusionClient {
         Ok(ndjson_lines.join("\n") + "\n")
     }
 
-    /// Execute a DataFusion query and convert results to Vec<Vec<String>>.
+    /// Execute a DataFusion query and convert results to structured rows
+    /// (per-cell NULLs preserved).
     ///
     /// This intentionally streams and bounds results instead of using
     /// `DataFrame::collect()`: collecting a huge Parquet/CSV/JSON result can
     /// materialize many Arrow batches, then dbcrust would duplicate them into
     /// strings and formatted terminal output. Streaming lets us stop at safety
     /// caps and drop DataFusion execution early.
-    async fn execute_datafusion_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+    async fn execute_datafusion_query(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         debug!(
             "[DataFusionClient::execute_datafusion_query] Executing query: {}",
             sql
@@ -668,29 +676,32 @@ impl DataFusionClient {
             DatabaseError::QueryError(format!("Failed to start streaming results: {e}"))
         })?;
 
-        Self::record_batch_stream_to_strings(stream, &self.safety_limits).await
+        Self::record_batch_stream_to_structured(stream, &self.safety_limits).await
     }
 
-    async fn record_batch_stream_to_strings(
+    async fn record_batch_stream_to_structured(
         mut stream: datafusion::execution::SendableRecordBatchStream,
         limits: &DataFusionSafetyLimits,
-    ) -> Result<Vec<Vec<String>>, DatabaseError> {
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         let schema = stream.schema();
         let column_count = schema.fields().len();
         let headers: Vec<String> = schema.fields().iter().map(|f| f.name().clone()).collect();
         let mut approx_output_bytes = headers.iter().map(|h| h.len()).sum::<usize>();
-        let mut results = vec![headers];
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
         let mut data_rows = 0usize;
         let started_at = Instant::now();
         let timeout = Duration::from_secs(limits.max_query_seconds as u64);
         let mut truncation_reason = None;
 
         if limits.max_result_rows == 0 {
-            results.push(Self::truncation_notice_row(
+            rows.push(Self::truncation_notice_row(
                 column_count,
                 "result row safety cap reached (0 rows). Raise datafusion_max_result_rows if you need rows returned.".to_string(),
             ));
-            return Ok(results);
+            return Ok(StructuredQueryResult {
+                columns: headers,
+                rows,
+            });
         }
 
         loop {
@@ -719,8 +730,17 @@ impl DataFusionClient {
                     break;
                 }
 
-                let row = Self::record_batch_row_to_strings(&batch, row_idx, limits.max_cell_chars);
-                let row_bytes = row.iter().map(|cell| cell.len()).sum::<usize>();
+                let row = Self::record_batch_row_to_cells(&batch, row_idx, limits.max_cell_chars);
+                // Count NULL cells at their display width ("NULL") so the
+                // output byte cap trips at exactly the same point as before
+                // the structured (Option<String>) conversion.
+                let row_bytes = row
+                    .iter()
+                    .map(|cell| {
+                        cell.as_deref()
+                            .map_or(DATAFUSION_NULL_DISPLAY.len(), str::len)
+                    })
+                    .sum::<usize>();
                 if approx_output_bytes.saturating_add(row_bytes) > limits.max_output_bytes {
                     truncation_reason = Some(format!(
                         "output safety cap reached ({} bytes). Select fewer columns or raise datafusion_max_output_bytes if you really need more.",
@@ -730,7 +750,7 @@ impl DataFusionClient {
                 }
 
                 approx_output_bytes = approx_output_bytes.saturating_add(row_bytes);
-                results.push(row);
+                rows.push(row);
                 data_rows += 1;
             }
 
@@ -740,10 +760,13 @@ impl DataFusionClient {
         }
 
         if let Some(reason) = truncation_reason {
-            results.push(Self::truncation_notice_row(column_count, reason));
+            rows.push(Self::truncation_notice_row(column_count, reason));
         }
 
-        Ok(results)
+        Ok(StructuredQueryResult {
+            columns: headers,
+            rows,
+        })
     }
 
     fn query_timeout_error(max_query_seconds: usize, elapsed: Duration) -> DatabaseError {
@@ -754,22 +777,22 @@ impl DataFusionClient {
         ))
     }
 
-    fn record_batch_row_to_strings(
+    fn record_batch_row_to_cells(
         batch: &RecordBatch,
         row_idx: usize,
         max_cell_chars: usize,
-    ) -> Vec<String> {
+    ) -> Vec<Option<String>> {
         let mut row = Vec::with_capacity(batch.num_columns());
         for col_idx in 0..batch.num_columns() {
             let column = batch.column(col_idx);
-            row.push(Self::array_value_to_string(column, row_idx, max_cell_chars));
+            row.push(Self::array_value_to_cell(column, row_idx, max_cell_chars));
         }
         row
     }
 
-    fn truncation_notice_row(column_count: usize, reason: String) -> Vec<String> {
-        let mut row = vec![String::new(); column_count.max(1)];
-        row[0] = format!("⚠ dbcrust truncated DataFusion results: {reason}");
+    fn truncation_notice_row(column_count: usize, reason: String) -> Vec<Option<String>> {
+        let mut row = vec![Some(String::new()); column_count.max(1)];
+        row[0] = Some(format!("⚠ dbcrust truncated DataFusion results: {reason}"));
         row
     }
 
@@ -796,41 +819,67 @@ impl DataFusionClient {
         rendered
     }
 
-    /// Convert an Arrow array value to a bounded String.
-    fn array_value_to_string(
+    /// Convert an Arrow array value to a bounded cell.
+    ///
+    /// `None` means the cell is SQL NULL at the top level. Nulls nested
+    /// inside arrays/structs are not structured: they keep rendering as the
+    /// text "NULL" *within* the returned `Some(...)` string (the
+    /// `.with_null("NULL")` formatter option below).
+    fn array_value_to_cell(
         array: &Arc<dyn datafusion::arrow::array::Array>,
         row_idx: usize,
         max_cell_chars: usize,
-    ) -> String {
+    ) -> Option<String> {
         use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
 
         if array.is_null(row_idx) {
-            return "NULL".to_string();
+            return None;
         }
 
         // Handle large string/binary cells without first allocating their full
         // display representation. This is essential for Parquet columns such as
         // `patch` or `file_content` where a single cell can be megabytes.
         if let Some(values) = array.as_any().downcast_ref::<StringArray>() {
-            return Self::truncate_cell_value(values.value(row_idx), max_cell_chars);
+            return Some(Self::truncate_cell_value(
+                values.value(row_idx),
+                max_cell_chars,
+            ));
         }
         if let Some(values) = array.as_any().downcast_ref::<LargeStringArray>() {
-            return Self::truncate_cell_value(values.value(row_idx), max_cell_chars);
+            return Some(Self::truncate_cell_value(
+                values.value(row_idx),
+                max_cell_chars,
+            ));
         }
         if let Some(values) = array.as_any().downcast_ref::<StringViewArray>() {
-            return Self::truncate_cell_value(values.value(row_idx), max_cell_chars);
+            return Some(Self::truncate_cell_value(
+                values.value(row_idx),
+                max_cell_chars,
+            ));
         }
         if let Some(values) = array.as_any().downcast_ref::<BinaryArray>() {
-            return Self::bytes_to_display(values.value(row_idx), max_cell_chars);
+            return Some(Self::bytes_to_display(
+                values.value(row_idx),
+                max_cell_chars,
+            ));
         }
         if let Some(values) = array.as_any().downcast_ref::<LargeBinaryArray>() {
-            return Self::bytes_to_display(values.value(row_idx), max_cell_chars);
+            return Some(Self::bytes_to_display(
+                values.value(row_idx),
+                max_cell_chars,
+            ));
         }
         if let Some(values) = array.as_any().downcast_ref::<BinaryViewArray>() {
-            return Self::bytes_to_display(values.value(row_idx), max_cell_chars);
+            return Some(Self::bytes_to_display(
+                values.value(row_idx),
+                max_cell_chars,
+            ));
         }
         if let Some(values) = array.as_any().downcast_ref::<FixedSizeBinaryArray>() {
-            return Self::bytes_to_display(values.value(row_idx), max_cell_chars);
+            return Some(Self::bytes_to_display(
+                values.value(row_idx),
+                max_cell_chars,
+            ));
         }
 
         // Arrow's value formatter renders the single cell for every remaining
@@ -844,7 +893,7 @@ impl DataFusionClient {
                 .unwrap_or_else(|e| format!("?{e}?")),
             Err(e) => format!("?{e}?"),
         };
-        Self::truncate_cell_value(&rendered, max_cell_chars)
+        Some(Self::truncate_cell_value(&rendered, max_cell_chars))
     }
 }
 
@@ -1078,6 +1127,18 @@ impl MetadataProvider for DataFusionMetadataProvider {
 #[async_trait]
 impl DatabaseClient for DataFusionClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+        // NULL cells render as the text "NULL", exactly as before the
+        // structured conversion.
+        Ok(self
+            .execute_datafusion_query(sql)
+            .await?
+            .into_display_rows(DATAFUSION_NULL_DISPLAY))
+    }
+
+    async fn execute_query_structured(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         self.execute_datafusion_query(sql).await
     }
 
@@ -1092,7 +1153,10 @@ impl DatabaseClient for DataFusionClient {
 
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         let explain_sql = format!("EXPLAIN {sql}");
-        self.execute_datafusion_query(&explain_sql).await
+        Ok(self
+            .execute_datafusion_query(&explain_sql)
+            .await?
+            .into_display_rows(DATAFUSION_NULL_DISPLAY))
     }
 
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
@@ -1179,9 +1243,12 @@ mod tests {
         let array: Arc<dyn datafusion::arrow::array::Array> =
             Arc::new(StringViewArray::from(vec![long_value.as_str()]));
 
-        let rendered = DataFusionClient::array_value_to_string(&array, 0, 8);
+        let rendered = DataFusionClient::array_value_to_cell(&array, 0, 8);
 
-        assert_eq!(rendered, "xxxxxxxx… [truncated; 100 bytes]");
+        assert_eq!(
+            rendered,
+            Some("xxxxxxxx… [truncated; 100 bytes]".to_string())
+        );
     }
 
     #[tokio::test]
@@ -1202,9 +1269,10 @@ mod tests {
         let mut limits = test_limits();
         limits.max_result_rows = 2;
 
-        let results = DataFusionClient::record_batch_stream_to_strings(stream, &limits)
+        let results = DataFusionClient::record_batch_stream_to_structured(stream, &limits)
             .await
-            .unwrap();
+            .unwrap()
+            .into_display_rows(DATAFUSION_NULL_DISPLAY);
 
         assert_eq!(results[0], vec!["value".to_string()]);
         assert_eq!(results[1], vec!["1".to_string()]);
@@ -1228,9 +1296,10 @@ mod tests {
         let mut limits = test_limits();
         limits.max_output_bytes = "payload".len() + "abcde".len();
 
-        let results = DataFusionClient::record_batch_stream_to_strings(stream, &limits)
+        let results = DataFusionClient::record_batch_stream_to_structured(stream, &limits)
             .await
-            .unwrap();
+            .unwrap()
+            .into_display_rows(DATAFUSION_NULL_DISPLAY);
 
         assert_eq!(results[0], vec!["payload".to_string()]);
         assert!(results[1][0].contains("output safety cap reached"));
@@ -1280,6 +1349,82 @@ mod tests {
         assert_eq!(results[2], vec!["2".to_string(), "Bob".to_string()]);
         assert!(results[3][0].contains("result row safety cap reached"));
         assert_eq!(results.len(), 4);
+    }
+
+    /// Structured results must distinguish SQL NULL (`None`) from empty
+    /// strings and literal "NULL" text. This encodes ACTUAL arrow-csv
+    /// behavior (verified empirically):
+    /// - an empty CSV field parses as SQL NULL → `None` for EVERY column
+    ///   type, strings included — and a quoted `""` is indistinguishable
+    ///   from an unquoted empty field after CSV unescaping, so it is `None`
+    ///   too. CSV input therefore cannot produce a non-NULL empty string.
+    /// - the text `NULL` is just a four-character string → `Some("NULL")`
+    /// - a SQL literal `''` is a non-NULL empty string → `Some("")`,
+    ///   proving the structured path keeps NULL and empty apart.
+    #[tokio::test]
+    async fn datafusion_structured_nulls_distinguish_empty_and_null_text() {
+        let mut file = tempfile::Builder::new().suffix(".csv").tempfile().unwrap();
+        use std::io::Write;
+        writeln!(file, "id,name,score").unwrap();
+        writeln!(file, "1,,").unwrap(); // empty string field + empty numeric field
+        writeln!(file, "2,\"\",7").unwrap(); // quoted empty string field
+        writeln!(file, "3,NULL,9").unwrap(); // literal text NULL
+        writeln!(file, "4,alice,11").unwrap();
+        file.flush().unwrap();
+
+        let path = file.path().to_string_lossy().to_string();
+        let mut options = std::collections::HashMap::new();
+        options.insert("header".to_string(), "true".to_string());
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::CSV,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: Some(path.clone()),
+            options,
+            docker_container: None,
+            use_tls: false,
+        };
+
+        let client = DataFusionClient::new(connection_info).await.unwrap();
+        let table_name = DataFusionClient::extract_table_name(&path);
+        let sql = format!("SELECT name, score, '' AS empty_lit FROM {table_name} ORDER BY id");
+
+        let structured = client.execute_query_structured(&sql).await.unwrap();
+
+        assert_eq!(structured.columns, vec!["name", "score", "empty_lit"]);
+        assert_eq!(
+            structured.rows,
+            vec![
+                vec![None, None, Some(String::new())],
+                vec![None, Some("7".to_string()), Some(String::new())],
+                vec![
+                    Some("NULL".to_string()),
+                    Some("9".to_string()),
+                    Some(String::new()),
+                ],
+                vec![
+                    Some("alice".to_string()),
+                    Some("11".to_string()),
+                    Some(String::new()),
+                ],
+            ]
+        );
+
+        // The legacy display path flattens None to the historical "NULL"
+        // sentinel — indistinguishable from the literal text, which is
+        // exactly why the structured path exists.
+        let display = client.execute_query(&sql).await.unwrap();
+        assert_eq!(
+            display[1],
+            vec!["NULL".to_string(), "NULL".to_string(), String::new()]
+        );
+        assert_eq!(
+            display[3],
+            vec!["NULL".to_string(), "9".to_string(), String::new()]
+        );
     }
 
     /// Regex operators (~, ~*, !~, !~*) are native DataFusion SQL and need no

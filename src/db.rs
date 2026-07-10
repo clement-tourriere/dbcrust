@@ -9,6 +9,71 @@ use std::collections::HashMap;
 use std::error::Error as StdError;
 use tracing::{debug, info};
 
+pub(crate) fn unquote_metadata_identifier(identifier: &str) -> String {
+    let trimmed = identifier.trim();
+    if trimmed.len() >= 2 {
+        if trimmed.starts_with('"') && trimmed.ends_with('"') {
+            return trimmed[1..trimmed.len() - 1].replace("\"\"", "\"");
+        }
+        if trimmed.starts_with('`') && trimmed.ends_with('`') {
+            return trimmed[1..trimmed.len() - 1].replace("``", "`");
+        }
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            return trimmed[1..trimmed.len() - 1].replace("]]", "]");
+        }
+    }
+    trimmed.to_string()
+}
+
+pub(crate) fn metadata_table_parts(
+    table_name: &str,
+    database_type: &DatabaseType,
+) -> (Option<String>, String) {
+    let supports_schemas = matches!(
+        database_type,
+        DatabaseType::PostgreSQL
+            | DatabaseType::MySQL
+            | DatabaseType::SQLite
+            | DatabaseType::ClickHouse
+    );
+    if !supports_schemas {
+        return (None, unquote_metadata_identifier(table_name));
+    }
+
+    let mut quote = None;
+    let mut chars = table_name.char_indices().peekable();
+    while let Some((index, character)) = chars.next() {
+        match quote {
+            Some('"') if character == '"' => {
+                if chars.peek().is_some_and(|(_, next)| *next == '"') {
+                    chars.next();
+                } else {
+                    quote = None;
+                }
+            }
+            Some('`') if character == '`' => {
+                if chars.peek().is_some_and(|(_, next)| *next == '`') {
+                    chars.next();
+                } else {
+                    quote = None;
+                }
+            }
+            Some(']') if character == ']' => quote = None,
+            Some(_) => {}
+            None if character == '"' || character == '`' => quote = Some(character),
+            None if character == '[' => quote = Some(']'),
+            None if character == '.' => {
+                let schema = unquote_metadata_identifier(&table_name[..index]);
+                let table = unquote_metadata_identifier(&table_name[index + 1..]);
+                return (Some(schema), table);
+            }
+            None => {}
+        }
+    }
+
+    (None, unquote_metadata_identifier(table_name))
+}
+
 #[derive(Debug)]
 pub struct ColumnSelectionAborted;
 
@@ -1265,17 +1330,26 @@ impl Database {
                 "Owner".to_string(),
             ]);
 
-            // Add table/collection rows
-            for table in tables {
+            // Add table/collection rows. Providers may qualify objects outside
+            // the default schema (for example `analytics.orders` in PostgreSQL).
+            for table_reference in tables {
                 let conn_info = database_client.get_connection_info();
+                let (explicit_schema, table) =
+                    if conn_info.database_type == crate::database::DatabaseType::PostgreSQL {
+                        metadata_table_parts(&table_reference, &conn_info.database_type)
+                    } else {
+                        (None, unquote_metadata_identifier(&table_reference))
+                    };
                 let schema_name =
                     if conn_info.database_type == crate::database::DatabaseType::MongoDB {
                         "".to_string() // MongoDB doesn't have schemas
                     } else {
-                        database_client
-                            .get_metadata_provider()
-                            .default_schema()
-                            .unwrap_or_else(|| "main".to_string())
+                        explicit_schema.unwrap_or_else(|| {
+                            database_client
+                                .get_metadata_provider()
+                                .default_schema()
+                                .unwrap_or_else(|| "main".to_string())
+                        })
                     };
 
                 let object_type =
@@ -1303,6 +1377,35 @@ impl Database {
             &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .await
+    }
+
+    /// Execute a query preserving per-cell NULL-ness (for structured
+    /// consumers like the GUI). Shares the read-only guard, explain mode,
+    /// and auto-LIMIT with the display path, but never runs interactive
+    /// column selection.
+    pub async fn execute_query_structured(
+        &mut self,
+        query: &str,
+    ) -> std::result::Result<crate::database::StructuredQueryResult, Box<dyn StdError>> {
+        if self.read_only {
+            crate::safety::check_read_only(query, &self.get_database_type())?;
+        }
+
+        if self.explain_mode && is_query_explainable(query) {
+            let results = self.execute_explain_query(query).await?;
+            return Ok(crate::database::StructuredQueryResult::from_display_rows(
+                results,
+            ));
+        }
+
+        if let Some(ref database_client) = self.database_client {
+            let query_with_limit = self.maybe_add_limit(query);
+            Ok(database_client
+                .execute_query_structured(&query_with_limit)
+                .await?)
+        } else {
+            Err("No database client available".into())
+        }
     }
 
     /// Test query execution without side effects (for validating named queries before saving)
@@ -1797,11 +1900,26 @@ impl Database {
     ) -> std::result::Result<TableDetails, Box<dyn StdError>> {
         // Use the new database abstraction layer if available
         if let Some(ref database_client) = self.database_client {
-            match database_client
-                .get_metadata_provider()
-                .get_table_details(table_name, None)
-                .await
+            let database_type = &database_client.get_connection_info().database_type;
+            let provider = database_client.get_metadata_provider();
+            let (schema, table) = metadata_table_parts(table_name, database_type);
+            let mut result = provider.get_table_details(&table, schema.as_deref()).await;
+
+            // A dot inside a bare table name parses as `schema.table` above.
+            // When that lookup fails (SQLite errors on the phantom schema) or
+            // comes back empty (PostgreSQL returns zero columns), retry the
+            // name verbatim in the default schema.
+            if schema.is_some() && !matches!(result, Ok(ref details) if !details.columns.is_empty())
             {
+                let verbatim = unquote_metadata_identifier(table_name);
+                if let Ok(details) = provider.get_table_details(&verbatim, None).await {
+                    if !details.columns.is_empty() {
+                        result = Ok(details);
+                    }
+                }
+            }
+
+            match result {
                 Ok(table_details) => Ok(table_details),
                 Err(e) => {
                     debug!("Error using database client for get_table_details: {e}");
@@ -1854,19 +1972,31 @@ impl Database {
         };
 
         let provider = database_client.get_metadata_provider();
+        let database_type = &database_client.get_connection_info().database_type;
         // Bounded concurrency: stay within the pool's connection budget.
         const MAX_CONCURRENT: usize = 8;
         let mut indexed: Vec<(usize, String, Option<TableDetails>)> =
             futures_util::stream::iter(table_names.iter().enumerate())
                 .map(|(idx, name)| async move {
-                    // Accept schema-qualified names (`schema.table`) so non-public
-                    // tables resolve to the right schema instead of defaulting to
-                    // public; bare names keep schema = None.
-                    let (schema, table) = match name.split_once('.') {
-                        Some((s, t)) => (Some(s), t),
-                        None => (None, name.as_str()),
-                    };
-                    let details = provider.get_table_details(table, schema).await.ok();
+                    // Accept schema-qualified and quoted names while preserving
+                    // dots that are intrinsic to schemaless backend objects.
+                    let (schema, table) = metadata_table_parts(name, database_type);
+                    let mut details = provider
+                        .get_table_details(&table, schema.as_deref())
+                        .await
+                        .ok();
+                    // Dotted bare names parse as schema.table; retry verbatim
+                    // when that lookup finds nothing.
+                    if schema.is_some() && details.as_ref().is_none_or(|d| d.columns.is_empty()) {
+                        if let Ok(fallback) = provider
+                            .get_table_details(&unquote_metadata_identifier(name), None)
+                            .await
+                        {
+                            if !fallback.columns.is_empty() {
+                                details = Some(fallback);
+                            }
+                        }
+                    }
                     (idx, name.clone(), details)
                 })
                 .buffer_unordered(MAX_CONCURRENT)
@@ -2029,15 +2159,22 @@ impl Database {
         &mut self,
         table_name: &str,
     ) -> std::result::Result<Vec<String>, Box<dyn StdError>> {
-        // Try to parse schema from table name if it contains a dot
-        let (schema, table) = if table_name.contains('.') {
-            let parts: Vec<&str> = table_name.splitn(2, '.').collect();
-            (Some(parts[0]), parts[1])
-        } else {
-            (None, table_name)
-        };
-
-        self.get_columns_for_table(table, schema).await
+        let database_type = self.get_database_type();
+        let (schema, table) = metadata_table_parts(table_name, &database_type);
+        let primary = self.get_columns_for_table(&table, schema.as_deref()).await;
+        match primary {
+            Ok(columns) if !columns.is_empty() => Ok(columns),
+            primary_result if schema.is_some() => {
+                // A dot inside a bare table name parses as `schema.table`;
+                // retry the name verbatim in the default schema.
+                let verbatim = unquote_metadata_identifier(table_name);
+                match self.get_columns_for_table(&verbatim, None).await {
+                    Ok(columns) if !columns.is_empty() => Ok(columns),
+                    _ => primary_result,
+                }
+            }
+            primary_result => primary_result,
+        }
     }
 
     pub fn is_column_select_mode(&self) -> bool {
@@ -2342,6 +2479,34 @@ impl Drop for Database {
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    #[rstest]
+    #[case(
+        "analytics.orders",
+        DatabaseType::PostgreSQL,
+        Some("analytics"),
+        "orders"
+    )]
+    #[case(
+        "\"odd.schema\".\"Order.Items\"",
+        DatabaseType::PostgreSQL,
+        Some("odd.schema"),
+        "Order.Items"
+    )]
+    #[case("\"v1.events\"", DatabaseType::PostgreSQL, None, "v1.events")]
+    #[case("logs-2026.07", DatabaseType::Elasticsearch, None, "logs-2026.07")]
+    #[case("events.archive", DatabaseType::MongoDB, None, "events.archive")]
+    fn metadata_table_parts_respects_backend_and_identifier_quotes(
+        #[case] input: &str,
+        #[case] database_type: DatabaseType,
+        #[case] schema: Option<&str>,
+        #[case] table: &str,
+    ) {
+        assert_eq!(
+            metadata_table_parts(input, &database_type),
+            (schema.map(str::to_string), table.to_string())
+        );
+    }
 
     #[rstest]
     fn test_is_query_explainable() {

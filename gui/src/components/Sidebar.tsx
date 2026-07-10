@@ -21,6 +21,7 @@ import {
 import * as cmd from "../commands";
 import type { ConnectionState, NamedQuery, TableDetail } from "../types";
 import { formatConnectionTarget } from "../connectionDisplay";
+import { formatTableReference } from "../tableMetadata";
 import {
   getVisibleDjangoPresetGroups,
   getVisibleDjangoPresets,
@@ -34,6 +35,7 @@ interface SidebarProps {
   onLoadSnippet: (title: string, sql: string) => void;
   namedQueriesVersion: number;
   onDisconnect: () => void;
+  onRefreshTables: () => Promise<void>;
 }
 
 export function Sidebar({
@@ -44,23 +46,19 @@ export function Sidebar({
   onLoadSnippet,
   namedQueriesVersion,
   onDisconnect,
+  onRefreshTables,
 }: SidebarProps) {
   const [search, setSearch] = useState("");
   const [expandedTable, setExpandedTable] = useState<string | null>(null);
   const [tableDetail, setTableDetail] = useState<TableDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [localTables, setLocalTables] = useState(tables);
   const [namedQueries, setNamedQueries] = useState<NamedQuery[]>([]);
   const [presetMessage, setPresetMessage] = useState<string | null>(null);
   const [savingPreset, setSavingPreset] = useState<string | null>(null);
   const [deletingPreset, setDeletingPreset] = useState<string | null>(null);
   const [showSavedPresets, setShowSavedPresets] = useState(false);
   const [showDjangoToolkit, setShowDjangoToolkit] = useState(false);
-
-  useEffect(() => {
-    setLocalTables(tables);
-  }, [tables]);
 
   useEffect(() => {
     if (!presetMessage) return;
@@ -82,18 +80,24 @@ export function Sidebar({
     loadNamedQueries().catch(() => {});
   }, [connection.database_type, namedQueriesVersion, loadNamedQueries]);
 
-  const filteredTables = localTables.filter((t) =>
+  const filteredTables = tables.filter((t) =>
     t.toLowerCase().includes(search.toLowerCase()),
   );
   const djangoPresetGroups = useMemo(
-    () => getVisibleDjangoPresetGroups(localTables),
-    [localTables],
+    () => getVisibleDjangoPresetGroups(tables),
+    [tables],
   );
   const visibleDjangoPresets = useMemo(
-    () => getVisibleDjangoPresets(localTables),
-    [localTables],
+    () => getVisibleDjangoPresets(tables),
+    [tables],
   );
   const hasDjangoToolkit = djangoPresetGroups.length > 0;
+  const isElasticsearch = connection.database_type === "Elasticsearch";
+  const objectPlural = isElasticsearch
+    ? "indices"
+    : connection.database_type === "MongoDB"
+      ? "collections"
+      : "tables";
 
   const handleSavePreset = useCallback(
     async (name: string, query: string) => {
@@ -136,15 +140,13 @@ export function Sidebar({
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
-      const result = await cmd.listTables();
-      if (result.rows.length > 0) {
-        setLocalTables(result.rows.map((r) => r[1]));
-      }
-    } catch {
-      /* ignore */
+      // Refresh the App-level table list so the sidebar, schema explorer, and
+      // editor autocomplete all observe the same metadata snapshot.
+      await onRefreshTables();
+    } finally {
+      setRefreshing(false);
     }
-    setRefreshing(false);
-  }, []);
+  }, [onRefreshTables]);
 
   const toggleTable = useCallback(
     async (tableName: string) => {
@@ -388,7 +390,7 @@ export function Sidebar({
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter tables..."
+            placeholder={`Filter ${objectPlural}...`}
             className="w-full bg-surface-300 border border-zinc-800 rounded-md pl-8 pr-3 py-1.5
               text-xs text-zinc-300 placeholder-zinc-600 focus:outline-none focus:border-zinc-600 transition-colors"
           />
@@ -399,7 +401,7 @@ export function Sidebar({
       <div className="flex items-center justify-between px-3 py-1.5">
         <h3 className="text-xxs font-semibold text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
           <Table2 className="w-3 h-3" />
-          Tables
+          {objectPlural}
           <span className="text-zinc-600 font-normal">
             ({filteredTables.length})
           </span>
@@ -418,16 +420,25 @@ export function Sidebar({
 
       {/* ── Table List ────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto px-1">
+        {tablesError && filteredTables.length > 0 && (
+          <div
+            role="alert"
+            className="mx-2 mb-1 truncate rounded border border-red-500/20 bg-red-500/10 px-2 py-1 text-xxs text-red-300"
+            title={tablesError}
+          >
+            Refresh failed — showing last known {objectPlural}
+          </div>
+        )}
         {filteredTables.length === 0 ? (
           <div
             className={`px-3 py-8 text-center text-xs ${tablesError && !search ? "text-red-400" : "text-zinc-600"}`}
             title={tablesError ?? undefined}
           >
             {search
-              ? "No matching tables"
+              ? `No matching ${objectPlural}`
               : tablesError
-                ? `Failed to load tables: ${tablesError}`
-                : "No tables found"}
+                ? `Failed to load ${objectPlural}: ${tablesError}`
+                : `No ${objectPlural} found`}
           </div>
         ) : (
           <div className="space-y-px">
@@ -449,7 +460,7 @@ export function Sidebar({
                     onClick={() => onTableSelect(table)}
                     className="flex-1 text-left px-1 py-1 rounded text-xs text-zinc-300
                       hover:bg-zinc-800 hover:text-zinc-100 transition-colors truncate font-mono"
-                    title={`SELECT * FROM ${table} LIMIT 100`}
+                    title={`SELECT * FROM ${formatTableReference(table, connection.database_type)} LIMIT 100`}
                   >
                     {table}
                   </button>

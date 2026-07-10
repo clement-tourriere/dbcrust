@@ -69,8 +69,7 @@ export function SavedConnections({
   }, [refresh]);
 
   const handleDeleteSession = useCallback(
-    async (name: string, e: React.MouseEvent) => {
-      e.stopPropagation();
+    async (name: string) => {
       if (!window.confirm(`Delete saved session "${name}"?`)) return;
       try {
         await cmd.deleteSession(name);
@@ -162,6 +161,7 @@ export function SavedConnections({
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search connections…"
+            aria-label="Search saved and recent connections"
             className="w-full bg-surface border border-zinc-800 rounded-xl pl-10 pr-4 py-3
               text-sm text-zinc-200 placeholder-zinc-600
               focus:outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 transition-all"
@@ -232,14 +232,16 @@ export function SavedConnections({
             ) : (
               <div className="space-y-2">
                 {filteredSessions.map((s) => (
-                  <button
+                  <div
                     key={s.name}
-                    onClick={() => onConnectSession(s.name)}
-                    disabled={connecting}
-                    className="w-full text-left bg-surface rounded-xl border border-zinc-800
-                      hover:border-zinc-700 hover:bg-surface-100 transition-all
-                      flex items-center gap-4 p-4 group disabled:opacity-50"
+                    className="group flex items-center bg-surface rounded-xl border border-zinc-800
+                      hover:border-zinc-700 hover:bg-surface-100 transition-all"
                   >
+                    <button
+                      onClick={() => onConnectSession(s.name)}
+                      disabled={connecting}
+                      className="flex min-w-0 flex-1 items-center gap-4 p-4 text-left disabled:opacity-50"
+                    >
                     <div className="w-12 h-12 rounded-xl bg-zinc-800 flex items-center justify-center text-xl flex-shrink-0">
                       {DB_ICONS[s.database_type] ?? "🔗"}
                     </div>
@@ -272,23 +274,24 @@ export function SavedConnections({
                         )}
                       </div>
                     </div>
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                      <span
-                        role="button"
-                        onClick={(e) => handleDeleteSession(s.name, e)}
-                        className="p-2 rounded-lg text-zinc-700 hover:text-red-400 hover:bg-red-500/10
-                          opacity-0 group-hover:opacity-100 transition-all"
-                        title="Delete session"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </span>
-                      {connecting ? (
-                        <Loader2 className="w-4 h-4 animate-spin text-zinc-500" />
-                      ) : (
-                        <ChevronRight className="w-5 h-5 text-zinc-700 group-hover:text-zinc-400 transition-colors" />
-                      )}
-                    </div>
-                  </button>
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        {connecting ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-zinc-500" />
+                        ) : (
+                          <ChevronRight className="w-5 h-5 text-zinc-700 group-hover:text-zinc-400 transition-colors" />
+                        )}
+                      </div>
+                    </button>
+                    <button
+                      onClick={() => void handleDeleteSession(s.name)}
+                      className="mr-3 p-2 rounded-lg text-zinc-600 hover:text-red-400 hover:bg-red-500/10
+                        opacity-40 group-hover:opacity-100 focus:opacity-100 transition-all"
+                      title={`Delete ${s.name}`}
+                      aria-label={`Delete saved session ${s.name}`}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 ))}
               </div>
             )}

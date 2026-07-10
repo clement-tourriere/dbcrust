@@ -1,5 +1,7 @@
 //! SQLite implementation of the database abstraction layer
-use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
+use crate::database::{
+    ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider, StructuredQueryResult,
+};
 use crate::db::TableDetails;
 use crate::performance_analyzer::PerformanceAnalyzer;
 use crate::regex_operators::{RegexTarget, translate_regex_operators};
@@ -170,8 +172,9 @@ impl MetadataProvider for SqliteMetadataProvider {
         let table_q = crate::database::quote_sql_ident(table);
 
         // First check if the table exists
-        let table_exists_query =
-            format!("SELECT name FROM {schema_q}.sqlite_master WHERE type='table' AND name=?");
+        let table_exists_query = format!(
+            "SELECT name FROM {schema_q}.sqlite_master WHERE type IN ('table', 'view') AND name=?"
+        );
         let table_exists = sqlx::query(&table_exists_query)
             .bind(table)
             .fetch_optional(&self.pool)
@@ -614,45 +617,70 @@ impl SqliteClient {
             )]);
         }
     }
-}
 
-#[async_trait]
-impl DatabaseClient for SqliteClient {
-    async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+    /// Shared row building for `execute_query`/`execute_query_structured`:
+    /// a data cell is `None` exactly when the database value is SQL NULL.
+    async fn execute_query_structured_impl(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         debug!("[SqliteClient::execute_query] Executing query");
 
         let sql = translate_regex_operators(sql, RegexTarget::Sqlite)?;
         let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
 
         if rows.is_empty() {
-            return Ok(vec![]);
+            return Ok(StructuredQueryResult::default());
         }
-
-        let mut results = Vec::new();
 
         // Get column names from the first row
         let first_row = &rows[0];
-        let column_names: Vec<String> = (0..first_row.len())
+        let columns: Vec<String> = (0..first_row.len())
             .map(|i| first_row.column(i).name().to_string())
             .collect();
 
-        results.push(column_names);
-
-        // Convert rows to strings
+        // Convert rows to strings, keeping SQL NULL distinct from ""
+        let mut structured_rows = Vec::with_capacity(rows.len());
         for row in rows {
-            let mut string_row = Vec::new();
+            let mut structured_row = Vec::with_capacity(row.len());
             for i in 0..row.len() {
-                let value = format_sqlite_value(&row, i)?;
-                string_row.push(value);
+                if sqlite_value_is_null(&row, i) {
+                    structured_row.push(None);
+                } else {
+                    structured_row.push(Some(format_sqlite_value(&row, i)?));
+                }
             }
-            results.push(string_row);
+            structured_rows.push(structured_row);
         }
 
         debug!(
             "[SqliteClient::execute_query] Query completed with {} rows",
-            results.len() - 1
+            structured_rows.len()
         );
-        Ok(results)
+        Ok(StructuredQueryResult {
+            columns,
+            rows: structured_rows,
+        })
+    }
+}
+
+#[async_trait]
+impl DatabaseClient for SqliteClient {
+    async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+        let structured = self.execute_query_structured_impl(sql).await?;
+        if structured.columns.is_empty() && structured.rows.is_empty() {
+            // Legacy shape for empty results: no header row at all
+            return Ok(vec![]);
+        }
+        // Legacy NULL sentinel: SQL NULL has always rendered as ""
+        Ok(structured.into_display_rows(""))
+    }
+
+    async fn execute_query_structured(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
+        self.execute_query_structured_impl(sql).await
     }
 
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
@@ -894,6 +922,19 @@ impl DatabaseClient for SqliteClient {
     }
 }
 
+/// Whether the raw database value at `column_index` is SQL NULL.
+///
+/// Mirrors the NULL check inside [`format_sqlite_value`] (which renders NULL
+/// as the legacy `""` sentinel) so callers can decide NULL-ness from the raw
+/// value before any formatting.
+fn sqlite_value_is_null(row: &SqliteRow, column_index: usize) -> bool {
+    use sqlx::ValueRef;
+
+    row.try_get_raw(column_index)
+        .map(|value_ref| value_ref.is_null())
+        .unwrap_or(false)
+}
+
 /// Format a SQLite value to string representation
 fn format_sqlite_value(row: &SqliteRow, column_index: usize) -> Result<String, DatabaseError> {
     use sqlx::TypeInfo;
@@ -1073,6 +1114,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_sqlite_table_details_support_views() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE source (id INTEGER, label TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("CREATE VIEW source_view AS SELECT id, label FROM source")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let provider = SqliteMetadataProvider::new(pool);
+        let details = provider
+            .get_table_details("source_view", Some("main"))
+            .await
+            .unwrap();
+
+        assert_eq!(details.name, "source_view");
+        assert_eq!(details.columns.len(), 2);
+        assert_eq!(details.columns[0].name, "id");
+    }
+
+    #[tokio::test]
     async fn test_sqlite_query_execution() {
         // Use the test database we created earlier
         let test_db_path = std::env::current_dir()
@@ -1198,6 +1266,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows[1][0], "2");
+
+        std::fs::remove_file(&db_path).ok();
+    }
+
+    #[tokio::test]
+    async fn test_structured_query_distinguishes_null_from_empty_string() {
+        // Fresh database file; an empty file is a valid empty SQLite database
+        let db_path =
+            std::env::temp_dir().join(format!("dbcrust_null_test_{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&db_path);
+        std::fs::File::create(&db_path).unwrap();
+
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::SQLite,
+            host: None,
+            port: None,
+            username: None,
+            password: None,
+            database: None,
+            file_path: Some(db_path.to_string_lossy().to_string()),
+            options: HashMap::new(),
+            docker_container: None,
+            use_tls: false,
+        };
+
+        let client = SqliteClient::new(connection_info).await.unwrap();
+        let sql = "SELECT NULL AS a, '' AS b, 'NULL' AS c";
+
+        // Structured result: SQL NULL is None; an empty string and the
+        // literal text "NULL" stay Some
+        let structured = client.execute_query_structured(sql).await.unwrap();
+        assert_eq!(structured.columns, vec!["a", "b", "c"]);
+        assert_eq!(
+            structured.rows,
+            vec![vec![None, Some(String::new()), Some("NULL".to_string())]]
+        );
+
+        // Legacy display rows: NULL keeps rendering as the historical ""
+        let display = client.execute_query(sql).await.unwrap();
+        assert_eq!(display, vec![vec!["a", "b", "c"], vec!["", "", "NULL"]]);
 
         std::fs::remove_file(&db_path).ok();
     }

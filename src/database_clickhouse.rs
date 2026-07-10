@@ -5,6 +5,7 @@ use crate::complex_display::{
 };
 use crate::database::{
     ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider, ServerInfo,
+    StructuredQueryResult,
 };
 use crate::db::TableDetails;
 use crate::geojson_display::GeoJsonDisplayAdapter;
@@ -14,6 +15,27 @@ use async_trait::async_trait;
 use clickhouse::{Client, Row};
 use serde::Deserialize;
 use tracing::debug;
+
+/// Raw TabSeparated escape ClickHouse sends for SQL NULL: the two-character
+/// field `\N`. dbcrust has always displayed it verbatim, so the legacy
+/// display path renders structured `None` cells back to this exact text.
+const CLICKHOUSE_NULL_DISPLAY: &str = "\\N";
+
+/// Whether a ClickHouse column type accepts NULLs.
+///
+/// Nullable may only appear at the top level or directly inside
+/// LowCardinality — `LowCardinality(Nullable(String))` is the (only legal)
+/// nullable dictionary-encoded form. Nullable inside Array/Map/Tuple makes
+/// the *elements* nullable, not the column, so a plain substring check would
+/// misreport those.
+fn clickhouse_type_is_nullable(data_type: &str) -> bool {
+    let type_name = data_type.trim_start();
+    let type_name = type_name
+        .strip_prefix("LowCardinality(")
+        .map(str::trim_start)
+        .unwrap_or(type_name);
+    type_name.starts_with("Nullable(")
+}
 
 /// ClickHouse metadata provider implementation
 pub struct ClickHouseMetadataProvider {
@@ -208,17 +230,20 @@ impl MetadataProvider for ClickHouseMetadataProvider {
 
         let column_infos: Vec<crate::db::ColumnInfo> = columns
             .into_iter()
-            .map(|col| crate::db::ColumnInfo {
-                name: col.name,
-                data_type: col.data_type,
-                collation: String::new(), // ClickHouse doesn't use collations like other DBs
-                nullable: true,           // ClickHouse columns are nullable by default
-                default_value: if col.default_expression.is_empty() {
-                    None
-                } else {
-                    Some(col.default_expression)
-                },
-                enum_values: None, // ClickHouse enum handling could be added later if needed
+            .map(|col| {
+                let nullable = clickhouse_type_is_nullable(&col.data_type);
+                crate::db::ColumnInfo {
+                    name: col.name,
+                    data_type: col.data_type,
+                    collation: String::new(), // ClickHouse doesn't use collations like other DBs
+                    nullable,
+                    default_value: if col.default_expression.is_empty() {
+                        None
+                    } else {
+                        Some(col.default_expression)
+                    },
+                    enum_values: None, // ClickHouse enum handling could be added later if needed
+                }
             })
             .collect();
 
@@ -396,7 +421,10 @@ impl ClickHouseClient {
     }
 
     /// Execute HTTP query via ClickHouse HTTP interface
-    async fn execute_http_user_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+    async fn execute_http_user_query(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         // Build HTTP URL
         let host = self.connection_info.host.as_deref().unwrap_or("localhost");
         let port = self.connection_info.port.unwrap_or(8123);
@@ -457,45 +485,7 @@ impl ClickHouseClient {
                 text_response
             );
 
-            let mut results = Vec::new();
-            let lines: Vec<&str> = text_response.lines().collect();
-
-            if lines.is_empty() {
-                return Ok(vec![vec!["(no results)".to_string()]]);
-            }
-
-            // First line is headers
-            if let Some(header_line) = lines.first() {
-                let headers: Vec<String> = header_line
-                    .split('\t')
-                    .map(|s| s.trim().to_string())
-                    .collect();
-                results.push(headers);
-            }
-
-            // Remaining lines are data
-            for line in lines.iter().skip(1) {
-                if !line.trim().is_empty() {
-                    let raw_row_data: Vec<String> =
-                        line.split('\t').map(|s| s.trim().to_string()).collect();
-
-                    // Apply complex display formatting if headers are available
-                    let formatted_row_data = if let Some(headers) = results.first() {
-                        self.format_row_with_complex_display(&raw_row_data, headers)
-                    } else {
-                        raw_row_data
-                    };
-
-                    results.push(formatted_row_data);
-                }
-            }
-
-            // If only headers and no data rows
-            if results.len() == 1 {
-                results.push(vec!["(no rows)".to_string()]);
-            }
-
-            Ok(results)
+            Ok(self.parse_tab_separated_with_names(&text_response))
         } else {
             // Try without FORMAT (for non-SELECT queries like DDL/DML)
             debug!(
@@ -521,10 +511,10 @@ impl ClickHouseClient {
 
             if response.status().is_success() {
                 // DDL/DML query succeeded
-                Ok(vec![
+                Ok(StructuredQueryResult::from_display_rows(vec![
                     vec!["Status".to_string()],
                     vec!["Query executed successfully".to_string()],
-                ])
+                ]))
             } else {
                 let error_text = response
                     .text()
@@ -537,8 +527,60 @@ impl ClickHouseClient {
         }
     }
 
-    /// Execute a raw query and return results as Vec<Vec<String>>
-    async fn execute_raw_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+    /// Parse a `TabSeparatedWithNames` response body into structured rows.
+    ///
+    /// TabSeparated escapes tabs/newlines inside values, so splitting on
+    /// lines and tabs is safe without unescaping. SQL NULL arrives as the
+    /// two-character field `\N` — and only NULL does: a literal backslash
+    /// followed by `N` inside a string is escaped as `\\N` — so that exact
+    /// field becomes a `None` cell. Everything else stays `Some` with the
+    /// historical complex-display formatting applied.
+    fn parse_tab_separated_with_names(&self, text_response: &str) -> StructuredQueryResult {
+        let lines: Vec<&str> = text_response.lines().collect();
+
+        if lines.is_empty() {
+            return StructuredQueryResult::from_display_rows(vec![vec![
+                "(no results)".to_string(),
+            ]]);
+        }
+
+        // First line is headers
+        let headers: Vec<String> = lines[0].split('\t').map(|s| s.trim().to_string()).collect();
+
+        // Remaining lines are data
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+        for line in lines.iter().skip(1) {
+            if !line.trim().is_empty() {
+                let row: Vec<Option<String>> = line
+                    .split('\t')
+                    .map(|s| s.trim())
+                    .zip(headers.iter())
+                    .map(|(value, column_name)| {
+                        if value == CLICKHOUSE_NULL_DISPLAY {
+                            None
+                        } else {
+                            // Apply complex display formatting
+                            Some(self.format_value_with_complex_display(value, column_name))
+                        }
+                    })
+                    .collect();
+                rows.push(row);
+            }
+        }
+
+        // If only headers and no data rows
+        if rows.is_empty() {
+            rows.push(vec![Some("(no rows)".to_string())]);
+        }
+
+        StructuredQueryResult {
+            columns: headers,
+            rows,
+        }
+    }
+
+    /// Execute a raw query and return structured results (per-cell NULLs).
+    async fn execute_raw_query(&self, sql: &str) -> Result<StructuredQueryResult, DatabaseError> {
         debug!(
             "[ClickHouseClient::execute_raw_query] Executing query: {}",
             sql
@@ -547,19 +589,6 @@ impl ClickHouseClient {
         let sql = translate_regex_operators(sql, RegexTarget::ClickHouse)?;
         // Use HTTP interface for all user queries to handle dynamic results
         self.execute_http_user_query(&sql).await
-    }
-
-    /// Format a row of data with complex display adapters
-    fn format_row_with_complex_display(
-        &self,
-        row_data: &[String],
-        headers: &[String],
-    ) -> Vec<String> {
-        row_data
-            .iter()
-            .zip(headers.iter())
-            .map(|(value, column_name)| self.format_value_with_complex_display(value, column_name))
-            .collect()
     }
 
     /// Format a single value using complex display adapters if applicable
@@ -677,6 +706,18 @@ impl ClickHouseClient {
 #[async_trait]
 impl DatabaseClient for ClickHouseClient {
     async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+        // NULL cells render as the raw `\N` escape, exactly as before the
+        // structured conversion.
+        Ok(self
+            .execute_raw_query(sql)
+            .await?
+            .into_display_rows(CLICKHOUSE_NULL_DISPLAY))
+    }
+
+    async fn execute_query_structured(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         self.execute_raw_query(sql).await
     }
 
@@ -703,7 +744,10 @@ impl DatabaseClient for ClickHouseClient {
 
         let sql = translate_regex_operators(sql, RegexTarget::ClickHouse)?;
         let explain_sql = format!("EXPLAIN PLAN {sql}");
-        self.execute_raw_query(&explain_sql).await
+        Ok(self
+            .execute_raw_query(&explain_sql)
+            .await?
+            .into_display_rows(CLICKHOUSE_NULL_DISPLAY))
     }
 
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
@@ -715,14 +759,20 @@ impl DatabaseClient for ClickHouseClient {
         let sql = translate_regex_operators(sql, RegexTarget::ClickHouse)?;
         // ClickHouse EXPLAIN with more details
         let explain_sql = format!("EXPLAIN SYNTAX {sql}");
-        self.execute_raw_query(&explain_sql).await
+        Ok(self
+            .execute_raw_query(&explain_sql)
+            .await?
+            .into_display_rows(CLICKHOUSE_NULL_DISPLAY))
     }
 
     async fn list_databases(&self) -> Result<Vec<Vec<String>>, DatabaseError> {
         debug!("[ClickHouseClient::list_databases] Listing databases");
 
         let query = "SELECT name FROM system.databases ORDER BY name";
-        self.execute_raw_query(query).await
+        Ok(self
+            .execute_raw_query(query)
+            .await?
+            .into_display_rows(CLICKHOUSE_NULL_DISPLAY))
     }
 
     async fn connect_to_database(&mut self, database: &str) -> Result<(), DatabaseError> {
@@ -798,6 +848,75 @@ impl DatabaseClient for ClickHouseClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case("Nullable(String)", true)]
+    #[case("LowCardinality(Nullable(String))", true)]
+    #[case("String", false)]
+    #[case("LowCardinality(String)", false)]
+    #[case("Map(String, Nullable(String))", false)]
+    #[case("Array(Nullable(Int64))", false)]
+    fn nullable_detection_handles_wrapped_types(#[case] data_type: &str, #[case] expected: bool) {
+        assert_eq!(clickhouse_type_is_nullable(data_type), expected);
+    }
+
+    #[rstest]
+    #[case::empty_response("", vec![vec!["(no results)".to_string()]])]
+    #[case::header_only("id\tname\n", vec![
+        vec!["id".to_string(), "name".to_string()],
+        vec!["(no rows)".to_string()],
+    ])]
+    #[case::plain_row("id\tname\n1\talice\n", vec![
+        vec!["id".to_string(), "name".to_string()],
+        vec!["1".to_string(), "alice".to_string()],
+    ])]
+    #[case::null_escape_rendered_verbatim("id\tname\n1\t\\N\n", vec![
+        vec!["id".to_string(), "name".to_string()],
+        vec!["1".to_string(), "\\N".to_string()],
+    ])]
+    fn tab_separated_parsing_matches_legacy_display(
+        #[case] payload: &str,
+        #[case] expected: Vec<Vec<String>>,
+    ) {
+        let client = test_client_with_auth(None, None);
+
+        let display = client
+            .parse_tab_separated_with_names(payload)
+            .into_display_rows(CLICKHOUSE_NULL_DISPLAY);
+
+        assert_eq!(display, expected);
+    }
+
+    #[test]
+    fn tab_separated_null_escape_becomes_none_cell() {
+        let client = test_client_with_auth(None, None);
+        // TabSeparatedWithNames data row whose fields are a literal string,
+        // the raw NULL escape `\N`, and an empty string.
+        let payload = "name\tnickname\tnote\nalice\t\\N\t\n";
+
+        let structured = client.parse_tab_separated_with_names(payload);
+
+        assert_eq!(structured.columns, vec!["name", "nickname", "note"]);
+        assert_eq!(
+            structured.rows,
+            vec![vec![Some("alice".to_string()), None, Some(String::new())]]
+        );
+
+        // The legacy display path reproduces the raw text fields byte for
+        // byte: NULL renders as `\N`, distinct from the empty string.
+        assert_eq!(
+            structured.into_display_rows(CLICKHOUSE_NULL_DISPLAY),
+            vec![
+                vec![
+                    "name".to_string(),
+                    "nickname".to_string(),
+                    "note".to_string(),
+                ],
+                vec!["alice".to_string(), "\\N".to_string(), String::new()],
+            ]
+        );
+    }
 
     fn test_client_with_auth(username: Option<&str>, password: Option<&str>) -> ClickHouseClient {
         let connection_info = ConnectionInfo {

@@ -8,6 +8,7 @@ export function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     cmd
@@ -22,6 +23,7 @@ export function SettingsPage() {
   const updateSetting = useCallback(
     async (key: string, value: string) => {
       setSaving(key);
+      setError(null);
       try {
         await cmd.updateConfig(key, value);
         const updated = await cmd.getConfig();
@@ -29,9 +31,10 @@ export function SettingsPage() {
         setSaved(key);
         setTimeout(() => setSaved(null), 1500);
       } catch (e) {
-        window.alert(`Failed to update: ${String(e)}`);
+        setError(`Failed to update ${key}: ${String(e)}`);
+      } finally {
+        setSaving(null);
       }
-      setSaving(null);
     },
     [],
   );
@@ -166,6 +169,12 @@ export function SettingsPage() {
             Configure DBCrust preferences. Changes are saved automatically.
           </p>
         </div>
+
+        {error && (
+          <div role="alert" className="mb-5 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-300">
+            {error}
+          </div>
+        )}
 
         {/* Setting Sections */}
         <div className="space-y-6">

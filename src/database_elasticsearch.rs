@@ -2,6 +2,7 @@
 use crate::complex_display::ComplexDisplayConfig;
 use crate::database::{
     ConnectionInfo, DatabaseClient, DatabaseError, DatabaseTypeExt, MetadataProvider, ServerInfo,
+    StructuredQueryResult,
 };
 use crate::regex_operators::{RegexTarget, translate_regex_operators};
 use async_trait::async_trait;
@@ -20,6 +21,50 @@ use regex::Regex;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, info};
+
+fn elasticsearch_error_reason(body: &Value) -> Option<String> {
+    let error = body.get("error")?;
+    if let Some(reason) = error.as_str() {
+        return Some(reason.to_string());
+    }
+    // Mapping responses are keyed by index name, so an index literally named
+    // "error" produces a top-level "error" key on a SUCCESSFUL response. Only
+    // treat the value as an error when it carries the documented error shape.
+    let error_object = error.as_object()?;
+    if !(error_object.contains_key("reason")
+        || error_object.contains_key("type")
+        || error_object.contains_key("root_cause"))
+    {
+        return None;
+    }
+    if let Some(reason) = error.get("reason").and_then(Value::as_str) {
+        return Some(reason.to_string());
+    }
+    if let Some(reason) = error
+        .get("root_cause")
+        .and_then(Value::as_array)
+        .and_then(|causes| causes.first())
+        .and_then(|cause| cause.get("reason"))
+        .and_then(Value::as_str)
+    {
+        return Some(reason.to_string());
+    }
+    error
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| Some(error.to_string()))
+}
+
+fn ensure_elasticsearch_success(body: &Value, operation: &str) -> Result<(), DatabaseError> {
+    if let Some(reason) = elasticsearch_error_reason(body) {
+        Err(DatabaseError::QueryError(format!(
+            "Elasticsearch {operation} failed: {reason}"
+        )))
+    } else {
+        Ok(())
+    }
+}
 
 /// Elasticsearch metadata provider implementation
 pub struct ElasticsearchMetadataProvider {
@@ -52,6 +97,7 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
         let body: Value = response.json().await.map_err(|e| {
             DatabaseError::QueryError(format!("Failed to parse indices response: {e}"))
         })?;
+        ensure_elasticsearch_success(&body, "index listing")?;
 
         let mut schemas = Vec::new();
         if let Some(indices) = body.as_array() {
@@ -92,6 +138,7 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
         let body: Value = response.json().await.map_err(|e| {
             DatabaseError::QueryError(format!("Failed to parse indices response: {e}"))
         })?;
+        ensure_elasticsearch_success(&body, "index listing")?;
 
         let mut tables = Vec::new();
         if let Some(indices) = body.as_array() {
@@ -111,11 +158,16 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
         table: &str,
         _schema: Option<&str>,
     ) -> Result<Vec<String>, DatabaseError> {
-        // Get mapping for the index to extract field names
+        let clean_table = Self::clean_mapping_target(table);
+
+        // Get mappings for the index, alias, or wildcard and extract nested
+        // fields and multi-fields (for example `message.keyword`). Mapping
+        // responses are keyed by the concrete backing index, which is not
+        // necessarily the name that was requested.
         let response = self
             .client
             .indices()
-            .get_mapping(IndicesGetMappingParts::Index(&[table]))
+            .get_mapping(IndicesGetMappingParts::Index(&[&clean_table]))
             .send()
             .await
             .map_err(|e| DatabaseError::QueryError(format!("Failed to get mapping: {e}")))?;
@@ -123,27 +175,15 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
         let body: Value = response.json().await.map_err(|e| {
             DatabaseError::QueryError(format!("Failed to parse mapping response: {e}"))
         })?;
+        ensure_elasticsearch_success(&body, "mapping lookup")?;
 
-        let mut columns = Vec::new();
+        let mut columns = Self::completion_columns_from_mapping(&body);
 
-        // Navigate through the mapping structure
-        if let Some(index_mapping) = body.get(table) {
-            if let Some(mappings) = index_mapping.get("mappings") {
-                if let Some(properties) = mappings.get("properties") {
-                    if let Some(props) = properties.as_object() {
-                        for (field_name, _field_def) in props {
-                            columns.push(field_name.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        // If no mapping found, try to get sample documents to infer fields
+        // If no mapping found, try to get sample documents to infer fields.
         if columns.is_empty() {
             let search_response = self
                 .client
-                .search(SearchParts::Index(&[table]))
+                .search(SearchParts::Index(&[&clean_table]))
                 .body(json!({
                     "size": 1,
                     "query": {
@@ -159,6 +199,7 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
             let search_body: Value = search_response.json().await.map_err(|e| {
                 DatabaseError::QueryError(format!("Failed to parse search response: {e}"))
             })?;
+            ensure_elasticsearch_success(&search_body, "sample document lookup")?;
 
             if let Some(hits) = search_body
                 .get("hits")
@@ -175,6 +216,8 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
             }
         }
 
+        columns.sort();
+        columns.dedup();
         Ok(columns)
     }
 
@@ -219,6 +262,7 @@ impl MetadataProvider for ElasticsearchMetadataProvider {
         let mapping_body: Value = mapping_response.json().await.map_err(|e| {
             DatabaseError::QueryError(format!("Failed to parse mapping response: {e}"))
         })?;
+        ensure_elasticsearch_success(&mapping_body, "mapping lookup")?;
 
         let mut columns = Vec::new();
 
@@ -293,6 +337,64 @@ pub struct ElasticsearchClient {
 }
 
 impl ElasticsearchMetadataProvider {
+    fn clean_mapping_target(table: &str) -> String {
+        let clean = ElasticsearchClient::clean_table_name(table.trim());
+        if clean.len() >= 2
+            && ((clean.starts_with('"') && clean.ends_with('"'))
+                || (clean.starts_with('`') && clean.ends_with('`')))
+        {
+            clean[1..clean.len() - 1].to_string()
+        } else {
+            clean
+        }
+    }
+
+    fn completion_columns_from_mapping(mapping_body: &Value) -> Vec<String> {
+        let mut columns = Vec::new();
+        if let Some(indices) = mapping_body.as_object() {
+            for index_mapping in indices.values() {
+                if let Some(properties) = index_mapping
+                    .get("mappings")
+                    .and_then(|mappings| mappings.get("properties"))
+                {
+                    Self::extract_completion_fields(properties, "", &mut columns);
+                }
+            }
+        }
+        columns.sort();
+        columns.dedup();
+        columns
+    }
+
+    fn extract_completion_fields(properties: &Value, prefix: &str, columns: &mut Vec<String>) {
+        let Some(properties) = properties.as_object() else {
+            return;
+        };
+
+        for (field_name, field_definition) in properties {
+            let full_name = if prefix.is_empty() {
+                field_name.clone()
+            } else {
+                format!("{prefix}.{field_name}")
+            };
+
+            let field_type = field_definition.get("type").and_then(Value::as_str);
+            if !matches!(field_type, Some("object" | "nested")) && field_type.is_some() {
+                columns.push(full_name.clone());
+            }
+
+            if let Some(multi_fields) = field_definition.get("fields").and_then(Value::as_object) {
+                for sub_field_name in multi_fields.keys() {
+                    columns.push(format!("{full_name}.{sub_field_name}"));
+                }
+            }
+
+            if let Some(nested_properties) = field_definition.get("properties") {
+                Self::extract_completion_fields(nested_properties, &full_name, columns);
+            }
+        }
+    }
+
     /// Extract all fields recursively including nested fields and multi-fields
     fn extract_all_fields_for_table_details(
         &self,
@@ -550,10 +652,25 @@ impl ElasticsearchClient {
 
         let client = Elasticsearch::new(transport);
 
-        // Test connection
-        let _info_response = client.info().send().await.map_err(|e| {
+        // Test both transport and HTTP/API success. The generated client
+        // returns an HTTP response for authentication failures, so `send()`
+        // succeeding alone does not mean the connection is usable.
+        let info_response = client.info().send().await.map_err(|e| {
             DatabaseError::ConnectionError(format!("Failed to connect to Elasticsearch: {e}"))
         })?;
+        let status = info_response.status_code().as_u16();
+        let info_body: Value = info_response.json().await.map_err(|e| {
+            DatabaseError::ConnectionError(format!(
+                "Failed to parse Elasticsearch server response: {e}"
+            ))
+        })?;
+        if !(200..300).contains(&status) || info_body.get("error").is_some() {
+            let reason = elasticsearch_error_reason(&info_body)
+                .unwrap_or_else(|| format!("server returned HTTP {status}"));
+            return Err(DatabaseError::ConnectionError(format!(
+                "Elasticsearch connection rejected: {reason}"
+            )));
+        }
 
         debug!("[ElasticsearchClient::new] Connection successful");
 
@@ -670,6 +787,7 @@ impl ElasticsearchClient {
         let body: Value = response.json().await.map_err(|e| {
             DatabaseError::QueryError(format!("Failed to parse mapping response: {e}"))
         })?;
+        ensure_elasticsearch_success(&body, "mapping lookup")?;
 
         let mut field_types = HashMap::new();
 
@@ -739,6 +857,7 @@ impl ElasticsearchClient {
         let search_body: Value = search_response.json().await.map_err(|e| {
             DatabaseError::QueryError(format!("Failed to parse search response: {e}"))
         })?;
+        ensure_elasticsearch_success(&search_body, "sample document lookup")?;
 
         let mut safe_fields = Vec::new();
         let mut potentially_array_fields = HashSet::new();
@@ -817,7 +936,13 @@ impl ElasticsearchClient {
             }
 
             let columns_list = safe_fields.join(", ");
-            let rewritten_query = sql.replacen("SELECT *", &format!("SELECT {columns_list}"), 1);
+            let select_star = Regex::new(r"(?is)^(\s*SELECT)\s+\*")
+                .map_err(|e| DatabaseError::QueryError(format!("Regex error: {e}")))?;
+            let rewritten_query = select_star
+                .replace(sql, |captures: &regex::Captures| {
+                    format!("{} {columns_list}", &captures[1])
+                })
+                .into_owned();
 
             // Get list of excluded fields for user info
             let field_mappings = self.get_field_mappings(&index_name).await?;
@@ -840,34 +965,44 @@ impl ElasticsearchClient {
         sql.replace('`', "\"")
     }
 
+    fn prepare_sql_query(sql: &str) -> Result<String, DatabaseError> {
+        let auto_quoted_sql = Self::auto_quote_table_names_in_sql(sql)?;
+        let normalized_sql = Self::fix_elasticsearch_sql_quoting(&auto_quoted_sql);
+        translate_regex_operators(&normalized_sql, RegexTarget::ElasticsearchSql)
+    }
+
+    /// Interpret a `_sql/translate` response as a validation verdict.
+    ///
+    /// The translate API cannot produce a DSL for command statements
+    /// (SHOW TABLES, DESCRIBE) or queries Elasticsearch executes locally
+    /// (e.g. `SELECT 1`) and reports "Cannot generate a query" for them —
+    /// those statements execute fine, so they count as valid.
+    fn translate_validation_result(body: &Value) -> Result<(), DatabaseError> {
+        match elasticsearch_error_reason(body) {
+            Some(reason) if reason.contains("Cannot generate a query") => Ok(()),
+            Some(reason) => Err(DatabaseError::QueryError(format!(
+                "Elasticsearch query validation failed: {reason}"
+            ))),
+            None => Ok(()),
+        }
+    }
+
     /// Execute SQL query via Elasticsearch SQL API
-    async fn execute_sql_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+    async fn execute_sql_query(&self, sql: &str) -> Result<StructuredQueryResult, DatabaseError> {
         debug!(
             "[ElasticsearchClient::execute_sql_query] Executing SQL: {}",
             sql
         );
 
-        // First, automatically quote table names in SQL
-        let auto_quoted_sql = Self::auto_quote_table_names_in_sql(sql)?;
-        if auto_quoted_sql != sql {
+        // Normalize table quoting consistently for execution, validation, and
+        // explain. This is especially important for generated GUI queries.
+        let mut final_sql = Self::prepare_sql_query(sql)?;
+        if final_sql != sql {
             debug!(
-                "[ElasticsearchClient::execute_sql_query] Auto-quoted table names: {} -> {}",
-                sql, auto_quoted_sql
+                "[ElasticsearchClient::execute_sql_query] Normalized SQL: {} -> {}",
+                sql, final_sql
             );
         }
-
-        // Fix quoting for Elasticsearch SQL API (backticks to double quotes)
-        let mut final_sql = Self::fix_elasticsearch_sql_quoting(&auto_quoted_sql);
-        if final_sql != auto_quoted_sql {
-            debug!(
-                "[ElasticsearchClient::execute_sql_query] Fixed SQL quoting: {} -> {}",
-                auto_quoted_sql, final_sql
-            );
-        }
-
-        // Translate PG-style regex operators (~, !~) to RLIKE after quoting,
-        // so index names with dashes/dots are already parseable
-        final_sql = translate_regex_operators(&final_sql, RegexTarget::ElasticsearchSql)?;
 
         // Handle SELECT * queries by rewriting them to exclude array fields
         let mut excluded_fields = Vec::new();
@@ -947,33 +1082,38 @@ impl ElasticsearchClient {
         }
 
         // Parse SQL API response format
-        let mut results = Vec::new();
+        let mut columns: Vec<String> = Vec::new();
+        let mut header_present = false;
 
-        if let Some(columns) = body.get("columns") {
-            if let Some(cols) = columns.as_array() {
-                let mut header = Vec::new();
+        if let Some(body_columns) = body.get("columns") {
+            if let Some(cols) = body_columns.as_array() {
+                header_present = true;
                 for col in cols {
                     if let Some(name) = col.get("name").and_then(|n| n.as_str()) {
-                        header.push(name.to_string());
+                        columns.push(name.to_string());
                     }
                 }
-                results.push(header);
             }
         }
 
-        if let Some(rows) = body.get("rows") {
-            if let Some(rows_array) = rows.as_array() {
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+
+        if let Some(body_rows) = body.get("rows") {
+            if let Some(rows_array) = body_rows.as_array() {
                 debug!(
                     "[ElasticsearchClient::execute_sql_query] Found {} rows",
                     rows_array.len()
                 );
                 for row in rows_array {
                     if let Some(row_array) = row.as_array() {
-                        let mut row_strings = Vec::new();
+                        let mut row_cells = Vec::new();
                         for cell in row_array {
-                            row_strings.push(self.format_elasticsearch_value(cell));
+                            row_cells.push(Self::elasticsearch_value_to_cell(
+                                cell,
+                                &self.complex_display_config,
+                            ));
                         }
-                        results.push(row_strings);
+                        rows.push(row_cells);
                     }
                 }
             } else {
@@ -985,23 +1125,23 @@ impl ElasticsearchClient {
 
         debug!(
             "[ElasticsearchClient::execute_sql_query] Returning {} result rows (including header)",
-            results.len()
+            rows.len() + usize::from(header_present)
         );
 
         // If we have headers but no data rows, add a message row to indicate empty result
-        if results.len() == 1 && !results.is_empty() {
+        if header_present && rows.is_empty() {
             debug!(
                 "[ElasticsearchClient::execute_sql_query] Query returned headers but no data rows"
             );
             // Add a message row to show the empty result explicitly
-            let column_count = results[0].len();
+            let column_count = columns.len();
             if column_count > 0 {
-                let mut empty_message_row = vec!["(0 rows)".to_string()];
+                let mut empty_message_row = vec![Some("(0 rows)".to_string())];
                 // Pad with empty strings for remaining columns
                 for _ in 1..column_count {
-                    empty_message_row.push("".to_string());
+                    empty_message_row.push(Some(String::new()));
                 }
-                results.push(empty_message_row);
+                rows.push(empty_message_row);
             }
         }
 
@@ -1014,28 +1154,44 @@ impl ElasticsearchClient {
             );
 
             // Add the message as a comment row at the end
-            if !results.is_empty() {
-                let column_count = results[0].len();
+            if header_present || !rows.is_empty() {
+                let column_count = if header_present {
+                    columns.len()
+                } else {
+                    rows[0].len()
+                };
                 let message = format!(
                     "Note: {} array fields excluded: {}",
                     excluded_fields.len(),
                     excluded_fields.join(", ")
                 );
 
-                let mut info_row = vec![message];
+                let mut info_row = vec![Some(message)];
                 // Pad with empty strings for remaining columns
                 for _ in 1..column_count {
-                    info_row.push("".to_string());
+                    info_row.push(Some(String::new()));
                 }
-                results.push(info_row);
+                rows.push(info_row);
             }
         }
 
-        Ok(results)
+        Ok(StructuredQueryResult { columns, rows })
     }
 
-    /// Format Elasticsearch values for display
-    fn format_elasticsearch_value(&self, value: &Value) -> String {
+    /// Map one SQL-API cell onto a display cell, preserving SQL NULL-ness.
+    ///
+    /// `None` means the server sent a JSON `null` (SQL NULL); a literal
+    /// `"NULL"` string value stays `Some("NULL")` so the two remain
+    /// distinguishable for structured consumers.
+    fn elasticsearch_value_to_cell(value: &Value, config: &ComplexDisplayConfig) -> Option<String> {
+        match value {
+            Value::Null => None,
+            other => Some(Self::format_elasticsearch_value(other, config)),
+        }
+    }
+
+    /// Format non-NULL Elasticsearch values for display
+    fn format_elasticsearch_value(value: &Value, config: &ComplexDisplayConfig) -> String {
         match value {
             Value::Null => "NULL".to_string(),
             Value::Bool(b) => b.to_string(),
@@ -1043,16 +1199,16 @@ impl ElasticsearchClient {
             Value::String(s) => s.clone(),
             Value::Array(_) | Value::Object(_) => {
                 // Use complex display configuration for JSON formatting
-                let json_str = if self.complex_display_config.json_pretty_print {
+                let json_str = if config.json_pretty_print {
                     serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
                 } else {
                     serde_json::to_string(value).unwrap_or_else(|_| value.to_string())
                 };
 
                 // Apply display mode formatting
-                match &self.complex_display_config.display_mode {
+                match &config.display_mode {
                     crate::complex_display::ComplexDisplayMode::Truncated => {
-                        let max_len = self.complex_display_config.max_width;
+                        let max_len = config.max_width;
                         if json_str.len() > max_len {
                             format!(
                                 "{}...",
@@ -1089,16 +1245,20 @@ impl ElasticsearchClient {
     async fn handle_elasticsearch_command(
         &self,
         command: &str,
-    ) -> Result<Vec<Vec<String>>, DatabaseError> {
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         let cmd_upper = command.trim().to_uppercase();
 
         if cmd_upper.starts_with("SHOW TABLES") || cmd_upper.starts_with("SHOW INDICES") {
-            return self.list_indices().await;
+            return Ok(StructuredQueryResult::from_display_rows(
+                self.list_indices().await?,
+            ));
         }
 
         if cmd_upper.starts_with("DESCRIBE ") || cmd_upper.starts_with("DESC ") {
             let table_name = command.split_whitespace().nth(1).unwrap_or("*");
-            return self.describe_index(table_name).await;
+            return Ok(StructuredQueryResult::from_display_rows(
+                self.describe_index(table_name).await?,
+            ));
         }
 
         // Default to SQL execution
@@ -1121,6 +1281,7 @@ impl ElasticsearchClient {
         let body: Value = response.json().await.map_err(|e| {
             DatabaseError::QueryError(format!("Failed to parse indices response: {e}"))
         })?;
+        ensure_elasticsearch_success(&body, "index listing")?;
 
         let mut results = Vec::new();
         results.push(vec![
@@ -1190,6 +1351,7 @@ impl ElasticsearchClient {
         let body: Value = response.json().await.map_err(|e| {
             DatabaseError::QueryError(format!("Failed to parse mapping response: {e}"))
         })?;
+        ensure_elasticsearch_success(&body, "mapping lookup")?;
 
         let mut results = Vec::new();
         results.push(vec![
@@ -1302,13 +1464,26 @@ impl ElasticsearchClient {
 #[async_trait]
 impl DatabaseClient for ElasticsearchClient {
     async fn execute_query(&self, query: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+        // "NULL" is this backend's historical display sentinel for JSON null.
+        Ok(self
+            .execute_query_structured(query)
+            .await?
+            .into_display_rows("NULL"))
+    }
+
+    async fn execute_query_structured(
+        &self,
+        query: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         debug!(
             "[ElasticsearchClient::execute_query] Executing query: {}",
             query
         );
 
         if query.trim().is_empty() {
-            return Ok(vec![vec!["No query provided".to_string()]]);
+            return Ok(StructuredQueryResult::from_display_rows(vec![vec![
+                "No query provided".to_string(),
+            ]]));
         }
 
         let query = query.trim();
@@ -1324,9 +1499,9 @@ impl DatabaseClient for ElasticsearchClient {
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
         debug!("[ElasticsearchClient::test_query] Testing query: {}", sql);
 
-        let sql = translate_regex_operators(sql, RegexTarget::ElasticsearchSql)?;
+        let sql = Self::prepare_sql_query(sql)?;
         // Use SQL translate API to validate query without executing
-        let _response = self
+        let response = self
             .client
             .sql()
             .translate()
@@ -1336,8 +1511,10 @@ impl DatabaseClient for ElasticsearchClient {
             .send()
             .await
             .map_err(|e| DatabaseError::QueryError(format!("Query validation failed: {e}")))?;
-
-        Ok(())
+        let body: Value = response.json().await.map_err(|e| {
+            DatabaseError::QueryError(format!("Failed to parse validation response: {e}"))
+        })?;
+        Self::translate_validation_result(&body)
     }
 
     async fn explain_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
@@ -1346,7 +1523,7 @@ impl DatabaseClient for ElasticsearchClient {
             sql
         );
 
-        let sql = translate_regex_operators(sql, RegexTarget::ElasticsearchSql)?;
+        let sql = Self::prepare_sql_query(sql)?;
         // Use SQL translate API to show the underlying Elasticsearch query
         let response = self
             .client
@@ -1362,6 +1539,7 @@ impl DatabaseClient for ElasticsearchClient {
         let body: Value = response.json().await.map_err(|e| {
             DatabaseError::QueryError(format!("Failed to parse translation response: {e}"))
         })?;
+        ensure_elasticsearch_success(&body, "query translation")?;
 
         let mut results = Vec::new();
         results.push(vec!["Elasticsearch Query".to_string()]);
@@ -1487,5 +1665,154 @@ impl ComplexDisplayConfig {
             full_show_numbers: false,
             json_pretty_print: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ElasticsearchClient, ElasticsearchMetadataProvider, elasticsearch_error_reason,
+        ensure_elasticsearch_success,
+    };
+    use crate::complex_display::ComplexDisplayConfig;
+    use rstest::rstest;
+    use serde_json::{Value, json};
+
+    #[rstest]
+    #[case(json!(null), None)] // JSON null -> SQL NULL
+    #[case(json!("NULL"), Some("NULL"))] // a literal "NULL" string stays text
+    #[case(json!(""), Some(""))] // empty string is not NULL
+    #[case(json!(42), Some("42"))]
+    #[case(json!(true), Some("true"))]
+    fn sql_cells_keep_null_distinct_from_null_text(
+        #[case] value: Value,
+        #[case] expected: Option<&str>,
+    ) {
+        let config = ComplexDisplayConfig::elasticsearch_default();
+        assert_eq!(
+            ElasticsearchClient::elasticsearch_value_to_cell(&value, &config),
+            expected.map(str::to_string)
+        );
+    }
+
+    #[test]
+    fn completion_columns_include_nested_and_multi_fields() {
+        let mapping = json!({
+            "logs-2026.07-000001": {
+                "mappings": {
+                    "properties": {
+                        "message": {
+                            "type": "text",
+                            "fields": { "keyword": { "type": "keyword" } }
+                        },
+                        "host": {
+                            "properties": {
+                                "name": { "type": "keyword" }
+                            }
+                        },
+                        "events": {
+                            "type": "nested",
+                            "properties": {
+                                "code": { "type": "integer" }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        assert_eq!(
+            ElasticsearchMetadataProvider::completion_columns_from_mapping(&mapping),
+            vec![
+                "events.code".to_string(),
+                "host.name".to_string(),
+                "message".to_string(),
+                "message.keyword".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn mapping_target_removes_sql_identifier_quotes() {
+        assert_eq!(
+            ElasticsearchMetadataProvider::clean_mapping_target("\"logs-2026.07\""),
+            "logs-2026.07"
+        );
+        assert_eq!(
+            ElasticsearchMetadataProvider::clean_mapping_target("`logs-current`"),
+            "logs-current"
+        );
+    }
+
+    #[test]
+    fn api_errors_are_not_treated_as_success() {
+        let body = json!({
+            "error": {
+                "type": "security_exception",
+                "reason": "missing authentication credentials"
+            },
+            "status": 401
+        });
+
+        assert_eq!(
+            elasticsearch_error_reason(&body).as_deref(),
+            Some("missing authentication credentials")
+        );
+        assert!(ensure_elasticsearch_success(&body, "connection").is_err());
+        assert!(ensure_elasticsearch_success(&json!({ "name": "node-1" }), "connection").is_ok());
+    }
+
+    #[test]
+    fn index_named_error_is_not_an_api_error() {
+        // GET /error/_mapping succeeds with a body keyed by the index name.
+        let mapping_response = json!({
+            "error": {
+                "mappings": {
+                    "properties": { "message": { "type": "text" } }
+                }
+            }
+        });
+
+        assert_eq!(elasticsearch_error_reason(&mapping_response), None);
+        assert!(ensure_elasticsearch_success(&mapping_response, "mapping lookup").is_ok());
+    }
+
+    #[test]
+    fn translate_validation_accepts_untranslatable_commands() {
+        // SHOW TABLES / DESCRIBE / SELECT 1 execute fine but cannot be
+        // translated to a query DSL; that must not fail validation.
+        let planning_error = json!({
+            "error": {
+                "type": "planning_exception",
+                "reason": "Cannot generate a query DSL for a special SQL command"
+            },
+            "status": 400
+        });
+        assert!(ElasticsearchClient::translate_validation_result(&planning_error).is_ok());
+
+        let real_error = json!({
+            "error": {
+                "type": "verification_exception",
+                "reason": "Unknown column [nope]"
+            },
+            "status": 400
+        });
+        assert!(ElasticsearchClient::translate_validation_result(&real_error).is_err());
+        assert!(
+            ElasticsearchClient::translate_validation_result(&json!({ "size": 10, "query": {} }))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn sql_preparation_quotes_elasticsearch_indices() {
+        assert_eq!(
+            ElasticsearchClient::prepare_sql_query("select * from logs-2026.07").unwrap(),
+            "select * from \"logs-2026.07\""
+        );
+        assert_eq!(
+            ElasticsearchClient::prepare_sql_query("EXPLAIN SELECT * FROM `logs-current`").unwrap(),
+            "EXPLAIN SELECT * FROM \"logs-current\""
+        );
     }
 }

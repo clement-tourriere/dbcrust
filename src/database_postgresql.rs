@@ -3,7 +3,9 @@ use crate::complex_display::{
     ArrayDisplayAdapter, ComplexDataDisplay, ComplexDataType, ComplexTypeDetector,
     GenericComplexTypeDetector,
 };
-use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
+use crate::database::{
+    ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider, StructuredQueryResult,
+};
 use crate::db::TableDetails;
 use crate::geojson_display::GeoJsonDisplayAdapter;
 use crate::json_display::JsonDisplayAdapter;
@@ -463,7 +465,7 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
         let query = if let Some(schema_name) = schema {
             sqlx::query(
                 r#"
-                SELECT c.relname as table_name
+                SELECT n.nspname as schema_name, c.relname as table_name
                 FROM pg_class c
                 INNER JOIN pg_namespace n ON c.relnamespace = n.oid
                 WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
@@ -475,7 +477,7 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
         } else {
             sqlx::query(
                 r#"
-                SELECT c.relname as table_name
+                SELECT n.nspname as schema_name, c.relname as table_name
                 FROM pg_class c
                 INNER JOIN pg_namespace n ON c.relnamespace = n.oid
                 WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
@@ -487,7 +489,28 @@ impl MetadataProvider for PostgreSQLMetadataProvider {
         };
 
         let rows = query.fetch_all(&self.pool).await?;
-        let tables: Vec<String> = rows.iter().map(|row| row.get::<String, _>(0)).collect();
+        // A literal dot or quote inside an identifier would make the packed
+        // `schema.table` string ambiguous for every consumer that re-splits
+        // it, so quote such parts (matching db::metadata_table_parts).
+        fn pack_part(part: &str) -> String {
+            if part.contains('.') || part.contains('"') {
+                format!("\"{}\"", part.replace('"', "\"\""))
+            } else {
+                part.to_string()
+            }
+        }
+        let tables: Vec<String> = rows
+            .iter()
+            .map(|row| {
+                let schema_name = row.get::<String, _>("schema_name");
+                let table_name = row.get::<String, _>("table_name");
+                if schema.is_none() && schema_name != "public" {
+                    format!("{}.{}", pack_part(&schema_name), pack_part(&table_name))
+                } else {
+                    pack_part(&table_name)
+                }
+            })
+            .collect();
 
         debug!(
             "[PostgreSQLMetadataProvider::get_tables] Found {} tables",
@@ -1175,11 +1198,13 @@ impl PostgreSQLClient {
         );
         Ok(results)
     }
-}
 
-#[async_trait]
-impl DatabaseClient for PostgreSQLClient {
-    async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+    /// Shared row building for `execute_query`/`execute_query_structured`:
+    /// a data cell is `None` exactly when the database value is SQL NULL.
+    async fn execute_query_structured_impl(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         debug!("[PostgreSQLClient::execute_query] Executing query");
 
         // Pinned session connection (transactions/SET/temp tables persist
@@ -1187,23 +1212,26 @@ impl DatabaseClient for PostgreSQLClient {
         let rows = self.fetch_all_session(sql).await?;
 
         if rows.is_empty() {
-            return Ok(vec![]);
+            return Ok(StructuredQueryResult::default());
         }
-
-        let mut results = Vec::new();
 
         // Get column names from the first row
         let first_row = &rows[0];
-        let column_names: Vec<String> = (0..first_row.len())
+        let columns: Vec<String> = (0..first_row.len())
             .map(|i| first_row.column(i).name().to_string())
             .collect();
 
-        results.push(column_names);
-
-        // Convert rows to strings
+        // Convert rows to strings, keeping SQL NULL distinct from "" —
+        // NULL-ness is decided from the raw value, never from the formatted
+        // string (JSON/GeoJSON adapters and friends only see non-NULL cells)
+        let mut structured_rows = Vec::with_capacity(rows.len());
         for row in rows {
-            let mut string_row = Vec::new();
+            let mut structured_row = Vec::with_capacity(row.len());
             for i in 0..row.len() {
+                if postgresql_value_is_null(&row, i) {
+                    structured_row.push(None);
+                    continue;
+                }
                 let value = match format_postgresql_value(&row, i) {
                     Ok(v) => v,
                     Err(e) => {
@@ -1216,16 +1244,39 @@ impl DatabaseClient for PostgreSQLClient {
                         "?error?".to_string()
                     }
                 };
-                string_row.push(value);
+                structured_row.push(Some(value));
             }
-            results.push(string_row);
+            structured_rows.push(structured_row);
         }
 
         debug!(
             "[PostgreSQLClient::execute_query] Query completed with {} rows",
-            results.len() - 1
+            structured_rows.len()
         );
-        Ok(results)
+        Ok(StructuredQueryResult {
+            columns,
+            rows: structured_rows,
+        })
+    }
+}
+
+#[async_trait]
+impl DatabaseClient for PostgreSQLClient {
+    async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+        let structured = self.execute_query_structured_impl(sql).await?;
+        if structured.columns.is_empty() && structured.rows.is_empty() {
+            // Legacy shape for empty results: no header row at all
+            return Ok(vec![]);
+        }
+        // Legacy NULL sentinel: SQL NULL has always rendered as ""
+        Ok(structured.into_display_rows(""))
+    }
+
+    async fn execute_query_structured(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
+        self.execute_query_structured_impl(sql).await
     }
 
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
@@ -1556,6 +1607,21 @@ fn handle_custom_postgresql_type(
             "Failed to get raw value for custom type '{type_name}': {e}"
         ))),
     }
+}
+
+/// Whether the raw database value at `column_index` is SQL NULL.
+///
+/// Every NULL path in [`format_postgresql_value`] renders NULL as the legacy
+/// `""` sentinel (the `Option<String>` guard for scalar types, the
+/// `Ok(None)` whole-NULL-array branches, and the raw-value NULL checks in
+/// [`handle_custom_postgresql_type`] / [`decode_postgresql_interval`]); this
+/// lets callers make the same decision from the raw value before formatting.
+fn postgresql_value_is_null(row: &PgRow, column_index: usize) -> bool {
+    use sqlx::ValueRef;
+
+    row.try_get_raw(column_index)
+        .map(|value_ref| value_ref.is_null())
+        .unwrap_or(false)
 }
 
 /// Format a PostgreSQL value to string representation

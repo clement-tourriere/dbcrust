@@ -3,7 +3,9 @@ use crate::complex_display::{
     ArrayDisplayAdapter, ComplexDataDisplay, ComplexDataType, ComplexDisplayConfig,
     ComplexTypeDetector, GenericComplexTypeDetector,
 };
-use crate::database::{ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider};
+use crate::database::{
+    ConnectionInfo, DatabaseClient, DatabaseError, MetadataProvider, StructuredQueryResult,
+};
 use crate::db::TableDetails;
 use crate::geojson_display::GeoJsonDisplayAdapter;
 use crate::json_display::JsonDisplayAdapter;
@@ -898,46 +900,77 @@ impl MySqlClient {
             }
         }
     }
-}
 
-#[async_trait]
-impl DatabaseClient for MySqlClient {
-    async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+    /// Shared row building for `execute_query`/`execute_query_structured`:
+    /// a data cell is `None` exactly when the database value is SQL NULL.
+    async fn execute_query_structured_impl(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
         debug!("[MySqlClient::execute_query] Executing query");
 
         let sql = translate_regex_operators(sql, RegexTarget::MySql)?;
         let rows = sqlx::query(&sql).fetch_all(&self.pool).await?;
 
         if rows.is_empty() {
-            return Ok(vec![]);
+            return Ok(StructuredQueryResult::default());
         }
-
-        let mut results = Vec::new();
 
         // Get column names from the first row
         let first_row = &rows[0];
-        let column_names: Vec<String> = (0..first_row.len())
+        let columns: Vec<String> = (0..first_row.len())
             .map(|i| first_row.column(i).name().to_string())
             .collect();
 
-        results.push(column_names);
-
-        // Convert rows to strings with complex display formatting
+        // Convert rows to strings with complex display formatting, keeping
+        // SQL NULL distinct from "" (NULL-ness is decided from the raw
+        // value, never from the formatted/transformed string)
+        let mut structured_rows = Vec::with_capacity(rows.len());
         for row in rows {
-            let mut string_row = Vec::new();
+            let mut structured_row = Vec::with_capacity(row.len());
             for i in 0..row.len() {
-                let column_name = row.column(i).name();
-                let value = format_mysql_value_with_complex_display(&row, i, column_name)?;
-                string_row.push(value);
+                if mysql_value_is_null(&row, i) {
+                    structured_row.push(None);
+                } else {
+                    let column_name = row.column(i).name();
+                    structured_row.push(Some(format_mysql_value_with_complex_display(
+                        &row,
+                        i,
+                        column_name,
+                    )?));
+                }
             }
-            results.push(string_row);
+            structured_rows.push(structured_row);
         }
 
         debug!(
             "[MySqlClient::execute_query] Query completed with {} rows",
-            results.len() - 1
+            structured_rows.len()
         );
-        Ok(results)
+        Ok(StructuredQueryResult {
+            columns,
+            rows: structured_rows,
+        })
+    }
+}
+
+#[async_trait]
+impl DatabaseClient for MySqlClient {
+    async fn execute_query(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
+        let structured = self.execute_query_structured_impl(sql).await?;
+        if structured.columns.is_empty() && structured.rows.is_empty() {
+            // Legacy shape for empty results: no header row at all
+            return Ok(vec![]);
+        }
+        // Legacy NULL sentinel: SQL NULL has always rendered as ""
+        Ok(structured.into_display_rows(""))
+    }
+
+    async fn execute_query_structured(
+        &self,
+        sql: &str,
+    ) -> Result<StructuredQueryResult, DatabaseError> {
+        self.execute_query_structured_impl(sql).await
     }
 
     async fn test_query(&self, sql: &str) -> Result<(), DatabaseError> {
@@ -1290,6 +1323,19 @@ fn format_complex_value(value: &str, data_type: ComplexDataType) -> String {
         }
         _ => value.to_string(), // Fallback for unsupported types
     }
+}
+
+/// Whether the raw database value at `column_index` is SQL NULL.
+///
+/// Mirrors the NULL check inside [`format_mysql_value`] (which renders NULL
+/// as the legacy `""` sentinel, untouched by the complex-display wrapper) so
+/// callers can decide NULL-ness from the raw value before any formatting.
+fn mysql_value_is_null(row: &MySqlRow, column_index: usize) -> bool {
+    use sqlx::ValueRef;
+
+    row.try_get_raw(column_index)
+        .map(|value_ref| value_ref.is_null())
+        .unwrap_or(false)
 }
 
 /// Format a MySQL value to string representation

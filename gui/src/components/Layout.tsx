@@ -23,6 +23,7 @@ interface LayoutProps {
   onDisconnect: () => void;
   onTableSelect: (tableName: string) => void;
   onLoadSnippet: (title: string, sql: string) => void;
+  onRefreshTables: () => Promise<void>;
 }
 
 export function Layout({
@@ -43,6 +44,7 @@ export function Layout({
   onDisconnect,
   onTableSelect,
   onLoadSnippet,
+  onRefreshTables,
 }: LayoutProps) {
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const [editorHeight, setEditorHeight] = useState<number | null>(null);
@@ -116,6 +118,7 @@ export function Layout({
             onLoadSnippet={onLoadSnippet}
             namedQueriesVersion={namedQueriesVersion}
             onDisconnect={onDisconnect}
+            onRefreshTables={onRefreshTables}
           />
         </div>
 
@@ -123,53 +126,77 @@ export function Layout({
         <div
           className="resize-handle resize-handle-h bg-zinc-800 hover:bg-accent"
           onMouseDown={handleSidebarResize}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            setSidebarWidth((width) =>
+              Math.max(180, Math.min(500, width + (event.key === "ArrowLeft" ? -16 : 16))),
+            );
+          }}
+          role="separator"
+          aria-label="Resize schema sidebar"
+          aria-orientation="vertical"
+          aria-valuemin={180}
+          aria-valuemax={500}
+          aria-valuenow={sidebarWidth}
+          tabIndex={0}
         />
 
         {/* ── Editor + Results Area ────────────────────────────────────── */}
         <div className="flex-1 flex flex-col min-w-0" ref={containerRef}>
           {/* ── Tab Bar ─────────────────────────────────────────────────── */}
           <div className="flex items-center bg-surface-200 border-b border-zinc-800 h-9 flex-shrink-0">
-            <div className="flex items-center overflow-x-auto flex-1 min-w-0">
+            <div
+              className="flex items-center overflow-x-auto flex-1 min-w-0"
+              role="tablist"
+              aria-label="Query tabs"
+            >
               {tabs.map((tab) => (
-                <button
+                <div
                   key={tab.id}
-                  onClick={() => onTabSelect(tab.id)}
-                  className={`group flex items-center gap-1.5 px-3 h-9 text-xs font-medium
-                    border-r border-zinc-800 whitespace-nowrap transition-colors-fast
+                  className={`group flex items-center h-9 border-r border-zinc-800 whitespace-nowrap transition-colors-fast
                     ${
                       tab.id === activeTabId
                         ? "bg-surface text-zinc-200 border-b-2 border-b-accent"
                         : "text-zinc-500 hover:text-zinc-300 hover:bg-surface-100"
                     }`}
                 >
-                  <span
-                    className={`w-2 h-2 rounded-full ${
-                      tab.isRunning
-                        ? "bg-amber-500 animate-pulse-soft"
-                        : tab.error
-                          ? "bg-red-500"
-                          : tab.results
-                            ? "bg-emerald-500"
-                            : "bg-zinc-600"
-                    }`}
-                  />
-                  {tab.title}
-                  <span
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onTabClose(tab.id);
-                    }}
-                    className="ml-1 p-0.5 rounded hover:bg-zinc-700 opacity-0 group-hover:opacity-100 transition-opacity"
+                  <button
+                    onClick={() => onTabSelect(tab.id)}
+                    role="tab"
+                    aria-selected={tab.id === activeTabId}
+                    className="flex items-center gap-1.5 pl-3 pr-1 h-full text-xs font-medium"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={`w-2 h-2 rounded-full ${
+                        tab.isRunning
+                          ? "bg-amber-500 animate-pulse-soft"
+                          : tab.error
+                            ? "bg-red-500"
+                            : tab.results
+                              ? "bg-emerald-500"
+                              : "bg-zinc-600"
+                      }`}
+                    />
+                    {tab.title}
+                  </button>
+                  <button
+                    onClick={() => onTabClose(tab.id)}
+                    className="mr-1 p-1 rounded hover:bg-zinc-700 opacity-40 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+                    aria-label={`Close ${tab.title}`}
+                    title={`Close ${tab.title}`}
                   >
                     <X className="w-3 h-3" />
-                  </span>
-                </button>
+                  </button>
+                </div>
               ))}
             </div>
             <button
               onClick={onTabAdd}
               className="px-2 h-9 text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800 transition-colors flex items-center"
-              title="New Tab"
+              title="New tab"
+              aria-label="New query tab"
             >
               <Plus className="w-4 h-4" />
             </button>
@@ -236,6 +263,22 @@ export function Layout({
           <div
             className="resize-handle resize-handle-v bg-zinc-800 hover:bg-accent"
             onMouseDown={handleVerticalResize}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+              const container = containerRef.current;
+              if (!container) return;
+              event.preventDefault();
+              const height = container.getBoundingClientRect().height;
+              setEditorHeight((current) => {
+                const next = (current ?? height * 0.45) +
+                  (event.key === "ArrowUp" ? -16 : 16);
+                return Math.max(100, Math.min(height - 100, next));
+              });
+            }}
+            role="separator"
+            aria-label="Resize query editor and results"
+            aria-orientation="horizontal"
+            tabIndex={0}
           />
 
           {/* ── Results ─────────────────────────────────────────────────── */}

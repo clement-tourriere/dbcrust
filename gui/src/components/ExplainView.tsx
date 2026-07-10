@@ -39,8 +39,8 @@ function parseSqlitePlan(results: QueryResult): PlanStep[] {
   for (const row of results.rows) {
     if (row.length >= 4) {
       steps.push({
-        id: parseInt(row[0]) || 0,
-        parent: parseInt(row[1]) || 0,
+        id: parseInt(row[0] ?? "") || 0,
+        parent: parseInt(row[1] ?? "") || 0,
         detail: row[3] || row[2] || "",
         indent: 0,
       });

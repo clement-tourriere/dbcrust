@@ -1,10 +1,10 @@
-import { useState, useCallback, useEffect, lazy, Suspense } from "react";
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from "react";
 import type { ConnectionState, EditorTab, NavigationView } from "./types";
 import * as cmd from "./commands";
 import { Navigation } from "./components/Navigation";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { StatusBar } from "./components/StatusBar";
-import { extractTableNames } from "./tableMetadata";
+import { extractTableNames, formatTableReference } from "./tableMetadata";
 
 // Lazy-loaded views — keeps the initial bundle small.
 // Layout is the heaviest (~450-520 KB) since it pulls in CodeMirror.
@@ -53,6 +53,14 @@ export default function App() {
   const [tablesError, setTablesError] = useState<string | null>(null);
   const [namedQueriesVersion, setNamedQueriesVersion] = useState(0);
   const [vaultAddr, setVaultAddr] = useState<string | null>(() => loadStoredVaultAddr());
+  const [presetDialog, setPresetDialog] = useState<{ name: string; sql: string } | null>(null);
+  const [presetSaving, setPresetSaving] = useState(false);
+  const [presetError, setPresetError] = useState<string | null>(null);
+  // State updates are asynchronous, so a ref is needed to reject a second
+  // keyboard/menu execution fired before React renders `isRunning`.
+  const runningTabIdsRef = useRef(new Set<string>());
+  const connectionOperationRef = useRef(0);
+  const tableLoadRef = useRef(0);
   const activeTab = tabs.find((t) => t.id === activeTabId) || tabs[0];
 
   const rememberVaultAddr = useCallback((nextVaultAddr?: string | null) => {
@@ -68,16 +76,30 @@ export default function App() {
     }
   }, []);
 
-  const loadTablesForConnection = useCallback(async (databaseType?: string) => {
-    try {
-      const result = await cmd.listTables();
-      setTables(extractTableNames(result.rows, databaseType));
-      setTablesError(null);
-    } catch (error) {
-      setTables([]);
-      setTablesError(String(error));
-    }
-  }, []);
+  const loadTablesForConnection = useCallback(
+    async (
+      databaseType?: string,
+      options?: { keepTablesOnError?: boolean },
+    ) => {
+      const requestId = ++tableLoadRef.current;
+      try {
+        const result = await cmd.listTables();
+        if (requestId !== tableLoadRef.current) return;
+        setTables(extractTableNames(result.rows, databaseType));
+        setTablesError(null);
+      } catch (error) {
+        if (requestId !== tableLoadRef.current) return;
+        // A user-initiated refresh keeps the last working list on transient
+        // failures; a connect-triggered load must clear the previous
+        // connection's tables.
+        if (!options?.keepTablesOnError) {
+          setTables([]);
+        }
+        setTablesError(String(error));
+      }
+    },
+    [],
+  );
 
   // ── Redirect database views when not connected ────────────────────────
   useEffect(() => {
@@ -110,18 +132,24 @@ export default function App() {
   // ── Connection ─────────────────────────────────────────────────────────
   const performConnect = useCallback(
     async (connectFn: () => Promise<ConnectionState>) => {
+      const operationId = ++connectionOperationRef.current;
       setConnecting(true);
       setConnectError(null);
       setTablesError(null);
       try {
         const state = await connectFn();
+        if (operationId !== connectionOperationRef.current) return;
         setConnection(state);
         setView("query");
         await loadTablesForConnection(state.database_type);
       } catch (error) {
-        setConnectError(String(error));
+        if (operationId === connectionOperationRef.current) {
+          setConnectError(String(error));
+        }
       } finally {
-        setConnecting(false);
+        if (operationId === connectionOperationRef.current) {
+          setConnecting(false);
+        }
       }
     },
     [loadTablesForConnection],
@@ -156,6 +184,9 @@ export default function App() {
   );
 
   const handleDisconnect = useCallback(async () => {
+    connectionOperationRef.current += 1;
+    tableLoadRef.current += 1;
+    setConnecting(false);
     try {
       await cmd.disconnectFromDatabase();
     } catch {
@@ -215,9 +246,10 @@ export default function App() {
       const tab = tabs.find((entry) => entry.id === id);
       const sqlToRun = (sqlOverride ?? tab?.sql ?? "").trim();
       if (!tab || !sqlToRun) return;
-      // The menu accelerator bypasses the Run button's disabled state —
-      // without this guard a second Cmd+Enter stacks a concurrent execution
-      if (tab.isRunning) return;
+      // The menu accelerator bypasses the Run button's disabled state. The ref
+      // closes the small gap before the `isRunning` state update is rendered.
+      if (tab.isRunning || runningTabIdsRef.current.has(id)) return;
+      runningTabIdsRef.current.add(id);
 
       setTabs((prev) =>
         prev.map((entry) =>
@@ -244,6 +276,8 @@ export default function App() {
               : entry,
           ),
         );
+      } finally {
+        runningTabIdsRef.current.delete(id);
       }
     },
     [tabs],
@@ -254,7 +288,8 @@ export default function App() {
       const tab = tabs.find((entry) => entry.id === id);
       const sqlToRun = (sqlOverride ?? tab?.sql ?? "").trim();
       if (!tab || !sqlToRun) return;
-      if (tab.isRunning) return;
+      if (tab.isRunning || runningTabIdsRef.current.has(id)) return;
+      runningTabIdsRef.current.add(id);
 
       setTabs((prev) =>
         prev.map((entry) =>
@@ -281,6 +316,8 @@ export default function App() {
               : entry,
           ),
         );
+      } finally {
+        runningTabIdsRef.current.delete(id);
       }
     },
     [tabs],
@@ -289,11 +326,15 @@ export default function App() {
   // ── Table / Preset Actions ─────────────────────────────────────────────
   const handleTableSelect = useCallback(
     (tableName: string) => {
-      const sql = `SELECT * FROM ${tableName} LIMIT 100;`;
+      const tableReference = formatTableReference(
+        tableName,
+        connection?.database_type,
+      );
+      const sql = `SELECT * FROM ${tableReference} LIMIT 100;`;
       updateTabSql(activeTabId, sql);
       setView("query");
     },
-    [activeTabId, updateTabSql],
+    [activeTabId, connection?.database_type, updateTabSql],
   );
 
   const handleLoadSnippet = useCallback(
@@ -304,7 +345,7 @@ export default function App() {
     [loadSnippet],
   );
 
-  const handleSaveCurrentPreset = useCallback(async () => {
+  const handleSaveCurrentPreset = useCallback(() => {
     const sql = activeTab.sql.trim();
     if (!sql) return;
 
@@ -315,27 +356,44 @@ export default function App() {
         .replace(/[^a-z0-9]+/g, "_")
         .replace(/^_+|_+$/g, "") || "query_preset";
 
-    const name = window.prompt("Preset name", suggestedName)?.trim();
-    if (!name) return;
-
-    try {
-      await cmd.saveNamedQuery(name, sql, false);
-      setNamedQueriesVersion((version) => version + 1);
-    } catch (error) {
-      window.alert(`Failed to save preset: ${String(error)}`);
-    }
+    setPresetError(null);
+    setPresetDialog({ name: suggestedName, sql });
   }, [activeTab]);
 
+  const savePreset = useCallback(async () => {
+    const name = presetDialog?.name.trim();
+    if (!presetDialog || !name || presetSaving) return;
+    setPresetSaving(true);
+    setPresetError(null);
+    try {
+      await cmd.saveNamedQuery(name, presetDialog.sql, false);
+      setNamedQueriesVersion((version) => version + 1);
+      setPresetDialog(null);
+    } catch (error) {
+      setPresetError(String(error));
+    } finally {
+      setPresetSaving(false);
+    }
+  }, [presetDialog, presetSaving]);
+
   const handleRefreshTables = useCallback(async () => {
-    await loadTablesForConnection(connection?.database_type);
+    await loadTablesForConnection(connection?.database_type, {
+      keepTablesOnError: true,
+    });
   }, [connection?.database_type, loadTablesForConnection]);
 
   // ── Check for existing connection on mount ─────────────────────────────
   useEffect(() => {
     let cancelled = false;
+    const operationAtStart = connectionOperationRef.current;
 
     cmd.getConnectionState().then((state) => {
-      if (!state || cancelled) return;
+      if (
+        !state ||
+        cancelled ||
+        operationAtStart !== connectionOperationRef.current
+      )
+        return;
       setConnection(state);
       setView("query");
       loadTablesForConnection(state.database_type).catch(() => {
@@ -497,6 +555,7 @@ export default function App() {
                   onDisconnect={handleDisconnect}
                   onTableSelect={handleTableSelect}
                   onLoadSnippet={handleLoadSnippet}
+                  onRefreshTables={handleRefreshTables}
                 />
               </Suspense>
             )}
@@ -525,6 +584,79 @@ export default function App() {
           )}
         </div>
       </div>
+
+      {presetDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !presetSaving) {
+              setPresetDialog(null);
+            }
+          }}
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="save-preset-title"
+            className="w-full max-w-md rounded-xl border border-zinc-700 bg-surface p-5 shadow-2xl"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void savePreset();
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Escape" && !presetSaving) {
+                event.preventDefault();
+                setPresetDialog(null);
+              }
+            }}
+          >
+            <h2 id="save-preset-title" className="text-base font-semibold text-zinc-100">
+              Save query preset
+            </h2>
+            <p className="mt-1 text-xs text-zinc-500">
+              Give this query a reusable name for the current database scope.
+            </p>
+            <label htmlFor="preset-name" className="mt-4 block text-xs font-medium text-zinc-400">
+              Preset name
+            </label>
+            <input
+              id="preset-name"
+              autoFocus
+              value={presetDialog.name}
+              onChange={(event) =>
+                setPresetDialog((current) =>
+                  current ? { ...current, name: event.target.value } : current,
+                )
+              }
+              className="mt-1.5 w-full rounded-lg border border-zinc-700 bg-surface-300 px-3 py-2 text-sm text-zinc-100 focus:border-accent focus:outline-none"
+              spellCheck={false}
+            />
+            {presetError && (
+              <div role="alert" className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs text-red-300">
+                {presetError}
+              </div>
+            )}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={presetSaving}
+                onClick={() => setPresetDialog(null)}
+                className="rounded-lg px-3 py-2 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={presetSaving || !presetDialog.name.trim()}
+                className="rounded-lg bg-accent px-3 py-2 text-xs font-semibold text-white hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {presetSaving ? "Saving…" : "Save preset"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }
