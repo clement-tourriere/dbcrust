@@ -1,6 +1,6 @@
 # DBCrust
 
-**A fast psql-style database workbench for your terminal.** One CLI for PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, Docker databases, Vault-backed connections, and SQL over Parquet/CSV/JSON files — with optional AI, Django ORM analysis, Python bindings, and a desktop GUI.
+**A fast psql-style database workbench for your terminal.** One CLI for PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, White Dragon search, Docker databases, Vault-backed connections, and SQL over Parquet/CSV/JSON files — with optional AI, Django ORM analysis, Python bindings, and a desktop GUI.
 
 [![CI](https://github.com/clement-tourriere/dbcrust/actions/workflows/ci.yml/badge.svg)](https://github.com/clement-tourriere/dbcrust/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/dbcrust.svg)](https://pypi.org/project/dbcrust/)
@@ -69,6 +69,7 @@ Every connection type is a URL:
 | ClickHouse | `clickhouse://user:pass@localhost:8123/default` |
 | MongoDB | `mongodb://user:pass@localhost:27017/mydb` |
 | Elasticsearch | `elasticsearch://localhost:9200` |
+| White Dragon | `white-dragon://localhost:7700` |
 | Parquet / CSV / JSON | `./data.parquet` · `./logs/app.csv` · `file://` picker · `json:///events.json` |
 | Docker container | `docker://` (interactive picker) · `docker://my-postgres/mydb` |
 | Saved session | `session://production_db` |

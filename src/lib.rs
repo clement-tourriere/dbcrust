@@ -19,6 +19,7 @@ pub mod database_mongodb; // MongoDB implementation
 pub mod database_mysql; // MySQL implementation
 pub mod database_postgresql; // PostgreSQL implementation
 pub mod database_sqlite; // SQLite implementation
+pub mod database_white_dragon; // White Dragon HTTP/SQL implementation
 pub mod db;
 pub mod dbcrust_pass; // Universal password file (.dbcrust) support
 pub mod docker; // Docker container integration

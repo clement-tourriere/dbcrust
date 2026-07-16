@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-DBCrust — high-performance multi-database interactive client in Rust with Python bindings. Supports PostgreSQL, MySQL, SQLite, MongoDB, ClickHouse, Elasticsearch, and file formats (Parquet, CSV, JSON) via Apache DataFusion.
+DBCrust — high-performance multi-engine interactive client in Rust with Python bindings. Supports PostgreSQL, MySQL, SQLite, MongoDB, ClickHouse, Elasticsearch, White Dragon, and file formats (Parquet, CSV, JSON) via Apache DataFusion.
 
 ## Build Commands
 
@@ -40,6 +40,7 @@ mise run gui:install && mise run gui:build
 | `src/database.rs` | `DatabaseClient` + `MetadataProvider` traits |
 | `src/database_postgresql.rs` | PG implementation (`format_postgresql_value` ~line 1390) |
 | `src/database_datafusion.rs` | File format queries (Parquet, CSV, JSON) |
+| `src/database_white_dragon.rs` | White Dragon SQL/qualifier HTTP adapter with generic WDSP schema introspection |
 | `src/ssh_tunnel.rs` | SSH tunnel management |
 | `src/vault_client.rs` | HashiCorp Vault credentials |
 | `src/named_queries.rs` | Parameterized queries (`$1`, `$*`, `$@`) |
@@ -49,6 +50,7 @@ mise run gui:install && mise run gui:build
 ```
 postgres://user:pass@host:5432/db?sslmode=require
 mysql://  sqlite:///path  mongodb://  clickhouse://
+white-dragon://host:7700 # White Dragon search SQL over HTTP
 session://name          # saved session
 recent://               # recent-connection picker
 file://                 # compatible-file picker in current directory

@@ -218,7 +218,13 @@ export function createColumnCompletionSource(
         cacheKey,
         cmd
           .describeTable(tableName)
-          .then((detail) => detail.columns.map((column) => column.name))
+          .then((detail) => {
+            const fields = detail.columns.map((column) => column.name);
+            if (databaseType === "White Dragon") {
+              fields.push(...detail.indexes.map((index) => index.name));
+            }
+            return Array.from(new Set(fields));
+          })
           .catch(() => []),
       );
     }

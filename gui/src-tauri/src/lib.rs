@@ -580,6 +580,7 @@ fn database_type_placeholder(database_type: &DatabaseType) -> &'static str {
         DatabaseType::ClickHouse => "clickhouse://user:pass@localhost:8123/default",
         DatabaseType::MongoDB => "mongodb://user:pass@localhost:27017/mydb",
         DatabaseType::Elasticsearch => "elasticsearch://localhost:9200",
+        DatabaseType::WhiteDragon => "white-dragon://localhost:7700",
         DatabaseType::Parquet => "parquet:///path/to/data.parquet",
         DatabaseType::CSV => "csv:///path/to/data.csv",
         DatabaseType::JSON => "json:///path/to/data.json",

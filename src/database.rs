@@ -88,6 +88,7 @@ pub enum DatabaseType {
     ClickHouse,
     MongoDB,
     Elasticsearch,
+    WhiteDragon,
     // File formats (via DataFusion)
     Parquet,
     CSV,
@@ -163,6 +164,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => Some(8123),    // HTTP interface
             DatabaseType::MongoDB => Some(27017),      // MongoDB default port
             DatabaseType::Elasticsearch => Some(9200), // HTTP REST API
+            DatabaseType::WhiteDragon => Some(7700),   // HTTP search API
             DatabaseType::Parquet
             | DatabaseType::CSV
             | DatabaseType::JSON
@@ -178,6 +180,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => "ClickHouse",
             DatabaseType::MongoDB => "MongoDB",
             DatabaseType::Elasticsearch => "Elasticsearch",
+            DatabaseType::WhiteDragon => "White Dragon",
             DatabaseType::Parquet => "Parquet",
             DatabaseType::CSV => "CSV",
             DatabaseType::JSON => "JSON",
@@ -191,7 +194,8 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::MySQL
             | DatabaseType::ClickHouse
             | DatabaseType::MongoDB
-            | DatabaseType::Elasticsearch => true,
+            | DatabaseType::Elasticsearch
+            | DatabaseType::WhiteDragon => true,
             DatabaseType::SQLite
             | DatabaseType::Parquet
             | DatabaseType::CSV
@@ -208,6 +212,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => &["clickhouse"],
             DatabaseType::MongoDB => &["mongodb", "mongodb+srv"],
             DatabaseType::Elasticsearch => &["elasticsearch", "elastic", "es"],
+            DatabaseType::WhiteDragon => &["white-dragon", "whitedragon", "wd"],
             DatabaseType::Parquet => &["parquet"],
             DatabaseType::CSV => &["csv"],
             DatabaseType::JSON => &["json", "ndjson"],
@@ -226,7 +231,8 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::MySQL
             | DatabaseType::ClickHouse
             | DatabaseType::MongoDB
-            | DatabaseType::Elasticsearch => false,
+            | DatabaseType::Elasticsearch
+            | DatabaseType::WhiteDragon => false,
         }
     }
 
@@ -240,7 +246,7 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::CSV
             | DatabaseType::JSON
             | DatabaseType::DuckDB => true, // DataFusion supports EXPLAIN
-            DatabaseType::MySQL | DatabaseType::SQLite => false,
+            DatabaseType::MySQL | DatabaseType::SQLite | DatabaseType::WhiteDragon => false,
         }
     }
 
@@ -255,7 +261,8 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::Parquet
             | DatabaseType::CSV
             | DatabaseType::JSON
-            | DatabaseType::DuckDB => false, // File-based, no auth needed
+            | DatabaseType::DuckDB
+            | DatabaseType::WhiteDragon => false, // No built-in authentication
         }
     }
 
@@ -267,6 +274,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => "clickhouse",
             DatabaseType::MongoDB => "mongodb",
             DatabaseType::Elasticsearch => "elasticsearch",
+            DatabaseType::WhiteDragon => "white-dragon",
             DatabaseType::Parquet => "parquet",
             DatabaseType::CSV => "csv",
             DatabaseType::JSON => "json",
@@ -461,6 +469,7 @@ impl DatabaseTypeExt for DatabaseType {
                 "ELSE",
                 "END",
             ],
+            DatabaseType::WhiteDragon => &["COUNT", "YEAR", "MONTH", "DAY"],
             // DataFusion SQL functions (for file formats)
             DatabaseType::Parquet
             | DatabaseType::CSV
@@ -579,7 +588,7 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::CSV
             | DatabaseType::JSON
             | DatabaseType::DuckDB => true, // DataFusion supports timestamp functions
-            DatabaseType::PostgreSQL | DatabaseType::SQLite => false,
+            DatabaseType::PostgreSQL | DatabaseType::SQLite | DatabaseType::WhiteDragon => false,
         }
     }
 
@@ -595,6 +604,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => &["CLICKHOUSE_USER"],
             DatabaseType::MongoDB => &["MONGO_INITDB_ROOT_USERNAME"],
             DatabaseType::Elasticsearch => &["ELASTIC_USERNAME", "ES_USERNAME"],
+            DatabaseType::WhiteDragon => &[],
         }
     }
 
@@ -610,6 +620,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => &["CLICKHOUSE_PASSWORD"],
             DatabaseType::MongoDB => &["MONGO_INITDB_ROOT_PASSWORD"],
             DatabaseType::Elasticsearch => &["ELASTIC_PASSWORD", "ES_PASSWORD"],
+            DatabaseType::WhiteDragon => &[],
         }
     }
 
@@ -625,6 +636,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => &["CLICKHOUSE_DB"],
             DatabaseType::MongoDB => &["MONGO_INITDB_DATABASE"],
             DatabaseType::Elasticsearch => &["ELASTIC_INDEX", "ES_INDEX"],
+            DatabaseType::WhiteDragon => &[],
         }
     }
 
@@ -640,6 +652,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::ClickHouse => "default",
             DatabaseType::MongoDB => "admin",
             DatabaseType::Elasticsearch => "elastic",
+            DatabaseType::WhiteDragon => "",
         }
     }
 }
@@ -654,6 +667,7 @@ impl DatabaseType {
             "clickhouse" => Ok(DatabaseType::ClickHouse),
             "mongodb" | "mongodb+srv" => Ok(DatabaseType::MongoDB),
             "elasticsearch" | "elastic" | "es" => Ok(DatabaseType::Elasticsearch),
+            "white-dragon" | "whitedragon" | "wd" => Ok(DatabaseType::WhiteDragon),
             "parquet" => Ok(DatabaseType::Parquet),
             "csv" => Ok(DatabaseType::CSV),
             "json" | "ndjson" => Ok(DatabaseType::JSON),
@@ -815,6 +829,11 @@ pub async fn create_database_client(
         DatabaseType::Elasticsearch => {
             let client =
                 crate::database_elasticsearch::ElasticsearchClient::new(connection_info).await?;
+            Ok(Box::new(client))
+        }
+        DatabaseType::WhiteDragon => {
+            let client =
+                crate::database_white_dragon::WhiteDragonClient::new(connection_info).await?;
             Ok(Box::new(client))
         }
         // File formats via DataFusion
@@ -1099,6 +1118,12 @@ pub trait MetadataProvider: Send + Sync {
         schema: Option<&str>,
     ) -> Result<crate::db::TableDetails, DatabaseError>;
 
+    /// Backend-native search qualifier names, when the backend has a query
+    /// language in addition to SQL. SQL-only providers use the empty default.
+    async fn get_search_qualifiers(&self) -> Result<Vec<String>, DatabaseError> {
+        Ok(Vec::new())
+    }
+
     /// Check if a query can be explained
     fn supports_explain(&self) -> bool;
 
@@ -1320,6 +1345,14 @@ mod tests {
         Some("user"),
         Some("mydb")
     )]
+    #[case(
+        "white-dragon://search.example:7700",
+        DatabaseType::WhiteDragon,
+        Some("search.example"),
+        Some(7700),
+        None,
+        None
+    )]
     fn test_parse_database_url(
         #[case] url: &str,
         #[case] expected_type: DatabaseType,
@@ -1341,6 +1374,7 @@ mod tests {
     #[case("postgres://localhost/db", true)]
     #[case("mysql://localhost/db", true)]
     #[case("sqlite:///path/to/db", false)]
+    #[case("white-dragon://localhost", true)]
     fn test_ssh_tunnel_support(#[case] url: &str, #[case] expected: bool) {
         let conn_info = ConnectionInfo::parse_url(url).unwrap();
         assert_eq!(conn_info.supports_ssh_tunnel(), expected);
@@ -1350,6 +1384,7 @@ mod tests {
     #[case("postgres://localhost/db", Some(5432))]
     #[case("mysql://localhost/db", Some(3306))]
     #[case("sqlite:///path/to/db", None)]
+    #[case("white-dragon://localhost", Some(7700))]
     fn test_default_ports(#[case] url: &str, #[case] expected: Option<u16>) {
         let conn_info = ConnectionInfo::parse_url(url).unwrap();
         assert_eq!(conn_info.default_port(), expected);
@@ -1391,6 +1426,16 @@ mod tests {
     fn test_clickhouse_tls_detection(#[case] url: &str, #[case] expected_tls: bool) {
         let conn_info = ConnectionInfo::parse_url(url).unwrap();
         assert_eq!(conn_info.database_type, DatabaseType::ClickHouse);
+        assert_eq!(conn_info.use_tls, expected_tls);
+    }
+
+    #[rstest]
+    #[case("white-dragon://localhost:7700", false)]
+    #[case("whitedragon://localhost:7700?tls=true", true)]
+    #[case("wd://localhost:443?sslmode=require", true)]
+    fn test_white_dragon_url_aliases_and_tls(#[case] url: &str, #[case] expected_tls: bool) {
+        let conn_info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(conn_info.database_type, DatabaseType::WhiteDragon);
         assert_eq!(conn_info.use_tls, expected_tls);
     }
 

@@ -38,6 +38,7 @@ export default defineConfig({
             { label: 'Query files with SQL', slug: 'user-guide/file-formats' },
             { label: 'MongoDB', slug: 'user-guide/mongodb' },
             { label: 'Elasticsearch', slug: 'user-guide/elasticsearch' },
+            { label: 'White Dragon', slug: 'user-guide/white-dragon' },
             { label: 'Password Management', slug: 'user-guide/password-management' },
             { label: 'Troubleshooting', slug: 'user-guide/troubleshooting' },
             { label: 'Development', slug: 'user-guide/development' },

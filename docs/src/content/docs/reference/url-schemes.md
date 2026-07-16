@@ -164,6 +164,27 @@ dbcrust docker://my-elasticsearch-container
 - **Container Auto-Discovery**: Detects Elasticsearch containers and excludes Kibana
 - **Advanced Query Rewriting**: Handles complex queries with proper escaping
 
+**White Dragon**
+
+**Schemes:** `white-dragon://`, `whitedragon://`, `wd://`
+
+```bash
+# Local White Dragon HTTP server (default port 7700)
+dbcrust white-dragon://127.0.0.1:7700
+
+# TLS and reverse-proxy Basic authentication
+dbcrust 'white-dragon://user:password@search.example.com:443?tls=true'
+```
+
+**Features:**
+- SQL and qualifier-language search through `/v1/search`
+- Exact generic WDSP v6 fields and index paths from schema API v3
+- Stored mapping fields flattened into named result columns with SQL NULL for missing values
+- Structured JSON policies for `named_field` sorting and generic column aggregations
+- Safe use with `--read-only` because White Dragon exposes search-only operations
+
+See the [White Dragon guide](/user-guide/white-dragon/) for examples.
+
 ### File Format Schemes
 
 DBCrust can query file formats directly using Apache DataFusion, a powerful SQL query engine that operates on Parquet, CSV, and JSON files. You can either use the explicit scheme or pass a local path with a known extension:

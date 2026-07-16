@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand, ValueEnum};
   dbcrust docker://my-container/mydb
   dbcrust ./data.csv                # infer CSV from extension
   dbcrust sqlite:///path/to/file.db
+  dbcrust white-dragon://localhost:7700
   dbcrust 'parquet:///data/*.parquet'
   dbcrust file://                   # pick a compatible file from the current directory
   dbcrust config                    # interactive configuration menu (no connection)
@@ -23,13 +24,14 @@ use clap::{Parser, Subcommand, ValueEnum};
   dbcrust agents                    # print the guide for AI coding agents
   dbcrust --update                  # update dbcrust to the latest release")]
 pub struct Args {
-    /// Database connection URL
+    /// Database, search-engine, or file target URL
     ///
     /// Examples:
     ///   PostgreSQL: postgresql://user:pass@localhost:5432/mydb
     ///   MySQL:      mysql://user:pass@localhost:3306/mydb
     ///   SQLite:     sqlite:///path/to/database.db or ./database.sqlite
     ///   ClickHouse: clickhouse://user:pass@localhost:8123/mydb
+    ///   White Dragon: white-dragon://localhost:7700
     ///   Docker:     docker://container_name/mydb
     ///   Files:      ./data.csv | parquet:///data/*.parquet | csv:///logs/*.csv | file://
     ///   Session:    session://saved_session_name

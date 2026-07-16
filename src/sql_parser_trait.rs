@@ -168,6 +168,7 @@ impl SqlParserFactory {
                 // Elasticsearch uses SQL API, use PostgreSQL parser as base
                 Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
             }
+            DatabaseType::WhiteDragon => Box::new(WhiteDragonSqlParser::new()),
             // File formats via DataFusion - use PostgreSQL parser (DataFusion SQL is similar to PostgreSQL)
             DatabaseType::Parquet
             | DatabaseType::CSV
@@ -326,6 +327,126 @@ impl SqlParserEngine for GenericSqlParser {
     }
 }
 
+/// White Dragon's compact search SQL parser metadata.
+///
+/// Parsing still uses the shared structural SQL parser, while completion is
+/// restricted to White Dragon's read-only SELECT, mapping-defined field/index
+/// paths, search operators, and aggregation functions.
+pub struct WhiteDragonSqlParser {
+    generic: GenericSqlParser,
+}
+
+impl Default for WhiteDragonSqlParser {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WhiteDragonSqlParser {
+    pub fn new() -> Self {
+        Self {
+            generic: GenericSqlParser::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl SqlParserEngine for WhiteDragonSqlParser {
+    fn database_type(&self) -> DatabaseType {
+        DatabaseType::WhiteDragon
+    }
+
+    fn parse_at_cursor(&self, sql: &str, cursor_pos: usize) -> EnhancedSqlContext {
+        EnhancedSqlContext {
+            base_context: crate::sql_parser::parse_sql_at_cursor(sql, cursor_pos),
+            database_context: DatabaseSpecificContext::Generic,
+            database_type: DatabaseType::WhiteDragon,
+        }
+    }
+
+    fn get_keywords_by_category(&self, category: KeywordCategory) -> Vec<&'static str> {
+        match category {
+            KeywordCategory::DDL => Vec::new(),
+            KeywordCategory::DML => vec!["SELECT"],
+            KeywordCategory::Functions => vec!["COUNT", "YEAR", "MONTH", "DAY"],
+            KeywordCategory::Operators => vec![
+                "AND", "OR", "NOT", "IN", "BETWEEN", "MATCH", "REGEXP", "LIKE", "ILIKE",
+            ],
+            KeywordCategory::DataTypes => vec![
+                "TEXT", "KEYWORD", "I64", "U64", "F64", "BOOL", "DATETIME", "JSON",
+            ],
+            KeywordCategory::SystemFunctions => Vec::new(),
+            KeywordCategory::AggregateFunctions => vec!["COUNT"],
+            KeywordCategory::WindowFunctions => Vec::new(),
+        }
+    }
+
+    fn get_functions(&self) -> Vec<&'static str> {
+        vec!["COUNT", "YEAR", "MONTH", "DAY"]
+    }
+
+    fn get_operators(&self) -> Vec<&'static str> {
+        vec![
+            "=", "!=", "<>", "<", ">", "<=", ">=", "~", "~*", "AND", "OR", "NOT", "IN", "BETWEEN",
+            "MATCH", "REGEXP", "LIKE", "ILIKE",
+        ]
+    }
+
+    fn get_data_types(&self) -> Vec<&'static str> {
+        self.get_keywords_by_category(KeywordCategory::DataTypes)
+    }
+
+    fn is_keyword_valid_in_context(&self, _keyword: &str, _context: &EnhancedSqlContext) -> bool {
+        true
+    }
+
+    fn get_context_suggestions(
+        &self,
+        context: &EnhancedSqlContext,
+        _current_word: &str,
+    ) -> Vec<String> {
+        if context.base_context.current_clause == SqlClause::Where {
+            self.get_operators()
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn parse_operators_at_cursor(&self, sql: &str, _cursor_pos: usize) -> Vec<String> {
+        self.get_operators()
+            .into_iter()
+            .filter(|operator| sql.contains(operator))
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn get_completion_hints(&self, context: &EnhancedSqlContext) -> Vec<CompletionHint> {
+        let mut hints = self.generic.get_completion_hints(context);
+        if context.base_context.current_clause == SqlClause::Where {
+            hints.extend([
+                CompletionHint {
+                    text: "MATCH".to_string(),
+                    description: "Case-insensitive literal substring search".to_string(),
+                    category: CompletionHintCategory::Operator,
+                    requires_parentheses: false,
+                    priority: 9,
+                },
+                CompletionHint {
+                    text: "REGEXP".to_string(),
+                    description: "Case-sensitive Rust regex search".to_string(),
+                    category: CompletionHintCategory::Operator,
+                    requires_parentheses: false,
+                    priority: 8,
+                },
+            ]);
+        }
+        hints
+    }
+}
+
 /// Utility functions for database-specific parsing
 pub mod parsing_utils {
     use super::*;
@@ -339,6 +460,7 @@ pub mod parsing_utils {
             DatabaseType::ClickHouse => ch.is_alphanumeric() || ch == '_',
             DatabaseType::MongoDB => ch.is_alphanumeric() || ch == '_', // MongoDB collection/field names
             DatabaseType::Elasticsearch => ch.is_alphanumeric() || ch == '_' || ch == '.', // Elasticsearch field names can contain dots
+            DatabaseType::WhiteDragon => ch.is_alphanumeric() || ch == '_' || ch == '.',
             DatabaseType::Parquet
             | DatabaseType::CSV
             | DatabaseType::JSON
@@ -450,6 +572,7 @@ pub mod parsing_utils {
             DatabaseType::ClickHouse => '`', // ClickHouse uses backticks like MySQL
             DatabaseType::MongoDB => '"',    // MongoDB uses double quotes for field names
             DatabaseType::Elasticsearch => '"', // Elasticsearch uses double quotes for field names
+            DatabaseType::WhiteDragon => '"',
             DatabaseType::Parquet
             | DatabaseType::CSV
             | DatabaseType::JSON
@@ -478,6 +601,23 @@ mod tests {
     }
 
     #[test]
+    fn test_white_dragon_parser_search_vocabulary() {
+        let parser = SqlParserFactory::create_parser(DatabaseType::WhiteDragon);
+        assert_eq!(parser.database_type(), DatabaseType::WhiteDragon);
+        let operators = parser.get_operators();
+        assert!(operators.contains(&"MATCH"));
+        assert!(operators.contains(&"REGEXP"));
+        assert!(operators.contains(&"~*"));
+        assert_eq!(parser.get_functions(), ["COUNT", "YEAR", "MONTH", "DAY"]);
+        assert!(parser.get_data_types().contains(&"U64"));
+        assert!(
+            parser
+                .get_keywords_by_category(KeywordCategory::DDL)
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn test_parsing_utils_identifier_char() {
         use parsing_utils::*;
 
@@ -493,6 +633,8 @@ mod tests {
         assert!(is_identifier_char('a', DatabaseType::SQLite));
         assert!(is_identifier_char('_', DatabaseType::SQLite));
         assert!(!is_identifier_char('$', DatabaseType::SQLite));
+
+        assert!(is_identifier_char('.', DatabaseType::WhiteDragon));
     }
 
     #[test]

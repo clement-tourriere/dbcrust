@@ -32,6 +32,7 @@ pub fn check_read_only(query: &str, db_type: &DatabaseType) -> Result<(), ReadOn
     let verdict = match db_type {
         DatabaseType::MongoDB => check_mongodb(query),
         DatabaseType::Elasticsearch => check_elasticsearch(query),
+        DatabaseType::WhiteDragon => check_white_dragon(query),
         _ => check_sql(query),
     };
     verdict.map_err(|reason| ReadOnlyViolation { reason })
@@ -129,6 +130,17 @@ fn check_mongodb(query: &str) -> Result<(), String> {
     }
 
     Err("only find/aggregate/count/distinct/getIndexes/stats commands are allowed".to_string())
+}
+
+/// White Dragon exposes only search operations. Both its SQL and qualifier
+/// front-ends use the same read-only `/v1/search` endpoint, so qualifier input
+/// must not be rejected merely because it does not start with `SELECT`.
+fn check_white_dragon(query: &str) -> Result<(), String> {
+    if query.trim().is_empty() {
+        Err("an empty White Dragon search is not valid".to_string())
+    } else {
+        Ok(())
+    }
 }
 
 /// Elasticsearch speaks SQL here (see database_elasticsearch.rs); its SQL
@@ -352,6 +364,19 @@ mod tests {
             check_read_only(q, &DatabaseType::Elasticsearch).is_ok(),
             allowed,
             "{q}"
+        );
+    }
+
+    #[rstest]
+    #[case::qualifier("patch.code:memcpy repo:github.com/postgres/postgres", true)]
+    #[case::regex("/EXPORT_SYMBOL(_GPL)?\\(/ tags:C", true)]
+    #[case::sql("SELECT COUNT(*) FROM documents WHERE patch.code MATCH 'panic!'", true)]
+    #[case::empty("", false)]
+    fn test_check_read_only_white_dragon(#[case] query: &str, #[case] allowed: bool) {
+        assert_eq!(
+            check_read_only(query, &DatabaseType::WhiteDragon).is_ok(),
+            allowed,
+            "{query}"
         );
     }
 

@@ -629,13 +629,17 @@ pub fn format_table_details(details: &TableDetails) -> String {
         && !details.columns.is_empty()
         && details.columns[0].collation.is_empty();
 
-    // Detect Elasticsearch by looking for capability-style collation values
-    let is_elasticsearch = !details.columns.is_empty()
+    // Search backends reuse the otherwise-SQL collation slot for field
+    // capabilities supplied by their metadata APIs.
+    let is_search_metadata = !details.columns.is_empty()
         && details.columns.iter().any(|c| {
             c.collation.contains("filter")
                 || c.collation.contains("search")
                 || c.collation.contains("select")
                 || c.collation.contains("agg")
+                || c.collation.contains("stored")
+                || c.collation.contains("columnar")
+                || c.collation.contains("indexed")
         });
 
     if is_sqlite {
@@ -807,7 +811,7 @@ pub fn format_table_details(details: &TableDetails) -> String {
         // Start with header widths as minimums
         col_widths[0] = "Column".len();
         col_widths[1] = "Type".len();
-        col_widths[2] = if is_elasticsearch {
+        col_widths[2] = if is_search_metadata {
             "Capabilities".len()
         } else {
             "Collation".len()
@@ -838,7 +842,7 @@ pub fn format_table_details(details: &TableDetails) -> String {
         }
 
         // Header row
-        let collation_header = if is_elasticsearch {
+        let collation_header = if is_search_metadata {
             "Capabilities"
         } else {
             "Collation"

@@ -19,6 +19,7 @@ dbcrust config set read_only_default true  # house policy; override with --read-
 | PostgreSQL / MySQL / SQLite / ClickHouse / files | anything that isn't a single read-only statement: DML/DDL, data-modifying CTEs, `EXPLAIN ANALYZE` on writes, multi-statement smuggling (`SELECT 1; DROP …`), `SELECT … INTO`, `INTO OUTFILE`, sequence bumps (`nextval`/`setval`), advisory/named locks, `PRAGMA name = value` assignments (read PRAGMAs stay allowed) |
 | MongoDB | everything except a read allowlist (`find`, `findOne`, `aggregate` without `$out`/`$merge`, `count*`, `distinct`, `getIndexes`, `stats`, …) — unknown verbs are rejected by default |
 | Elasticsearch | anything that isn't `SELECT`/`SHOW`/`DESCRIBE`/`EXPLAIN` (its SQL interface is read-only by design) |
+| White Dragon | all non-empty SQL, qualifier-language, and structured JSON searches are allowed; DBCrust only calls White Dragon's read-only `/v1/search` endpoint |
 
 A blocked statement exits with **code 4** and (under `-o json`) a `read_only_violation` error on stderr.
 

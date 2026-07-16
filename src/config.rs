@@ -205,7 +205,8 @@ fn lookup_connection_password(
         | DatabaseType::Parquet
         | DatabaseType::CSV
         | DatabaseType::JSON
-        | DatabaseType::DuckDB => None,
+        | DatabaseType::DuckDB
+        | DatabaseType::WhiteDragon => None,
     };
 
     if dbcrust_password.is_some() {

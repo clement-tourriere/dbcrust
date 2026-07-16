@@ -980,6 +980,12 @@ impl CliCore {
                     "File-based connection failed".to_string(),
                 ));
             }
+            crate::database::DatabaseType::WhiteDragon => {
+                return Err(CliError::ConnectionError(
+                    "White Dragon authentication is managed by its reverse proxy; include HTTP Basic credentials in the URL"
+                        .to_string(),
+                ));
+            }
         };
 
         let host = connection_info.host.as_deref().unwrap_or("localhost");
@@ -1640,9 +1646,9 @@ impl CliCore {
     }
 
     /// Execute a pure-SQL batch: psql-style, one batch may carry several
-    /// semicolon-separated statements (MongoDB/Elasticsearch queries run
-    /// unsplit — their command syntax is not `;`-separated SQL). Stops at
-    /// the first failing statement. `-f` files and stdin scripts go through
+    /// semicolon-separated statements (MongoDB, Elasticsearch, and White
+    /// Dragon searches run unsplit because their input is not always SQL).
+    /// Stops at the first failing statement. `-f` files and stdin scripts go through
     /// here, so they carry SQL only — no backslash commands, no named
     /// queries.
     async fn execute_sql_batch(&mut self, sql: &str) -> Result<SqlBatchOutcome, CliError> {
@@ -1657,6 +1663,7 @@ impl CliCore {
             Some(
                 crate::database::DatabaseType::MongoDB
                     | crate::database::DatabaseType::Elasticsearch
+                    | crate::database::DatabaseType::WhiteDragon
             )
         );
         let statements = if splittable {
@@ -3058,7 +3065,8 @@ impl CliCore {
         db_arc: &Arc<Mutex<Database>>,
         interrupt_flag: &Arc<AtomicBool>,
     ) -> Result<(), CliError> {
-        // Mongo/ES "queries" aren't SQL — never split those on semicolons
+        // Mongo/ES/White Dragon input is not necessarily SQL — never split it
+        // on semicolons that may belong to a native query or JSON request.
         let splittable = {
             let db_guard = db_arc.lock().unwrap();
             !matches!(
@@ -3068,6 +3076,7 @@ impl CliCore {
                 Some(
                     crate::database::DatabaseType::MongoDB
                         | crate::database::DatabaseType::Elasticsearch
+                        | crate::database::DatabaseType::WhiteDragon
                 )
             )
         };

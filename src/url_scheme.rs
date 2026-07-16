@@ -49,7 +49,7 @@ impl ParsedUrl {
     pub fn is_database_scheme(&self) -> bool {
         matches!(
             self.scheme,
-            UrlScheme::Postgres | UrlScheme::MySQL | UrlScheme::SQLite
+            UrlScheme::Postgres | UrlScheme::MySQL | UrlScheme::SQLite | UrlScheme::WhiteDragon
         )
     }
 
@@ -70,6 +70,8 @@ pub enum UrlScheme {
     MySQL,
     #[strum(serialize = "sqlite")]
     SQLite,
+    #[strum(serialize = "white-dragon")]
+    WhiteDragon,
     #[strum(serialize = "docker")]
     Docker,
     #[strum(serialize = "file")]
@@ -94,6 +96,7 @@ impl UrlScheme {
             Self::Postgres => "PostgreSQL database connection",
             Self::MySQL => "MySQL database connection",
             Self::SQLite => "SQLite database file",
+            Self::WhiteDragon => "White Dragon schema-first search endpoint",
             Self::Docker => "Docker container database",
             Self::File => "Interactive local file picker",
             Self::Session => "Saved session connection",
@@ -155,6 +158,7 @@ impl UrlScheme {
             "postgresql" | "postgres" => Ok(Self::Postgres),
             "mysql" => Ok(Self::MySQL),
             "sqlite" => Ok(Self::SQLite),
+            "white-dragon" | "whitedragon" | "wd" => Ok(Self::WhiteDragon),
             "docker" => Ok(Self::Docker),
             "file" => Ok(Self::File),
             "session" => Ok(Self::Session),
@@ -175,6 +179,7 @@ impl UrlScheme {
             Self::Postgres | Self::Docker => Some("PostgreSQL"),
             Self::MySQL => Some("MySQL"),
             Self::SQLite => Some("SQLite"),
+            Self::WhiteDragon => Some("White Dragon"),
             Self::File | Self::Session | Self::Recent | Self::Vault => None, // Resolved later
         }
     }
@@ -187,6 +192,9 @@ impl UrlScheme {
             "postgresql" | "postgres" => vec![Self::Postgres],
             "mysql" => vec![Self::MySQL],
             "sqlite" => vec![Self::SQLite],
+            "white dragon" | "white-dragon" | "whitedragon" | "wd" => {
+                vec![Self::WhiteDragon]
+            }
             _ => UrlScheme::iter().collect(),
         }
     }
@@ -421,7 +429,7 @@ mod tests {
     #[test]
     fn test_url_scheme_iteration() {
         let schemes: Vec<_> = UrlScheme::iter().collect();
-        assert_eq!(schemes.len(), 8); // All 8 schemes
+        assert_eq!(schemes.len(), 9); // All schemes
 
         // Verify all schemes have proper string representation
         for scheme in schemes {
@@ -457,6 +465,7 @@ mod tests {
         assert!(!UrlScheme::Postgres.supports_contextual_completion());
         assert!(!UrlScheme::MySQL.supports_contextual_completion());
         assert!(!UrlScheme::Recent.supports_contextual_completion());
+        assert!(!UrlScheme::WhiteDragon.supports_contextual_completion());
     }
 
     #[tokio::test]
@@ -506,6 +515,10 @@ mod tests {
         // Test MySQL URL
         let parsed = UrlScheme::parse_url("mysql://user:pass@host:3306/db").unwrap();
         assert_eq!(parsed.scheme, UrlScheme::MySQL);
+        assert!(parsed.is_database_scheme());
+
+        let parsed = UrlScheme::parse_url("white-dragon://localhost:7700").unwrap();
+        assert_eq!(parsed.scheme, UrlScheme::WhiteDragon);
         assert!(parsed.is_database_scheme());
 
         // Test special scheme (session)

@@ -563,6 +563,93 @@ impl SqlCompleter {
         columns
     }
 
+    fn get_search_qualifiers(&self) -> Vec<String> {
+        let database = Arc::clone(&self.database);
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    let database = database.lock().unwrap();
+                    match database.get_database_client() {
+                        Some(client) => client
+                            .get_metadata_provider()
+                            .get_search_qualifiers()
+                            .await
+                            .unwrap_or_default(),
+                        None => Vec::new(),
+                    }
+                })
+            }),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn complete_white_dragon_qualifier(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        let word_start = line[..pos]
+            .rfind(char::is_whitespace)
+            .map_or(0, |index| index + 1);
+        let current = &line[word_start..pos];
+        if current.contains(':') {
+            return Vec::new();
+        }
+        let lower = current.to_ascii_lowercase();
+        let fields = self.get_search_qualifiers();
+
+        let mut suggestions = Vec::new();
+        if line[..word_start].trim().is_empty() && !lower.is_empty() && "select".starts_with(&lower)
+        {
+            suggestions.push(Suggestion {
+                value: "SELECT".to_string(),
+                description: Some("White Dragon SQL query".to_string()),
+                span: Span {
+                    start: word_start,
+                    end: pos,
+                },
+                append_whitespace: true,
+                extra: None,
+                style: Some(Style::new().fg(Color::Blue)),
+                ..Default::default()
+            });
+        }
+        suggestions.extend(
+            fields
+                .into_iter()
+                .filter(|field| lower.is_empty() || field.to_ascii_lowercase().contains(&lower))
+                .map(|field| Suggestion {
+                    value: format!("{field}:"),
+                    description: Some("White Dragon qualifier".to_string()),
+                    span: Span {
+                        start: word_start,
+                        end: pos,
+                    },
+                    append_whitespace: false,
+                    extra: None,
+                    style: Some(Style::new().fg(Color::Cyan)),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+        suggestions.extend(
+            ["AND", "OR", "NOT"]
+                .into_iter()
+                .filter(|operator| {
+                    lower.is_empty() || operator.to_ascii_lowercase().starts_with(&lower)
+                })
+                .map(|operator| Suggestion {
+                    value: operator.to_string(),
+                    description: Some("White Dragon boolean operator".to_string()),
+                    span: Span {
+                        start: word_start,
+                        end: pos,
+                    },
+                    append_whitespace: true,
+                    extra: None,
+                    style: Some(Style::new().fg(Color::Blue)),
+                    ..Default::default()
+                }),
+        );
+        suggestions
+    }
+
     /// Delegate to the command manager's argument completion without
     /// re-entering complete_backslash_commands: classify_command would route
     /// a "\ns " line straight back into complete_ns_command — infinite mutual
@@ -2070,6 +2157,7 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::CSV => "[csv]",
                                     crate::database::DatabaseType::JSON => "[json]",
                                     crate::database::DatabaseType::DuckDB => "[duckdb]",
+                                    crate::database::DatabaseType::WhiteDragon => "[white-dragon]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
@@ -2143,6 +2231,7 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::CSV => "[csv]",
                                     crate::database::DatabaseType::JSON => "[json]",
                                     crate::database::DatabaseType::DuckDB => "[duckdb]",
+                                    crate::database::DatabaseType::WhiteDragon => "[white-dragon]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
@@ -2203,6 +2292,15 @@ impl SqlCompleter {
 
             // For other backslash commands or when typing the command itself
             return self.complete_backslash_commands(line, pos);
+        }
+
+        let is_white_dragon = self.get_database_type() == DatabaseType::WhiteDragon;
+        let trimmed_upper = line.trim_start().to_ascii_uppercase();
+        if is_white_dragon
+            && !trimmed_upper.starts_with("SELECT")
+            && !line.trim_start().starts_with('{')
+        {
+            return self.complete_white_dragon_qualifier(line, pos);
         }
 
         // Fallback to existing SQL completion logic
@@ -2466,6 +2564,41 @@ mod tests {
         let db = Database::new_for_test();
         let config = Config::default();
         (Arc::new(Mutex::new(db)), Arc::new(Mutex::new(config)))
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn white_dragon_qualifier_completion_does_not_invent_schema_without_a_provider() {
+        let mut database = Database::new_for_test();
+        database.set_connection_info_override(crate::database::ConnectionInfo {
+            database_type: DatabaseType::WhiteDragon,
+            host: Some("localhost".to_string()),
+            port: Some(7700),
+            username: None,
+            password: None,
+            database: None,
+            file_path: None,
+            options: HashMap::new(),
+            docker_container: None,
+            use_tls: false,
+        });
+        let config = Config::default();
+        let mut completer =
+            SqlCompleter::new(Arc::new(Mutex::new(database)), Arc::new(Mutex::new(config)));
+
+        let suggestions = completer.complete("tit", 3);
+        assert!(
+            suggestions
+                .iter()
+                .all(|suggestion| suggestion.value != "title:")
+        );
+
+        let suggestions = completer.complete("SEL", 3);
+        let select = suggestions
+            .iter()
+            .find(|suggestion| suggestion.value == "SELECT")
+            .expect("partial SELECT should complete in qualifier-or-SQL mode");
+        assert_eq!(select.span, Span { start: 0, end: 3 });
+        assert!(select.append_whitespace);
     }
 
     #[tokio::test(flavor = "multi_thread")]
