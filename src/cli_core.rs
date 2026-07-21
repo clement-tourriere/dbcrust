@@ -3365,25 +3365,43 @@ impl CliCore {
 
         eprintln!("🔐 Connecting to Vault...");
 
+        // Resolve authentication only after special URLs (including
+        // session://) have produced an effective vault:// target. A configured
+        // credential process is therefore never run for ordinary databases.
+        let credential_process = self.config.vault_credential_process.clone();
+        let vault_auth = crate::vault_client::resolve_vault_auth(
+            None,
+            (!credential_process.trim().is_empty()).then_some(credential_process.as_str()),
+        )
+        .await
+        .map_err(|e| CliError::ConnectionError(format!("Vault authentication failed: {e}")))?;
+
         // Handle optional parameters - if None, prompt user to select
         let db_name = match database_name {
             Some(name) => name.clone(),
             None => {
                 // List all available databases and filter to only show accessible ones
-                let all_databases = crate::vault_client::list_vault_databases(&mount_path)
+                let all_databases =
+                    crate::vault_client::list_vault_databases_with_auth(&mount_path, &vault_auth)
+                        .await
+                        .map_err(|e| {
+                            CliError::ConnectionError(format!(
+                                "Failed to list Vault databases: {e}"
+                            ))
+                        })?;
+
+                let databases =
+                    crate::vault_client::filter_databases_with_available_roles_with_auth(
+                        &mount_path,
+                        all_databases,
+                        &vault_auth,
+                    )
                     .await
                     .map_err(|e| {
-                        CliError::ConnectionError(format!("Failed to list Vault databases: {e}"))
+                        CliError::ConnectionError(format!(
+                            "Failed to filter accessible databases: {e}"
+                        ))
                     })?;
-
-                let databases = crate::vault_client::filter_databases_with_available_roles(
-                    &mount_path,
-                    all_databases,
-                )
-                .await
-                .map_err(|e| {
-                    CliError::ConnectionError(format!("Failed to filter accessible databases: {e}"))
-                })?;
 
                 if databases.is_empty() {
                     return Err(CliError::ConnectionError(
@@ -3409,12 +3427,15 @@ impl CliCore {
             Some(name) => name.clone(),
             None => {
                 // List available roles for the selected database and prompt user to select
-                let roles =
-                    crate::vault_client::get_available_roles_for_user(&mount_path, &db_name)
-                        .await
-                        .map_err(|e| {
-                            CliError::ConnectionError(format!("Failed to list Vault roles: {e}"))
-                        })?;
+                let roles = crate::vault_client::get_available_roles_for_user_with_auth(
+                    &mount_path,
+                    &db_name,
+                    &vault_auth,
+                )
+                .await
+                .map_err(|e| {
+                    CliError::ConnectionError(format!("Failed to list Vault roles: {e}"))
+                })?;
 
                 if roles.is_empty() {
                     return Err(CliError::ConnectionError(format!(
@@ -3437,24 +3458,32 @@ impl CliCore {
         };
 
         // Get dynamic credentials from Vault (with caching)
-        let (credentials, _lease_info) = crate::vault_client::get_dynamic_credentials_with_caching(
-            &mount_path,
-            &db_name,
-            &role_name,
-            &mut self.config,
-        )
-        .await
-        .map_err(|e| CliError::ConnectionError(format!("Failed to get Vault credentials: {e}")))?;
+        let (credentials, _lease_info) =
+            crate::vault_client::get_dynamic_credentials_with_caching_with_auth(
+                &mount_path,
+                &db_name,
+                &role_name,
+                &mut self.config,
+                &vault_auth,
+            )
+            .await
+            .map_err(|e| {
+                CliError::ConnectionError(format!("Failed to get Vault credentials: {e}"))
+            })?;
 
         eprintln!("✅ Successfully obtained dynamic credentials from Vault");
         eprintln!("🔗 Connecting to PostgreSQL with temporary credentials...");
 
         // Get the database configuration from Vault to build the connection URL
-        let db_config = crate::vault_client::get_vault_database_config(&mount_path, &db_name)
-            .await
-            .map_err(|e| {
-                CliError::ConnectionError(format!("Failed to get database config from Vault: {e}"))
-            })?;
+        let db_config = crate::vault_client::get_vault_database_config_with_auth(
+            &mount_path,
+            &db_name,
+            &vault_auth,
+        )
+        .await
+        .map_err(|e| {
+            CliError::ConnectionError(format!("Failed to get database config from Vault: {e}"))
+        })?;
 
         // Extract the connection URL template from the config
         let connection_url_template = db_config

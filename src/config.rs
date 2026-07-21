@@ -759,6 +759,10 @@ pub struct Config {
     pub vault_cache_renewal_threshold: f64, // 0.25 = 25%
     #[serde(default = "default_vault_min_ttl")]
     pub vault_cache_min_ttl_seconds: u64, // 300 = 5 minutes
+    /// Optional AWS-style credential process invoked lazily for `vault://`
+    /// connections when `VAULT_TOKEN` is not already present.
+    #[serde(default)]
+    pub vault_credential_process: String,
 
     // Query timeout settings
     #[serde(default = "default_query_timeout")]
@@ -819,6 +823,7 @@ impl Default for Config {
             vault_credential_cache_enabled: default_vault_cache_enabled(),
             vault_cache_renewal_threshold: default_vault_renewal_threshold(),
             vault_cache_min_ttl_seconds: default_vault_min_ttl(),
+            vault_credential_process: String::new(),
             query_timeout_seconds: default_query_timeout(),
             metadata_timeout_seconds: default_metadata_timeout(),
             vector_display: crate::vector_display::VectorDisplayConfig::default(),
@@ -1167,77 +1172,85 @@ impl Config {
         Ok(())
     }
 
-    /// Load vault credentials from encrypted file
+    /// Load Vault credentials using the ambient token sources.
     fn load_vault_credentials() -> VaultCredentialStorage {
-        match Self::get_vault_credentials_path() {
-            Ok(path) => {
-                if path.exists() {
-                    match fs::read(&path) {
-                        Ok(encrypted_data) => {
-                            match crate::vault_encryption::decrypt_data(&encrypted_data) {
-                                Ok(decrypted_data) => {
-                                    match toml::from_slice::<VaultCredentialStorage>(
-                                        &decrypted_data,
-                                    ) {
-                                        Ok(storage) => storage,
-                                        Err(e) => {
-                                            eprintln!("Error parsing vault credentials file: {e}");
-                                            VaultCredentialStorage::default()
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    // Delete the corrupted file since vault token has likely changed
-                                    if let Err(remove_err) = fs::remove_file(&path) {
-                                        eprintln!("Error decrypting vault credentials file: {e}");
-                                        eprintln!(
-                                            "Failed to remove corrupted vault credentials file: {remove_err}"
-                                        );
-                                    } else {
-                                        debug!(
-                                            "Removed corrupted vault credentials file due to decryption failure: {e}"
-                                        );
-                                    }
-                                    VaultCredentialStorage::default()
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Error reading vault credentials file: {e}");
-                            VaultCredentialStorage::default()
-                        }
-                    }
-                } else {
-                    VaultCredentialStorage::default()
-                }
-            }
+        Self::load_vault_credentials_with_optional_token(None)
+    }
+
+    fn load_vault_credentials_with_optional_token(
+        vault_token: Option<&str>,
+    ) -> VaultCredentialStorage {
+        let path = match Self::get_vault_credentials_path() {
+            Ok(path) => path,
             Err(e) => {
                 eprintln!("Error getting vault credentials path: {e}");
+                return VaultCredentialStorage::default();
+            }
+        };
+        if !path.exists() {
+            return VaultCredentialStorage::default();
+        }
+
+        let encrypted_data = match fs::read(&path) {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("Error reading vault credentials file: {e}");
+                return VaultCredentialStorage::default();
+            }
+        };
+        let decrypted = match vault_token {
+            Some(token) => crate::vault_encryption::decrypt_data_with_token(&encrypted_data, token),
+            None => crate::vault_encryption::decrypt_data(&encrypted_data),
+        };
+
+        match decrypted {
+            Ok(data) => match toml::from_slice::<VaultCredentialStorage>(&data) {
+                Ok(storage) => storage,
+                Err(e) => {
+                    eprintln!("Error parsing vault credentials file: {e}");
+                    VaultCredentialStorage::default()
+                }
+            },
+            // A missing ambient token is expected when a lazy credential
+            // process is configured. Keep the encrypted cache so it can be
+            // unlocked after the process returns a token.
+            Err(crate::vault_encryption::EncryptionError::NoVaultToken) => {
+                debug!("Vault credential cache remains locked until authentication");
+                VaultCredentialStorage::default()
+            }
+            Err(e) => {
+                // Any other failure means the cache is malformed or was
+                // encrypted with different key material.
+                if let Err(remove_err) = fs::remove_file(&path) {
+                    eprintln!("Error decrypting vault credentials file: {e}");
+                    eprintln!("Failed to remove corrupted vault credentials file: {remove_err}");
+                } else {
+                    debug!("Removed unreadable Vault credential cache: {e}");
+                }
                 VaultCredentialStorage::default()
             }
         }
     }
 
-    /// Save vault credentials to encrypted file
-    fn save_vault_credentials(&self) -> Result<(), Box<dyn Error>> {
+    fn save_vault_credentials_with_optional_token(
+        &self,
+        vault_token: Option<&str>,
+    ) -> Result<(), Box<dyn Error>> {
         let path = Self::get_vault_credentials_path()?;
-
-        // Ensure the parent directory exists
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
 
-        // Serialize to TOML
         let content = toml::to_string_pretty(&self.vault_credential_storage)?;
-
-        // Encrypt the content
-        let encrypted_data = crate::vault_encryption::encrypt_data(content.as_bytes())
-            .map_err(|e| Box::new(e) as Box<dyn Error>)?;
-
-        // Write encrypted data to file
+        let encrypted_data = match vault_token {
+            Some(token) => {
+                crate::vault_encryption::encrypt_data_with_token(content.as_bytes(), token)
+            }
+            None => crate::vault_encryption::encrypt_data(content.as_bytes()),
+        }
+        .map_err(|e| Box::new(e) as Box<dyn Error>)?;
         fs::write(&path, encrypted_data)?;
 
-        // Set restrictive file permissions (600 - owner read/write only)
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1247,6 +1260,11 @@ impl Config {
         }
 
         Ok(())
+    }
+
+    /// Save Vault credentials using the ambient token sources.
+    fn save_vault_credentials(&self) -> Result<(), Box<dyn Error>> {
+        self.save_vault_credentials_with_optional_token(None)
     }
 
     /// Migrate recent connections from main config file to separate file
@@ -1783,6 +1801,23 @@ impl Config {
                 self.vault_cache_min_ttl_seconds
             ));
 
+            content.push_str(
+                "# Optional command that prints a Vault token, JSON, or VAULT_TOKEN/VAULT_ADDR lines.\n",
+            );
+            content.push_str(
+                "# It runs lazily only for vault:// targets when VAULT_TOKEN is absent.\n",
+            );
+            let escaped_vault_credential_process = self
+                .vault_credential_process
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r")
+                .replace('\t', "\\t");
+            content.push_str(&format!(
+                "vault_credential_process = \"{escaped_vault_credential_process}\"\n\n"
+            ));
+
             // Vector Display Settings
             content.push_str("# ================================================================================\n");
             content.push_str("# VECTOR DISPLAY SETTINGS\n");
@@ -2106,6 +2141,7 @@ impl Config {
             "vault_credential_cache_enabled",
             "vault_cache_renewal_threshold",
             "vault_cache_min_ttl_seconds",
+            "vault_credential_process",
             "query_timeout_seconds",
             "metadata_timeout_seconds",
             "max_recent_connections",
@@ -2772,7 +2808,7 @@ impl Config {
         Some(credentials)
     }
 
-    /// Cache vault credentials
+    /// Cache Vault credentials using the ambient token sources.
     pub fn cache_vault_credentials(
         &mut self,
         mount_path: &str,
@@ -2780,38 +2816,66 @@ impl Config {
         role_name: &str,
         credentials: CachedVaultCredentials,
     ) -> Result<(), Box<dyn Error>> {
+        self.cache_vault_credentials_with_optional_token(
+            mount_path,
+            database_name,
+            role_name,
+            credentials,
+            None,
+        )
+    }
+
+    /// Cache Vault credentials using token material returned by a credential process.
+    pub fn cache_vault_credentials_with_token(
+        &mut self,
+        mount_path: &str,
+        database_name: &str,
+        role_name: &str,
+        credentials: CachedVaultCredentials,
+        vault_token: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        self.cache_vault_credentials_with_optional_token(
+            mount_path,
+            database_name,
+            role_name,
+            credentials,
+            Some(vault_token),
+        )
+    }
+
+    fn cache_vault_credentials_with_optional_token(
+        &mut self,
+        mount_path: &str,
+        database_name: &str,
+        role_name: &str,
+        credentials: CachedVaultCredentials,
+        vault_token: Option<&str>,
+    ) -> Result<(), Box<dyn Error>> {
         if !self.vault_credential_cache_enabled {
             return Ok(());
         }
 
         let key = Self::vault_cache_key(mount_path, database_name, role_name);
-
-        // Clean up expired credentials before adding new ones
-        self.cleanup_expired_vault_credentials();
-
-        // Add the new credentials
+        self.remove_expired_vault_credentials();
         self.vault_credential_storage
             .cached_credentials
             .insert(key, credentials);
 
-        // Limit cache size (LRU eviction based on issue_time)
         const MAX_CACHE_SIZE: usize = 50;
-        if self.vault_credential_storage.cached_credentials.len() > MAX_CACHE_SIZE {
-            // Find oldest credential by issue_time and remove it
-            if let Some((oldest_key, _)) = self
+        if self.vault_credential_storage.cached_credentials.len() > MAX_CACHE_SIZE
+            && let Some(oldest_key) = self
                 .vault_credential_storage
                 .cached_credentials
                 .iter()
                 .min_by_key(|(_, creds)| creds.issue_time)
-                .map(|(k, v)| (k.clone(), v.clone()))
-            {
-                self.vault_credential_storage
-                    .cached_credentials
-                    .remove(&oldest_key);
-            }
+                .map(|(key, _)| key.clone())
+        {
+            self.vault_credential_storage
+                .cached_credentials
+                .remove(&oldest_key);
         }
 
-        self.save_vault_credentials()
+        self.save_vault_credentials_with_optional_token(vault_token)
     }
 
     /// Check if credentials need renewal (TTL below threshold)
@@ -2841,24 +2905,23 @@ impl Config {
         }
     }
 
-    /// Clean up expired vault credentials
-    pub fn cleanup_expired_vault_credentials(&mut self) -> usize {
+    fn remove_expired_vault_credentials(&mut self) -> usize {
         let now = chrono::Utc::now();
         let initial_count = self.vault_credential_storage.cached_credentials.len();
-
         self.vault_credential_storage
             .cached_credentials
             .retain(|_, creds| now < creds.expire_time);
+        initial_count - self.vault_credential_storage.cached_credentials.len()
+    }
 
-        let removed_count = initial_count - self.vault_credential_storage.cached_credentials.len();
-
-        // Save if we removed any credentials
-        if removed_count > 0 {
-            if let Err(e) = self.save_vault_credentials() {
-                eprintln!("Error saving vault credentials after cleanup: {e}");
-            }
+    /// Clean up expired Vault credentials.
+    pub fn cleanup_expired_vault_credentials(&mut self) -> usize {
+        let removed_count = self.remove_expired_vault_credentials();
+        if removed_count > 0
+            && let Err(e) = self.save_vault_credentials()
+        {
+            eprintln!("Error saving vault credentials after cleanup: {e}");
         }
-
         removed_count
     }
 
@@ -2914,9 +2977,15 @@ impl Config {
             .collect()
     }
 
-    /// Force refresh vault credentials storage from file
+    /// Force refresh Vault credential storage from file using ambient auth.
     pub fn reload_vault_credentials(&mut self) {
         self.vault_credential_storage = Self::load_vault_credentials();
+    }
+
+    /// Unlock and reload the encrypted Vault cache with an explicit token.
+    pub fn reload_vault_credentials_with_token(&mut self, vault_token: &str) {
+        self.vault_credential_storage =
+            Self::load_vault_credentials_with_optional_token(Some(vault_token));
     }
 
     /// Reload named queries from file (for development/testing)

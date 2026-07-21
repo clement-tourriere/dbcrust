@@ -53,7 +53,7 @@ session://name          # saved session
 recent://               # recent-connection picker
 file://                 # compatible-file picker in current directory
 docker://container/db
-vault://role@mount/database
+vault://role@mount/database  # optional vault_credential_process runs lazily
 path/to/file.csv        # infer CSV/Parquet/JSON/SQLite from extension
 parquet:///path/*.parquet
 csv:///path/file.csv?header=true&delimiter=,

@@ -96,6 +96,10 @@ vault_credential_cache_enabled = true          # Enable/disable credential cachi
 vault_cache_renewal_threshold = 0.25           # Renew when 25% of TTL remaining
 vault_cache_min_ttl_seconds = 300              # Minimum TTL required (5 minutes)
 
+# Optional: run only when an effective vault:// target needs authentication.
+# The command may be any credential broker.
+vault_credential_process = "~/.local/bin/vault-credential-process"
+
 [security]
 verify_ssl = true
 ssl_cert_path = ""
@@ -410,6 +414,11 @@ Configuration for dynamic database credentials via Vault, including intelligent 
 | `vault_credential_cache_enabled` | boolean | `true` | Enable credential caching between sessions |
 | `vault_cache_renewal_threshold` | float | `0.25` | Renew when remaining TTL < 25% of original |
 | `vault_cache_min_ttl_seconds` | integer | `300` | Minimum TTL required (5 minutes) |
+| `vault_credential_process` | string | `""` | Command invoked lazily when a `vault://` target needs a token |
+
+**Credential process:**
+
+The process runs only after direct URLs or saved `session://` targets resolve to `vault://`, and only when `VAULT_TOKEN` is absent. It may print a plain token, JSON (`{"token":"…","vault_addr":"…"}`), or `VAULT_TOKEN=`/`VAULT_ADDR=` lines. An explicit `VAULT_TOKEN` takes precedence; `~/.vault-token` remains the fallback when no process is configured.
 
 **Example:**
 ```toml

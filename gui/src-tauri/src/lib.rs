@@ -585,11 +585,13 @@ fn detect_vault_environment_response() -> VaultEnvironmentResponse {
         Some((vault_addr, source)) => (Some(vault_addr), Some(source)),
         None => (None, None),
     };
+    let credential_process_configured = !Config::load().vault_credential_process.trim().is_empty();
 
     VaultEnvironmentResponse {
         vault_addr,
         source,
-        token_available: dbcrust::vault_client::get_vault_token().is_ok(),
+        token_available: credential_process_configured
+            || dbcrust::vault_client::get_vault_token().is_ok(),
     }
 }
 
@@ -679,13 +681,20 @@ fn connect_vault_database(
 
                 let vault_addr_override_ref = vault_addr_override.as_deref();
                 let mut vault_config = Config::load();
+                let credential_process = vault_config.vault_credential_process.clone();
+                let vault_auth = dbcrust::vault_client::resolve_vault_auth(
+                    vault_addr_override_ref,
+                    (!credential_process.trim().is_empty()).then_some(credential_process.as_str()),
+                )
+                .await
+                .map_err(|e| format_vault_error("Vault authentication failed", e.to_string()))?;
                 let (credentials, _) =
-                    dbcrust::vault_client::get_dynamic_credentials_with_caching_with_addr(
+                    dbcrust::vault_client::get_dynamic_credentials_with_caching_with_auth(
                         &mount_path,
                         &db_name,
                         &role_name,
                         &mut vault_config,
-                        vault_addr_override_ref,
+                        &vault_auth,
                     )
                     .await
                     .map_err(|e| {
@@ -695,10 +704,10 @@ fn connect_vault_database(
                         )
                     })?;
 
-                let db_config = dbcrust::vault_client::get_vault_database_config_with_addr(
+                let db_config = dbcrust::vault_client::get_vault_database_config_with_auth(
                     &mount_path,
                     &db_name,
-                    vault_addr_override_ref,
+                    &vault_auth,
                 )
                 .await
                 .map_err(|e| {
@@ -1396,18 +1405,26 @@ async fn list_vault_databases(
             .unwrap();
         let local = tokio::task::LocalSet::new();
         local.block_on(&rt, async {
-            let all_databases = dbcrust::vault_client::list_vault_databases_with_addr(
-                &mount_path,
+            let config = Config::load();
+            let credential_process = config.vault_credential_process.clone();
+            let auth = dbcrust::vault_client::resolve_vault_auth(
                 vault_addr.as_deref(),
+                (!credential_process.trim().is_empty()).then_some(credential_process.as_str()),
+            )
+            .await
+            .map_err(|e| format_vault_error("Vault authentication failed", e.to_string()))?;
+            let all_databases = dbcrust::vault_client::list_vault_databases_with_auth(
+                &mount_path,
+                &auth,
             )
             .await
             .map_err(|e| format_vault_error("Vault discovery failed", format!("Failed to list Vault databases: {e}")))?;
 
             let all_databases_len = all_databases.len();
-            let filtered_databases = dbcrust::vault_client::filter_databases_with_available_roles_with_addr(
+            let filtered_databases = dbcrust::vault_client::filter_databases_with_available_roles_with_auth(
                 &mount_path,
                 all_databases,
-                vault_addr.as_deref(),
+                &auth,
             )
             .await
             .map_err(|e| format_vault_error("Vault discovery failed", format!("Failed to filter accessible databases: {e}")))?;
@@ -1438,10 +1455,18 @@ async fn list_vault_roles(
             .unwrap();
         let local = tokio::task::LocalSet::new();
         local.block_on(&rt, async {
-            dbcrust::vault_client::get_available_roles_for_user_with_addr(
+            let config = Config::load();
+            let credential_process = config.vault_credential_process.clone();
+            let auth = dbcrust::vault_client::resolve_vault_auth(
+                vault_addr.as_deref(),
+                (!credential_process.trim().is_empty()).then_some(credential_process.as_str()),
+            )
+            .await
+            .map_err(|e| format_vault_error("Vault authentication failed", e.to_string()))?;
+            dbcrust::vault_client::get_available_roles_for_user_with_auth(
                 &mount_path,
                 &database_name,
-                vault_addr.as_deref(),
+                &auth,
             )
             .await
             .map_err(|e| {

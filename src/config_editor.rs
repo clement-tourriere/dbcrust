@@ -39,7 +39,7 @@ impl ConfigSection {
             ConfigSection::Pager => "Pager",
             ConfigSection::Features => "Features",
             ConfigSection::Timeouts => "Timeouts",
-            ConfigSection::Vault => "Vault credential cache",
+            ConfigSection::Vault => "Vault integration",
             ConfigSection::VectorDisplay => "Vector display",
             ConfigSection::ComplexDisplay => "Complex data display",
             ConfigSection::Ai => "AI assistant",
@@ -75,9 +75,15 @@ impl ConfigSection {
                 "query={}s, metadata={}s",
                 config.query_timeout_seconds, config.metadata_timeout_seconds
             ),
-            ConfigSection::Vault => {
-                format!("cache={}", on_off(config.vault_credential_cache_enabled))
-            }
+            ConfigSection::Vault => format!(
+                "cache={}, credential-process={}",
+                on_off(config.vault_credential_cache_enabled),
+                if config.vault_credential_process.trim().is_empty() {
+                    "off"
+                } else {
+                    "configured"
+                }
+            ),
             ConfigSection::VectorDisplay => format!("mode={}", config.vector_display.display_mode),
             ConfigSection::ComplexDisplay => {
                 format!("mode={}", config.complex_display.display_mode)
@@ -527,6 +533,19 @@ static SCHEMA: &[FieldSpec] = &[
         get: |c| c.vault_cache_min_ttl_seconds.to_string(),
         set: |c, v| {
             c.vault_cache_min_ttl_seconds = pnum(v)?;
+            Ok(())
+        },
+    },
+    FieldSpec {
+        path: "vault_credential_process",
+        label: "Vault credential process",
+        help: "Command run lazily for vault:// targets; prints a token or JSON credentials",
+        kind: FieldKind::Text { allow_empty: true },
+        section: ConfigSection::Vault,
+        sensitive: false,
+        get: |c| c.vault_credential_process.clone(),
+        set: |c, v| {
+            c.vault_credential_process = v.to_string();
             Ok(())
         },
     },
@@ -1966,6 +1985,19 @@ mod tests {
     }
 
     #[test]
+    fn test_vault_credential_process_documented_round_trip() {
+        let mut config = Config::default();
+        config.vault_credential_process =
+            r#"helper --format "json" --script 'printf "token\\n"'"#.to_string();
+        let documented = config.render_documented_config();
+        let parsed: Config = toml::from_str(&documented).unwrap();
+        assert_eq!(
+            parsed.vault_credential_process,
+            config.vault_credential_process
+        );
+    }
+
+    #[test]
     fn test_every_enum_option_is_settable() {
         for spec in schema() {
             if let FieldKind::Enum(options) = spec.kind {
@@ -1994,6 +2026,11 @@ mod tests {
     #[case("autocomplete_enabled", "0", "false")]
     #[case("pager_command", "less -RFX", "less -RFX")]
     #[case("vault_cache_renewal_threshold", "0.5", "0.5")]
+    #[case(
+        "vault_credential_process",
+        "credential-helper vault",
+        "credential-helper vault"
+    )]
     #[case("ai.temperature", "1.5", "1.5")]
     #[case("logging.level", "DEBUG", "debug")]
     #[case("vector_display.display_mode", "viz", "viz")]

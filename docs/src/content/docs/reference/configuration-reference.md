@@ -342,6 +342,9 @@ auth_method = "token"               # "token", "userpass", "ldap", etc.
 | `default_mount_path` | String | `"database"` | Default mount path |
 | `default_role` | String | `"readonly"` | Default role name |
 | `auth_method` | String | `"token"` | Vault authentication method |
+| `vault_credential_process` | String | `""` | External command used to obtain Vault authentication lazily |
+
+`vault_credential_process` is currently a root-level DBCrust setting. The command is executed only for an effective `vault://` target when `VAULT_TOKEN` is absent. It can return a plain token, JSON (`{"token":"…","vault_addr":"…"}`), or `VAULT_TOKEN=`/`VAULT_ADDR=` lines. This follows the `credential_process` pattern and does not depend on a particular credential broker.
 
 ### `[complex_display]` - Complex Data Type Display
 

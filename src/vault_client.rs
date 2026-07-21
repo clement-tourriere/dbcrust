@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
+use std::process::Stdio;
 
 use futures_util::stream::{FuturesUnordered, StreamExt};
 use regex::Regex;
@@ -98,6 +99,52 @@ pub enum VaultError {
     RequestError(#[from] reqwest::Error),
     #[error("JSON parsing error: {0}")]
     JsonError(#[from] serde_json::Error),
+    #[error("Vault credential process failed: {0}")]
+    CredentialProcessError(String),
+}
+
+/// Resolved Vault authentication material for one connection attempt.
+///
+/// The token is deliberately omitted from `Debug`; callers should pass this
+/// value directly to the Vault client rather than publishing it through the
+/// process environment.
+#[derive(Clone)]
+pub struct VaultAuth {
+    addr: String,
+    token: String,
+}
+
+impl std::fmt::Debug for VaultAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultAuth")
+            .field("addr", &self.addr)
+            .field("token", &"<redacted>")
+            .finish()
+    }
+}
+
+impl VaultAuth {
+    pub fn addr(&self) -> &str {
+        &self.addr
+    }
+
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+}
+
+#[derive(Deserialize)]
+struct VaultCredentialProcessOutput {
+    #[serde(alias = "Token", alias = "vault_token", alias = "VAULT_TOKEN")]
+    token: String,
+    #[serde(
+        default,
+        alias = "address",
+        alias = "addr",
+        alias = "VaultAddr",
+        alias = "VAULT_ADDR"
+    )]
+    vault_addr: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -210,31 +257,194 @@ pub fn get_vault_addr() -> Result<String, VaultError> {
     get_vault_addr_with_override(None)
 }
 
-pub fn get_vault_token() -> Result<String, VaultError> {
-    if let Ok(token) = env::var("VAULT_TOKEN") {
-        if !token.trim().is_empty() {
-            return Ok(token.trim().to_string());
-        }
-    }
+fn vault_token_from_environment() -> Option<String> {
+    env::var("VAULT_TOKEN")
+        .ok()
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty())
+}
 
+fn vault_token_from_file() -> Result<String, VaultError> {
     let token_path = dirs::home_dir()
         .ok_or_else(|| VaultError::TokenFileError("Home directory not found".to_string()))?
         .join(".vault-token");
 
-    fs::read_to_string(token_path)
-        .map(|s| s.trim().to_string())
-        .map_err(|e| VaultError::TokenFileError(format!("{e}")))
+    let token = fs::read_to_string(token_path)
+        .map_err(|e| VaultError::TokenFileError(format!("{e}")))?
+        .trim()
+        .to_string();
+    if token.is_empty() {
+        return Err(VaultError::TokenError);
+    }
+    Ok(token)
 }
 
-// Create HTTP client with Vault headers
-async fn create_vault_client_with_addr(
-    vault_addr_override: Option<&str>,
-) -> Result<(reqwest::Client, String), VaultError> {
-    let vault_addr = get_vault_addr_with_override(vault_addr_override)?;
-    let vault_token = get_vault_token()?;
+pub fn get_vault_token() -> Result<String, VaultError> {
+    vault_token_from_environment().map_or_else(vault_token_from_file, Ok)
+}
 
+fn parse_credential_process_output(output: &str) -> Result<(String, Option<String>), VaultError> {
+    let output = output.trim();
+    if output.is_empty() {
+        return Err(VaultError::CredentialProcessError(
+            "command produced no output".to_string(),
+        ));
+    }
+
+    if output.starts_with('{') {
+        let credentials: VaultCredentialProcessOutput =
+            serde_json::from_str(output).map_err(|e| {
+                VaultError::CredentialProcessError(format!("command returned invalid JSON: {e}"))
+            })?;
+        let token = credentials.token.trim().to_string();
+        if token.is_empty() {
+            return Err(VaultError::CredentialProcessError(
+                "JSON response contains an empty token".to_string(),
+            ));
+        }
+        let addr = credentials
+            .vault_addr
+            .map(|addr| addr.trim().to_string())
+            .filter(|addr| !addr.is_empty());
+        return Ok((token, addr));
+    }
+
+    let lines: Vec<&str> = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let dotenv_output = lines
+        .iter()
+        .any(|line| line.starts_with("VAULT_TOKEN=") || line.starts_with("VAULT_ADDR="));
+    if dotenv_output {
+        let mut dotenv_token = None;
+        let mut dotenv_addr = None;
+        for line in &lines {
+            if let Some(value) = line.strip_prefix("VAULT_TOKEN=") {
+                dotenv_token = Some(value.trim().to_string());
+            } else if let Some(value) = line.strip_prefix("VAULT_ADDR=") {
+                dotenv_addr = Some(value.trim().to_string());
+            } else {
+                return Err(VaultError::CredentialProcessError(
+                    "dotenv output may contain only VAULT_TOKEN and VAULT_ADDR".to_string(),
+                ));
+            }
+        }
+        let token = dotenv_token
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| {
+                VaultError::CredentialProcessError(
+                    "command output is missing VAULT_TOKEN".to_string(),
+                )
+            })?;
+        return Ok((token, dotenv_addr.filter(|addr| !addr.is_empty())));
+    }
+
+    if lines.len() != 1 {
+        return Err(VaultError::CredentialProcessError(
+            "plain-token output must contain exactly one line".to_string(),
+        ));
+    }
+    Ok((lines[0].to_string(), None))
+}
+
+async fn run_credential_process(command_str: &str) -> Result<(String, Option<String>), VaultError> {
+    let command_str = command_str.trim();
+    if command_str.is_empty() {
+        return Err(VaultError::CredentialProcessError(
+            "command is empty".to_string(),
+        ));
+    }
+
+    let mut command = if cfg!(target_os = "windows") {
+        let mut command = tokio::process::Command::new("cmd");
+        command.args(["/C", command_str]);
+        command
+    } else {
+        let mut command = tokio::process::Command::new("sh");
+        command.args(["-c", command_str]);
+        command
+    };
+    let output = command
+        .stdin(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| {
+            VaultError::CredentialProcessError(format!("failed to execute command: {e}"))
+        })?;
+
+    if !output.status.success() {
+        return Err(VaultError::CredentialProcessError(format!(
+            "command exited with status {}",
+            output.status.code().unwrap_or(-1)
+        )));
+    }
+
+    let stdout = String::from_utf8(output.stdout).map_err(|_| {
+        VaultError::CredentialProcessError("command output is not valid UTF-8".to_string())
+    })?;
+    parse_credential_process_output(&stdout)
+}
+
+fn resolve_vault_addr(
+    vault_addr_override: Option<&str>,
+    process_addr: Option<&str>,
+) -> Result<String, VaultError> {
+    if let Some(addr) = vault_addr_override
+        .map(str::trim)
+        .filter(|addr| !addr.is_empty())
+    {
+        return Ok(addr.to_string());
+    }
+    if let Some(addr) = process_addr.map(str::trim).filter(|addr| !addr.is_empty()) {
+        return Ok(addr.to_string());
+    }
+    get_vault_addr_with_override(None)
+}
+
+/// Resolve Vault authentication lazily.
+///
+/// An explicit `VAULT_TOKEN` wins. If none is present and a credential process
+/// is configured, DBCrust executes it and accepts either a plain token, JSON
+/// (`{"token":"…","vault_addr":"…"}`), or `VAULT_TOKEN=`/`VAULT_ADDR=`
+/// lines. The legacy `~/.vault-token` file is the final fallback.
+pub async fn resolve_vault_auth(
+    vault_addr_override: Option<&str>,
+    credential_process: Option<&str>,
+) -> Result<VaultAuth, VaultError> {
+    if let Some(token) = vault_token_from_environment() {
+        return Ok(VaultAuth {
+            addr: resolve_vault_addr(vault_addr_override, None)?,
+            token,
+        });
+    }
+
+    if let Some(process) = credential_process
+        .map(str::trim)
+        .filter(|process| !process.is_empty())
+    {
+        let (token, process_addr) = run_credential_process(process).await?;
+        return Ok(VaultAuth {
+            addr: resolve_vault_addr(vault_addr_override, process_addr.as_deref())?,
+            token,
+        });
+    }
+
+    Ok(VaultAuth {
+        addr: resolve_vault_addr(vault_addr_override, None)?,
+        token: vault_token_from_file()?,
+    })
+}
+
+fn create_vault_client_with_auth(
+    auth: &VaultAuth,
+) -> Result<(reqwest::Client, String), VaultError> {
     let mut headers = HeaderMap::new();
-    let header_value = vault_token
+    let header_value = auth
+        .token
         .parse()
         .map_err(|e| VaultError::ApiError(format!("Invalid token header value: {e}")))?;
     headers.insert("X-Vault-Token", header_value);
@@ -243,7 +453,15 @@ async fn create_vault_client_with_addr(
         .default_headers(headers)
         .build()?;
 
-    Ok((client, vault_addr))
+    Ok((client, auth.addr.clone()))
+}
+
+// Create an HTTP client from the legacy ambient token sources.
+async fn create_vault_client_with_addr(
+    vault_addr_override: Option<&str>,
+) -> Result<(reqwest::Client, String), VaultError> {
+    let auth = resolve_vault_auth(vault_addr_override, None).await?;
+    create_vault_client_with_auth(&auth)
 }
 
 async fn create_vault_client() -> Result<(reqwest::Client, String), VaultError> {
@@ -258,7 +476,15 @@ pub async fn list_vault_databases_with_addr(
     mount_path: &str,
     vault_addr_override: Option<&str>,
 ) -> Result<Vec<String>, VaultError> {
-    let (client, vault_addr) = create_vault_client_with_addr(vault_addr_override).await?;
+    let auth = resolve_vault_auth(vault_addr_override, None).await?;
+    list_vault_databases_with_auth(mount_path, &auth).await
+}
+
+pub async fn list_vault_databases_with_auth(
+    mount_path: &str,
+    auth: &VaultAuth,
+) -> Result<Vec<String>, VaultError> {
+    let (client, vault_addr) = create_vault_client_with_auth(auth)?;
     let list_path = format!("{vault_addr}/v1/{mount_path}/config?list=true");
 
     let response = client.get(&list_path).send().await?;
@@ -403,7 +629,16 @@ pub async fn get_vault_database_config_with_addr(
     db_config_name: &str,
     vault_addr_override: Option<&str>,
 ) -> Result<VaultDbConfigData, VaultError> {
-    let (client, vault_addr) = create_vault_client_with_addr(vault_addr_override).await?;
+    let auth = resolve_vault_auth(vault_addr_override, None).await?;
+    get_vault_database_config_with_auth(mount_path, db_config_name, &auth).await
+}
+
+pub async fn get_vault_database_config_with_auth(
+    mount_path: &str,
+    db_config_name: &str,
+    auth: &VaultAuth,
+) -> Result<VaultDbConfigData, VaultError> {
+    let (client, vault_addr) = create_vault_client_with_auth(auth)?;
     fetch_vault_database_config(&client, &vault_addr, mount_path, db_config_name).await
 }
 
@@ -463,6 +698,26 @@ pub async fn get_dynamic_credentials_with_caching_with_addr(
     config: &mut crate::config::Config,
     vault_addr_override: Option<&str>,
 ) -> Result<(VaultDynamicCredentialsData, VaultLeaseInfo), VaultError> {
+    let auth = resolve_vault_auth(vault_addr_override, None).await?;
+    get_dynamic_credentials_with_caching_with_auth(
+        mount_path,
+        db_config_name,
+        role_name,
+        config,
+        &auth,
+    )
+    .await
+}
+
+pub async fn get_dynamic_credentials_with_caching_with_auth(
+    mount_path: &str,
+    db_config_name: &str,
+    role_name: &str,
+    config: &mut crate::config::Config,
+    auth: &VaultAuth,
+) -> Result<(VaultDynamicCredentialsData, VaultLeaseInfo), VaultError> {
+    config.reload_vault_credentials_with_token(auth.token());
+
     if let Some(cached_creds) =
         config.get_cached_vault_credentials(mount_path, db_config_name, role_name)
     {
@@ -490,7 +745,7 @@ pub async fn get_dynamic_credentials_with_caching_with_addr(
         mount_path, db_config_name, role_name
     );
 
-    let (client, vault_addr) = create_vault_client_with_addr(vault_addr_override).await?;
+    let (client, vault_addr) = create_vault_client_with_auth(auth)?;
     let path = format!("{vault_addr}/v1/{mount_path}/creds/{role_name}");
 
     let response = client.get(&path).send().await?;
@@ -544,9 +799,13 @@ pub async fn get_dynamic_credentials_with_caching_with_addr(
             role_name: role_name.to_string(),
         };
 
-        if let Err(e) =
-            config.cache_vault_credentials(mount_path, db_config_name, role_name, cached_creds)
-        {
+        if let Err(e) = config.cache_vault_credentials_with_token(
+            mount_path,
+            db_config_name,
+            role_name,
+            cached_creds,
+            auth.token(),
+        ) {
             debug!("Failed to cache vault credentials: {e}");
         } else {
             debug!(
@@ -596,7 +855,16 @@ pub async fn get_available_roles_for_user_with_addr(
     db_config_name: &str,
     vault_addr_override: Option<&str>,
 ) -> Result<Vec<String>, VaultError> {
-    let (client, vault_addr) = create_vault_client_with_addr(vault_addr_override).await?;
+    let auth = resolve_vault_auth(vault_addr_override, None).await?;
+    get_available_roles_for_user_with_auth(mount_path, db_config_name, &auth).await
+}
+
+pub async fn get_available_roles_for_user_with_auth(
+    mount_path: &str,
+    db_config_name: &str,
+    auth: &VaultAuth,
+) -> Result<Vec<String>, VaultError> {
+    let (client, vault_addr) = create_vault_client_with_auth(auth)?;
     let db_config =
         fetch_vault_database_config(&client, &vault_addr, mount_path, db_config_name).await?;
 
@@ -644,7 +912,16 @@ pub async fn filter_databases_with_available_roles_with_addr(
     db_configs: Vec<String>,
     vault_addr_override: Option<&str>,
 ) -> Result<Vec<String>, VaultError> {
-    let (client, vault_addr) = create_vault_client_with_addr(vault_addr_override).await?;
+    let auth = resolve_vault_auth(vault_addr_override, None).await?;
+    filter_databases_with_available_roles_with_auth(mount_path, db_configs, &auth).await
+}
+
+pub async fn filter_databases_with_available_roles_with_auth(
+    mount_path: &str,
+    db_configs: Vec<String>,
+    auth: &VaultAuth,
+) -> Result<Vec<String>, VaultError> {
+    let (client, vault_addr) = create_vault_client_with_auth(auth)?;
 
     let mut tasks = FuturesUnordered::new();
     for db_name in db_configs {
@@ -791,6 +1068,65 @@ pub fn has_capabilities(user_capabilities: &[String], required_capabilities: &[&
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case("hvs.plain-token\n", "hvs.plain-token", None)]
+    #[case(
+        r#"{"token":"hvs.json-token","vault_addr":"https://vault.example"}"#,
+        "hvs.json-token",
+        Some("https://vault.example")
+    )]
+    #[case(
+        "VAULT_TOKEN=hvs.env-token\nVAULT_ADDR=https://vault.internal\n",
+        "hvs.env-token",
+        Some("https://vault.internal")
+    )]
+    fn test_parse_credential_process_output(
+        #[case] output: &str,
+        #[case] expected_token: &str,
+        #[case] expected_addr: Option<&str>,
+    ) {
+        let (token, addr) = parse_credential_process_output(output).unwrap();
+        assert_eq!(token, expected_token);
+        assert_eq!(addr.as_deref(), expected_addr);
+    }
+
+    #[rstest]
+    #[case("")]
+    #[case("VAULT_ADDR=https://vault.example")]
+    #[case("token\nunexpected")]
+    #[case("PATH=/usr/bin\nVAULT_TOKEN=hvs.token")]
+    #[case(r#"{"token":""}"#)]
+    fn test_rejects_invalid_credential_process_output(#[case] output: &str) {
+        assert!(matches!(
+            parse_credential_process_output(output),
+            Err(VaultError::CredentialProcessError(_))
+        ));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    async fn test_runs_credential_process() {
+        let (token, addr) = run_credential_process(
+            "printf 'VAULT_TOKEN=hvs.helper\\nVAULT_ADDR=https://vault.helper\\n'",
+        )
+        .await
+        .unwrap();
+        assert_eq!(token, "hvs.helper");
+        assert_eq!(addr.as_deref(), Some("https://vault.helper"));
+    }
+
+    #[test]
+    fn test_vault_auth_debug_redacts_token() {
+        let auth = VaultAuth {
+            addr: "https://vault.example".to_string(),
+            token: "hvs.must-not-leak".to_string(),
+        };
+        let debug = format!("{auth:?}");
+        assert!(debug.contains("<redacted>"));
+        assert!(!debug.contains("hvs.must-not-leak"));
+    }
 
     #[test]
     fn test_has_path_permission() {

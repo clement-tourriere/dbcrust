@@ -17,32 +17,16 @@ pub enum EncryptionError {
     NoVaultToken,
 }
 
-/// Generate encryption key from Vault token
-/// Uses SHA-256 to derive a 32-byte key from the vault token
-fn derive_key_from_vault_token() -> Result<[u8; 32], EncryptionError> {
-    // Get vault token - try environment variable first, then token file
-    let vault_token = match std::env::var("VAULT_TOKEN") {
-        Ok(token) if !token.trim().is_empty() => token.trim().to_string(),
-        _ => {
-            // Try reading from ~/.vault-token file
-            let token_path = dirs::home_dir()
-                .ok_or(EncryptionError::NoVaultToken)?
-                .join(".vault-token");
-
-            std::fs::read_to_string(token_path)
-                .map(|s| s.trim().to_string())
-                .map_err(|_| EncryptionError::NoVaultToken)?
-        }
-    };
-
+/// Derive the cache encryption key from an explicit Vault token.
+fn derive_key(vault_token: &str) -> Result<[u8; 32], EncryptionError> {
+    let vault_token = vault_token.trim();
     if vault_token.is_empty() {
         return Err(EncryptionError::NoVaultToken);
     }
 
-    // Use SHA-256 to derive a deterministic key from the vault token
     let mut hasher = Sha256::new();
     hasher.update(vault_token.as_bytes());
-    hasher.update(b"dbcrust-vault-credentials"); // Salt for additional security
+    hasher.update(b"dbcrust-vault-credentials");
     let hash = hasher.finalize();
 
     let mut key = [0u8; 32];
@@ -50,52 +34,76 @@ fn derive_key_from_vault_token() -> Result<[u8; 32], EncryptionError> {
     Ok(key)
 }
 
-/// Encrypt data using AES-256-GCM
-/// Returns: nonce (12 bytes) + encrypted_data + tag (combined by aes-gcm)
-pub fn encrypt_data(plaintext: &[u8]) -> Result<Vec<u8>, EncryptionError> {
-    let key = derive_key_from_vault_token()?;
+/// Resolve the legacy ambient token used by callers that do not provide one.
+fn ambient_vault_token() -> Result<String, EncryptionError> {
+    match std::env::var("VAULT_TOKEN") {
+        Ok(token) if !token.trim().is_empty() => Ok(token.trim().to_string()),
+        _ => {
+            let token_path = dirs::home_dir()
+                .ok_or(EncryptionError::NoVaultToken)?
+                .join(".vault-token");
+
+            std::fs::read_to_string(token_path)
+                .map(|s| s.trim().to_string())
+                .map_err(|_| EncryptionError::NoVaultToken)
+        }
+    }
+}
+
+/// Encrypt data using AES-256-GCM and an explicit Vault token.
+pub fn encrypt_data_with_token(
+    plaintext: &[u8],
+    vault_token: &str,
+) -> Result<Vec<u8>, EncryptionError> {
+    let key = derive_key(vault_token)?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?;
 
-    // Generate random nonce
     let mut nonce_bytes = [0u8; 12];
     OsRng.fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    // Encrypt the data
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
         .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?;
 
-    // Combine nonce + ciphertext for storage
     let mut result = Vec::with_capacity(12 + ciphertext.len());
     result.extend_from_slice(&nonce_bytes);
     result.extend_from_slice(&ciphertext);
-
     Ok(result)
 }
 
-/// Decrypt data using AES-256-GCM
-/// Expects: nonce (12 bytes) + encrypted_data + tag (combined by aes-gcm)
-pub fn decrypt_data(encrypted_data: &[u8]) -> Result<Vec<u8>, EncryptionError> {
+/// Encrypt data using the ambient `VAULT_TOKEN`/`~/.vault-token` source.
+pub fn encrypt_data(plaintext: &[u8]) -> Result<Vec<u8>, EncryptionError> {
+    let token = ambient_vault_token()?;
+    encrypt_data_with_token(plaintext, &token)
+}
+
+/// Decrypt data using AES-256-GCM and an explicit Vault token.
+pub fn decrypt_data_with_token(
+    encrypted_data: &[u8],
+    vault_token: &str,
+) -> Result<Vec<u8>, EncryptionError> {
     if encrypted_data.len() < 12 {
         return Err(EncryptionError::InvalidFormat);
     }
 
-    let key = derive_key_from_vault_token()?;
+    let key = derive_key(vault_token)?;
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| EncryptionError::DecryptionFailed(e.to_string()))?;
 
-    // Extract nonce and ciphertext
     let (nonce_bytes, ciphertext) = encrypted_data.split_at(12);
     let nonce = Nonce::from_slice(nonce_bytes);
 
-    // Decrypt the data
-    let plaintext = cipher
+    cipher
         .decrypt(nonce, ciphertext)
-        .map_err(|e| EncryptionError::DecryptionFailed(e.to_string()))?;
+        .map_err(|e| EncryptionError::DecryptionFailed(e.to_string()))
+}
 
-    Ok(plaintext)
+/// Decrypt data using the ambient `VAULT_TOKEN`/`~/.vault-token` source.
+pub fn decrypt_data(encrypted_data: &[u8]) -> Result<Vec<u8>, EncryptionError> {
+    let token = ambient_vault_token()?;
+    decrypt_data_with_token(encrypted_data, &token)
 }
 
 /// Encrypt a string and return base64-encoded result
@@ -150,6 +158,15 @@ mod tests {
                 std::env::remove_var("VAULT_TOKEN");
             },
         }
+    }
+
+    #[test]
+    fn test_encrypt_decrypt_with_explicit_token() {
+        let plaintext = b"cached dynamic database credentials";
+        let encrypted = encrypt_data_with_token(plaintext, "hvs.explicit").unwrap();
+        let decrypted = decrypt_data_with_token(&encrypted, "hvs.explicit").unwrap();
+        assert_eq!(decrypted, plaintext);
+        assert!(decrypt_data_with_token(&encrypted, "hvs.other").is_err());
     }
 
     #[test]

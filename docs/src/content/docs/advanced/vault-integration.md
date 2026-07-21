@@ -80,6 +80,32 @@ export VAULT_MOUNT_POINT="database"                # Default mount point
 export VAULT_SKIP_VERIFY="false"                   # Skip TLS verification
 ```
 
+### External credential process
+
+Instead of keeping `VAULT_TOKEN` in the parent environment or a plaintext token file, configure any command that returns short-lived Vault authentication:
+
+```toml
+# Root-level key in ~/.config/dbcrust/config.toml
+vault_credential_process = "~/.local/bin/vault-credential-process"
+```
+
+The command runs lazily only when the effective target is `vault://`—including a saved `session://name` that resolves to Vault. It is never invoked for ordinary database URLs. Accepted stdout formats are:
+
+```text
+hvs.plain-token
+```
+
+```json
+{"token":"hvs.example","vault_addr":"https://vault.company.com"}
+```
+
+```text
+VAULT_TOKEN=hvs.example
+VAULT_ADDR=https://vault.company.com
+```
+
+The executable can use a password manager, an identity broker, or any other credential source. Progress and login messages may be written to stderr; stdout must contain credentials only.
+
 ### DBCrust Configuration
 
 ```toml

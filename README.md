@@ -161,7 +161,7 @@ dbcrust postgres://user@db.internal/app --ssh-tunnel jumphost.example.com
 "^db\\.internal\\..*\\.com$" = "user@jumphost.example.com:2222"
 ```
 
-**HashiCorp Vault** — dynamic database credentials with an encrypted local cache: `dbcrust vault://readonly@database/postgres-prod`.
+**HashiCorp Vault** — dynamic database credentials with an encrypted local cache: `dbcrust vault://readonly@database/postgres-prod`. An optional AWS-style `vault_credential_process` can obtain authentication lazily, so ordinary PostgreSQL/MySQL connections never start a Vault login flow. The helper is provider-neutral: any command that prints a token or JSON `{ "token": "…", "vault_addr": "…" }` works.
 
 **Docker** — `dbcrust docker://` lists running database containers and connects without you hunting for ports or credentials.
 
