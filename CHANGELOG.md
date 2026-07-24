@@ -1,3 +1,9 @@
+## v0.35.0 (2026-07-24)
+
+### Feat
+
+- **vault**: support lazy credential processes
+
 ## v0.34.1 (2026-07-09)
 
 ### Fix
