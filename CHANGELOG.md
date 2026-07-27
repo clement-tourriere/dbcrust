@@ -1,3 +1,10 @@
+## v0.36.0 (2026-07-27)
+
+### Feat
+
+- add White Dragon SQL endpoint support
+- backend-aware quoting, schema metadata, and structured NULL results
+
 ## v0.35.0 (2026-07-24)
 
 ### Feat
