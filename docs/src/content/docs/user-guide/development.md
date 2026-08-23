@@ -117,7 +117,7 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 │   ├── main.rs                # tokio entry point
 │   ├── lib.rs                 # public API + PyO3 bindings
 │   ├── commands.rs            # backslash command enum (strum-driven)
-│   ├── cli.rs                 # clap argument parsing
+│   ├── cli.rs                 # argument parsing (usage-rs derive)
 │   ├── cli_core.rs            # REPL loop and command dispatch
 │   ├── config.rs              # TOML config + session + named query storage
 │   ├── database.rs            # DatabaseClient / MetadataProvider traits

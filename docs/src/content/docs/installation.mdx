@@ -100,7 +100,7 @@ pip install -e ./python
 
 ## Shell completion
 
-Enable tab-completion for URL schemes, container names, session names, and flags.
+Enable tab-completion for URL schemes, container names, session names, compatible data files, and flags.
 
 <Tabs>
   <TabItem label="Bash">
@@ -136,7 +136,16 @@ Enable tab-completion for URL schemes, container names, session names, and flags
     dbcrust --completions powershell > "$HOME\Documents\PowerShell\Completions\dbcrust.ps1"
     ```
   </TabItem>
+  <TabItem label="Nushell">
+    ```bash
+    dbcrust --completions nushell | save -f ($env.NU_VENDOR_AUTOLOAD_DIR | path join "dbcrust.nu")
+    ```
+  </TabItem>
 </Tabs>
+
+Completions are answered live by the `dbcrust` binary itself (the script calls
+it back at Tab time), so saved sessions, running Docker containers, and
+compatible files are always current — just keep `dbcrust` on your `PATH`.
 
 After setup:
 

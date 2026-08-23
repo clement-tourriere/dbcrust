@@ -27,7 +27,8 @@ mise run gui:install && mise run gui:build
 | `src/main.rs` | Entry point, Tokio runtime, CLI orchestration |
 | `src/lib.rs` | PyO3 bindings (`PyDatabase`, `PyConfig`, `run_cli_loop`) |
 | `src/commands.rs` | **Enum-based command system** — all `\cmd` logic lives here |
-| `src/cli.rs` | Clap arg parsing incl. one-shot flags (`-c`/`-f`, `-o/--format`, `--read-only`, `--no-input`); `OutputFormat`/`OneShotSource` live here |
+| `src/cli.rs` | Arg parsing via `usage-rs` derive (jdx/usage) — private `Root` wraps public `Args`; one-shot flags (`-c`/`-f`, `-o/--format`, `--read-only`, `--no-input`); `OutputFormat`/`OneShotSource`/`ParseExit` live here; hidden `__complete_word__`/`__usage_spec__` endpoints answered in `parse_from_argv` |
+| `src/shell_completion.rs` | Rust-side URL completer (`complete_connection_url`: schemes, sessions, docker, files) + completion-script generation (usage scripts call the binary back at Tab time) |
 | `src/safety.rs` | Read-only statement classification — `--read-only` guard + AI agent guard share it |
 | `src/agent_guide.md` | Embedded `dbcrust agents` guide (the one-shot contract for AI coding agents) |
 | `src/ai/` | AI assistant (`??` text-to-SQL, `\ai`) — multi-provider via `genai` |

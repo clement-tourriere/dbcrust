@@ -90,12 +90,15 @@ fn init_tracing() -> Result<(), Box<dyn StdError>> {
 
 /// Main async workflow that can be called from both main() and Python
 pub async fn async_main() -> Result<(), Box<dyn StdError>> {
+    // Parse before logging is up: a completion reply must be the only thing
+    // on stdout, and console logging writes there
+    let args = Args::parse_from_argv(std::env::args_os()).unwrap_or_else(|e| e.exit());
+
     // Initialize tracing system
     if let Err(e) = init_tracing() {
         eprintln!("Failed to initialize logging: {e}");
     }
 
-    let args = Args::parse_from_argv(std::env::args()).unwrap_or_else(|e| e.exit());
     dbcrust::cli_core::CliCore::run_with_args(args)
         .await
         .map_err(|e| -> Box<dyn StdError> { Box::new(e) })?;
@@ -117,13 +120,16 @@ pub async fn async_main_with_args(args: Args) -> Result<(), Box<dyn StdError>> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn StdError>> {
+    // Parse before logging is up: a completion reply (`__complete_word__`)
+    // must be the only thing on stdout, and console logging writes there
+    let args = Args::parse_from_argv(std::env::args_os()).unwrap_or_else(|e| e.exit());
+
     // Initialize tracing system before anything else
     if let Err(e) = init_tracing() {
         eprintln!("Failed to initialize logging: {e}");
         // Continue without logging rather than exit
     }
 
-    let args = Args::parse_from_argv(std::env::args()).unwrap_or_else(|e| e.exit());
     match dbcrust::cli_core::CliCore::run_with_args(args).await {
         Ok(exit_code) => std::process::exit(exit_code),
         Err(e) => {

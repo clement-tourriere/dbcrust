@@ -8,13 +8,11 @@ use crate::format::{format_query_results_expanded, format_query_results_psql_wit
 use crate::history_manager::{SessionHistoryManager, SessionId};
 use crate::prompt::DbPrompt;
 use crate::{logging, pager};
-use clap::CommandFactory;
 use dirs;
 use inquire;
 use nu_ansi_term::{Color, Style};
 use percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
 use std::error::Error as StdError;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -113,7 +111,7 @@ pub enum CliError {
 
 impl CliError {
     /// Process exit code for the one-shot contract: 0 success, 1 statement
-    /// failure, 2 usage/config (clap itself also exits 2), 3 connection,
+    /// failure, 2 usage/config (argument parsing also exits 2), 3 connection,
     /// 4 read-only violation (produced in command mode, not from a variant).
     pub fn exit_code(&self) -> i32 {
         match self {
@@ -466,21 +464,19 @@ impl CliCore {
         crate::database::set_read_only_requested(cli_core.run_overrides.read_only);
         set_prompts_allowed(!args.no_input && stdin_is_terminal);
 
-        // Handle shell completion generation if requested
+        // Handle shell completion generation if requested; the script calls
+        // the binary it was generated for (`dbc` keeps its own name)
         if let Some(shell) = args.completions {
-            // Pass the binary name from the original args if available
-            let binary_name = original_args
-                .as_ref()
-                .and_then(|args| args.first())
-                .map(|arg| {
-                    std::path::Path::new(arg)
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("dbcrust")
-                        .to_string()
-                })
-                .unwrap_or_else(|| "dbcrust".to_string());
-            cli_core.handle_shell_completion(shell, &binary_name)?;
+            let binary_name = crate::shell_completion::binary_name_from_argv0(
+                original_args
+                    .as_ref()
+                    .and_then(|args| args.first())
+                    .map(std::ffi::OsStr::new),
+            );
+            print!(
+                "{}",
+                crate::shell_completion::completion_script(shell.into(), &binary_name)
+            );
             return Ok(0);
         }
 
@@ -563,35 +559,10 @@ impl CliCore {
 
             // No URL and nothing to execute: print help instead of opening an
             // empty REPL — connection examples live in `after_help` (cli.rs).
-            Args::command()
-                .print_help()
-                .map_err(|e| CliError::CommandError(format!("Failed to print help: {e}")))?;
+            print!("{}", Args::help_text());
         }
 
         Ok(0)
-    }
-
-    /// Handle shell completion generation
-    fn handle_shell_completion(
-        &self,
-        shell: crate::cli::Shell,
-        binary_name: &str,
-    ) -> Result<(), CliError> {
-        use crate::shell_completion::generate_completion_with_url_schemes;
-        use clap_complete::Shell as CompletionShell;
-
-        let mut cmd = Args::command();
-        let shell_type = match shell {
-            crate::cli::Shell::Bash => CompletionShell::Bash,
-            crate::cli::Shell::Zsh => CompletionShell::Zsh,
-            crate::cli::Shell::Fish => CompletionShell::Fish,
-            crate::cli::Shell::PowerShell => CompletionShell::PowerShell,
-            crate::cli::Shell::Elvish => CompletionShell::Elvish,
-        };
-
-        generate_completion_with_url_schemes(shell_type, &mut cmd, binary_name, &mut io::stdout())
-            .map_err(|e| CliError::CommandError(format!("Failed to generate completion: {e}")))?;
-        Ok(())
     }
 
     /// Log system information for debugging
@@ -1155,7 +1126,7 @@ impl CliCore {
         }
     }
 
-    fn detect_file_database_type(
+    pub(crate) fn detect_file_database_type(
         path: &str,
     ) -> Option<(DatabaseType, Vec<(&'static str, &'static str)>)> {
         let file_name = Path::new(path)

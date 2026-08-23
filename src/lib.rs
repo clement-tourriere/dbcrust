@@ -1118,8 +1118,7 @@ pub fn run_cli_loop(connection_url: Option<String>) -> PyResult<i32> {
 /// Unified CLI workflow using CliCore - provides 100% feature parity with Rust CLI
 #[cfg(feature = "python")]
 async fn run_main_cli_workflow(args: Vec<String>) -> PyResult<i32> {
-    use crate::cli::Args;
-    use clap::Parser;
+    use crate::cli::{Args, ParseExit};
 
     // Store the original args for shell completion generation
     let original_args = args.clone();
@@ -1127,14 +1126,12 @@ async fn run_main_cli_workflow(args: Vec<String>) -> PyResult<i32> {
     // Parse arguments (argv-order aware for interleaved -c/-f sources)
     let args = match Args::parse_from_argv(args) {
         Ok(args) => args,
-        Err(e) => {
-            // Handle help and version display (which clap treats as "errors")
-            if e.kind() == clap::error::ErrorKind::DisplayHelp
-                || e.kind() == clap::error::ErrorKind::DisplayVersion
-            {
-                print!("{e}");
-                return Ok(0);
-            }
+        // --help, --version, and shell-completion replies go to stdout
+        Err(ParseExit::Output(text)) => {
+            print!("{text}");
+            return Ok(0);
+        }
+        Err(e @ ParseExit::Usage(_)) => {
             return Err(DbcrustArgumentError::new_err(format!(
                 "Error parsing arguments: {e}"
             )));

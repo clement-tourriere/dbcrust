@@ -70,8 +70,22 @@ pub enum UrlScheme {
     MySQL,
     #[strum(serialize = "sqlite")]
     SQLite,
+    #[strum(serialize = "clickhouse")]
+    ClickHouse,
+    #[strum(serialize = "mongodb")]
+    MongoDB,
+    #[strum(serialize = "elasticsearch")]
+    Elasticsearch,
     #[strum(serialize = "white-dragon")]
     WhiteDragon,
+    #[strum(serialize = "parquet")]
+    Parquet,
+    #[strum(serialize = "csv")]
+    Csv,
+    #[strum(serialize = "json")]
+    Json,
+    #[strum(serialize = "duckdb")]
+    DuckDB,
     #[strum(serialize = "docker")]
     Docker,
     #[strum(serialize = "file")]
@@ -96,7 +110,14 @@ impl UrlScheme {
             Self::Postgres => "PostgreSQL database connection",
             Self::MySQL => "MySQL database connection",
             Self::SQLite => "SQLite database file",
+            Self::ClickHouse => "ClickHouse database connection",
+            Self::MongoDB => "MongoDB database connection",
+            Self::Elasticsearch => "Elasticsearch cluster connection",
             Self::WhiteDragon => "White Dragon schema-first search endpoint",
+            Self::Parquet => "Parquet file or glob (DataFusion)",
+            Self::Csv => "CSV/TSV file or glob (DataFusion)",
+            Self::Json => "JSON/NDJSON file or glob (DataFusion)",
+            Self::DuckDB => "DuckDB database file",
             Self::Docker => "Docker container database",
             Self::File => "Interactive local file picker",
             Self::Session => "Saved session connection",
@@ -158,7 +179,14 @@ impl UrlScheme {
             "postgresql" | "postgres" => Ok(Self::Postgres),
             "mysql" => Ok(Self::MySQL),
             "sqlite" => Ok(Self::SQLite),
+            "clickhouse" => Ok(Self::ClickHouse),
+            "mongodb" | "mongodb+srv" => Ok(Self::MongoDB),
+            "elasticsearch" | "elastic" | "es" => Ok(Self::Elasticsearch),
             "white-dragon" | "whitedragon" | "wd" => Ok(Self::WhiteDragon),
+            "parquet" => Ok(Self::Parquet),
+            "csv" => Ok(Self::Csv),
+            "json" | "ndjson" => Ok(Self::Json),
+            "duckdb" => Ok(Self::DuckDB),
             "docker" => Ok(Self::Docker),
             "file" => Ok(Self::File),
             "session" => Ok(Self::Session),
@@ -179,7 +207,14 @@ impl UrlScheme {
             Self::Postgres | Self::Docker => Some("PostgreSQL"),
             Self::MySQL => Some("MySQL"),
             Self::SQLite => Some("SQLite"),
+            Self::ClickHouse => Some("ClickHouse"),
+            Self::MongoDB => Some("MongoDB"),
+            Self::Elasticsearch => Some("Elasticsearch"),
             Self::WhiteDragon => Some("White Dragon"),
+            Self::Parquet => Some("Parquet"),
+            Self::Csv => Some("CSV"),
+            Self::Json => Some("JSON"),
+            Self::DuckDB => Some("DuckDB"),
             Self::File | Self::Session | Self::Recent | Self::Vault => None, // Resolved later
         }
     }
@@ -429,7 +464,7 @@ mod tests {
     #[test]
     fn test_url_scheme_iteration() {
         let schemes: Vec<_> = UrlScheme::iter().collect();
-        assert_eq!(schemes.len(), 9); // All schemes
+        assert_eq!(schemes.len(), 16); // All schemes
 
         // Verify all schemes have proper string representation
         for scheme in schemes {

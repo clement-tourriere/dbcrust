@@ -794,7 +794,7 @@ dbcrust --completions zsh > ~/.zfunc/_dbcrust           # Zsh
 dbc --completions zsh > ~/.zfunc/_dbc                   # Zsh (dbc binary)
 
 # Test basic completion
-type _dbcrust  # Should show function definition
+type _usage_complete_dbcrust  # Should show function definition
 ```
 
 **Docker completions not showing containers?**

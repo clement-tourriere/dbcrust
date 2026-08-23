@@ -2,9 +2,10 @@
 name = "dbcrust"
 version = "0.36.0"
 edition = "2024"
-# edition 2024 requires Rust >= 1.85 — declared so `cargo install` on older
-# toolchains fails with a clear message instead of an edition parse error
-rust-version = "1.85"
+# usage-rs 6 requires Rust >= 1.91 (edition 2024 alone needs 1.85) — declared
+# so `cargo install` on older toolchains fails with a clear message instead of
+# a cryptic build error
+rust-version = "1.91"
 description = "Fast Rust database workbench for PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, and SQL over Parquet/CSV/JSON — agent-ready one-shot mode (JSON output, stable exit codes, read-only guard), optional AI, SSH/Vault, and Django analysis"
 authors = ["dbcrust authors"]
 license = "MIT"
@@ -40,14 +41,10 @@ sqlx = { version = "0.8", features = [
     "regexp",
 ], default-features = false }
 prettytable-rs = { version = "0.10", default-features = false }
-clap = { version = "4.6", features = [
-    "derive",
-    "std",
-    "help",
-    "usage",
-    "env",
-], default-features = false }
-clap_complete = { version = "4.6", default-features = false }
+# CLI parsing via the usage spec (https://usage.jdx.dev): derive macros compile
+# the grammar into static tables; `completions` powers the in-binary
+# `__complete_word__` protocol the generated shell scripts call back into
+usage = { package = "usage-rs", version = "6.1", features = ["completions"] }
 hex = { version = "0.4", default-features = false, features = ["std"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
 serde = { version = "1.0", features = ["derive"], default-features = false }
@@ -171,6 +168,9 @@ tokio = { version = "1", default-features = false, features = ["macros", "rt-mul
 # gates real regressions. Remove entries as the corresponding code is
 # refactored.
 only_used_in_recursion = "allow"
+# Enabled wholesale by the rust-version 1.91 bump (clippy now suggests
+# let-chains): 135 pre-existing sites, to be collapsed in a dedicated pass
+collapsible_if = "allow"
 type_complexity = "allow"
 enum_variant_names = "allow"
 too_many_arguments = "allow"
