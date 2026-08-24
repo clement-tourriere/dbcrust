@@ -1,3 +1,9 @@
+## v0.37.0 (2026-08-24)
+
+### Feat
+
+- replace clap with usage-rs for CLI parsing and completions
+
 ## v0.36.0 (2026-07-27)
 
 ### Feat
