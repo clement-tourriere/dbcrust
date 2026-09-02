@@ -4,8 +4,13 @@ This file provides guidance for agentic coding tools working with the DBCrust co
 
 ## Build/Lint/Test Commands
 
+`mise.toml` uses the project-scoped Mr Boxington Cargo wrapper and requires mise 2026.8.16+. Run `mise install` first and prefer `mise run` tasks so non-interactive agents also use the shared Rust build cache. Use `mbx doctor` to diagnose cache setup.
+
 ### Core Build Commands
 ```bash
+# Install pinned development tools
+mise install
+
 # Install Bun-managed GUI dependencies
 mise run gui:install
 

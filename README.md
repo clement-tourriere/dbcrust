@@ -237,14 +237,18 @@ Full list of options: [configuration reference](https://clement-tourriere.github
 
 ## Development
 
-DBCrust uses [mise](https://mise.jdx.dev/) for toolchain and task management — `mise install` sets up everything (Bun for the GUI, commitizen, etc.).
+DBCrust uses [mise](https://mise.jdx.dev/) 2026.8.16+ for toolchain and task management. `mise install` installs Bun, Commitizen, and [Mr Boxington](https://mr-boxington.jdx.dev/), which puts a shared, self-pruning cache behind Cargo commands run through mise.
 
 ```bash
+mise install
 mise run build:dev        # debug build          mise run build      # release build
 mise run test             # cargo test           mise run check      # fmt + lint + test
 mise run py:dev           # maturin develop      mise run py:test    # Python tests
 mise run gui:dev          # GUI with hot-reload  mise run docs       # docs dev server
+mbx doctor                # verify the Rust build cache
 ```
+
+With mise activated, plain `cargo` commands use the same cache. Set `MBX_DISABLE=1` for a one-off uncached Cargo command.
 
 ```
 src/                Rust core — CLI, REPL, database backends, AI assistant

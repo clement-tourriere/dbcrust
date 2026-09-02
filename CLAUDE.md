@@ -4,7 +4,10 @@ DBCrust — high-performance multi-engine interactive client in Rust with Python
 
 ## Build Commands
 
+`mise.toml` requires mise 2026.8.16+ and routes Cargo through the pinned Mr Boxington build cache. Run `mise install` once; use `mise run` tasks (or an activated mise shell) so Cargo is wrapped. Diagnose cache setup with `mbx doctor`.
+
 ```bash
+mise install
 mise run build:dev        # dev build
 mise run build            # release build
 mise run install          # install dbcrust + dbc into ~/.cargo/bin

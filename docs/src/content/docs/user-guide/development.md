@@ -9,7 +9,7 @@ This page covers how to build, test, and contribute to DBCrust.
 ## Prerequisites
 
 - **[Rust](https://rustup.rs/)** — stable toolchain
-- **[mise](https://mise.jdx.dev/)** — manages Bun, commitizen, and other tools automatically
+- **[mise](https://mise.jdx.dev/) 2026.8.16+** — manages Bun, Commitizen, and other tools automatically
 - **Python 3.10+** — only needed for the Python bindings
 
 ```bash
@@ -25,9 +25,22 @@ mise install
 | Tool | Purpose |
 |------|---------|
 | **Bun** | JavaScript runtime for the GUI frontend |
-| **commitizen** | Conventional commit helper |
+| **Commitizen** | Conventional commit helper |
+| **Mr Boxington** | Shared, self-pruning Rust build cache |
 | **pkl** | Configuration language |
 | **hk** | Git hooks |
+
+## Rust build cache
+
+The project-scoped mise wrapper routes Cargo through [Mr Boxington](https://mr-boxington.jdx.dev/). `mise run` tasks use it automatically; activate mise in your shell if you also want plain `cargo` commands to use the cache.
+
+```bash
+mbx doctor          # verify Cargo and cache integration
+mbx cache stats     # inspect cache usage
+mbx gc --dry-run    # preview automatic cleanup
+```
+
+Set `MBX_DISABLE=1` for a one-off uncached Cargo command.
 
 ## Building
 

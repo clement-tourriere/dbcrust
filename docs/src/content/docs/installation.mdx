@@ -60,14 +60,14 @@ pipx install dbcrust
 ### Prerequisites
 
 - **Rust** stable — install from [rustup.rs](https://rustup.rs/)
-- **mise** (optional but recommended) — manages Bun and dev tools
+- **mise 2026.8.16+** (optional but recommended) — manages Bun, dev tools, and the Rust build cache
 
 ```bash
 git clone https://github.com/clement-tourriere/dbcrust.git
 cd dbcrust
 
 # Option A: with mise (recommended for development)
-mise install            # installs Bun, commitizen, etc.
+mise install            # installs Bun, Commitizen, Mr Boxington, etc.
 mise run build          # release build
 mise run build:dev      # debug build (faster)
 mise run install        # build + install dbcrust and dbc into ~/.cargo/bin

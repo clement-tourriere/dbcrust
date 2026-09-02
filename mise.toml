@@ -1,10 +1,16 @@
 [tools]
 bun = "1.2.10"
 hk = "latest"
+mr-boxington = "1.4.1"
 "pipx:commitizen" = "latest"
 pkl = "latest"
 ruff = "latest"
 ty = "latest"
+
+# Project-scoped Cargo caching. Wrappers require mise 2026.8.16 or newer.
+[wrappers.cargo]
+command = "mbx"
+env = { MBX_CARGO_SHIM_MODE = "1" }
 
 [env]
 _.python.venv = ".venv"

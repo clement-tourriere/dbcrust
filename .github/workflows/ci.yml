@@ -9,6 +9,9 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   rust:
     name: Rust · fmt, clippy, test (${{ matrix.os }})
@@ -22,13 +25,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - name: Set up Mr Boxington
+        uses: jdx/mr-boxington-action@adc5c234c02592f7edd008bf81d5bc0e9584dc03 # v1.2.0
+        with:
+          version: "1.4.1"
       - name: rustfmt
         run: cargo fmt --check
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: mbx clippy --all-targets -- -D warnings
       - name: tests
-        run: cargo test
+        run: mbx test
 
   python:
     name: Python · Django toolkit tests
