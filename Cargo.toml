@@ -100,8 +100,10 @@ sha2 = { version = "0.10.9", default-features = false, features = ["std"] }
 base64 = { version = "0.22", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 keyring = { version = "3", default-features = false, features = ["apple-native", "linux-native", "windows-native"] }
-# Use rustls-tls-ring to avoid aws-lc-rs cross-compilation issues on ARM64 Linux
-clickhouse = { version = "0.15", default-features = false, features = ["lz4", "rustls-tls-ring", "rustls-tls-webpki-roots"] }
+# Use rustls-tls-ring to avoid aws-lc-rs cross-compilation issues on ARM64 Linux.
+# 0.15.2's Native reader uses `const ...: usize = 1 << 32`, breaking i686.
+# Keep this exact pin until an upstream fix passes our 32-bit Python check.
+clickhouse = { version = "=0.15.1", default-features = false, features = ["lz4", "rustls-tls-ring", "rustls-tls-webpki-roots"] }
 mongodb = { version = "3.9", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
 bson = { version = "2.15", default-features = false }
 elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }

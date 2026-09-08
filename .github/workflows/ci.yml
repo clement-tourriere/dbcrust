@@ -37,6 +37,30 @@ jobs:
       - name: tests
         run: mbx test --locked
 
+  rust-i686:
+    name: Rust · 32-bit Python compatibility
+    needs: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: i686-unknown-linux-gnu
+      - name: Set up Mr Boxington
+        uses: jdx/mr-boxington-action@adc5c234c02592f7edd008bf81d5bc0e9584dc03 # v1.2.0
+        with:
+          version: "1.4.1"
+      - name: Install 32-bit C/C++ toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-multilib g++-multilib
+      - name: Check 32-bit Python extension
+        # abi3-py310 supplies the target ABI; do not discover the runner's
+        # 64-bit Python interpreter when checking our 32-bit wheel library.
+        env:
+          PYO3_NO_PYTHON: "1"
+        run: mbx check --locked -p dbcrust --lib --features python --target i686-unknown-linux-gnu
+
   security:
     name: Rust · dependency audit
     runs-on: ubuntu-latest

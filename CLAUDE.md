@@ -126,6 +126,7 @@ User data lives in dedicated files, not mixed into `config.toml`:
 - New crate releases must be at least **24 hours old**, including security updates. Use `cargo update -p CRATE --precise VERSION`, then `python3 .github/scripts/check_cargo_cooldown.py --base HEAD` before compiling (Python 3.11+). CI checks lockfile additions against the PR base, including transitive and target-only entries, with no security-PR exemption.
 - Use `--locked` for validation/builds. Run `cargo audit`, `cargo machete --with-metadata`, and `cargo +nightly udeps --workspace --all-targets --all-features --locked` when reviewing removals. `prettytable-rs` is imported as `prettytable`; never remove it based on a name-only false positive.
 - `.cargo/audit.toml` documents the narrowly justified SQLx/MySQL RSA exception; do not suppress additional advisories to make CI green. See [dependency review notes](docs/src/content/docs/user-guide/development.md#rust-dependency-updates) for residual upstream warnings.
+- ClickHouse is exactly pinned to **0.15.1**: 0.15.2's unconditionally compiled Native reader overflows a `usize` constant on i686. Keep the pin until an upstream fix is reviewed and **Rust · 32-bit Python compatibility** passes. Confirm that CI check before tagging dependency releases; a successful 64-bit build does not validate our 32-bit Python wheels.
 
 ## Adding a New Feature Checklist
 

@@ -158,6 +158,33 @@ does not replace review or constrain arbitrary local `cargo update` commands.
 - Deferred `genai 0.7.0-beta.23` (published that day) and breaking updates such
   as SQLx 0.9, DataFusion 55, BSON 3, Reqwest 0.13, and keyring 4.
 
+### 32-bit release compatibility
+
+The `v0.37.1` release attempt exposed a ClickHouse 0.15.2 regression: its new
+Native reader unconditionally compiles `const SAFE_ALLOCATION_LIMIT: usize =
+1 << 32`, which overflows on i686 even though DBCrust does not use the Native
+API. ClickHouse is therefore exactly pinned to **0.15.1** (published 2026-06-04,
+not yanked). The remaining security updates are retained; the restored
+transitive dependencies are checked by the same cooldown/audit policy.
+
+CI now checks the actual Python extension library for
+`i686-unknown-linux-gnu`, not just 64-bit hosts. Confirm **Rust · 32-bit Python
+compatibility** passes before tagging a dependency release. Keep the pin until
+an upstream fix passes that check; do not drop the i686 wheel to hide a failure.
+
+To reproduce the check on an x86_64 Debian/Ubuntu development host:
+
+```bash
+sudo apt-get install gcc-multilib g++-multilib
+rustup target add i686-unknown-linux-gnu
+PYO3_NO_PYTHON=1 cargo check --locked -p dbcrust --lib --features python \
+  --target i686-unknown-linux-gnu
+```
+
+`PYO3_NO_PYTHON=1` uses the configured `abi3-py310` ABI instead of trying to
+use a 64-bit Python interpreter for the 32-bit target. This is a compile check;
+the release workflow still builds and packages the real i686 wheel.
+
 ## Task reference
 
 All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
