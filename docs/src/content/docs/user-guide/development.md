@@ -96,6 +96,68 @@ mise run lint    # clippy (correctness, suspicious, perf as errors; style, compl
 mise run check   # fmt + lint + test in sequence
 ```
 
+## Rust dependency updates
+
+Treat updates as code changes, not automatic trust decisions. Review upstream
+release notes, repository/maintainer changes, advisories, and added transitive
+crates before building. Avoid blanket `cargo update`; review breaking upgrades
+separately. A cooldown reduces exposure to freshly published compromises but
+cannot prove a package is safe.
+
+Every new release must be **at least 24 hours old**, including security fixes.
+Weekly Dependabot version PRs have a one-day cooldown and are not auto-merged.
+Because Dependabot exempts security PRs, CI also checks every new external
+`Cargo.lock` entry against the PR base (or the previous push), including
+transitive, optional, and platform-specific dependencies. The guard verifies
+crates.io publication timestamps, checksums, and yank status; missing metadata
+or new non-crates.io sources fail closed. Retry a failed check after the cooldown
+expires or the registry recovers. Make **Rust · dependency audit** a required
+check in branch protection to prevent merging around it.
+
+From the project root, using Python 3.11+ for the stdlib-only guard:
+
+```bash
+# After reviewing a specific upstream release and its publication date:
+cargo update -p CRATE --precise VERSION
+python3 .github/scripts/check_cargo_cooldown.py --base HEAD
+cargo audit
+cargo machete --with-metadata
+cargo +nightly udeps --workspace --all-targets --all-features --locked
+cargo test --all-features --locked
+cargo clippy --all-targets --all-features --locked -- -D warnings
+```
+
+For committed changes use `--base origin/main` (fetch that ref first). Use
+`--locked` when validating/building so Cargo cannot silently resolve newer,
+unreviewed versions. Both workspace members share the root lockfile. The guard
+does not replace review or constrain arbitrary local `cargo update` commands.
+
+### Review snapshot — 2026-09-08
+
+- Selected updates include PyO3 **0.29.2** (with binding migration), Ratatui
+  **0.30.2**, usage-rs **6.8.0**, MongoDB **3.9.0**, DataFusion **53.1.0**, and
+  Tauri **2.11.5**, plus compatible security fixes. All **160 new registry
+  versions** passed the one-day age check; none were yanked.
+- Fixed **14 vulnerability findings** affecting HTTP/2, Python bindings, XML,
+  QUIC, archive validation, TLS certificate validation, and time parsing.
+  Removed four unsoundness warnings and the yanked `spin` version as well.
+- `cargo audit` passes with one documented exception: **RUSTSEC-2023-0071**
+  (`rsa` via SQLx/MySQL). There is no patched release; this code path only
+  encrypts credentials with a public key, not the vulnerable private-key
+  operations. Reassess the exception when that dependency tree changes.
+- **20 informational warnings remain**, predominantly inherited from Tauri's
+  GTK3 dependencies, plus unmaintained `paste`, `fxhash`, and Unicode helpers.
+  These include unsoundness advisories for `glib` and build-time `rand 0.7.3`.
+  They are not silently suppressed or claimed fixed. `cargo deny check` is not
+  a passing gate: the project has no license allowlist/deny configuration, and
+  deny also reports the remaining advisories.
+- No unused direct dependencies were found by `cargo machete --with-metadata`
+  or workspace/all-feature `cargo udeps` on macOS. `prettytable-rs` is used under
+  the library name `prettytable`. Platform-specific usage still needs review
+  before any removal.
+- Deferred `genai 0.7.0-beta.23` (published that day) and breaking updates such
+  as SQLx 0.9, DataFusion 55, BSON 3, Reqwest 0.13, and keyring 4.
+
 ## Task reference
 
 All tasks are defined in `mise.toml`. Run `mise tasks` to list them.

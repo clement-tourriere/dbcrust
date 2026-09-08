@@ -1,5 +1,6 @@
 /target
-.cargo/
+.cargo/*
+!.cargo/audit.toml
 dist/
 .DS_Store
 .venv/

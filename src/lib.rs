@@ -166,7 +166,7 @@ impl PyServerInfo {
 
 /// Structured row data
 #[cfg(feature = "python")]
-#[pyclass]
+#[pyclass(skip_from_py_object)]
 #[derive(Clone)]
 pub struct PyRow {
     data: Vec<String>,
@@ -329,7 +329,7 @@ impl PyDatabase {
     }
 
     /// Execute a query and return the results.
-    pub fn execute(&self, query: &str) -> PyResult<PyObject> {
+    pub fn execute(&self, query: &str) -> PyResult<Py<PyAny>> {
         let results = self
             .rt
             .block_on(async {
@@ -338,7 +338,7 @@ impl PyDatabase {
             })
             .map_err(|e| DbcrustCommandError::new_err(format!("Query execution failed: {e}")))?;
 
-        Python::with_gil(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
+        Python::attach(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
     }
 
     /// Get connection info as a string.
@@ -356,7 +356,7 @@ impl PyDatabase {
     }
 
     /// List all databases.
-    pub fn list_databases(&self) -> PyResult<PyObject> {
+    pub fn list_databases(&self) -> PyResult<Py<PyAny>> {
         let results = self
             .rt
             .block_on(async {
@@ -365,11 +365,11 @@ impl PyDatabase {
             })
             .map_err(|e| DbcrustCommandError::new_err(format!("Failed to list databases: {e}")))?;
 
-        Python::with_gil(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
+        Python::attach(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
     }
 
     /// List all tables.
-    pub fn list_tables(&self) -> PyResult<PyObject> {
+    pub fn list_tables(&self) -> PyResult<Py<PyAny>> {
         let results = self
             .rt
             .block_on(async {
@@ -378,11 +378,11 @@ impl PyDatabase {
             })
             .map_err(|e| DbcrustCommandError::new_err(format!("Failed to list tables: {e}")))?;
 
-        Python::with_gil(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
+        Python::attach(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
     }
 
     /// Describe a table.
-    pub fn describe_table(&self, table_name: &str) -> PyResult<PyObject> {
+    pub fn describe_table(&self, table_name: &str) -> PyResult<Py<PyAny>> {
         let table_details = self
             .rt
             .block_on(async {
@@ -391,7 +391,7 @@ impl PyDatabase {
             })
             .map_err(|e| DbcrustCommandError::new_err(format!("Failed to describe table: {e}")))?;
 
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let dict = PyDict::new(py);
             dict.set_item("name", &table_details.name)?;
             dict.set_item("schema", &table_details.schema)?;
@@ -410,7 +410,7 @@ impl PyDatabase {
             }
             dict.set_item("columns", columns_list)?;
 
-            Ok(dict.into())
+            Ok(dict.into_any().unbind())
         })
     }
 }
@@ -521,9 +521,9 @@ impl PyConnection {
     /// Context manager exit
     pub fn __exit__(
         &mut self,
-        _exc_type: Option<PyObject>,
-        _exc_value: Option<PyObject>,
-        _traceback: Option<PyObject>,
+        _exc_type: Option<Py<PyAny>>,
+        _exc_value: Option<Py<PyAny>>,
+        _traceback: Option<Py<PyAny>>,
     ) -> PyResult<bool> {
         // Connection cleanup if needed
         // Return false to let exceptions propagate

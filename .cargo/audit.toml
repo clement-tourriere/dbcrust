@@ -1,0 +1,7 @@
+[advisories]
+ignore = [
+    # sqlx-mysql only uses RsaPublicKey to encrypt client credentials. The
+    # advisory affects private-key operations, and no patched rsa release exists.
+    # Reassess this exception whenever SQLx or the rsa dependency tree changes.
+    "RUSTSEC-2023-0071",
+]

@@ -120,6 +120,13 @@ User data lives in dedicated files, not mixed into `config.toml`:
 - `thiserror` for custom error types.
 - PostgreSQL type decode: use `.or_else(|_| handle_custom_postgresql_type(...))` fallback, not `.map_err(...)`.
 
+## Rust dependency policy
+
+- Do not run blanket dependency upgrades. Review release notes, provenance/maintainer changes, RustSec advisories, and newly introduced transitive crates; keep breaking migrations separate.
+- New crate releases must be at least **24 hours old**, including security updates. Use `cargo update -p CRATE --precise VERSION`, then `python3 .github/scripts/check_cargo_cooldown.py --base HEAD` before compiling (Python 3.11+). CI checks lockfile additions against the PR base, including transitive and target-only entries, with no security-PR exemption.
+- Use `--locked` for validation/builds. Run `cargo audit`, `cargo machete --with-metadata`, and `cargo +nightly udeps --workspace --all-targets --all-features --locked` when reviewing removals. `prettytable-rs` is imported as `prettytable`; never remove it based on a name-only false positive.
+- `.cargo/audit.toml` documents the narrowly justified SQLx/MySQL RSA exception; do not suppress additional advisories to make CI green. See [dependency review notes](docs/src/content/docs/user-guide/development.md#rust-dependency-updates) for residual upstream warnings.
+
 ## Adding a New Feature Checklist
 
 - [ ] Core logic in appropriate module

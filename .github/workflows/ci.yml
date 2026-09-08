@@ -15,6 +15,7 @@ permissions:
 jobs:
   rust:
     name: Rust · fmt, clippy, test (${{ matrix.os }})
+    needs: security
     strategy:
       fail-fast: false
       matrix:
@@ -32,9 +33,34 @@ jobs:
       - name: rustfmt
         run: cargo fmt --check
       - name: clippy
-        run: mbx clippy --all-targets -- -D warnings
+        run: mbx clippy --locked --all-targets -- -D warnings
       - name: tests
-        run: mbx test
+        run: mbx test --locked
+
+  security:
+    name: Rust · dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Test dependency guard (offline)
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+      - name: Enforce Cargo release cooldown
+        # Includes manual updates, transitive crates, and security PRs (which
+        # Dependabot itself exempts). No crate code runs in this check.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 .github/scripts/check_cargo_cooldown.py --base "$BASE_SHA"
+      - name: Install cargo-audit
+        # Pin both the checksum-verifying installer and cargo-audit itself.
+        uses: taiki-e/install-action@84f5ac3124727fb3d284d4d22ee9ab3654fd09a6 # v2.87.7
+        with:
+          tool: cargo-audit@0.22.1
+          fallback: none
+      - name: Audit Cargo.lock
+        run: cargo audit
 
   python:
     name: Python · Django toolkit tests

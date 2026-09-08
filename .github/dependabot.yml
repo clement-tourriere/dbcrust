@@ -1,0 +1,21 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: "Etc/UTC"
+    # Quarantine routine crates.io version updates for at least 24 hours before
+    # Dependabot can propose them. Updates stay in separate PRs for review.
+    # GitHub exempts security updates; CI's lockfile guard enforces their age too.
+    cooldown:
+      default-days: 1
+      semver-major-days: 1
+      semver-minor-days: 1
+      semver-patch-days: 1
+      include:
+        - "*"
+    open-pull-requests-limit: 5

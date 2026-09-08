@@ -44,13 +44,13 @@ prettytable-rs = { version = "0.10", default-features = false }
 # CLI parsing via the usage spec (https://usage.jdx.dev): derive macros compile
 # the grammar into static tables; `completions` powers the in-binary
 # `__complete_word__` protocol the generated shell scripts call back into
-usage = { package = "usage-rs", version = "6.1", features = ["completions"] }
+usage = { package = "usage-rs", version = "6.8", features = ["completions"] }
 hex = { version = "0.4", default-features = false, features = ["std"] }
 chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
 serde = { version = "1.0", features = ["derive"], default-features = false }
 serde_json = { version = "1.0.149", default-features = false, features = ["std"] }
 nu-ansi-term = { version = "0.50.3", default-features = false }
-pyo3 = { version = "0.26", features = [
+pyo3 = { version = "0.29.2", features = [
     "extension-module",
     # Keep in sync with requires-python in pyproject.toml — a cp38 abi3 tag
     # with requires-python >=3.10 produced wheels pip refuses to resolve
@@ -102,7 +102,7 @@ uuid = { version = "1", default-features = false, features = ["v4"] }
 keyring = { version = "3", default-features = false, features = ["apple-native", "linux-native", "windows-native"] }
 # Use rustls-tls-ring to avoid aws-lc-rs cross-compilation issues on ARM64 Linux
 clickhouse = { version = "0.15", default-features = false, features = ["lz4", "rustls-tls-ring", "rustls-tls-webpki-roots"] }
-mongodb = { version = "3.3", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
+mongodb = { version = "3.9", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
 bson = { version = "2.15", default-features = false }
 elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
@@ -126,7 +126,7 @@ pgvector = { version = "0.4", default-features = false, features = ["sqlx", "hal
 half = { version = "2.7", default-features = false }
 
 # TUI support for explain visualizer
-ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", default-features = false }
 textwrap = { version = "0.16", default-features = false, features = ["unicode-width"] }
 
