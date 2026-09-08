@@ -1,3 +1,9 @@
+## v0.37.2 (2026-09-08)
+
+### Fix
+
+- **deps**: restore ClickHouse compatibility with 32-bit Linux
+
 ## v0.37.1 (2026-09-08)
 
 ### Fix
