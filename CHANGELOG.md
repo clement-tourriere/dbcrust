@@ -1,3 +1,9 @@
+## v0.37.1 (2026-09-08)
+
+### Fix
+
+- **deps**: patch vulnerable Rust crates and enforce release cooldown
+
 ## v0.37.0 (2026-08-24)
 
 ### Feat
