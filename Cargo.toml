@@ -97,7 +97,7 @@ strum = { version = "0.27", features = ["derive"], default-features = false }
 aes-gcm = { version = "0.10", default-features = false, features = ["std", "aes", "getrandom"] }
 sha2 = { version = "0.10.9", default-features = false, features = ["std"] }
 # PKCE + JWT-payload decoding for "Sign in with ChatGPT" (already transitive)
-base64 = { version = "0.22", default-features = false, features = ["std"] }
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 keyring = { version = "3", default-features = false, features = ["apple-native", "linux-native", "windows-native"] }
 # Use rustls-tls-ring to avoid aws-lc-rs cross-compilation issues on ARM64 Linux.
