@@ -106,7 +106,7 @@ keyring = { version = "3", default-features = false, features = ["apple-native",
 # Keep this exact pin until an upstream fix passes our 32-bit Python check.
 clickhouse = { version = "=0.15.1", default-features = false, features = ["lz4", "rustls-tls-ring", "rustls-tls-webpki-roots"] }
 mongodb = { version = "3.9", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
-bson = { version = "2.15", default-features = false }
+bson = { version = "3.1", default-features = false }
 elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
 futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
 hostname = { version = "0.4.2", default-features = false }
