@@ -16,6 +16,7 @@ use async_channel::Sender;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TrayEvent {
     /// A menu entry was chosen.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
     Menu(TrayCommand),
     /// The icon itself was clicked (Windows: left click opens the app; on
     /// macOS the click opens the menu instead and this is never sent).

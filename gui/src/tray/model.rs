@@ -355,6 +355,7 @@ fn shorten(label: &str) -> String {
 }
 
 /// OS menus treat `&` as a mnemonic marker (`&&` shows one).
+#[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(dead_code))]
 pub fn escape_mnemonics(label: &str) -> String {
     label.replace('&', "&&")
 }
