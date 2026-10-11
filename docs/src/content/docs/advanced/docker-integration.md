@@ -66,6 +66,35 @@ dbc docker://click[TAB] → clickhouse-analytics, clickhouse-dev
 
 ## 🛠️ Connection Methods
 
+### How DBCrust reaches a container
+
+DBCrust talks to the Docker daemon your `docker` CLI uses: `DOCKER_CONTEXT`, then `DOCKER_HOST`, then the current context (`docker context use …`), then the platform default. So OrbStack, Docker Desktop and Colima all work without extra setup. `ssh://` and TLS contexts are reported as unsupported instead of silently using another daemon.
+
+It then tries the container's routes in this order and uses the first one that answers. The direct routes are all checked within about 2 seconds.
+
+1. **A published port** (`-p` / `ports:`), on this computer's loopback address.
+2. **OrbStack domains** (`service.project.orb.local`, `dev.orbstack.domains` labels), only when the daemon really is OrbStack.
+3. **The container's address** on its Docker network.
+4. **Through Docker**: when nothing above answers (a VPN that swallows container networks, or Docker Desktop on macOS, where container addresses are never reachable), DBCrust relays the connection through the Docker API with `docker exec`.
+   - The relay uses `socat`, `perl` or `nc` from inside the container. `perl` is part of every Debian- and Ubuntu-based image, including the official PostgreSQL, MySQL, ClickHouse and MongoDB images, and Alpine images have `nc`.
+   - It forwards to the container's own network address, so the server checks your password exactly as it does for any other client.
+   - Nothing is installed, pulled or published. While connected, the relay listens on a local port of this computer, and it stops when you disconnect.
+
+If no route works, DBCrust says so within seconds instead of waiting for a network timeout:
+
+```text
+Couldn't reach 'myapp-postgres-1'.
+Port 5432 isn't published, and the container address didn't respond. A VPN may be blocking that route. This image has no supported forwarding helper (needs socat, perl or nc).
+Tried:
+  - postgres.myapp.orb.local:5432: timed out after 1.5 s
+  - 192.168.158.4:5432: timed out after 1.5 s
+  - through Docker (docker exec): this image has no supported forwarding helper (needs socat, perl or nc)
+To publish the port on this computer only, add to the service in compose.yaml (recreates the container):
+  ports: ["127.0.0.1::5432"]
+```
+
+Publishing on `127.0.0.1` only (as above) keeps the database off your network while giving DBCrust the fastest route.
+
 ### Exposed Ports (Standard Docker)
 
 For containers with exposed ports:
@@ -91,6 +120,8 @@ docker run -d --name postgres-dev postgres:15
 dbcrust docker://postgres-dev
 # → Connects to postgres-dev.orb.local:5432
 ```
+
+If a VPN blocks OrbStack's container network, DBCrust falls back to relaying through Docker (see [How DBCrust reaches a container](#how-dbcrust-reaches-a-container)).
 
 ### Docker Network Support
 
@@ -700,6 +731,16 @@ docker port postgres-dev
 
 # Test connection manually
 telnet localhost 5432
+```
+
+### Connection times out or "Couldn't reach" behind a VPN
+
+Full-tunnel VPNs (NordVPN, corporate VPNs) often swallow the private networks Docker and OrbStack use, so a container's address and its `.orb.local` domain stop answering even though the container is healthy. DBCrust detects this within about 2 seconds and relays through Docker instead (see [How DBCrust reaches a container](#how-dbcrust-reaches-a-container)). If the image has none of `socat`, `perl` or `nc` (distroless or scratch images), publish the port on this computer only:
+
+```yaml
+services:
+  postgres:
+    ports: ["127.0.0.1::5432"]   # random free local port; DBCrust finds it
 ```
 
 ### OrbStack Issues (macOS)

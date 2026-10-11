@@ -20,6 +20,45 @@ impl SqliteMetadataProvider {
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
+
+    /// Foreign keys of other tables in `schema` that point at `table`.
+    /// Best effort: an error yields an empty list.
+    async fn referenced_by(&self, schema: &str, table: &str) -> Vec<crate::db::ReferencedByInfo> {
+        let schema_q = crate::database::quote_sql_ident(schema);
+        let query = format!(
+            "SELECT m.name AS source, p.\"from\" AS from_col, p.\"to\" AS to_col \
+             FROM {schema_q}.sqlite_master m \
+             JOIN pragma_foreign_key_list(m.name, ?) p \
+             WHERE m.type = 'table' AND p.\"table\" = ? \
+             ORDER BY m.name, p.id, p.seq"
+        );
+        let rows = match sqlx::query(&query)
+            .bind(schema)
+            .bind(table)
+            .fetch_all(&self.pool)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                debug!("[SqliteMetadataProvider::referenced_by] {e}");
+                return Vec::new();
+            }
+        };
+        rows.into_iter()
+            .map(|row| {
+                let source: String = row.get("source");
+                let from_col: String = row.get("from_col");
+                let to_col: Option<String> = row.try_get("to_col").unwrap_or(None);
+                let to_col = to_col.unwrap_or_default();
+                crate::db::ReferencedByInfo {
+                    schema: schema.to_string(),
+                    constraint_name: format!("fk_{source}_{from_col}"),
+                    definition: format!("FOREIGN KEY ({from_col}) REFERENCES {table}({to_col})"),
+                    table: source,
+                }
+            })
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -191,7 +230,14 @@ impl MetadataProvider for SqliteMetadataProvider {
         let rows = sqlx::query(&query).fetch_all(&self.pool).await?;
 
         let mut columns = Vec::new();
+        // (position in the primary key, column name) — `pk` is 0 for
+        // columns outside the key
+        let mut primary_key: Vec<(i64, String)> = Vec::new();
         for row in rows {
+            let pk_position = row.try_get::<i64, _>("pk").unwrap_or(0);
+            if pk_position > 0 {
+                primary_key.push((pk_position, row.get::<String, _>("name")));
+            }
             let column = crate::db::ColumnInfo {
                 name: row.get::<String, _>("name"),
                 data_type: row.get::<String, _>("type"),
@@ -209,10 +255,26 @@ impl MetadataProvider for SqliteMetadataProvider {
         let index_query = format!("PRAGMA {schema_q}.index_list({table_q})");
         let index_rows = sqlx::query(&index_query).fetch_all(&self.pool).await?;
 
+        primary_key.sort();
+        let primary_key: Vec<String> = primary_key.into_iter().map(|(_, name)| name).collect();
+        // A single INTEGER PRIMARY KEY is an alias of the rowid: never NULL
+        // (PRAGMA reports notnull = 0 for it), and it has no index of its own
+        if let [only] = primary_key.as_slice()
+            && let Some(column) = columns.iter_mut().find(|c| &c.name == only)
+            && column.data_type.eq_ignore_ascii_case("integer")
+        {
+            column.nullable = false;
+        }
+
         let mut indexes = Vec::new();
+        let mut primary_key_indexed = false;
         for index_row in index_rows {
             let index_name: String = index_row.get("name");
             let is_unique: bool = index_row.get("unique");
+            // origin: "pk" (primary key), "u" (UNIQUE constraint), "c" (CREATE INDEX)
+            let origin = index_row.try_get::<String, _>("origin").unwrap_or_default();
+            let is_primary = origin == "pk";
+            primary_key_indexed |= is_primary;
 
             // Get index details
             let index_name_q = crate::database::quote_sql_ident(&index_name);
@@ -230,12 +292,27 @@ impl MetadataProvider for SqliteMetadataProvider {
                 name: index_name.clone(),
                 definition: format!("({})", columns_in_index.join(", ")),
                 index_type: "btree".to_string(), // SQLite primarily uses B-tree indexes
-                is_primary: index_name.contains("primary") || index_name.contains("pk"),
+                is_primary,
                 is_unique,
                 predicate: None, // Would need to parse CREATE INDEX statements to get predicates
                 constraint_def: None,
             };
             indexes.push(index_info);
+        }
+
+        if !primary_key.is_empty() && !primary_key_indexed {
+            indexes.insert(
+                0,
+                crate::db::IndexInfo {
+                    name: format!("{table}_pkey"),
+                    definition: format!("({})", primary_key.join(", ")),
+                    index_type: "rowid".to_string(),
+                    is_primary: true,
+                    is_unique: true,
+                    predicate: None,
+                    constraint_def: Some(format!("PRIMARY KEY ({})", primary_key.join(", "))),
+                },
+            );
         }
 
         // Get foreign key information
@@ -263,7 +340,7 @@ impl MetadataProvider for SqliteMetadataProvider {
             indexes,
             check_constraints: Vec::new(), // SQLite check constraints are harder to query
             foreign_keys,
-            referenced_by: Vec::new(), // Would need complex query to find referencing tables
+            referenced_by: self.referenced_by(schema_name, table).await,
             nested_field_details: std::collections::HashMap::new(),
         };
 
@@ -1111,6 +1188,51 @@ mod tests {
         assert!(functions.contains(&"count".to_string()));
         assert!(functions.contains(&"max".to_string()));
         assert!(functions.contains(&"json_extract".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_sqlite_table_details_report_primary_keys_and_references() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        for statement in [
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, email TEXT UNIQUE)",
+            "CREATE TABLE orders (id INTEGER PRIMARY KEY, customer_id INTEGER REFERENCES customers(id))",
+            "CREATE TABLE order_items (order_id INTEGER, product_id INTEGER, PRIMARY KEY (order_id, product_id))",
+            "CREATE INDEX customers_email_lower ON customers (email)",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+        let provider = SqliteMetadataProvider::new(pool);
+
+        // Rowid alias: no index of its own, synthesized as the primary key
+        let customers = provider
+            .get_table_details("customers", Some("main"))
+            .await
+            .unwrap();
+        let pk = customers.indexes.iter().find(|i| i.is_primary).unwrap();
+        assert_eq!(pk.definition, "(id)");
+        assert!(!customers.columns[0].nullable, "rowid alias is never NULL");
+        // UNIQUE constraint and a plain index are not primary
+        assert_eq!(customers.indexes.iter().filter(|i| i.is_primary).count(), 1);
+        assert_eq!(customers.referenced_by.len(), 1);
+        assert_eq!(customers.referenced_by[0].table, "orders");
+        assert!(
+            customers.referenced_by[0]
+                .definition
+                .contains("customers(id)")
+        );
+
+        // Composite key: SQLite's own autoindex has origin "pk"
+        let items = provider
+            .get_table_details("order_items", Some("main"))
+            .await
+            .unwrap();
+        let pk = items.indexes.iter().find(|i| i.is_primary).unwrap();
+        assert_eq!(pk.definition, "(order_id, product_id)");
+        assert_eq!(items.indexes.iter().filter(|i| i.is_primary).count(), 1);
     }
 
     #[tokio::test]

@@ -13,12 +13,11 @@ pub fn sanitize_connection_url(url: &str) -> String {
         return format!("{sanitized_main}{comment_part}");
     }
 
-    // First check if this looks like a connection string without a proper scheme
-    if !url.starts_with("postgres://")
-        && !url.starts_with("postgresql://")
-        && url.contains('@')
-        && url.contains(':')
-    {
+    // A connection string without a scheme: user:password@host:port/db.
+    // URLs with any scheme (mysql://, docker://, …) are handled by the URL
+    // parser below — splitting them here mangled `mysql://u:p@h` into
+    // `mysql:[REDACTED]@h`.
+    if !url.contains("://") && url.contains('@') && url.contains(':') {
         // This looks like a simple connection string format: user:password@host:port/db
         let parts: Vec<&str> = url.split('@').collect();
         if parts.len() >= 2 {
@@ -43,8 +42,34 @@ pub fn sanitize_connection_url(url: &str) -> String {
         let result = sanitized.to_string();
         result.replace("%5BREDACTED%5D", "[REDACTED]")
     } else {
-        // If URL parsing fails, return the original
-        url.to_string()
+        redact_unparsable_url(url)
+    }
+}
+
+/// Best-effort redaction for URLs the parser rejects (bad port, stray
+/// characters…): anything between `scheme://user:` and the last `@` of the
+/// authority is treated as the password. Never returns the input verbatim
+/// when it looks like it carries credentials.
+fn redact_unparsable_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let authority_start = scheme_end + 3;
+    let after_scheme = &url[authority_start..];
+    // The last `@` wins: passwords may contain `@`. An `@` later in the
+    // path or query over-redacts, which is acceptable for unparsable input.
+    let Some(at) = after_scheme.rfind('@') else {
+        return url.to_string();
+    };
+    let userinfo = &after_scheme[..at];
+    match userinfo.find(':') {
+        Some(colon) => format!(
+            "{}{}:[REDACTED]{}",
+            &url[..authority_start],
+            &userinfo[..colon],
+            &after_scheme[at..]
+        ),
+        None => url.to_string(),
     }
 }
 
@@ -114,6 +139,24 @@ pub fn sanitize_text_for_logging(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case("mysql://u:secret@h:3306/db", "mysql://u:[REDACTED]@h:3306/db")]
+    #[case(
+        "clickhouse://default:secret@h:8123/db",
+        "clickhouse://default:[REDACTED]@h:8123/db"
+    )]
+    #[case("mongodb://u:secret@h:27017/db", "mongodb://u:[REDACTED]@h:27017/db")]
+    #[case("docker://u:secret@pg/db", "docker://u:[REDACTED]@pg/db")]
+    #[case("mysql://u@h:3306/db", "mysql://u@h:3306/db")]
+    #[case("u:secret@h:5432/db", "u:[REDACTED]@h:5432/db")]
+    // Unparsable (bad port): still redacted
+    #[case("mysql://u:secret@host:bad/db", "mysql://u:[REDACTED]@host:bad/db")]
+    #[case("mysql://u:p@ss:w0rd@host:bad/db", "mysql://u:[REDACTED]@host:bad/db")]
+    fn test_sanitize_keeps_the_scheme_of_every_engine(#[case] url: &str, #[case] expected: &str) {
+        assert_eq!(sanitize_connection_url(url), expected);
+    }
 
     #[test]
     fn test_sanitize_docker_connection_url() {

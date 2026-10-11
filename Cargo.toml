@@ -76,6 +76,7 @@ tokio = { version = "1.52", default-features = false, features = [
     "time",
     "sync",
     "signal",
+    "io-util",
 ] }
 async-trait = { version = "0.1", default-features = false }
 rand = { version = "0.9.4", default-features = false, features = ["std", "std_rng", "thread_rng"] }
@@ -179,5 +180,7 @@ too_many_arguments = "allow"
 should_implement_trait = "allow"
 
 [workspace]
-members = ["gui/src-tauri"]
+# The desktop GUI (GPUI) is opt-in: `cargo build`/`cargo test` at the root
+# only build the CLI. Use `mise run gui:*` or `-p dbcrust-gui[-core]`.
+members = ["gui", "gui/core"]
 default-members = ["."]

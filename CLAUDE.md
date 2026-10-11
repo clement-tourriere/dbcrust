@@ -19,9 +19,19 @@ cargo run -- postgres://localhost/test  # run CLI directly
 mise run py:dev           # maturin dev build
 mise run py:build         # wheel
 
-# GUI (Tauri)
-mise run gui:install && mise run gui:build
+# Desktop app (GPUI Kit, pure Rust) — see gui/ARCHITECTURE.md
+mise run gui:dev          # run it
+mise run gui:test         # backend tests (dbcrust-gui-core, no GPUI)
+mise run gui:lint         # clippy on both GUI crates (--no-deps)
+mise run gui:screenshots  # regenerate docs/README screenshots headlessly
+
+# Build cache — Mr Boxington (mbx), the `[wrappers.cargo]` entry in mise.toml
+mise run cache:stats      # savings + disk use
+mise run cache:gc         # reclaim disk space (`-- --dry-run` to preview)
 ```
+
+- Run Cargo through mise (`mise run …` or `mise exec -- cargo …`) so builds hit the shared mbx cache; calling `~/.cargo/bin/cargo` directly bypasses it. mbx turns `target/` into a link to a managed directory with a disk budget.
+- No mise installed? `./bin/mise` (committed wrapper, pinned mise version) works for every command above; regenerate it with `mise generate install-script --write --windows`.
 
 ## Module Map
 
@@ -46,8 +56,11 @@ mise run gui:install && mise run gui:build
 | `src/database_datafusion.rs` | File format queries (Parquet, CSV, JSON) |
 | `src/database_white_dragon.rs` | White Dragon SQL/qualifier HTTP adapter with generic WDSP schema introspection |
 | `src/ssh_tunnel.rs` | SSH tunnel management |
+| `src/docker.rs` | Docker discovery + `docker://` resolution; `docker_endpoint.rs` picks the daemon (contexts), `docker_route.rs` probes routes (published port → OrbStack domain → container IP), `docker_tunnel.rs` + `docker_relay.pl` relay through `docker exec` when none answers |
 | `src/vault_client.rs` | HashiCorp Vault credentials |
 | `src/named_queries.rs` | Parameterized queries (`$1`, `$*`, `$@`) |
+| `gui/core/` | `dbcrust-gui-core`: desktop app backend without GPUI — per-connection workers, `ConfigStore`, query/result/plan models |
+| `gui/src/` | `dbcrust-gui`: GPUI Kit desktop app (views, workspace, `AppCommand` catalogue); module map in `gui/ARCHITECTURE.md` |
 
 ## Connection URL Types
 

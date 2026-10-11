@@ -1,0 +1,4 @@
+# mise wrapper (`mise generate install-script --write --windows`): keep the bash
+# script LF everywhere, and give cmd.exe the CRLF line endings it expects
+bin/mise text eol=lf
+bin/mise.cmd text eol=crlf

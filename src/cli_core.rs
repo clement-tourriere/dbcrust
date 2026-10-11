@@ -1855,7 +1855,7 @@ impl CliCore {
         if INSTALLED.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return;
         }
-        let flag = crate::database::interrupt_flag().clone();
+        let flag = crate::database::interrupt_flag();
         tokio::spawn(async move {
             loop {
                 if tokio::signal::ctrl_c().await.is_err() {
@@ -1890,7 +1890,7 @@ impl CliCore {
         let mut last_script = String::new();
         // The process-wide flag: the Ctrl-C handler sets it, the database
         // clients poll it to cancel the running statement server-side
-        let interrupt_flag = crate::database::interrupt_flag().clone();
+        let interrupt_flag = crate::database::interrupt_flag();
         interrupt_flag.store(false, std::sync::atomic::Ordering::SeqCst);
         Self::install_interrupt_handler();
 

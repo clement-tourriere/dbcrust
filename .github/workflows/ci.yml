@@ -103,15 +103,49 @@ jobs:
       - name: ruff (errors only)
         run: pipx run ruff check python/dbcrust --select E9,F821,F811
 
-  gui:
-    name: GUI · typecheck + build
-    runs-on: ubuntu-latest
+  gui-core:
+    name: GUI · backend tests + clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      - name: Install dependencies
-        working-directory: gui
-        run: bun install --frozen-lockfile
-      - name: Typecheck + bundle
-        working-directory: gui
-        run: bun run build
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Set up Mr Boxington
+        uses: jdx/mr-boxington-action@adc5c234c02592f7edd008bf81d5bc0e9584dc03 # v1.2.0
+        with:
+          version: "1.4.1"
+      # dbcrust-gui-core has no GPUI dependency: it builds anywhere
+      - name: clippy
+        run: mbx clippy --locked -p dbcrust-gui-core --all-targets --no-deps -- -D warnings
+      - name: tests
+        run: mbx test --locked -p dbcrust-gui-core
+
+  gui-app:
+    name: GUI · desktop app clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Set up Mr Boxington
+        uses: jdx/mr-boxington-action@adc5c234c02592f7edd008bf81d5bc0e9584dc03 # v1.2.0
+        with:
+          version: "1.4.1"
+      - name: Install GPUI system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfontconfig-dev libwayland-dev libxkbcommon-x11-dev \
+            libx11-xcb-dev libvulkan1 libzstd-dev
+      - name: clippy
+        run: mbx clippy --locked -p dbcrust-gui --no-deps -- -D warnings

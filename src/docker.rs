@@ -1,9 +1,66 @@
+//! Docker database containers: discovery, and connecting to them from this
+//! machine however the container is (not) published.
+//!
+//! * Endpoint: [`DockerEndpoint`] picks the daemon like the `docker` CLI.
+//! * Reachability: [`DockerClient::connect_via_routes`] tries published port →
+//!   OrbStack domains → container address with short concurrent probes, then
+//!   a `docker exec` relay ([`crate::docker_tunnel`]), and only reports
+//!   success once the caller's database handshake succeeded on that route.
+//!   When nothing works it fails within seconds with [`DockerError::Unreachable`].
+
 use crate::database::{DatabaseType, DatabaseTypeExt};
+use crate::docker_route::{
+    FORWARDING_RESERVE, HANDSHAKE_BUDGET, ProbeConfig, ReachCandidate, ReachContext, SETUP_BUDGET,
+    is_transport_failure, probe_candidates, published_endpoints, reach_candidates, tcp_connect,
+};
+use crate::docker_tunnel::{DockerTunnel, RelayTarget};
 use bollard::Docker;
 use bollard::models::{ContainerInspectResponse, ContainerSummary};
 use bollard::query_parameters::{InspectContainerOptions, ListContainersOptions};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::error::Error as StdError;
+use std::future::Future;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use thiserror::Error;
+use tracing::debug;
+
+pub use crate::docker_endpoint::{
+    DockerEndpoint, EndpointInputs, EndpointSource, is_orbstack_daemon,
+};
+pub use crate::docker_route::{
+    DockerPhase, DockerRoute, PROBE_ATTEMPT_TIMEOUT, PROBE_BUDGET, PROBE_HEAD_START,
+    PROBE_MAX_CONCURRENT, RouteAttempt, RouteKind, Unreachable,
+};
+
+/// Time limits of a container connection. The defaults are the product
+/// behaviour; tests shrink them.
+#[derive(Debug, Clone, Copy)]
+pub struct RouteBudgets {
+    /// The whole setup, starting before the container is inspected.
+    pub setup: Duration,
+    /// One database handshake on one route.
+    pub handshake: Duration,
+    /// Kept back for forwarding while direct routes are tried.
+    pub forwarding_reserve: Duration,
+    /// Below this a direct route isn't worth starting a handshake on.
+    pub min_handshake: Duration,
+}
+
+impl Default for RouteBudgets {
+    fn default() -> Self {
+        Self {
+            setup: SETUP_BUDGET,
+            handshake: HANDSHAKE_BUDGET,
+            forwarding_reserve: FORWARDING_RESERVE,
+            min_handshake: Duration::from_millis(500),
+        }
+    }
+}
+
+/// How long a single Docker API call may take before the daemon is declared
+/// unresponsive (bollard's own default is 120 s).
+const DOCKER_API_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Error, Debug)]
 pub enum DockerError {
@@ -21,6 +78,42 @@ pub enum DockerError {
     DatabaseTypeDetectionFailed(String),
     #[error("Missing required environment variable: {0}")]
     MissingEnvironmentVariable(String),
+    /// The selected Docker context / `DOCKER_HOST` can't be used.
+    #[error("{0}")]
+    Endpoint(String),
+    /// The daemon can't be reached at all: not running, socket missing,
+    /// permission denied.
+    #[error("Docker isn't reachable at {endpoint}: {reason}")]
+    DaemonUnavailable { endpoint: String, reason: String },
+    /// The daemon accepted the connection but did not answer in time.
+    #[error("Docker timed out: no answer within {seconds} s ({action})")]
+    DaemonTimeout { action: &'static str, seconds: u64 },
+    /// Nothing answered: the port is not published, the container's network
+    /// address is not routable from this machine and `docker exec`
+    /// forwarding is not available either. Lists what was tried and how to
+    /// fix it.
+    #[error("{0}")]
+    Unreachable(Unreachable),
+    /// The whole setup (inspect, probes, forwarding, handshake) overran
+    /// [`SETUP_BUDGET`].
+    #[error(
+        "Connecting to '{container}' took longer than {seconds} s (last step: {})",
+        .phase.label().to_lowercase()
+    )]
+    SetupTimeout {
+        container: String,
+        seconds: u64,
+        phase: DockerPhase,
+    },
+}
+
+/// One host binding of a container port.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublishedBinding {
+    /// Address the daemon listens on (`0.0.0.0`, `::`, `127.0.0.1`, ...);
+    /// empty when the daemon doesn't say.
+    pub host_ip: String,
+    pub host_port: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -30,10 +123,18 @@ pub struct DockerContainerInfo {
     pub image: String,
     pub status: String,
     pub database_type: Option<DatabaseType>,
+    /// The preferred published host port of the database port.
     pub host_port: Option<u16>,
+    /// Address `host_port` is bound to (`0.0.0.0`, `127.0.0.1`...).
+    pub host_ip: Option<String>,
+    /// Every published binding of the database port (IPv4 and IPv6).
+    pub bindings: Vec<PublishedBinding>,
     pub container_port: Option<u16>,
     pub actual_database_port: u16,
+    /// The container's IPv4 address on its first (by name) network with one.
     pub ip_address: Option<String>,
+    /// Its global IPv6 address, when the network has one.
+    pub ipv6_address: Option<String>,
     pub environment: HashMap<String, String>,
     pub labels: HashMap<String, String>,
 }
@@ -49,22 +150,159 @@ pub struct DockerDatabaseConnection {
     pub database_name: Option<String>,
 }
 
+/// A successful [`DockerClient::connect_via_routes`].
+#[derive(Debug)]
+pub struct DockerConnected<T> {
+    /// What the caller's `build` produced (the `Database`).
+    pub value: T,
+    /// The address that was dialled (the local relay endpoint when forwarded).
+    pub connection: DockerDatabaseConnection,
+    pub route: DockerRoute,
+    /// Keeps the relay alive: store it next to `value` for as long as the
+    /// connection lives.
+    pub tunnel: Option<Arc<DockerTunnel>>,
+    /// The container's name and the database port inside it: the stable
+    /// address of the connection, whatever route carried it.
+    pub container_name: String,
+    pub database_port: u16,
+}
+
+/// A transport-level bollard error as "the daemon is not reachable"; HTTP
+/// answers from the daemon (404...) stay [`DockerError::ConnectionError`].
+fn daemon_error(endpoint: &DockerEndpoint, error: bollard::errors::Error) -> DockerError {
+    use bollard::errors::Error;
+    if matches!(
+        error,
+        Error::DockerResponseServerError { .. } | Error::JsonDataError { .. }
+    ) {
+        return DockerError::ConnectionError(error);
+    }
+    let mut reason = match &error {
+        Error::SocketNotFoundError(path) => {
+            format!("the socket {path} doesn't exist (is Docker running?)")
+        }
+        other => other.to_string(),
+    };
+    if reason.to_ascii_lowercase().contains("permission denied") {
+        reason.push_str(" (is your user allowed to use the Docker socket?)");
+    }
+    DockerError::DaemonUnavailable {
+        endpoint: endpoint.describe(),
+        reason,
+    }
+}
+
+/// Reports phases to the caller and remembers the current one for timeouts.
+struct Phases<P> {
+    progress: P,
+    current: Arc<Mutex<DockerPhase>>,
+}
+
+impl<P: FnMut(DockerPhase)> Phases<P> {
+    fn enter(&mut self, phase: DockerPhase) {
+        if let Ok(mut current) = self.current.lock() {
+            *current = phase;
+        }
+        (self.progress)(phase);
+    }
+}
+
 pub struct DockerClient {
     docker: Docker,
+    endpoint: DockerEndpoint,
+    orbstack: tokio::sync::OnceCell<bool>,
+    budgets: RouteBudgets,
 }
 
 impl DockerClient {
-    /// Create a new Docker client
+    /// Create a Docker client for the endpoint the `docker` CLI would use:
+    /// `DOCKER_CONTEXT`, `DOCKER_HOST`, the current context, then the
+    /// platform default. An endpoint DBCrust can't speak is an error.
     pub fn new() -> Result<Self, DockerError> {
-        let docker = Docker::connect_with_defaults()?;
-        Ok(DockerClient { docker })
+        Self::with_endpoint(DockerEndpoint::from_environment()?)
     }
 
-    /// Create a Docker client with custom socket path
-    pub fn with_socket(_socket_path: &str) -> Result<Self, DockerError> {
-        // TODO: Implement custom socket path support
-        let docker = Docker::connect_with_http_defaults()?;
-        Ok(DockerClient { docker })
+    /// Create a Docker client for an explicit endpoint.
+    pub fn with_endpoint(endpoint: DockerEndpoint) -> Result<Self, DockerError> {
+        let docker = match &endpoint.host {
+            Some(host) => Docker::connect_with_host(host),
+            None => Docker::connect_with_defaults(),
+        }
+        .map_err(|e| daemon_error(&endpoint, e))?;
+        debug!("[docker] endpoint: {}", endpoint.describe());
+        Ok(DockerClient {
+            docker,
+            endpoint,
+            orbstack: tokio::sync::OnceCell::new(),
+            budgets: RouteBudgets::default(),
+        })
+    }
+
+    /// Create a Docker client for a socket path (or `unix://`/`tcp://` URL).
+    pub fn with_socket(socket_path: &str) -> Result<Self, DockerError> {
+        Self::with_endpoint(DockerEndpoint::explicit(socket_path)?)
+    }
+
+    /// Replace the time limits (for tests).
+    pub fn with_budgets(mut self, budgets: RouteBudgets) -> Self {
+        self.budgets = budgets;
+        self
+    }
+
+    /// The daemon endpoint in use.
+    pub fn endpoint(&self) -> &DockerEndpoint {
+        &self.endpoint
+    }
+
+    /// The underlying bollard client (cheap to clone).
+    pub fn bollard(&self) -> &Docker {
+        &self.docker
+    }
+
+    /// Run a Docker API call under [`DOCKER_API_TIMEOUT`].
+    async fn api<T>(
+        &self,
+        action: &'static str,
+        call: impl Future<Output = Result<T, bollard::errors::Error>>,
+    ) -> Result<T, DockerError> {
+        match tokio::time::timeout(DOCKER_API_TIMEOUT, call).await {
+            Ok(result) => result.map_err(|e| daemon_error(&self.endpoint, e)),
+            Err(_) => Err(DockerError::DaemonTimeout {
+                action,
+                seconds: DOCKER_API_TIMEOUT.as_secs(),
+            }),
+        }
+    }
+
+    /// Whether the daemon is OrbStack: its socket lives under `~/.orbstack/`,
+    /// or `docker info` says so. Never inferred from the host OS.
+    pub async fn is_orbstack(&self) -> bool {
+        *self
+            .orbstack
+            .get_or_init(|| async {
+                if self.endpoint.mentions_orbstack() {
+                    return true;
+                }
+                match self.api("reading daemon info", self.docker.info()).await {
+                    Ok(info) => {
+                        is_orbstack_daemon(info.operating_system.as_deref(), info.name.as_deref())
+                    }
+                    Err(_) => false,
+                }
+            })
+            .await
+    }
+
+    async fn reach_context(&self) -> ReachContext {
+        let local = self.endpoint.is_local();
+        let orbstack = local && self.is_orbstack().await;
+        ReachContext {
+            orbstack,
+            // macOS and Windows daemons run in a VM whose container network
+            // is not routed to the host; only OrbStack bridges it.
+            container_ip_routable: local && (orbstack || cfg!(target_os = "linux")),
+            publish_host: self.endpoint.remote_host(),
+        }
     }
 
     /// List all running containers
@@ -78,8 +316,11 @@ impl DockerClient {
             ..Default::default()
         };
 
-        let containers = self.docker.list_containers(Some(options)).await?;
-        Ok(containers)
+        self.api(
+            "listing containers",
+            self.docker.list_containers(Some(options)),
+        )
+        .await
     }
 
     /// List all database containers (running or not)
@@ -89,16 +330,22 @@ impl DockerClient {
             ..Default::default()
         };
 
-        let containers = self.docker.list_containers(Some(options)).await?;
+        let containers = self
+            .api(
+                "listing containers",
+                self.docker.list_containers(Some(options)),
+            )
+            .await?;
         let mut database_containers = Vec::new();
 
         for container in containers {
             if let Some(image) = &container.image {
                 let database_type = Self::detect_database_type_from_image(image);
                 if let Some(db_type) = database_type {
-                    // Extract basic port information from container summary
-                    let (host_port, container_port) =
-                        self.extract_port_mapping_from_summary(&container, &db_type);
+                    // Port information from the container summary (the
+                    // default port of the engine; inspect refines it)
+                    let bindings = Self::summary_bindings(&container, &db_type);
+                    let (host_port, host_ip) = preferred_binding(&bindings);
 
                     let container_info = DockerContainerInfo {
                         id: container.id.unwrap_or_default(),
@@ -112,9 +359,12 @@ impl DockerClient {
                         status: container.status.unwrap_or_default(),
                         database_type: Some(db_type.clone()),
                         host_port,
-                        container_port,
+                        host_ip,
+                        bindings,
+                        container_port: Some(Self::get_default_port(&db_type)),
                         actual_database_port: Self::get_default_port(&db_type), // Will be detected in inspect_container
                         ip_address: None, // Will be populated by inspect_container if needed
+                        ipv6_address: None,
                         environment: HashMap::new(), // Will be populated by inspect_container if needed
                         labels: HashMap::new(), // Will be populated by inspect_container if needed
                     };
@@ -149,9 +399,19 @@ impl DockerClient {
     ) -> Result<DockerContainerInfo, DockerError> {
         let options = InspectContainerOptions { size: false };
         let container = self
-            .docker
-            .inspect_container(container_id, Some(options))
-            .await?;
+            .api(
+                "inspecting the container",
+                self.docker.inspect_container(container_id, Some(options)),
+            )
+            .await
+            .map_err(|e| match e {
+                DockerError::ConnectionError(
+                    bollard::errors::Error::DockerResponseServerError {
+                        status_code: 404, ..
+                    },
+                ) => DockerError::ContainerNotFound(container_id.to_string()),
+                other => other,
+            })?;
 
         let config = container
             .config
@@ -189,14 +449,15 @@ impl DockerClient {
             }
         }
 
-        // Extract port mappings
-        let (host_port, container_port) = self.extract_port_mapping(&container, &database_type)?;
+        // The port the database listens on (never "the first exposed port")
+        let actual_database_port = Self::database_port(&database_type, &environment);
 
-        // Detect the actual database port from exposed ports (for direct connections)
-        let actual_database_port = self.detect_actual_database_port(&container, &database_type);
+        // Every host binding of that port
+        let bindings = Self::inspect_bindings(&container, actual_database_port);
+        let (host_port, host_ip) = preferred_binding(&bindings);
 
-        // Extract IP address from network settings
-        let ip_address = self.extract_ip_address(&container);
+        // Extract IP addresses from network settings
+        let (ip_address, ipv6_address) = Self::extract_ip_addresses(&container);
 
         Ok(DockerContainerInfo {
             id: container.id.unwrap_or_default(),
@@ -213,142 +474,122 @@ impl DockerClient {
                 .unwrap_or_default(),
             database_type: Some(database_type),
             host_port,
-            container_port,
+            host_ip,
+            bindings,
+            container_port: Some(actual_database_port),
             actual_database_port,
             ip_address,
+            ipv6_address,
             environment,
             labels,
         })
     }
 
-    /// Extract IP address from container inspection
-    fn extract_ip_address(&self, container: &ContainerInspectResponse) -> Option<String> {
-        if let Some(network_settings) = &container.network_settings {
-            // Get IP address from any connected network
-            if let Some(networks) = &network_settings.networks {
-                for network in networks.values() {
-                    if let Some(ip_address) = &network.ip_address {
-                        if !ip_address.is_empty() {
-                            return Some(ip_address.clone());
-                        }
-                    }
-                }
-            }
-        }
-        None
+    /// The container's IPv4 and global IPv6 addresses. Networks are visited
+    /// by name so the choice is the same on every call.
+    fn extract_ip_addresses(
+        container: &ContainerInspectResponse,
+    ) -> (Option<String>, Option<String>) {
+        let Some(networks) = container
+            .network_settings
+            .as_ref()
+            .and_then(|settings| settings.networks.as_ref())
+        else {
+            return (None, None);
+        };
+        let mut names: Vec<_> = networks.keys().collect();
+        names.sort();
+        let first = |pick: fn(&bollard::models::EndpointSettings) -> Option<&String>| {
+            names
+                .iter()
+                .filter_map(|name| pick(&networks[*name]))
+                .find(|address| !address.is_empty())
+                .cloned()
+        };
+        (
+            first(|network| network.ip_address.as_ref()),
+            first(|network| network.global_ipv6_address.as_ref()),
+        )
     }
 
-    /// Extract port mapping from container summary (basic listing)
-    fn extract_port_mapping_from_summary(
-        &self,
+    /// Published bindings of the engine's default port in a container summary.
+    fn summary_bindings(
         container: &ContainerSummary,
         database_type: &DatabaseType,
-    ) -> (Option<u16>, Option<u16>) {
+    ) -> Vec<PublishedBinding> {
         let default_port = Self::get_default_port(database_type);
-
-        if let Some(ports) = &container.ports {
-            for port in ports {
-                // Check if this port matches our database port
-                if port.private_port == default_port {
-                    // Found matching database port
-                    if let Some(public_port) = port.public_port {
-                        return (Some(public_port), Some(default_port));
-                    }
+        let mut bindings: Vec<PublishedBinding> = Vec::new();
+        for port in container.ports.iter().flatten() {
+            if port.private_port != default_port {
+                continue;
+            }
+            // UDP publications of the same number are not the database
+            if port
+                .typ
+                .as_ref()
+                .is_some_and(|typ| typ.to_string().eq_ignore_ascii_case("udp"))
+            {
+                continue;
+            }
+            if let Some(host_port) = port.public_port {
+                let binding = PublishedBinding {
+                    host_ip: port.ip.clone().unwrap_or_default(),
+                    host_port,
+                };
+                if !bindings.contains(&binding) {
+                    bindings.push(binding);
                 }
             }
         }
-
-        (None, Some(default_port))
+        bindings
     }
 
-    /// Extract port mapping from container inspection
-    fn extract_port_mapping(
-        &self,
-        container: &ContainerInspectResponse,
-        database_type: &DatabaseType,
-    ) -> Result<(Option<u16>, Option<u16>), DockerError> {
-        let default_port = Self::get_default_port(database_type);
-
-        if let Some(network_settings) = &container.network_settings {
-            if let Some(ports) = &network_settings.ports {
-                // Look for the database port
-                let port_key = format!("{default_port}/tcp");
-                if let Some(Some(port_binding)) = ports.get(&port_key) {
-                    if let Some(binding) = port_binding.first() {
-                        if let Some(host_port_str) = &binding.host_port {
-                            if let Ok(host_port) = host_port_str.parse::<u16>() {
-                                return Ok((Some(host_port), Some(default_port)));
-                            }
-                        }
-                    }
-                }
+    /// Published bindings of `port/tcp` in an inspected container.
+    fn inspect_bindings(container: &ContainerInspectResponse, port: u16) -> Vec<PublishedBinding> {
+        let mut bindings: Vec<PublishedBinding> = Vec::new();
+        let published = container
+            .network_settings
+            .as_ref()
+            .and_then(|settings| settings.ports.as_ref())
+            .and_then(|ports| ports.get(&format!("{port}/tcp")))
+            .and_then(|bindings| bindings.as_ref());
+        for binding in published.into_iter().flatten() {
+            let Some(host_port) = binding
+                .host_port
+                .as_deref()
+                .and_then(|p| p.parse::<u16>().ok())
+            else {
+                continue;
+            };
+            let binding = PublishedBinding {
+                host_ip: binding.host_ip.clone().unwrap_or_default(),
+                host_port,
+            };
+            if !bindings.contains(&binding) {
+                bindings.push(binding);
             }
         }
-
-        Ok((None, Some(default_port)))
+        bindings
     }
 
-    /// Detect actual database port from container's exposed ports
-    /// This method finds the actual port the database is listening on inside the container
-    fn detect_actual_database_port(
-        &self,
-        container: &ContainerInspectResponse,
+    /// The port the database listens on inside the container: the engine's
+    /// own environment override if the image documents one, else its default
+    /// port. `EXPOSE`d or published ports prove nothing about what listens
+    /// where (a postgres container may also publish an admin UI).
+    pub fn database_port(
         database_type: &DatabaseType,
+        environment: &HashMap<String, String>,
     ) -> u16 {
-        let default_port = Self::get_default_port(database_type);
-
-        if let Some(network_settings) = &container.network_settings {
-            if let Some(ports) = &network_settings.ports {
-                // Collect ports with mappings (actually accessible) and all exposed ports
-                let mut mapped_ports: Vec<u16> = Vec::new();
-                let mut exposed_ports: Vec<u16> = Vec::new();
-
-                for (port_key, bindings) in ports {
-                    if port_key.ends_with("/tcp") {
-                        // Parse port number from "5433/tcp" format
-                        if let Some(port_str) = port_key.strip_suffix("/tcp") {
-                            if let Ok(port) = port_str.parse::<u16>() {
-                                exposed_ports.push(port);
-                                // Check if this port has host bindings (is actually mapped)
-                                if bindings.is_some() && !bindings.as_ref().unwrap().is_empty() {
-                                    mapped_ports.push(port);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // First priority: Use mapped ports (ports that can actually be reached)
-                if !mapped_ports.is_empty() {
-                    mapped_ports.sort();
-                    // Prefer default port if it's mapped, otherwise use first mapped port
-                    if mapped_ports.contains(&default_port) {
-                        tracing::debug!("Using default port {} (mapped)", default_port);
-                        return default_port;
-                    } else {
-                        tracing::debug!("Using first mapped port: {}", mapped_ports[0]);
-                        return mapped_ports[0];
-                    }
-                }
-
-                // Fallback: Use exposed ports if no mapped ports (for direct container access)
-                if !exposed_ports.is_empty() {
-                    exposed_ports.sort();
-                    // Prefer default port if exposed, otherwise use first exposed port
-                    if exposed_ports.contains(&default_port) {
-                        tracing::debug!("Using default port {} (exposed only)", default_port);
-                        return default_port;
-                    } else {
-                        tracing::debug!("Using first exposed port: {}", exposed_ports[0]);
-                        return exposed_ports[0];
-                    }
-                }
-            }
-        }
-
-        // Fallback to default port
-        tracing::debug!("Fallback to default port: {}", default_port);
-        default_port
+        let override_var = match database_type {
+            DatabaseType::PostgreSQL => Some("PGPORT"),
+            DatabaseType::MySQL => Some("MYSQL_TCP_PORT"),
+            _ => None,
+        };
+        override_var
+            .and_then(|var| environment.get(var))
+            .and_then(|value| value.trim().parse::<u16>().ok())
+            .filter(|port| *port != 0)
+            .unwrap_or_else(|| Self::get_default_port(database_type))
     }
 
     /// Detect database type from Docker image name
@@ -394,95 +635,73 @@ impl DockerClient {
         database_type.default_port().unwrap_or(0)
     }
 
-    /// Build database connection info from container info
-    pub fn build_connection_info(
-        &self,
+    /// Pick the database credentials and name out of the container's environment.
+    fn database_credentials(
         container_info: &DockerContainerInfo,
-    ) -> Result<DockerDatabaseConnection, DockerError> {
+    ) -> Result<(DatabaseType, Option<String>, Option<String>, Option<String>), DockerError> {
         let database_type = container_info
             .database_type
             .clone()
             .ok_or_else(|| DockerError::DatabaseTypeDetectionFailed(container_info.name.clone()))?;
 
-        // Try to get host port, or fall back to container IP (Linux) or OrbStack domain (macOS) if no port is exposed
-        let (host, port) = if let Some(host_port) = container_info.host_port {
-            ("localhost".to_string(), host_port)
-        } else {
-            // Check for OrbStack custom domain or compose project domain first
-            if let Some((orbstack_host, orbstack_port)) =
-                self.get_orbstack_custom_or_compose_domain(container_info, &database_type)?
-            {
-                (orbstack_host, orbstack_port)
-            } else if let Some(container_ip) = &container_info.ip_address {
-                // Fall back to container IP address (Linux or any system with IP)
-                // Use the actual database port detected from exposed ports
-                (container_ip.clone(), container_info.actual_database_port)
-            } else if let Some((orbstack_host, orbstack_port)) =
-                self.get_orbstack_automatic_domain(container_info, &database_type)?
-            {
-                // Fall back to OrbStack automatic domain (macOS)
-                (orbstack_host, orbstack_port)
-            } else {
-                return Err(DockerError::NoExposedPorts(container_info.name.clone()));
-            }
-        };
-
-        let (username, password, database_name) = if database_type.is_file_based() {
+        if database_type.is_file_based() {
             // SQLite doesn't use network connections
-            (None, None, None)
+            return Ok((database_type, None, None, None));
+        }
+
+        // Extract username from environment variables
+        let username = database_type
+            .docker_username_env_vars()
+            .iter()
+            .find_map(|var| container_info.environment.get(*var))
+            .cloned()
+            .unwrap_or_else(|| database_type.default_username().to_string());
+
+        // Extract password from environment variables
+        let password = database_type
+            .docker_password_env_vars()
+            .iter()
+            .find_map(|var| container_info.environment.get(*var))
+            .cloned();
+
+        // Extract database name from environment variables
+        let database_name = database_type
+            .docker_database_env_vars()
+            .iter()
+            .find_map(|var| container_info.environment.get(*var))
+            .cloned()
+            .unwrap_or_else(|| username.clone());
+
+        // Special handling for ClickHouse with CLICKHOUSE_SKIP_USER_SETUP=1:
+        // the default user is available without a password.
+        let skips_user_setup = database_type == DatabaseType::ClickHouse
+            && container_info
+                .environment
+                .get("CLICKHOUSE_SKIP_USER_SETUP")
+                .is_some_and(|skip| skip == "1");
+        let password = if skips_user_setup {
+            tracing::debug!(
+                "[DockerClient::build_connection_info] ClickHouse SKIP_USER_SETUP=1 detected, using default user without password"
+            );
+            None
         } else {
-            // Extract username from environment variables
-            let username = database_type
-                .docker_username_env_vars()
-                .iter()
-                .find_map(|var| container_info.environment.get(*var))
-                .cloned()
-                .unwrap_or_else(|| database_type.default_username().to_string());
-
-            // Extract password from environment variables
-            let password = database_type
-                .docker_password_env_vars()
-                .iter()
-                .find_map(|var| container_info.environment.get(*var))
-                .cloned();
-
-            // Extract database name from environment variables
-            let database_name = database_type
-                .docker_database_env_vars()
-                .iter()
-                .find_map(|var| container_info.environment.get(*var))
-                .cloned()
-                .unwrap_or_else(|| username.clone());
-
-            // Special handling for ClickHouse with CLICKHOUSE_SKIP_USER_SETUP=1
-            let final_password = if database_type == DatabaseType::ClickHouse {
-                // Check if user setup is skipped
-                if let Some(skip_setup) =
-                    container_info.environment.get("CLICKHOUSE_SKIP_USER_SETUP")
-                {
-                    if skip_setup == "1" {
-                        // When user setup is skipped, default user is available without password
-                        tracing::debug!(
-                            "[DockerClient::build_connection_info] ClickHouse SKIP_USER_SETUP=1 detected, using default user without password"
-                        );
-                        None
-                    } else {
-                        password
-                    }
-                } else {
-                    password
-                }
-            } else {
-                password
-            };
-
-            (Some(username), final_password, Some(database_name))
+            password
         };
 
+        Ok((database_type, Some(username), password, Some(database_name)))
+    }
+
+    fn connection_to(
+        container_info: &DockerContainerInfo,
+        host: &str,
+        port: u16,
+    ) -> Result<DockerDatabaseConnection, DockerError> {
+        let (database_type, username, password, database_name) =
+            Self::database_credentials(container_info)?;
         Ok(DockerDatabaseConnection {
             container_name: container_info.name.clone(),
             database_type,
-            host,
+            host: host.to_string(),
             port,
             username,
             password,
@@ -490,166 +709,484 @@ impl DockerClient {
         })
     }
 
-    /// Get OrbStack custom domain or compose project domain (high priority)
-    pub fn get_orbstack_custom_or_compose_domain(
+    /// Inspect `container` and connect to its database by the first route
+    /// that works. The whole thing, inspection included, runs under one
+    /// [`SETUP_BUDGET`] deadline. See [`DockerClient::connect_via_routes`].
+    pub async fn connect_container<T, P, B, Fut>(
+        &self,
+        container: &str,
+        progress: P,
+        build: B,
+    ) -> Result<DockerConnected<T>, Box<dyn StdError>>
+    where
+        P: FnMut(DockerPhase),
+        B: FnMut(DockerDatabaseConnection) -> Fut,
+        Fut: Future<Output = Result<T, Box<dyn StdError>>>,
+    {
+        self.within_budget(container, progress, |deadline, mut phases| async move {
+            phases.enter(DockerPhase::ResolvingDocker);
+            let info = self.inspect_container(container).await?;
+            self.try_routes(&info, deadline, phases, build).await
+        })
+        .await
+    }
+
+    /// Connect to the container's database by the first route that works,
+    /// bounded by [`SETUP_BUDGET`].
+    ///
+    /// `build` turns a resolved address into a connected value (the caller's
+    /// `Database`, including authentication/TLS setup). Routes are tried in
+    /// order: published binding, OrbStack domains, container address (probed
+    /// concurrently with short TCP connects), then a `docker exec` relay.
+    /// Each handshake gets at most [`HANDSHAKE_BUDGET`] and direct routes
+    /// leave [`FORWARDING_RESERVE`] for forwarding, so an endpoint that
+    /// accepts TCP but never speaks the protocol cannot eat the whole budget.
+    /// A route whose handshake fails at the transport level (or times out)
+    /// falls through to the next; an authentication/TLS/unknown-database
+    /// failure stops immediately so credentials are never replayed
+    /// elsewhere. `progress` is told each [`DockerPhase`] as it starts.
+    ///
+    /// Dropping the returned future cancels everything, including a relay
+    /// that was just opened.
+    pub async fn connect_via_routes<T, P, B, Fut>(
         &self,
         container_info: &DockerContainerInfo,
-        _database_type: &DatabaseType,
-    ) -> Result<Option<(String, u16)>, DockerError> {
-        // First check if we're running on OrbStack by looking for OrbStack-specific indicators
-        if !self.is_orbstack_available() {
-            return Ok(None);
-        }
-
-        // Use the actual database port detected from exposed ports
-        let actual_port = container_info.actual_database_port;
-
-        // Check for custom domain label first
-        if let Some(custom_domain) = self.get_custom_orbstack_domain(container_info) {
-            return Ok(Some((custom_domain, actual_port)));
-        }
-
-        // Check for compose project domain
-        if let Some(compose_domain) = self.get_compose_orbstack_domain(container_info) {
-            return Ok(Some((compose_domain, actual_port)));
-        }
-
-        // No custom or compose domain found
-        Ok(None)
+        progress: P,
+        build: B,
+    ) -> Result<DockerConnected<T>, Box<dyn StdError>>
+    where
+        P: FnMut(DockerPhase),
+        B: FnMut(DockerDatabaseConnection) -> Fut,
+        Fut: Future<Output = Result<T, Box<dyn StdError>>>,
+    {
+        self.within_budget(&container_info.name, progress, |deadline, phases| {
+            self.try_routes(container_info, deadline, phases, build)
+        })
+        .await
     }
 
-    /// Get OrbStack automatic domain for standalone containers (low priority)
-    pub fn get_orbstack_automatic_domain(
+    /// Run `work` under the single setup deadline, which starts now. `work`
+    /// receives the deadline and a phase reporter; if the deadline passes it
+    /// is dropped and the error names the step it was in.
+    async fn within_budget<T, P, W, Fut>(
         &self,
-        container_info: &DockerContainerInfo,
-        _database_type: &DatabaseType,
-    ) -> Result<Option<(String, u16)>, DockerError> {
-        // First check if we're running on OrbStack by looking for OrbStack-specific indicators
-        if !self.is_orbstack_available() {
-            return Ok(None);
+        container: &str,
+        progress: P,
+        work: W,
+    ) -> Result<DockerConnected<T>, Box<dyn StdError>>
+    where
+        P: FnMut(DockerPhase),
+        W: FnOnce(Instant, Phases<P>) -> Fut,
+        Fut: Future<Output = Result<DockerConnected<T>, Box<dyn StdError>>>,
+    {
+        let deadline = Instant::now() + self.budgets.setup;
+        let current = Arc::new(Mutex::new(DockerPhase::ResolvingDocker));
+        let phases = Phases {
+            progress,
+            current: Arc::clone(&current),
+        };
+        match tokio::time::timeout(self.budgets.setup, work(deadline, phases)).await {
+            Ok(result) => result,
+            Err(_) => Err(DockerError::SetupTimeout {
+                container: container.to_string(),
+                seconds: self.budgets.setup.as_secs(),
+                phase: current
+                    .lock()
+                    .map(|p| *p)
+                    .unwrap_or(DockerPhase::CheckingDirectAccess),
+            }
+            .into()),
         }
-
-        // Use the actual database port detected from exposed ports
-        let actual_port = container_info.actual_database_port;
-
-        // For standalone containers, use container name domain
-        let container_domain = format!("{}.orb.local", container_info.name);
-        Ok(Some((container_domain, actual_port)))
     }
 
-    /// Get OrbStack domain for container if available (kept for backward compatibility)
-    pub fn get_orbstack_domain(
+    async fn try_routes<T, P, B, Fut>(
         &self,
-        container_info: &DockerContainerInfo,
-        database_type: &DatabaseType,
-    ) -> Result<Option<(String, u16)>, DockerError> {
-        // Try custom/compose first
-        if let Some(domain) =
-            self.get_orbstack_custom_or_compose_domain(container_info, database_type)?
-        {
-            return Ok(Some(domain));
+        info: &DockerContainerInfo,
+        deadline: Instant,
+        mut phases: Phases<P>,
+        mut build: B,
+    ) -> Result<DockerConnected<T>, Box<dyn StdError>>
+    where
+        P: FnMut(DockerPhase),
+        B: FnMut(DockerDatabaseConnection) -> Fut,
+        Fut: Future<Output = Result<T, Box<dyn StdError>>>,
+    {
+        // Fail early on a missing type/credentials before any network work.
+        Self::database_credentials(info)?;
+        let port = info.actual_database_port;
+        if port == 0 {
+            return Err(DockerError::NoExposedPorts(info.name.clone()).into());
         }
+        let budgets = self.budgets;
+        let time_left = || deadline.saturating_duration_since(Instant::now());
 
-        // Fall back to automatic domain
-        self.get_orbstack_automatic_domain(container_info, database_type)
-    }
+        phases.enter(DockerPhase::CheckingDirectAccess);
+        let ctx = self.reach_context().await;
+        let mut remaining: Vec<ReachCandidate> = reach_candidates(info, &ctx);
+        debug!("[docker] {}: candidates {:?}", info.name, remaining);
+        let mut attempts: Vec<RouteAttempt> = Vec::new();
 
-    /// Check if OrbStack is available by looking for OrbStack-specific environment
-    fn is_orbstack_available(&self) -> bool {
-        // OrbStack typically runs on macOS and has specific characteristics
-        // We can check for OrbStack's presence by attempting to resolve a known OrbStack domain
-        // For now, we'll do a simple check - in production, you might want to be more sophisticated
+        while !remaining.is_empty() {
+            // Keep time for forwarding: direct routes may not spend it all.
+            let handshake_budget = budgets
+                .handshake
+                .min(time_left().saturating_sub(budgets.forwarding_reserve));
+            if handshake_budget < budgets.min_handshake {
+                debug!("[docker] {}: out of time for more direct routes", info.name);
+                break;
+            }
+            phases.enter(DockerPhase::CheckingDirectAccess);
+            let report = probe_candidates(&remaining, &ProbeConfig::default(), tcp_connect).await;
+            attempts.extend(report.failures());
+            let Some(index) = report.chosen else { break };
+            let candidate = remaining[index].clone();
 
-        // Check if we can find any containers with OrbStack-style labels or networks
-        // This is a heuristic approach
-        std::env::consts::OS == "macos"
-            || std::env::var("ORBSTACK_HOST").is_ok()
-            || std::path::Path::new("/Applications/OrbStack.app").exists()
-    }
-
-    /// Get custom domain from container labels (dev.orbstack.domains label)
-    fn get_custom_orbstack_domain(&self, container_info: &DockerContainerInfo) -> Option<String> {
-        // Check for OrbStack custom domain label - the actual label is "dev.orbstack.domains"
-        container_info.labels.get("dev.orbstack.domains").cloned()
-    }
-
-    /// Get compose project domain (service.project.orb.local)
-    fn get_compose_orbstack_domain(&self, container_info: &DockerContainerInfo) -> Option<String> {
-        // First check for compose project label
-        if let Some(project_name) = container_info.labels.get("com.docker.compose.project") {
-            if let Some(service_name) = container_info.labels.get("com.docker.compose.service") {
-                // For compose projects, OrbStack uses service.project.orb.local format
-                return Some(format!("{service_name}.{project_name}.orb.local"));
-            } else {
-                // Fallback to just project name
-                return Some(format!("{project_name}.orb.local"));
+            // A TCP answer is only reachability: complete the handshake,
+            // within its own budget.
+            phases.enter(DockerPhase::Authenticating);
+            let connection = Self::connection_to(info, &candidate.host, candidate.port)?;
+            let handshake = tokio::time::timeout(
+                handshake_budget.min(time_left().saturating_sub(budgets.forwarding_reserve)),
+                build(connection.clone()),
+            )
+            .await;
+            match handshake {
+                Ok(Ok(value)) => {
+                    debug!(
+                        "[docker] {}: connected via {}",
+                        info.name,
+                        candidate.address()
+                    );
+                    return Ok(DockerConnected {
+                        value,
+                        connection,
+                        route: DockerRoute {
+                            kind: candidate.route,
+                            host: candidate.host.clone(),
+                            port: candidate.port,
+                            helper: None,
+                            detail: format!("{} {}", candidate.route.label(), candidate.address()),
+                        },
+                        tunnel: None,
+                        container_name: info.name.clone(),
+                        database_port: port,
+                    });
+                }
+                Ok(Err(e)) if is_transport_failure(&e.to_string()) => {
+                    attempts.push(RouteAttempt {
+                        route: candidate.route,
+                        target: candidate.address(),
+                        reason: format!("answered, but the database connection failed ({e})"),
+                    });
+                    remaining.drain(..=index);
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(_) => {
+                    attempts.push(RouteAttempt {
+                        route: candidate.route,
+                        target: candidate.address(),
+                        reason: format!(
+                            "accepted the connection, but the database handshake did not finish within {} s",
+                            handshake_budget.as_secs().max(1)
+                        ),
+                    });
+                    remaining.drain(..=index);
+                }
             }
         }
 
-        // Fallback: Check if this container is part of a compose project by name pattern
-        // Compose containers typically have names like "project-service-1"
-        if container_info.name.contains('-') {
-            let parts: Vec<&str> = container_info.name.split('-').collect();
-            if parts.len() >= 2 {
-                // Take everything except the last part (which is usually the replica number)
-                let project_service = parts[..parts.len() - 1].join("-");
-                return Some(format!("{project_service}.orb.local"));
+        // No direct route: forward through the Docker API.
+        phases.enter(DockerPhase::OpeningForwarding);
+        let unreachable = |attempts: Vec<RouteAttempt>| {
+            let published = published_endpoints(info, self.endpoint.remote_host().as_deref())
+                .into_iter()
+                .next()
+                .map(|(host, port)| ReachCandidate::new(RouteKind::PublishedPort, host, port))
+                .map(|c| c.address());
+            Box::<dyn StdError>::from(DockerError::Unreachable(Unreachable {
+                container: info.name.clone(),
+                port,
+                published,
+                attempts,
+            }))
+        };
+        let forwarding_failed = |attempts: &mut Vec<RouteAttempt>, reason: String| {
+            attempts.push(RouteAttempt {
+                route: RouteKind::ExecTunnel,
+                target: "through Docker (docker exec)".to_string(),
+                reason,
+            });
+        };
+        let relay_target = match RelayTarget::for_container(
+            info.ip_address.as_deref(),
+            info.ipv6_address.as_deref(),
+            port,
+        ) {
+            Ok(target) => target,
+            Err(e) => {
+                forwarding_failed(&mut attempts, e.to_string());
+                return Err(unreachable(attempts));
             }
+        };
+        let exec_id = if info.id.is_empty() {
+            &info.name
+        } else {
+            &info.id
+        };
+        let tunnel = match DockerTunnel::open(self.docker.clone(), exec_id, relay_target).await {
+            Ok(tunnel) => Arc::new(tunnel),
+            Err(e) => {
+                forwarding_failed(&mut attempts, e.to_string());
+                return Err(unreachable(attempts));
+            }
+        };
+
+        phases.enter(DockerPhase::Authenticating);
+        let connection = Self::connection_to(
+            info,
+            &tunnel.local_addr().ip().to_string(),
+            tunnel.local_port(),
+        )?;
+        let handshake_budget = budgets.handshake.min(time_left());
+        let handshake = tokio::time::timeout(handshake_budget, build(connection.clone())).await;
+        let through_relay = |reason: String| {
+            let hint = tunnel
+                .last_error()
+                .map(|line| format!(": {line}"))
+                .unwrap_or_default();
+            Box::<dyn StdError>::from(format!(
+                "{reason}\nThe connection went through a `docker exec` relay to {}{hint}",
+                relay_target.describe()
+            ))
+        };
+        match handshake {
+            Ok(Ok(value)) => Ok(DockerConnected {
+                value,
+                connection,
+                route: DockerRoute {
+                    kind: RouteKind::ExecTunnel,
+                    host: tunnel.local_addr().ip().to_string(),
+                    port: tunnel.local_port(),
+                    helper: Some(tunnel.helper().name().to_string()),
+                    detail: tunnel.describe(),
+                },
+                tunnel: Some(tunnel),
+                container_name: info.name.clone(),
+                database_port: port,
+            }),
+            Ok(Err(e)) if is_transport_failure(&e.to_string()) => Err(through_relay(e.to_string())),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(through_relay(format!(
+                "the database handshake did not finish within {} s",
+                handshake_budget.as_secs().max(1)
+            ))),
         }
-        None
     }
 
     /// Parse Docker URL format: docker://user:password@container_name/database
+    /// (a `?query` after the database is accepted and ignored here; see
+    /// [`DockerTarget`] for the options).
     pub fn parse_docker_url(
         url: &str,
     ) -> Option<(Option<String>, Option<String>, String, Option<String>)> {
-        if !url.starts_with("docker://") {
-            return None;
-        }
-
-        let url_without_prefix = &url["docker://".len()..];
-
-        // Handle empty URL: docker://
-        if url_without_prefix.is_empty() {
-            return Some((None, None, String::new(), None));
-        }
-
-        // Parse user:password@container_name/database pattern
-        let (credentials_part, container_and_db) =
-            if let Some(at_pos) = url_without_prefix.find('@') {
-                let (creds, rest) = url_without_prefix.split_at(at_pos);
-                (Some(creds), &rest[1..]) // Skip the '@'
-            } else {
-                (None, url_without_prefix)
-            };
-
-        // Parse credentials
-        let (username, password) = if let Some(creds) = credentials_part {
-            if let Some(colon_pos) = creds.find(':') {
-                let (user, pass) = creds.split_at(colon_pos);
-                (Some(user.to_string()), Some(pass[1..].to_string())) // Skip the ':'
-            } else {
-                (Some(creds.to_string()), None)
-            }
-        } else {
-            (None, None)
-        };
-
-        // Parse container_name/database
-        let (container_name, database_name) = if let Some(slash_pos) = container_and_db.find('/') {
-            let (container, db) = container_and_db.split_at(slash_pos);
-            (container.to_string(), Some(db[1..].to_string())) // Skip the '/'
-        } else {
-            (container_and_db.to_string(), None)
-        };
-
-        Some((username, password, container_name, database_name))
+        let target = DockerTarget::parse(url)?;
+        Some((
+            target.user,
+            target.password,
+            target.container,
+            target.database,
+        ))
     }
+}
+
+/// Option key under which a connection request pins the Docker daemon (the
+/// value of [`DockerEndpoint::pinned_value`]). It travels in
+/// `ConnectionInfo::options` between a live connection and its siblings and
+/// is consumed by [`crate::db::Database::connect_docker_container`]; it is
+/// never handed to a database engine and never persisted.
+pub const PINNED_DAEMON_OPTION: &str = "docker_daemon";
+
+/// A parsed `docker://[user[:password]@]container[/database][?options]` URL.
+///
+/// Parts are taken verbatim (no percent-decoding, as `docker://` URLs always
+/// were) except option values, which are percent-encoded.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DockerTarget {
+    pub user: Option<String>,
+    pub password: Option<String>,
+    /// Empty for `docker://` (pick interactively).
+    pub container: String,
+    pub database: Option<String>,
+    /// Connection options (`sslmode=require`, ...). `ssl=true` is kept as
+    /// [`DockerTarget::use_tls`].
+    pub options: BTreeMap<String, String>,
+    pub use_tls: bool,
+}
+
+/// Everything except unreserved characters is percent-encoded in option
+/// values.
+const OPTION_ENCODE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~');
+
+impl DockerTarget {
+    /// `None` unless `url` starts with `docker://`.
+    pub fn parse(url: &str) -> Option<Self> {
+        let rest = url.strip_prefix("docker://")?;
+        let (credentials, rest) = match rest.find('@') {
+            Some(at) => (Some(&rest[..at]), &rest[at + 1..]),
+            None => (None, rest),
+        };
+        let (user, password) = match credentials {
+            Some(credentials) => match credentials.split_once(':') {
+                Some((user, password)) => (Some(user.to_string()), Some(password.to_string())),
+                None => (Some(credentials.to_string()), None),
+            },
+            None => (None, None),
+        };
+        let (rest, query) = match rest.split_once('?') {
+            Some((rest, query)) => (rest, Some(query)),
+            None => (rest, None),
+        };
+        let (container, database) = match rest.split_once('/') {
+            Some((container, database)) => (container, Some(database.to_string())),
+            None => (rest, None),
+        };
+        let mut options = BTreeMap::new();
+        for pair in query.into_iter().flat_map(|q| q.split('&')) {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            if key.is_empty() {
+                continue;
+            }
+            let decode = |text: &str| {
+                percent_encoding::percent_decode_str(text)
+                    .decode_utf8_lossy()
+                    .into_owned()
+            };
+            options.insert(decode(key), decode(value));
+        }
+        let use_tls = options
+            .remove("ssl")
+            .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+        Some(Self {
+            user,
+            password,
+            container: container.to_string(),
+            database,
+            options,
+            use_tls,
+        })
+    }
+
+    /// The target of an open (or resolved) container connection. The password
+    /// is kept only so callers can reuse it in memory; [`DockerTarget::render`]
+    /// never writes it.
+    pub fn from_connection_info(info: &crate::database::ConnectionInfo) -> Option<Self> {
+        let container = info.docker_container.as_deref().filter(|c| !c.is_empty())?;
+        Some(Self {
+            user: info.username.clone().filter(|u| !u.is_empty()),
+            password: info.password.clone().filter(|p| !p.is_empty()),
+            container: container.to_string(),
+            database: info.database.clone().filter(|d| !d.is_empty()),
+            options: info
+                .options
+                .iter()
+                .filter(|(key, _)| key.as_str() != PINNED_DAEMON_OPTION)
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            use_tls: info.use_tls,
+        })
+    }
+
+    /// Connection details to resolve against the container: the parts the URL
+    /// named (the engine, host and port are filled in from the container).
+    pub fn to_connection_info(&self) -> crate::database::ConnectionInfo {
+        crate::database::ConnectionInfo {
+            database_type: DatabaseType::PostgreSQL,
+            host: None,
+            port: None,
+            username: self.user.clone(),
+            password: self.password.clone(),
+            database: self.database.clone(),
+            file_path: None,
+            options: self
+                .options
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            docker_container: Some(self.container.clone()),
+            use_tls: self.use_tls,
+        }
+    }
+
+    /// The canonical URL to persist (recents, sessions): container, user,
+    /// database and options. **Never the password** and never an address (a
+    /// relay's port changes per connection). Parts that could not survive a
+    /// round trip through the verbatim URL syntax are left out (the
+    /// container's own environment then supplies the default on reconnect),
+    /// and so are options that look like secrets.
+    pub fn render(&self) -> String {
+        let mut url = String::from("docker://");
+        if let Some(user) = self
+            .user
+            .as_deref()
+            .filter(|u| !u.is_empty() && !u.contains(['@', ':', '/', '?', '#']))
+        {
+            url.push_str(user);
+            url.push('@');
+        }
+        url.push_str(&self.container);
+        if let Some(database) = self
+            .database
+            .as_deref()
+            .filter(|d| !d.is_empty() && !d.contains(['?', '#']))
+        {
+            url.push('/');
+            url.push_str(database);
+        }
+        let mut query: Vec<String> = self
+            .options
+            .iter()
+            .filter(|(key, _)| {
+                let key = key.to_ascii_lowercase();
+                !(key.contains("password") || key.contains("secret") || key.contains("token"))
+            })
+            .map(|(key, value)| {
+                format!(
+                    "{}={}",
+                    percent_encoding::utf8_percent_encode(key, OPTION_ENCODE),
+                    percent_encoding::utf8_percent_encode(value, OPTION_ENCODE)
+                )
+            })
+            .collect();
+        if self.use_tls {
+            query.push("ssl=true".to_string());
+        }
+        query.sort();
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(&query.join("&"));
+        }
+        url
+    }
+}
+
+/// The preferred published host port among bindings: IPv4 first.
+fn preferred_binding(bindings: &[PublishedBinding]) -> (Option<u16>, Option<String>) {
+    bindings
+        .iter()
+        .find(|b| !b.host_ip.contains(':'))
+        .or_else(|| bindings.first())
+        .map(|b| (Some(b.host_port), Some(b.host_ip.clone())))
+        .unwrap_or((None, None))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     #[test]
     fn test_detect_database_type_from_image() {
@@ -815,121 +1352,590 @@ mod tests {
         assert_eq!(DockerClient::get_default_port(&DatabaseType::SQLite), 0);
     }
 
-    #[test]
-    fn test_orbstack_custom_domain() {
-        let Ok(docker_client) = DockerClient::new() else {
-            eprintln!("Skipping: Docker daemon not available");
-            return;
-        };
+    // -- container info -------------------------------------------------------
 
-        // Test custom domain detection
-        let mut labels = HashMap::new();
-        labels.insert(
-            "dev.orbstack.domains".to_string(),
-            "my-custom-db.local".to_string(),
-        );
-
-        let container_info = DockerContainerInfo {
-            id: "test".to_string(),
-            name: "test-container".to_string(),
-            image: "postgres:13".to_string(),
+    fn container(name: &str) -> DockerContainerInfo {
+        DockerContainerInfo {
+            id: format!("id-{name}"),
+            name: name.to_string(),
+            image: "postgres:17".to_string(),
             status: "running".to_string(),
             database_type: Some(DatabaseType::PostgreSQL),
             host_port: None,
+            host_ip: None,
+            bindings: Vec::new(),
             container_port: Some(5432),
             actual_database_port: 5432,
             ip_address: None,
+            ipv6_address: None,
             environment: HashMap::new(),
-            labels,
-        };
+            labels: HashMap::new(),
+        }
+    }
 
-        let custom_domain = docker_client.get_custom_orbstack_domain(&container_info);
-        assert_eq!(custom_domain, Some("my-custom-db.local".to_string()));
+    fn with_bindings(mut info: DockerContainerInfo, ports: &[(&str, u16)]) -> DockerContainerInfo {
+        info.bindings = ports
+            .iter()
+            .map(|(ip, port)| PublishedBinding {
+                host_ip: ip.to_string(),
+                host_port: *port,
+            })
+            .collect();
+        (info.host_port, info.host_ip) = preferred_binding(&info.bindings);
+        info
+    }
+
+    #[rstest]
+    #[case(DatabaseType::PostgreSQL, &[], 5432)]
+    #[case(DatabaseType::PostgreSQL, &[("PGPORT", "5433")], 5433)]
+    #[case(DatabaseType::PostgreSQL, &[("PGPORT", "not-a-port")], 5432)]
+    #[case(DatabaseType::PostgreSQL, &[("PGPORT", "0")], 5432)]
+    #[case(DatabaseType::MySQL, &[("MYSQL_TCP_PORT", "3307")], 3307)]
+    // PGPORT means nothing to MySQL
+    #[case(DatabaseType::MySQL, &[("PGPORT", "5433")], 3306)]
+    fn database_port_comes_from_the_engine_not_from_exposed_ports(
+        #[case] db_type: DatabaseType,
+        #[case] env: &[(&str, &str)],
+        #[case] expected: u16,
+    ) {
+        let env = env
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(DockerClient::database_port(&db_type, &env), expected);
     }
 
     #[test]
-    fn test_orbstack_compose_domain() {
-        let Ok(docker_client) = DockerClient::new() else {
-            eprintln!("Skipping: Docker daemon not available");
-            return;
+    fn inspect_bindings_keep_every_host_binding_of_the_database_port() {
+        use bollard::models::{NetworkSettings, PortBinding};
+        let binding = |ip: &str, port: &str| PortBinding {
+            host_ip: Some(ip.into()),
+            host_port: Some(port.into()),
         };
-
-        // Test compose project domain detection via labels
-        let mut labels = HashMap::new();
-        labels.insert(
-            "com.docker.compose.project".to_string(),
-            "myapp".to_string(),
+        let mut ports = HashMap::new();
+        ports.insert(
+            "5432/tcp".to_string(),
+            Some(vec![
+                binding("0.0.0.0", "32768"),
+                binding("::", "32768"),
+                binding("0.0.0.0", "32768"),
+            ]),
         );
-        labels.insert(
-            "com.docker.compose.service".to_string(),
-            "database".to_string(),
+        // An unrelated published service must not matter.
+        ports.insert(
+            "8080/tcp".to_string(),
+            Some(vec![binding("0.0.0.0", "8080")]),
         );
-
-        let container_info = DockerContainerInfo {
-            id: "test".to_string(),
-            name: "myapp-database-1".to_string(),
-            image: "postgres:13".to_string(),
-            status: "running".to_string(),
-            database_type: Some(DatabaseType::PostgreSQL),
-            host_port: None,
-            container_port: Some(5432),
-            actual_database_port: 5432,
-            ip_address: None,
-            environment: HashMap::new(),
-            labels,
+        ports.insert("5432/udp".to_string(), Some(vec![binding("0.0.0.0", "9")]));
+        let inspect = ContainerInspectResponse {
+            network_settings: Some(NetworkSettings {
+                ports: Some(ports),
+                ..Default::default()
+            }),
+            ..Default::default()
         };
-
-        let compose_domain = docker_client.get_compose_orbstack_domain(&container_info);
-        assert_eq!(compose_domain, Some("database.myapp.orb.local".to_string()));
-
-        // Test fallback to name-based detection
-        let container_info_no_labels = DockerContainerInfo {
-            id: "test".to_string(),
-            name: "myproject-postgres-1".to_string(),
-            image: "postgres:13".to_string(),
-            status: "running".to_string(),
-            database_type: Some(DatabaseType::PostgreSQL),
-            host_port: None,
-            container_port: Some(5432),
-            actual_database_port: 5432,
-            ip_address: None,
-            environment: HashMap::new(),
-            labels: HashMap::new(),
-        };
-
-        let fallback_domain = docker_client.get_compose_orbstack_domain(&container_info_no_labels);
+        let bindings = DockerClient::inspect_bindings(&inspect, 5432);
         assert_eq!(
-            fallback_domain,
-            Some("myproject-postgres.orb.local".to_string())
+            bindings,
+            vec![
+                PublishedBinding {
+                    host_ip: "0.0.0.0".into(),
+                    host_port: 32768
+                },
+                PublishedBinding {
+                    host_ip: "::".into(),
+                    host_port: 32768
+                },
+            ]
         );
+        assert_eq!(
+            preferred_binding(&bindings),
+            (Some(32768), Some("0.0.0.0".into()))
+        );
+        // Nothing published (null binding list) → no bindings.
+        let mut unpublished = HashMap::new();
+        unpublished.insert("5432/tcp".to_string(), None);
+        let inspect = ContainerInspectResponse {
+            network_settings: Some(NetworkSettings {
+                ports: Some(unpublished),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(DockerClient::inspect_bindings(&inspect, 5432).is_empty());
+        assert_eq!(preferred_binding(&[]), (None, None));
     }
 
     #[test]
-    fn test_linux_container_ip_fallback() {
-        let Ok(docker_client) = DockerClient::new() else {
-            eprintln!("Skipping: Docker daemon not available");
-            return;
-        };
+    fn credentials_come_from_the_container_environment() {
+        let mut info = container("db");
+        info.environment
+            .insert("POSTGRES_USER".into(), "app".into());
+        info.environment
+            .insert("POSTGRES_PASSWORD".into(), "secret".into());
+        let (db_type, user, password, name) = DockerClient::database_credentials(&info).unwrap();
+        assert_eq!(db_type, DatabaseType::PostgreSQL);
+        assert_eq!(user.as_deref(), Some("app"));
+        assert_eq!(password.as_deref(), Some("secret"));
+        // POSTGRES_DB defaults to the user name.
+        assert_eq!(name.as_deref(), Some("app"));
+    }
 
-        // Test Linux container IP fallback when no ports are exposed
-        let container_info = DockerContainerInfo {
-            id: "test".to_string(),
-            name: "postgrescontainer".to_string(),
-            image: "postgres:13".to_string(),
-            status: "running".to_string(),
-            database_type: Some(DatabaseType::PostgreSQL),
-            host_port: None,
-            container_port: Some(5432),
-            actual_database_port: 5432,
-            ip_address: Some("172.17.0.2".to_string()),
-            environment: HashMap::new(),
-            labels: HashMap::new(),
-        };
+    #[test]
+    fn clickhouse_without_user_setup_uses_the_default_user_without_password() {
+        let mut info = container("ch");
+        info.database_type = Some(DatabaseType::ClickHouse);
+        info.environment
+            .insert("CLICKHOUSE_PASSWORD".into(), "secret".into());
+        info.environment
+            .insert("CLICKHOUSE_SKIP_USER_SETUP".into(), "1".into());
+        let (_, _, password, _) = DockerClient::database_credentials(&info).unwrap();
+        assert_eq!(password, None);
+    }
 
-        let connection_info = docker_client
-            .build_connection_info(&container_info)
+    // -- connecting through routes -----------------------------------------------
+
+    /// A client whose daemon is a closed local port: every API call fails
+    /// fast, which is what the route logic must cope with.
+    fn offline_client() -> DockerClient {
+        DockerClient::with_endpoint(DockerEndpoint::explicit("tcp://127.0.0.1:1").unwrap())
+            .expect("tcp endpoints connect lazily")
+    }
+
+    async fn listening_port() -> (tokio::net::TcpListener, u16) {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
             .unwrap();
-        assert_eq!(connection_info.host, "172.17.0.2");
-        assert_eq!(connection_info.port, 5432);
+        let port = listener.local_addr().unwrap().port();
+        (listener, port)
+    }
+
+    async fn closed_port() -> u16 {
+        listening_port().await.1
+    }
+
+    type BuildResult = Result<String, Box<dyn StdError>>;
+
+    #[tokio::test]
+    async fn connects_on_the_published_port_and_reports_the_phases() {
+        let (_listener, port) = listening_port().await;
+        let info = with_bindings(container("db"), &[("0.0.0.0", port)]);
+        let mut phases = Vec::new();
+        let connected = offline_client()
+            .connect_via_routes(
+                &info,
+                |phase| phases.push(phase),
+                |connection| async move {
+                    BuildResult::Ok(format!("{}:{}", connection.host, connection.port))
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(connected.value, format!("127.0.0.1:{port}"));
+        assert_eq!(connected.route.kind, RouteKind::PublishedPort);
+        assert!(connected.route.is_direct());
+        assert!(connected.tunnel.is_none());
+        assert_eq!(
+            phases,
+            [
+                DockerPhase::CheckingDirectAccess,
+                DockerPhase::CheckingDirectAccess,
+                DockerPhase::Authenticating
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_route_that_answers_but_fails_at_transport_level_falls_through() {
+        let (_a, first) = listening_port().await;
+        let (_b, second) = listening_port().await;
+        let info = with_bindings(
+            container("db"),
+            &[("127.0.0.1", first), ("127.0.0.1", second)],
+        );
+        let mut calls = 0;
+        let connected = offline_client()
+            .connect_via_routes(
+                &info,
+                |_| {},
+                |connection| {
+                    calls += 1;
+                    let first_call = calls == 1;
+                    async move {
+                        if first_call {
+                            BuildResult::Err(
+                                "error communicating with database: Connection reset by peer"
+                                    .into(),
+                            )
+                        } else {
+                            Ok(format!("{}", connection.port))
+                        }
+                    }
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(connected.value, second.to_string());
+        assert_eq!(connected.route.port, second);
+    }
+
+    #[tokio::test]
+    async fn an_authentication_failure_stops_without_trying_other_routes() {
+        let (_a, first) = listening_port().await;
+        let (_b, second) = listening_port().await;
+        let info = with_bindings(
+            container("db"),
+            &[("127.0.0.1", first), ("127.0.0.1", second)],
+        );
+        let mut calls = 0;
+        let error = offline_client()
+            .connect_via_routes(&info, |_| {}, |_| {
+                calls += 1;
+                async {
+                    BuildResult::Err(
+                        "error returned from database: password authentication failed for user \"app\""
+                            .into(),
+                    )
+                }
+            })
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("password authentication failed"));
+        assert_eq!(
+            calls, 1,
+            "credentials must not be replayed on another route"
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_reachable_and_no_forwarding_fails_fast_with_the_attempts() {
+        let closed = closed_port().await;
+        let info = with_bindings(container("tt2-postgres-1"), &[("0.0.0.0", closed)]);
+        let started = std::time::Instant::now();
+        let error = offline_client()
+            .connect_via_routes(&info, |_| {}, |_| async { BuildResult::Ok(String::new()) })
+            .await
+            .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        let docker_error = error.downcast_ref::<DockerError>().expect("typed error");
+        let DockerError::Unreachable(details) = docker_error else {
+            panic!("expected Unreachable, got {docker_error:?}");
+        };
+        assert_eq!(details.container, "tt2-postgres-1");
+        assert_eq!(details.port, 5432);
+        assert_eq!(
+            details.published.as_deref(),
+            Some(format!("127.0.0.1:{closed}").as_str())
+        );
+        let routes: Vec<_> = details.attempts.iter().map(|a| a.route).collect();
+        assert_eq!(routes, [RouteKind::PublishedPort, RouteKind::ExecTunnel]);
+        let text = error.to_string();
+        assert!(text.contains("Couldn't reach 'tt2-postgres-1'"), "{text}");
+        assert!(text.contains("connection refused"), "{text}");
+        assert!(text.contains(r#"ports: ["127.0.0.1::5432"]"#), "{text}");
+    }
+
+    #[tokio::test]
+    async fn containers_without_a_database_port_are_rejected_early() {
+        let mut info = container("lite");
+        info.database_type = Some(DatabaseType::SQLite);
+        info.actual_database_port = 0;
+        let error = offline_client()
+            .connect_via_routes(&info, |_| {}, |_| async { BuildResult::Ok(String::new()) })
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<DockerError>(),
+            Some(DockerError::NoExposedPorts(_))
+        ));
+    }
+
+    #[test]
+    fn setup_timeout_names_the_step() {
+        let text = DockerError::SetupTimeout {
+            container: "db".into(),
+            seconds: 10,
+            phase: DockerPhase::OpeningForwarding,
+        }
+        .to_string();
+        assert_eq!(
+            text,
+            "Connecting to 'db' took longer than 10 s (last step: opening forwarding)"
+        );
+    }
+    // -- daemon identity, targets ---------------------------------------------
+
+    #[tokio::test]
+    async fn a_pinned_daemon_is_used_whatever_the_current_context_is() {
+        use crate::db::Database;
+        // The current daemon (whatever it is here) is not consulted: the
+        // pin names a socket that doesn't exist, and that is what fails.
+        let mut template = DockerTarget::parse("docker://some-container")
+            .unwrap()
+            .to_connection_info();
+        template.options.insert(
+            PINNED_DAEMON_OPTION.to_string(),
+            "unix:///nonexistent/dbcrust-pinned.sock".to_string(),
+        );
+        let error = match Database::connect_docker_container(
+            &template,
+            |_| {},
+            |_| async { Err::<Database, _>("unreachable".into()) },
+        )
+        .await
+        {
+            Ok(_) => panic!("a missing daemon cannot connect"),
+            Err(e) => e,
+        };
+        let text = error.to_string();
+        assert!(text.contains("dbcrust-pinned.sock"), "{text}");
+        assert!(matches!(
+            error.downcast_ref::<DockerError>(),
+            Some(DockerError::DaemonUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn a_pin_that_cannot_be_used_is_an_error_not_a_fallback() {
+        let mut template = DockerTarget::parse("docker://c")
+            .unwrap()
+            .to_connection_info();
+        template.options.insert(
+            PINNED_DAEMON_OPTION.to_string(),
+            "ssh://me@host".to_string(),
+        );
+        let error =
+            futures_util::FutureExt::now_or_never(crate::db::Database::connect_docker_container(
+                &template,
+                |_| {},
+                |_| async { Err::<crate::db::Database, _>("unreachable".into()) },
+            ))
+            .expect("fails before any await")
+            .err()
+            .expect("error");
+        assert!(matches!(
+            error.downcast_ref::<DockerError>(),
+            Some(DockerError::Endpoint(_))
+        ));
+    }
+
+    #[rstest]
+    #[case("docker://", "", None, None)]
+    #[case("docker://db", "db", None, None)]
+    #[case("docker://app@db/shop", "db", Some("app"), Some("shop"))]
+    #[case(
+        "docker://app:pw@db/shop?sslmode=require",
+        "db",
+        Some("app"),
+        Some("shop")
+    )]
+    #[case("docker://db?sslmode=require", "db", None, None)]
+    fn docker_targets_parse(
+        #[case] url: &str,
+        #[case] container: &str,
+        #[case] user: Option<&str>,
+        #[case] database: Option<&str>,
+    ) {
+        let target = DockerTarget::parse(url).unwrap();
+        assert_eq!(target.container, container);
+        assert_eq!(target.user.as_deref(), user);
+        assert_eq!(target.database.as_deref(), database);
+        // the old tuple API agrees (and ignores the query)
+        let (u, _, c, d) = DockerClient::parse_docker_url(url).unwrap();
+        assert_eq!(
+            (u.as_deref(), c.as_str(), d.as_deref()),
+            (user, container, database)
+        );
+        assert!(DockerTarget::parse("postgres://x/y").is_none());
+    }
+
+    #[test]
+    fn the_canonical_target_round_trips_without_password_or_address() {
+        let target = DockerTarget::parse(
+            "docker://app:p%40ss@tt2-postgres-1/shop?sslmode=require&ssl=true&search_path=a%20b",
+        )
+        .unwrap();
+        assert!(target.use_tls);
+        let rendered = target.render();
+        assert_eq!(
+            rendered,
+            "docker://app@tt2-postgres-1/shop?search_path=a%20b&ssl=true&sslmode=require"
+        );
+        assert!(!rendered.contains("p%40ss") && !rendered.contains("pw"));
+        let again = DockerTarget::parse(&rendered).unwrap();
+        assert_eq!(again.user.as_deref(), Some("app"));
+        assert_eq!(again.password, None);
+        assert_eq!(again.database.as_deref(), Some("shop"));
+        assert_eq!(again.options, target.options);
+        assert!(again.use_tls);
+        assert_eq!(again.render(), rendered);
+    }
+
+    #[rstest]
+    // user names that the verbatim syntax can't carry are left out
+    #[case(Some("a@b"), Some("db"), "docker://c/db")]
+    #[case(Some("a:b"), Some("db"), "docker://c/db")]
+    #[case(Some("app"), Some("we?ird"), "docker://app@c")]
+    #[case(None, None, "docker://c")]
+    fn what_cannot_round_trip_is_left_to_the_container_environment(
+        #[case] user: Option<&str>,
+        #[case] database: Option<&str>,
+        #[case] expected: &str,
+    ) {
+        let target = DockerTarget {
+            user: user.map(str::to_string),
+            container: "c".into(),
+            database: database.map(str::to_string),
+            ..Default::default()
+        };
+        assert_eq!(target.render(), expected);
+    }
+
+    #[test]
+    fn secrets_never_reach_the_persisted_target() {
+        let mut info = DockerTarget::parse("docker://app@c/db")
+            .unwrap()
+            .to_connection_info();
+        info.password = Some("hunter2".into());
+        info.options
+            .insert("password_command".into(), "pass show db".into());
+        info.options.insert("API_TOKEN".into(), "abc".into());
+        info.options.insert("sslmode".into(), "require".into());
+        info.options
+            .insert(PINNED_DAEMON_OPTION.into(), "unix:///x.sock".into());
+        let rendered = DockerTarget::from_connection_info(&info).unwrap().render();
+        assert_eq!(rendered, "docker://app@c/db?sslmode=require");
+    }
+
+    // -- time budgets ------------------------------------------------------------
+
+    fn tight(setup_ms: u64, handshake_ms: u64, reserve_ms: u64) -> RouteBudgets {
+        RouteBudgets {
+            setup: Duration::from_millis(setup_ms),
+            handshake: Duration::from_millis(handshake_ms),
+            forwarding_reserve: Duration::from_millis(reserve_ms),
+            min_handshake: Duration::from_millis(50),
+        }
+    }
+
+    fn unreachable_details<'a>(error: &'a (dyn StdError + 'static)) -> &'a Unreachable {
+        match error.downcast_ref::<DockerError>() {
+            Some(DockerError::Unreachable(details)) => details,
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_that_never_finishes_the_handshake_falls_through() {
+        // Accepts TCP (the kernel does), never speaks: a proxy to nothing.
+        let (_silent, port) = listening_port().await;
+        let info = with_bindings(container("tt2-postgres-1"), &[("0.0.0.0", port)]);
+        let client = offline_client().with_budgets(tight(5000, 300, 200));
+        let started = Instant::now();
+        let error = client
+            .connect_via_routes(
+                &info,
+                |_| {},
+                |_| async { std::future::pending::<BuildResult>().await },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        let details = unreachable_details(error.as_ref());
+        assert_eq!(details.attempts[0].route, RouteKind::PublishedPort);
+        assert!(
+            details.attempts[0]
+                .reason
+                .contains("handshake did not finish"),
+            "{:?}",
+            details.attempts
+        );
+        // ...and forwarding was still tried afterwards
+        assert_eq!(
+            details.attempts.last().unwrap().route,
+            RouteKind::ExecTunnel
+        );
+    }
+
+    #[tokio::test]
+    async fn direct_routes_leave_time_for_forwarding() {
+        let (_a, first) = listening_port().await;
+        let (_b, second) = listening_port().await;
+        let info = with_bindings(
+            container("db"),
+            &[("127.0.0.1", first), ("127.0.0.1", second)],
+        );
+        // 2 s in all, 1.2 s reserved: the first silent route may take 0.8 s,
+        // which leaves nothing for a second one.
+        let client = offline_client().with_budgets(tight(2000, 1500, 1200));
+        let mut handshakes = 0;
+        let started = Instant::now();
+        let error = client
+            .connect_via_routes(
+                &info,
+                |_| {},
+                |_| {
+                    handshakes += 1;
+                    async { std::future::pending::<BuildResult>().await }
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(handshakes, 1, "the second direct route must not start");
+        assert!(
+            started.elapsed() < Duration::from_millis(1900),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            unreachable_details(error.as_ref())
+                .attempts
+                .last()
+                .unwrap()
+                .route,
+            RouteKind::ExecTunnel
+        );
+    }
+
+    #[tokio::test]
+    async fn one_deadline_covers_the_container_lookup_too() {
+        // A daemon that accepts connections and never answers the inspect.
+        let (_silent, port) = listening_port().await;
+        let client = DockerClient::with_endpoint(
+            DockerEndpoint::explicit(&format!("tcp://127.0.0.1:{port}")).unwrap(),
+        )
+        .unwrap()
+        .with_budgets(tight(400, 300, 100));
+        let started = Instant::now();
+        let error = client
+            .connect_container(
+                "tt2-postgres-1",
+                |_| {},
+                |_| async { BuildResult::Ok(String::new()) },
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        match error.downcast_ref::<DockerError>() {
+            Some(DockerError::SetupTimeout {
+                phase, container, ..
+            }) => {
+                assert_eq!(*phase, DockerPhase::ResolvingDocker);
+                assert_eq!(container, "tt2-postgres-1");
+            }
+            other => panic!("expected the overall timeout, got {other:?}"),
+        }
     }
 }

@@ -23,6 +23,9 @@ pub mod database_white_dragon; // White Dragon HTTP/SQL implementation
 pub mod db;
 pub mod dbcrust_pass; // Universal password file (.dbcrust) support
 pub mod docker; // Docker container integration
+pub mod docker_endpoint; // which Docker daemon: DOCKER_CONTEXT / DOCKER_HOST / contexts
+pub mod docker_route; // reachability candidates, probing, route reporting
+pub mod docker_tunnel; // docker exec relay for containers the host can't route to
 pub mod explain_tui;
 pub mod format; // Made format module public
 pub mod geojson_display;

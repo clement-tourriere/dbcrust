@@ -9,24 +9,27 @@ This page covers how to build, test, and contribute to DBCrust.
 ## Prerequisites
 
 - **[Rust](https://rustup.rs/)** — stable toolchain
-- **[mise](https://mise.jdx.dev/) 2026.8.16+** — manages Bun, Commitizen, and other tools automatically
+- **[mise](https://mise.jdx.dev/) 2026.8.16+** — manages Commitizen, the Mr Boxington build cache and the other tools, and runs every task. You don't have to install it: the repository's `./bin/mise` wrapper downloads a pinned mise on first use.
 - **Python 3.10+** — only needed for the Python bindings
 
 ```bash
-# Install mise (if you don't have it)
-curl https://mise.run | sh
-
 # From the project root — install all managed tools
 mise install
+
+# No mise? Use the committed wrapper the same way, for every command on this page
+./bin/mise install
+./bin/mise run build:dev
 ```
+
+On first use in a clone, mise asks you to trust `mise.toml` (or run `mise trust`). `./bin/mise` keeps its mise binary and tools in mise's usual directories, so they are shared with a mise you install later. On Windows, run `bin\mise.cmd`.
 
 `mise install` reads `mise.toml` and sets up:
 
 | Tool | Purpose |
 |------|---------|
-| **Bun** | JavaScript runtime for the GUI frontend |
+| **Mr Boxington** (`mbx`) | Shared Cargo build cache — see [Build cache](#build-cache-mr-boxington) |
+| **Bun** | JavaScript runtime for the documentation site |
 | **Commitizen** | Conventional commit helper |
-| **Mr Boxington** | Shared, self-pruning Rust build cache |
 | **pkl** | Configuration language |
 | **hk** | Git hooks |
 
@@ -55,16 +58,18 @@ cargo install --path .  # install to ~/.cargo/bin
 
 The binary is named `dbcrust`. A short alias `dbc` is also built (see `src/bin/dbc.rs`).
 
-### GUI
+### Desktop app
 
 ```bash
-mise run gui:install        # install frontend deps via Bun
-mise run gui:dev            # dev mode (Vite hot-reload + Tauri)
-mise run gui:build          # production build with installers
-mise run gui:frontend       # frontend dev server only (no Tauri)
-mise run gui:build-frontend # build frontend only
-mise run gui:build-rust     # build Tauri Rust backend only
+mise run gui:dev            # run the app (debug build)
+mise run gui:build          # release build
+mise run gui:test           # backend tests (dbcrust-gui-core, no GPUI needed)
+mise run gui:lint           # clippy on both GUI crates
+mise run gui:screenshots    # regenerate the docs/README screenshots headlessly
+mise run gui:bundle         # macOS DBCrust.app
 ```
+
+The app is two crates: `gui/core` (`dbcrust-gui-core`, plain Rust — workers, storage, models) and `gui` (`dbcrust-gui`, the GPUI Kit views). See `gui/ARCHITECTURE.md`.
 
 See [Desktop GUI](gui.md) for full details.
 
@@ -95,6 +100,24 @@ mise run fmt     # cargo fmt
 mise run lint    # clippy (correctness, suspicious, perf as errors; style, complexity as warnings)
 mise run check   # fmt + lint + test in sequence
 ```
+
+## Build cache (Mr Boxington)
+
+Cargo commands run through mise — for the CLI, the desktop app and the Python bindings alike — go through [Mr Boxington](https://mr-boxington.jdx.dev/) (`mbx`), the Cargo build cache by mise's author. `mise.toml` installs a pinned `mbx` and declares a project-scoped `cargo` wrapper (`[wrappers.cargo]`, mise 2026.8.16 or newer — `./bin/mise` already is), so you keep typing plain `cargo` commands:
+
+- Compilations are cached in one store and reused across worktrees and branches: building one checkout warms the next.
+- `target/` becomes a link to a managed directory with a disk budget; old targets and cache entries are collected automatically, and more aggressively when the disk runs low.
+- Builds running at the same time share one CPU and memory budget.
+
+Cargo uses mbx when it runs through mise: `mise run` tasks, `mise exec -- cargo …`, or a shell with mise activation or shims on `PATH`. Check with `mise exec -- mbx doctor`. Editors and coding agents that call `~/.cargo/bin/cargo` directly bypass the cache: point them at `mise exec`, and see [rust-analyzer setup](https://mr-boxington.jdx.dev/setup#rust-analyzer) to route editor checks through mbx.
+
+```bash
+mise run cache:stats            # savings and disk use
+mise run cache:gc -- --dry-run  # preview what collection would reclaim
+mise run cache:gc               # reclaim space now
+```
+
+CI uses the same cache through [`jdx/mr-boxington-action`](https://github.com/jdx/mr-boxington-action), pinned to a commit and an `mbx` version. Release builds don't use it.
 
 ## Rust dependency updates
 
@@ -197,15 +220,16 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 | `lint` | Clippy with strict settings |
 | `fmt` | `cargo fmt` |
 | `check` | fmt → lint → test |
-| `gui:install` | Bun install for frontend |
-| `gui:dev` | Dev mode (frontend + Tauri) |
-| `gui:build` | Production GUI build |
-| `gui:frontend` | Vite dev server only |
-| `gui:build-frontend` | Build frontend only |
-| `gui:build-rust` | Build Tauri backend only |
-| `gui:build-rust-release` | Release build of Tauri backend |
-| `gui:lint` | Clippy on GUI crate |
+| `gui:dev` | Run the desktop app (debug) |
+| `gui:build` | Release build of the desktop app |
+| `gui:install` | Install `dbcrust-gui` into `~/.cargo/bin` |
+| `gui:bundle` | macOS `DBCrust.app` bundle |
+| `gui:test` | Backend tests (`dbcrust-gui-core`) |
+| `gui:lint` | Clippy on both GUI crates |
+| `gui:screenshots` | Render docs screenshots headlessly |
 | `gui:clean` | Remove GUI build artifacts |
+| `cache:stats` | Build-cache savings and disk use (`mbx stats`) |
+| `cache:gc` | Reclaim build-cache disk space (`mbx gc`) |
 | `py:dev` | `maturin develop` |
 | `py:build` | `maturin build --release` |
 | `py:test` | `python -m pytest` |
@@ -267,13 +291,14 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 │   ├── geojson_display.rs     # GeoJSON rendering
 │   ├── vector_display.rs      # pgvector display
 │   └── myconf.rs              # MySQL .my.cnf support
-├── gui/                       # Tauri desktop app
-│   ├── src/                   # React + TS frontend
-│   ├── src-tauri/             # Tauri Rust backend
-│   └── package.json           # Bun-managed deps
+├── gui/                       # desktop app (GPUI Kit)
+│   ├── core/                  # dbcrust-gui-core: workers, storage, models (no GPUI)
+│   ├── src/                   # dbcrust-gui: views, workspace, commands
+│   └── ARCHITECTURE.md        # module map and design language
 ├── python/                    # Python package (PyO3 + maturin)
 ├── docs/                      # MkDocs Material documentation
 ├── mise.toml                  # tool + task definitions
+├── bin/mise                   # mise wrapper: runs a pinned mise without installing it (bin/mise.cmd on Windows)
 ├── Cargo.toml                 # workspace root
 ├── pyproject.toml             # Python package metadata
 └── mkdocs.yml                 # docs site config
@@ -284,7 +309,7 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 - **Command system**: All backslash commands are variants of a `Command` enum. The `CommandShortcut` enum (with `strum::EnumIter`) auto-generates help text, completion, and dispatch. Never use hardcoded arrays for command lists.
 - **Database abstraction**: The `DatabaseClient` and `MetadataProvider` traits in `database.rs` define the interface. Each database has its own implementation file.
 - **Async**: Database operations use `tokio` + `async-trait`. Shared state uses `Arc<Mutex<T>>`.
-- **GUI bridge**: The Tauri backend in `gui/src-tauri/src/lib.rs` wraps `dbcrust` core functions as `#[tauri::command]` handlers. Database operations run on dedicated threads with `LocalSet` to handle `!Send` futures.
+- **Desktop app**: `gui/core` (`dbcrust-gui-core`) runs each connection on its own thread with a current-thread runtime + `LocalSet` (DBCrust futures are `!Send` and sqlx pools must stay on their runtime); the GPUI views in `gui/src` await its `Send` futures. Cancellation is per request via `dbcrust::database::set_thread_interrupt_flag`.
 - **Error handling**: `thiserror` for custom error types. User-facing prompts use `inquire`.
 - **Config**: `serde` with `#[serde(default)]` for backward compatibility. Separate TOML files for settings, sessions, named queries, and recent connections.
 

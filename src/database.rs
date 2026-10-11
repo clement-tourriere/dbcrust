@@ -56,13 +56,33 @@ pub fn read_only_requested() -> bool {
     READ_ONLY_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Process-wide interrupt flag. Set by the interactive Ctrl-C handler while a
-/// query is running; database clients poll it to cancel server-side. One
-/// shared flag is correct for a CLI: there is a single foreground query.
-pub fn interrupt_flag() -> &'static std::sync::Arc<std::sync::atomic::AtomicBool> {
+thread_local! {
+    static THREAD_INTERRUPT_FLAG: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Install (or clear, with `None`) an interrupt flag scoped to the calling
+/// thread. While set, [`interrupt_flag`] returns it instead of the
+/// process-wide flag. The desktop GUI runs one current-thread runtime per
+/// connection, so a per-thread flag cancels exactly that connection's
+/// statement without touching queries running on other connections.
+pub fn set_thread_interrupt_flag(flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>) {
+    THREAD_INTERRUPT_FLAG.with(|slot| *slot.borrow_mut() = flag);
+}
+
+/// Interrupt flag polled by database clients to cancel server-side. Returns
+/// the calling thread's flag when one was installed with
+/// [`set_thread_interrupt_flag`], otherwise the process-wide flag set by the
+/// interactive Ctrl-C handler (one shared flag is correct for a CLI: there is
+/// a single foreground query).
+pub fn interrupt_flag() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    if let Some(flag) = THREAD_INTERRUPT_FLAG.with(|slot| slot.borrow().clone()) {
+        return flag;
+    }
     static FLAG: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
         std::sync::OnceLock::new();
     FLAG.get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        .clone()
 }
 
 /// Escape a value for interpolation into a single-quoted SQL string literal.
@@ -1199,6 +1219,20 @@ pub trait DatabaseClient: Send + Sync {
     /// Execute a query with EXPLAIN prefix and return raw output (unformatted)
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError>;
 
+    /// `EXPLAIN ANALYZE` with raw, machine-readable output (PostgreSQL: the
+    /// JSON plan with actual timings and buffers). This EXECUTES the
+    /// statement: callers must only pass statements they consider safe to
+    /// run. Unsupported by default.
+    async fn explain_analyze_query_raw(
+        &self,
+        _sql: &str,
+    ) -> Result<Vec<Vec<String>>, DatabaseError> {
+        Err(DatabaseError::FeatureNotSupported {
+            database_type: self.get_connection_info().database_type.clone(),
+            feature: "EXPLAIN ANALYZE".to_string(),
+        })
+    }
+
     /// List available databases (where applicable)
     async fn list_databases(&self) -> Result<Vec<Vec<String>>, DatabaseError>;
 
@@ -1228,6 +1262,24 @@ pub trait DatabaseClient: Send + Sync {
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    #[test]
+    fn test_thread_interrupt_flag_is_scoped_to_its_thread() {
+        let global = interrupt_flag();
+        let scoped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_flag = scoped.clone();
+        std::thread::spawn(move || {
+            set_thread_interrupt_flag(Some(worker_flag.clone()));
+            assert!(std::sync::Arc::ptr_eq(&interrupt_flag(), &worker_flag));
+            set_thread_interrupt_flag(None);
+            assert!(!std::sync::Arc::ptr_eq(&interrupt_flag(), &worker_flag));
+        })
+        .join()
+        .unwrap();
+        // Other threads keep seeing the process-wide flag
+        assert!(std::sync::Arc::ptr_eq(&interrupt_flag(), &global));
+        assert!(!std::sync::Arc::ptr_eq(&interrupt_flag(), &scoped));
+    }
 
     #[rstest]
     fn test_connection_info_to_url_postgresql() {

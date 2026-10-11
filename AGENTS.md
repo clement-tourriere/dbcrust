@@ -4,15 +4,12 @@ This file provides guidance for agentic coding tools working with the DBCrust co
 
 ## Build/Lint/Test Commands
 
-`mise.toml` uses the project-scoped Mr Boxington Cargo wrapper and requires mise 2026.8.16+. Run `mise install` first and prefer `mise run` tasks so non-interactive agents also use the shared Rust build cache. Use `mbx doctor` to diagnose cache setup.
+`mise.toml` uses the project-scoped Mr Boxington Cargo wrapper and requires mise 2026.8.16+. Run `mise install` first and run Cargo through mise — `mise run <task>` or `mise exec -- cargo …` — so non-interactive agents also use the shared Rust build cache; a bare `~/.cargo/bin/cargo` bypasses it. If mise isn't installed, use the committed wrapper `./bin/mise` the same way (`./bin/mise run test`). Use `mbx doctor` to diagnose cache setup; `mise run cache:stats` / `mise run cache:gc` inspect and trim the cache.
 
 ### Core Build Commands
 ```bash
 # Install pinned development tools
 mise install
-
-# Install Bun-managed GUI dependencies
-mise run gui:install
 
 # Build the project (development)
 mise run build:dev
@@ -20,11 +17,10 @@ mise run build:dev
 # Build optimized release version
 mise run build
 
-# Build GUI frontend only
-mise run gui:build-frontend
-
-# Build the Tauri GUI
+# Desktop app (GPUI Kit): run / release build / backend tests
+mise run gui:dev
 mise run gui:build
+mise run gui:test       # dbcrust-gui-core, no GPUI needed
 
 # Build Python package (development)
 mise run py:dev

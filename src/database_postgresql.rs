@@ -1004,10 +1004,16 @@ impl PostgreSQLClient {
                             // Best-effort server-side cancel from a separate
                             // pool connection; the pinned query then completes
                             // with SQLSTATE 57014 and the protocol stays clean
-                            let _ = sqlx::query("SELECT pg_cancel_backend($1)")
-                                .bind(backend_pid)
-                                .execute(&self.pool)
-                                .await;
+                            // Bounded: with an exhausted pool the cancel
+                            // request itself could otherwise wait for the
+                            // acquire timeout before the grace period starts
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_secs(3),
+                                sqlx::query("SELECT pg_cancel_backend($1)")
+                                    .bind(backend_pid)
+                                    .execute(&self.pool),
+                            )
+                            .await;
                             grace_deadline =
                                 Some(now + std::time::Duration::from_secs(5));
                         }
@@ -1309,6 +1315,14 @@ impl DatabaseClient for PostgreSQLClient {
 
     async fn explain_query_raw(&self, sql: &str) -> Result<Vec<Vec<String>>, DatabaseError> {
         let explain_sql = format!("EXPLAIN (FORMAT JSON) {sql}");
+        self.execute_query_raw_json(&explain_sql).await
+    }
+
+    async fn explain_analyze_query_raw(
+        &self,
+        sql: &str,
+    ) -> Result<Vec<Vec<String>>, DatabaseError> {
+        let explain_sql = format!("EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}");
         self.execute_query_raw_json(&explain_sql).await
     }
 

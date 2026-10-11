@@ -1,0 +1,64 @@
+[package]
+name = "dbcrust-gui"
+version = "0.37.2"
+edition = "2024"
+publish = false
+description = "DBCrust desktop app — a native GPU-accelerated database workbench built with GPUI Kit"
+default-run = "dbcrust-gui"
+
+[lib]
+name = "dbcrust_gui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "dbcrust-gui"
+path = "src/main.rs"
+
+[[bin]]
+name = "dbcrust-gui-screenshots"
+path = "src/bin/screenshots.rs"
+required-features = ["screenshots"]
+
+[features]
+default = []
+# Headless renderer + capture used by `mise run gui:screenshots`
+screenshots = ["gpui-kit/test-support", "dep:tempfile", "dep:chrono"]
+
+[dependencies]
+dbcrust-gui-core = { path = "core" }
+# Pinned: implement against the published 0.7.1 sources (the upstream main
+# branch has diverged under the same version number)
+gpui-kit = { version = "=0.7.1", features = ["tree-sitter-sql"] }
+# Types of GPUI Kit's LSP-style completion provider (same version as gpui-base)
+lsp-types = "0.97"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+strum = { version = "0.27", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter"] }
+# Wakes GPUI from the tray's native callbacks (already in the tree through GPUI)
+async-channel = "2"
+# Decodes the bundled tray icons (the screenshot harness encodes PNGs with it too)
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Raw NSView / HWND of the main window, to hide it without destroying it
+raw-window-handle = "0.6"
+tempfile = { version = "3", optional = true }
+chrono = { version = "0.4", optional = true, default-features = false, features = ["clock", "std"] }
+
+# The menu bar / notification area icon. Linux has no tray this round (GPUI
+# cannot hide a window there and tray-icon needs a GTK main loop), so nothing
+# of this is compiled or linked on Linux.
+[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
+tray-icon = { version = "0.24", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+gpui-kit = { version = "=0.7.1", features = ["tree-sitter-sql", "test-support"] }
+rstest = { version = "0.26", default-features = false }
+tempfile = "3"

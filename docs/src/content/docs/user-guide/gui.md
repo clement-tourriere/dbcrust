@@ -1,175 +1,221 @@
 ---
 title: "Desktop GUI"
+description: "DBCrust's native, GPU-accelerated desktop app: connect, explore schemas, write SQL with schema-aware completion, browse results, and read query plans."
 ---
 
-# Desktop GUI
+DBCrust ships a native desktop app built with [GPUI Kit](https://gpui-kit.com) — the GPU-accelerated UI framework behind Zed's GPUI. It is pure Rust: no web view, no JavaScript runtime, and the same `dbcrust` core as the CLI, so every engine, connection URL, SSH tunnel pattern, Vault setup and saved session you use in the terminal works in the app too.
 
-DBCrust ships with a Tauri-based desktop application. The frontend is built with React, TypeScript, Tailwind CSS, and CodeMirror; the backend is the same Rust `dbcrust` core library used by the CLI.
+![The DBCrust desktop app: schema explorer, SQL editor and results grid](/dbcrust/screenshots/gui-query.png)
 
-## Prerequisites
+## Build and run
 
-You need **[mise](https://mise.jdx.dev/)** installed. Mise manages Bun (the JavaScript runtime used for the frontend) and other project tools automatically.
-
-```bash
-# Install mise (if you don't have it)
-curl https://mise.run | sh
-
-# From the project root — install all tools (Bun, etc.)
-mise install
-
-# Install GUI frontend dependencies
-mise run gui:install
-```
-
-## Running in development
+The app is built from source for now. mise installs the Rust toolchain (1.85+) for you — on Linux you also need the usual GPUI system libraries (`libxkbcommon-x11`, `libwayland`, `libfontconfig`, Vulkan). Without mise installed, run the same tasks with the repository's `./bin/mise` wrapper, e.g. `./bin/mise run gui:dev`.
 
 ```bash
-mise run gui:dev
+mise run gui:dev        # run the app (debug build)
+mise run gui:build      # release build → target/release/dbcrust-gui
+mise run gui:install    # install dbcrust-gui into ~/.cargo/bin
+mise run gui:bundle     # macOS: target/release/bundle/DBCrust.app
 ```
 
-This starts:
+Builds run through [Mr Boxington](https://mr-boxington.jdx.dev/), so rebuilds — and builds in other worktrees and branches — restore cached crates instead of compiling them again. Without mise: `cargo run -p dbcrust-gui` from the repository root (uncached).
 
-1. The Vite dev server on `http://localhost:5173` (with hot-reload)
-2. The Tauri Rust backend, which opens a native window pointing at the dev server
+## Connections
 
-Changes to `.tsx`/`.css` files are reflected instantly. Changes to Rust code in `gui/src-tauri/` trigger a recompile.
+![The Connections page: searchable list of saved, recent and Docker connections, with details and actions](/dbcrust/screenshots/gui-home.png)
 
-## Building for production
+The **Connections** tab (`⇧⌘H`) is where every connection starts. On the left, one searchable list holds your **saved** connections, **recent** ones and the database **Docker containers** on this computer. Filter it with *All / Saved / Recent / Docker* and move through it with the arrow keys. On the right are the details of the selected entry and its actions.
 
-```bash
-mise run gui:build
-```
+| Key | Action |
+|---|---|
+| `↵` / double-click | Connect |
+| `⇧↵` | Connect read-only |
+| `⌘E` | Edit the saved connection |
+| `⌘⌫` | Remove it (asks first) |
+| `⌘↵` (in the form) | Connect |
+| `Esc` | Close the form, or cancel a connection attempt |
 
-Produces platform-specific installers:
+### New connection
 
-- **macOS** — `.app` bundle and `.dmg`
-- **Linux** — `.deb` and `.AppImage`
-- **Windows** — `.msi` and `.exe`
+![New connection form](/dbcrust/screenshots/gui-home-new.png)
 
-Output is in `gui/src-tauri/target/release/bundle/`.
+**+ New** opens the form:
 
-## Application overview
+- **Engine**: a searchable list grouped into *Servers* (PostgreSQL, MySQL, ClickHouse, MongoDB, Elasticsearch, White Dragon) and *Files* (SQLite, DuckDB, Parquet, CSV, JSON). The fields start with real defaults: `localhost`, the engine's port and default user.
+- **Paste connection URL…** fills the form from any URL DBCrust understands (`postgres://…`, `docker://…`, file paths), and keeps options the form has no field for.
+- **Name** is what the connection is called in the list when you save it.
+- **Encryption** summarises the TLS/SSL mode; open it for the details.
+- **Environment** (Local, Development, Staging, Production) labels the connection everywhere it appears, so production never looks like local.
+- **Read-only** opens the connection read-only where the engine supports it (PostgreSQL `default_transaction_read_only`, SQLite `query_only`) and turns on DBCrust's write-statement guard. Read-only connections show a lock wherever they appear. If **Open connections read-only** is on in Settings, every connection is read-only.
 
-### Home screen
+The footer shows the connection target (password masked) and three actions:
 
-When you launch the app, you see the **Home** view with:
+- **Test** runs the full connection setup, authentication included, then closes it. It doesn't change your recent list, and never stores anything.
+- **Save** keeps it in `sessions.toml`. Passwords are never stored there: DBCrust looks them up in `~/.dbcrust`, `~/.pgpass` or `~/.my.cnf`, or runs your `password_command`.
+- **Connect** opens it and adds it to your recent connections; it does not save it.
 
-- A connection form — pick a database type, enter host/port/user/password/database, and connect
-- **Saved sessions** — one-click reconnection to previously saved connections
-- **Recent connections** — your connection history
-- **Docker discovery** — auto-detect running database containers and connect directly
+While connecting, the page shows each step (for example *Checking direct access → Opening forwarding → Authenticating*) with the elapsed time and a **Cancel** button. A failure stays next to the connection it belongs to, with **Retry**, **Edit connection** and **Connection details**.
 
-### SQL editor
+### Docker containers
 
-After connecting, the **Query** view gives you:
+![A Docker container that can't be reached, with the reason and how to fix it](/dbcrust/screenshots/gui-home-docker-failed.png)
 
-- **CodeMirror editor** with SQL syntax highlighting, bracket matching, auto-indent, and metadata-aware table/column completion with backend-correct identifier quoting
-- **Run** (`Cmd+Enter` / `Ctrl+Enter`) and **Explain** (`Cmd+Shift+Enter` / `Ctrl+Shift+Enter`) buttons
-- **Multiple tabs** — open as many query tabs as you need
-- **Results table and JSON views** — sortable columns, row count, execution time, and copy-as-JSON
-- **Error display** — inline error messages from the database
+Database containers of the Docker daemon you use (`docker context`: OrbStack, Docker Desktop, Colima…) are listed with their image, whether they run, and whether their database port is published. Credentials come from the container's environment.
 
-### EXPLAIN viewer
+DBCrust picks the route itself, fastest first: a published port, an OrbStack domain, the container's address, and when none of them answers (a VPN that swallows container networks, or Docker Desktop on macOS), a relay through Docker itself. The details show which route a live connection uses. If nothing works, you learn why within seconds, and **Connection details** shows each route that was tried and the one-line `ports: ["127.0.0.1::5432"]` change that fixes it. See [Docker integration](/dbcrust/advanced/docker-integration/#how-dbcrust-reaches-a-container).
 
-Click **Explain** (or use the keyboard shortcut) to see the query execution plan rendered as a structured table directly in the results panel.
+### HashiCorp Vault
 
-### Schema explorer
+**Connect with Vault…** (bottom of the list) opens a wizard that detects your Vault address and token, lists the database configs and roles you can use, and connects with dynamic credentials.
 
-The **Schema** view lets you browse:
+You can keep **several connections open at once**. Each runs on its own worker thread, so a long query on one never blocks another. Every connection gets an accent colour shown next to its name in the explorer, tabs, editor toolbar and status bar.
 
-- All database objects, including PostgreSQL tables across non-public schemas, MongoDB collections, and Elasticsearch indices
-- **Columns or fields** — name, inferred/native type, nullability, and default value where supported
-- **Indexes** — name, type, primary/unique
-- **Foreign keys** — constraint name and definition
+## Keep it running in the menu bar
 
-Click an object to see its full details. The explorer adapts its terminology for MongoDB and Elasticsearch, unions MongoDB fields across a bounded document sample, shows Elasticsearch field capabilities, and safely quotes reserved or punctuated identifiers for each backend in generated queries and autocomplete selections.
+Closing the window doesn't quit DBCrust: it keeps running in the macOS menu bar or the Windows notification area, with its connections, tabs and running queries intact. The first time, DBCrust says so and offers to quit instead.
 
-### Docker discovery
+The menu bar icon shows how many connections are open and whether a query is running. It offers:
 
-The **Docker** panel lists all running containers that look like databases (PostgreSQL, MySQL, MongoDB, etc.). Click to connect — DBCrust resolves the host port automatically.
+- **Open DBCrust** and **New query**.
+- **Connect**, with your saved and recent connections.
+- **Connections**: open, query or disconnect each one, or disconnect all.
+- **Settings…** and **Quit DBCrust**.
 
-### Settings
+Clicking the Dock icon also brings the window back. `⌘Q` quits for real: DBCrust asks first if a query is still running, saves your open queries, then closes every connection.
 
-The **Settings** view shows the current configuration and lets you toggle options like:
+Turn this off in **Settings → General → Keep running in the menu bar** to make closing the window quit. On macOS you can also hide the Dock icon while the window is closed. On Linux there is no tray yet, so closing the window quits.
 
-- Default row limit
-- Expanded display mode
-- Autocompletion
-- Banner and server info
-- Pager
-- Query timeout
-- EXPLAIN mode
+## Explore schemas
 
-### System tray
+The **Explorer** sidebar lists every open connection with its tables, views and collections, grouped by schema when there is more than one. Type in the filter box to search across all connections. Expand a table to see its columns with type, primary-key, foreign-key and NOT NULL markers.
 
-On macOS the app installs a system tray icon. The tray menu shows:
+![The Explorer with a table expanded: columns with PK, FK and NN markers, and the row actions on hover](/dbcrust/screenshots/gui-explorer.png)
 
-- Connection status (database type, host, database name)
-- Disconnect
-- Show/hide the main window
-- Quit
+- **Double-click** a table to open the **table inspector**; hover a table for **Query data** and more actions.
+- **Right-click** for *Select top 100*, *Count rows*, *Generate SELECT/INSERT*, *Copy name*, *Copy DDL* and more.
+- On a connection: *New query*, *Refresh schema*, *Open database…* (opens another database of the same server as a new connection), *Save as session…*, the read-only guard, and *Disconnect*.
 
-## Keyboard shortcuts
+![Table inspector showing columns, keys and foreign keys](/dbcrust/screenshots/gui-inspector.png)
 
-| Shortcut | Action |
-|----------|--------|
-| `Cmd/Ctrl + Enter` | Execute query |
-| `Cmd/Ctrl + Shift + Enter` | Explain query |
+The inspector shows **Columns**, **Indexes**, **Constraints**, **Referenced by**, a **Data** preview and a reconstructed **DDL**. Foreign keys are links: click one to open the referenced table. **Count rows** runs only when you ask, and can be cancelled.
 
-## Project structure
+## Write and run SQL
+
+Each query tab is bound to a connection (pick it in the toolbar). The editor has SQL syntax highlighting, line numbers, and **schema-aware completion**: tables after `FROM`/`JOIN`, columns of the tables in the statement (aliases and CTEs resolved — type `o.` after `FROM orders o`), keywords and functions of the engine's dialect. Identifiers are quoted correctly for each engine.
+
+| Action | Shortcut (macOS / Linux & Windows) |
+|---|---|
+| Run the statement under the caret (or the selection) | `⌘↵` / `Ctrl+Enter` |
+| Run all statements (stops at the first error) | `⇧⌘↵` / `Ctrl+Shift+Enter` |
+| Cancel the running query | `⌘.` / `Ctrl+.` |
+| Explain / Explain analyze | `⌘E` / `⇧⌘E` |
+| Format SQL | `⌥⇧F` / `Alt+Shift+F` |
+| Save (to the tab's file or saved query; asks for a new tab) | `⌘S` / `Ctrl+S` |
+| Save as… / open a `.sql` file | `⇧⌘S` / `⌘O` |
+
+- **Several queries in one tab.** Put the caret anywhere in a query and press `⌘↵`: only that query runs, and it is lightly highlighted so you can see what will run. Queries are separated by `;`, or simply by a blank line between `SELECT` queries:
+
+  ```sql
+  select * from orders where status = 'open'
+
+  select count(*) from customers
+  ```
+
+  A blank line never splits anything else: `UPDATE`, `DELETE`, DDL and anything DBCrust can't parse as a plain read query need a `;` between them, so a blank line inside a statement can never cut it in two. If a run fails because two queries were sent together, the error says so. Prefer `;` only? **Settings → Queries → Statement separators**.
+- **The toolbar says what runs**: *Run statement* (the one under the caret, "2 of 3"), *Run selection*, or *Run all* (*Run all in selection* when text is selected). Selecting several queries and pressing `⌘↵` runs them one after another. The connection picker next to it decides where, and shows when the connection is read-only.
+- **Cancel** really cancels: PostgreSQL statements are cancelled server-side; other engines stop waiting for the result.
+- **Run all** shows one result tab per statement.
+- **History** keeps every run of the session (time, duration, row count, outcome); click an entry to load it back.
+- **Saved queries** are the CLI's named queries (`named_queries.toml`), scoped to the engine or global. A tab opened from a saved query or a `.sql` file saves back to it with `⌘S`, and a dot on the tab marks unsaved changes.
+- **Drafts are saved automatically** and restored on the next launch, still bound to their file or saved query. A restored tab reconnects to its connection as soon as you open it again.
+- **Tabs name their connection** (`● shop PG`), so two tabs on different databases never look alike; a tab without one says *No connection*. Hover a tab for its connection and save target.
+- **Rename a tab**: double-click its title, press `F2`, or right-click → *Rename tab*. `↵` keeps the name, `Esc` cancels. Renaming only changes the tab's label; `⌘S` still saves to the same file or saved query, and keeps your name.
+- **Jump to a tab**: `⌘1`…`⌘9` (`⌘9` is the last one), or `⌘P` to search tabs by title or connection.
+- **Closed a tab by mistake?** `⇧⌘T` reopens it, with its SQL and connection.
+- **A failed run keeps what you had:** the error shows above the previous results, or above the statements that completed in a "Run all".
+- **Results say when they are old:** after you edit the statement or switch connection, a banner marks them *Results from previous run*.
+
+## Read results
+
+- A virtualized grid that stays smooth with tens of thousands of rows. Numbers are right-aligned, `NULL` is shown distinctly from an empty string, and clicking a header sorts the loaded rows (numeric-aware, NULLs last).
+- When DBCrust adds its default `LIMIT` (see `default_limit` in settings), the footer says so — add an explicit `LIMIT` to fetch more.
+- One duration per statement; a "Run all" also shows the total.
+- **Copy** a cell, a row, a column or everything as CSV, TSV, JSON or Markdown; **Export** to a file in the same formats. Both menus say exactly which rows they include.
+- **Double-click a row** to inspect it field by field, with JSON values pretty-printed.
+
+## Understand query plans
+
+![EXPLAIN visualizer with plan tree, warnings and node details](/dbcrust/screenshots/gui-explain.png)
+
+**Explain** renders the plan as a tree with the cost share of each node and estimated vs. actual rows (with **Explain analyze** on PostgreSQL). The side panel shows the **selected node** and the **plan observations**: full scans, temporary B-trees, badly misestimated row counts, each listed once and with advice that says when it matters. Click an observation to jump to its node. **Copy plan** copies PostgreSQL's JSON plan, ready for tools like explain.dalibo.com.
+
+- PostgreSQL: full tree with costs, timings and buffers.
+- SQLite: `EXPLAIN QUERY PLAN` tree.
+- MySQL: JSON or classic plans.
+- DataFusion files: logical and physical plans.
+- Other engines show their native explain output.
+
+**Explain analyze** executes the statement, so it is only offered for statements DBCrust classifies as read-only.
+
+## Command palette and keyboard
+
+![Command palette](/dbcrust/screenshots/gui-palette.png)
+
+Press `⌘K` (`Ctrl+K`) to search every command, open connection, saved session, recent connection, table and named query. Every command also has a native menu entry and, where it makes sense, a shortcut:
+
+| Shortcut | Command |
+|---|---|
+| `⌘K` / `⇧⌘P` | Command palette |
+| `⌘T` / `⌘W` | New query tab / close tab |
+| `⇧⌘T` | Reopen the last closed tab |
+| `⌃Tab` / `⌃⇧Tab` | Next / previous tab |
+| `⌘1`…`⌘9` | Go to tab 1–8 / the last tab |
+| `⌘P` | Go to tab… (search by title or connection) |
+| `F2` | Rename the current tab |
+| `⌘N` | New connection |
+| `⇧⌘H` | Connections page |
+| `⌘B` | Toggle sidebar |
+| `⌘0` | Focus explorer |
+| `⌘R` | Refresh schema |
+| `⌘,` | Settings |
+| `⌥⌘T` | Toggle light / dark |
+
+## Settings and themes
+
+![Settings](/dbcrust/screenshots/gui-settings.png)
+
+**Settings** (`⌘,`) covers:
+
+- **General:** keep running in the menu bar when the window is closed, hide the Dock icon meanwhile (macOS), and reopen unsaved queries at launch.
+- **Appearance:** System, Light or Dark (follows the OS by default), interface size, and bundled color themes — Catppuccin, Tokyo Night, Gruvbox and Solarized.
+- **Queries:** default row limit and query timeout, shared with the CLI (the timeout applies immediately), the editor font size, and statement separators (`;` and blank lines between `SELECT` queries, or `;` only).
+- **Connections:** connection-related DBCrust settings.
+- **Files:** where every storage file lives, with a button to reveal it.
+
+DBCrust settings are written to `config.toml` with its documentation comments preserved. Desktop-only state (theme, sidebar, drafts) lives in `gui_state.toml` next to it.
+
+![The app in light mode](/dbcrust/screenshots/gui-query-light.png)
+
+## Files
+
+| File | Contents |
+|---|---|
+| `~/.config/dbcrust/config.toml` | DBCrust settings, shared with the CLI |
+| `sessions.toml`, `recent.toml`, `named_queries.toml` | Saved sessions, recent connections and named queries, shared with the CLI |
+| `gui_state.toml` | Desktop app only: theme, sizes, menu bar behaviour, open drafts, connection labels |
+
+Set `DBCRUST_CONFIG_DIR` to use another directory, exactly as with the CLI.
+
+## Under the hood
 
 ```
 gui/
-├── src/                     # React + TypeScript frontend
-│   ├── App.tsx              # main application shell
-│   ├── commands.ts          # Tauri command wrappers
-│   ├── types.ts             # TypeScript type definitions
-│   ├── queryPresets.ts      # built-in query presets
-│   ├── index.css            # Tailwind CSS styles
-│   └── components/
-│       ├── ConnectionDialog.tsx
-│       ├── DockerDiscovery.tsx
-│       ├── Editor.tsx           # CodeMirror SQL editor
-│       ├── ExplainView.tsx
-│       ├── Layout.tsx
-│       ├── Navigation.tsx
-│       ├── ResultsPanel.tsx
-│       ├── SavedConnections.tsx
-│       ├── SchemaExplorer.tsx
-│       ├── SettingsPage.tsx
-│       ├── Sidebar.tsx
-│       └── StatusBar.tsx
-├── src-tauri/               # Tauri Rust backend
-│   ├── src/lib.rs           # all Tauri commands (bridges to dbcrust core)
-│   ├── tauri.conf.json      # Tauri configuration
-│   └── Cargo.toml
-├── package.json             # Bun-managed dependencies
-├── vite.config.ts
-├── tailwind.config.js
-└── tsconfig.json
+├── core/   dbcrust-gui-core — no GPUI: per-connection workers, storage, query/result/plan models
+└── src/    dbcrust-gui      — the GPUI Kit app
 ```
 
-## Useful mise tasks
+- **Workers:** each connection runs on its own thread with its own async runtime. Queries are serialized per connection, and cancellation is per request.
+- **Backend tests:** `dbcrust-gui-core` is tested without any GUI: `mise run gui:test`.
+- **Screenshots:** the images on this page are rendered headlessly by `mise run gui:screenshots` from a seeded demo database.
 
-| Task | Description |
-|------|-------------|
-| `mise run gui:dev` | Start frontend + Tauri in dev mode |
-| `mise run gui:build` | Production build with platform installers |
-| `mise run gui:frontend` | Start only the Vite dev server (no Tauri) |
-| `mise run gui:build-frontend` | Build only the frontend |
-| `mise run gui:build-rust` | Build only the Tauri Rust backend |
-| `mise run gui:lint` | Clippy on the GUI Rust backend |
-| `mise run gui:install` | Install frontend npm dependencies via Bun |
-| `mise run gui:clean` | Remove `dist/`, `node_modules/`, and Tauri `target/` |
-
-## Tech stack
-
-| Layer | Technology |
-|-------|-----------|
-| Window framework | [Tauri 2](https://v2.tauri.app/) |
-| Frontend | React 19, TypeScript 5, Vite 6 |
-| CSS | Tailwind CSS 3 |
-| SQL editor | [CodeMirror](https://codemirror.net/) via `@uiw/react-codemirror` |
-| Icons | [Lucide React](https://lucide.dev/) |
-| JS runtime | [Bun](https://bun.sh/) (managed by mise) |
-| Backend | Rust — the same `dbcrust` crate used by the CLI |
+See `gui/ARCHITECTURE.md` in the repository for the module map.

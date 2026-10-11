@@ -2,11 +2,15 @@ use crate::config::SSHTunnelConfig;
 use crate::database::{
     ConnectionInfo, DatabaseClient, DatabaseType, DatabaseTypeExt, create_database_client,
 };
+use crate::docker::DockerPhase;
+use crate::docker_route::DockerRoute;
+use crate::docker_tunnel::DockerTunnel;
 use crate::pgpass;
 
 use inquire::MultiSelect;
 use std::collections::HashMap;
 use std::error::Error as StdError;
+use std::sync::Arc;
 use tracing::{debug, info};
 
 pub(crate) fn unquote_metadata_identifier(identifier: &str) -> String {
@@ -144,6 +148,16 @@ impl FrontendMode {
     }
 }
 
+/// A connected Docker container: the database, what to record for it, and
+/// how it is reached.
+pub struct DockerConnection {
+    pub database: Database,
+    /// The resolved connection (stable: for a relayed connection the host is
+    /// the container, not the relay's ephemeral local port).
+    pub connection_info: ConnectionInfo,
+    pub route: DockerRoute,
+}
+
 pub struct Database {
     // Database abstraction layer client
     database_client: Option<Box<dyn DatabaseClient>>,
@@ -153,6 +167,15 @@ pub struct Database {
 
     // SSH tunnel management
     ssh_tunnel: Option<crate::ssh_tunnel::SSHTunnel>,
+
+    // `docker exec` relay for Docker connections the host cannot route to.
+    // Owned here so it lives (and dies) with the connection: dropping the
+    // Database aborts the relay and every exec it started.
+    docker_tunnel: Option<Arc<DockerTunnel>>,
+    docker_route: Option<DockerRoute>,
+    // The Docker daemon this connection was made through (see
+    // `docker_daemon_pin`)
+    docker_daemon: Option<String>,
 
     // Application settings and state
     expanded_display: bool,
@@ -194,6 +217,39 @@ impl Database {
         expanded_display_default: Option<bool>,
         frontend_mode: FrontendMode,
     ) -> std::result::Result<Self, Box<dyn StdError>> {
+        // Docker targets don't need (and mustn't wait for) the config files
+        if url.starts_with("docker://") {
+            let (database, _) = Self::from_docker_url_with_mode(
+                url,
+                default_limit,
+                expanded_display_default,
+                frontend_mode,
+            )
+            .await?;
+            return Ok(database);
+        }
+        let config = crate::config::Config::load();
+        Self::from_url_with_config(
+            url,
+            &config,
+            default_limit,
+            expanded_display_default,
+            frontend_mode,
+        )
+        .await
+    }
+
+    /// [`Database::from_url_with_mode`] with the settings supplied by the
+    /// caller instead of loaded from the config files: constructing a
+    /// `Database` then touches no shared state besides the process-wide
+    /// read-only request.
+    pub async fn from_url_with_config(
+        url: &str,
+        config: &crate::config::Config,
+        default_limit: Option<usize>,
+        expanded_display_default: Option<bool>,
+        frontend_mode: FrontendMode,
+    ) -> std::result::Result<Self, Box<dyn StdError>> {
         debug!("[Database::from_url] Creating database from URL");
         let step_start = std::time::Instant::now();
 
@@ -211,7 +267,6 @@ impl Database {
 
         // Parse the connection info from URL
         let config_start = std::time::Instant::now();
-        let config = crate::config::Config::load();
         debug!("📋 Parsing connection URL...");
         let connection_info = ConnectionInfo::parse_url(url)?;
         debug!(
@@ -221,12 +276,13 @@ impl Database {
 
         // For SQLite, we don't need SSH tunneling
         if connection_info.database_type.is_file_based() {
-            return Self::from_connection_info_with_mode(
+            return Self::from_connection_info_with_config(
                 connection_info,
                 default_limit,
                 expanded_display_default,
                 None,
                 frontend_mode,
+                config,
             )
             .await;
         }
@@ -261,12 +317,13 @@ impl Database {
 
         debug!("🔧 Creating database connection...");
         let conn_start = std::time::Instant::now();
-        let result = Self::from_connection_info_with_mode(
+        let result = Self::from_connection_info_with_config(
             connection_info,
             default_limit,
             expanded_display_default,
             ssh_tunnel_config,
             frontend_mode,
+            config,
         )
         .await;
         debug!(
@@ -299,123 +356,176 @@ impl Database {
     ) -> std::result::Result<(Self, Option<ConnectionInfo>), Box<dyn StdError>> {
         debug!("[Database::from_docker_url] Creating database from Docker URL");
 
-        // Parse Docker URL
-        let connection_info = ConnectionInfo::parse_url(url)?;
+        // Parse Docker URL (container, credentials, database, options)
+        let mut template = crate::docker::DockerTarget::parse(url)
+            .ok_or("Invalid Docker URL format")?
+            .to_connection_info();
 
-        // Get the container name from the connection info
-        let container_name = connection_info
+        // If the container name is empty, provide interactive selection
+        let container_name = template
             .docker_container
-            .as_ref()
+            .clone()
             .ok_or("Docker container name not found in URL")?;
-
-        // If container name is empty, provide interactive selection
         if container_name.is_empty() {
             if !frontend_mode.allows_interactive_terminal_ui() {
                 return Err("Interactive Docker container selection is not available in GUI mode. Provide an explicit container name.".into());
             }
-            let selected_container = Self::select_docker_container().await?;
-
-            // Create Docker client
-            let docker_client = crate::docker::DockerClient::new()
-                .map_err(|e| format!("Failed to create Docker client: {e}"))?;
-
-            let container_info = docker_client
-                .inspect_container(&selected_container)
-                .await
-                .map_err(|e| {
-                    format!(
-                        "Failed to inspect selected Docker container '{selected_container}': {e}"
-                    )
-                })?;
-
-            // Build database connection info from container
-            let docker_connection = docker_client
-                .build_connection_info(&container_info)
-                .map_err(|e| format!("Failed to build connection info: {e}"))?;
-
-            // Create a new ConnectionInfo with the resolved Docker information
-            let resolved_connection_info = ConnectionInfo {
-                database_type: docker_connection.database_type,
-                host: Some(docker_connection.host),
-                port: Some(docker_connection.port),
-                username: connection_info
-                    .username
-                    .filter(|u| !u.is_empty())
-                    .or(docker_connection.username),
-                password: connection_info
-                    .password
-                    .filter(|p| !p.is_empty())
-                    .or(docker_connection.password),
-                database: connection_info.database.or(docker_connection.database_name),
-                file_path: None,
-                options: connection_info.options,
-                docker_container: Some(selected_container.clone()),
-                use_tls: connection_info.use_tls,
-            };
-
-            let database = Self::from_connection_info_with_mode(
-                resolved_connection_info.clone(),
-                default_limit,
-                expanded_display_default,
-                None,
-                frontend_mode,
-            )
-            .await?;
-            return Ok((database, Some(resolved_connection_info)));
+            template.docker_container = Some(Self::select_docker_container().await?);
         }
 
-        // Create Docker client and inspect the container
-        let docker_client = crate::docker::DockerClient::new()
-            .map_err(|e| format!("Failed to create Docker client: {e}"))?;
+        let connected = Self::connect_docker_container(
+            &template,
+            |_| {},
+            |info| {
+                Self::from_connection_info_with_mode(
+                    info,
+                    default_limit,
+                    expanded_display_default,
+                    None,
+                    frontend_mode,
+                )
+            },
+        )
+        .await?;
 
-        let container_info = docker_client
-            .inspect_container(container_name)
-            .await
-            .map_err(|e| format!("Failed to inspect Docker container '{container_name}': {e}"))?;
+        if connected.route.is_forwarded()
+            && frontend_mode.allows_stdout_status()
+            && !crate::database::one_shot_mode()
+        {
+            println!(
+                "🐳 '{}' is not reachable from this machine directly: connected through a `docker exec` relay ({}).",
+                template.docker_container.as_deref().unwrap_or_default(),
+                connected.route.helper.as_deref().unwrap_or("relay"),
+            );
+        }
+        Ok((connected.database, Some(connected.connection_info)))
+    }
 
-        // Build database connection info from container
-        let docker_connection = docker_client
-            .build_connection_info(&container_info)
-            .map_err(|e| format!("Failed to build connection info: {e}"))?;
+    /// Connect to a database container by the first route that works (see
+    /// [`crate::docker::DockerClient::connect_via_routes`]).
+    ///
+    /// `template` is the parsed `docker://` target: the container name plus
+    /// any credentials/database/options given explicitly (they win over the
+    /// container's environment). `progress` is told each [`DockerPhase`];
+    /// `build` constructs the `Database` from the resolved address — it is
+    /// where callers serialise construction and set up read-only mode, so
+    /// the Docker work around it never waits on anything. The whole thing,
+    /// container lookup included, runs under one deadline. The returned
+    /// `Database` owns the relay (if any): dropping it tears the relay down,
+    /// and so does dropping this future.
+    ///
+    /// Which daemon: the current one, unless `template.options` carries
+    /// [`crate::docker::PINNED_DAEMON_OPTION`] (as the siblings of an open
+    /// Docker connection do: see [`Database::docker_daemon_pin`]), in which
+    /// case that very daemon is used, whatever context is current by now.
+    pub async fn connect_docker_container<P, B, Fut>(
+        template: &ConnectionInfo,
+        progress: P,
+        mut build: B,
+    ) -> std::result::Result<DockerConnection, Box<dyn StdError>>
+    where
+        P: FnMut(DockerPhase),
+        B: FnMut(ConnectionInfo) -> Fut,
+        Fut: std::future::Future<Output = std::result::Result<Self, Box<dyn StdError>>>,
+    {
+        let container_name = template
+            .docker_container
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .ok_or("Docker container name not found in URL")?;
 
-        // Create a new ConnectionInfo with the resolved Docker information
-        let resolved_connection_info = ConnectionInfo {
+        // The pin is routing information, not a database option
+        let mut template = template.clone();
+        let pinned = template.options.remove(crate::docker::PINNED_DAEMON_OPTION);
+        let docker_client = match pinned {
+            Some(pin) => crate::docker::DockerClient::with_endpoint(
+                crate::docker::DockerEndpoint::from_pinned(&pin)?,
+            )?,
+            None => crate::docker::DockerClient::new()?,
+        };
+
+        let connected = docker_client
+            .connect_container(container_name, progress, |docker_connection| {
+                let resolved = Self::resolve_docker_connection_info(&template, docker_connection);
+                let attempt = build(resolved.clone());
+                async move { attempt.await.map(|database| (database, resolved)) }
+            })
+            .await?;
+
+        let (mut database, resolved_info) = connected.value;
+        debug!(
+            "[Database::from_docker_url] Resolved Docker connection: {}@{}:{}/{} ({})",
+            resolved_info.username.as_deref().unwrap_or(""),
+            resolved_info.host.as_deref().unwrap_or(""),
+            resolved_info.port.unwrap_or(0),
+            resolved_info.database.as_deref().unwrap_or(""),
+            connected.route.detail
+        );
+        // What recents/history record must not change with every connection:
+        // a relay's ephemeral local port is not part of the container's identity.
+        let connection_info = if connected.route.is_forwarded() {
+            ConnectionInfo {
+                host: Some(connected.container_name.clone()),
+                port: Some(connected.database_port),
+                ..resolved_info
+            }
+        } else {
+            resolved_info
+        };
+        database.docker_tunnel = connected.tunnel;
+        database.docker_route = Some(connected.route.clone());
+        database.docker_daemon = Some(docker_client.endpoint().pinned_value());
+        Ok(DockerConnection {
+            database,
+            connection_info,
+            route: connected.route,
+        })
+    }
+
+    /// For a Docker connection: the identity of the daemon it was made
+    /// through. Put it under [`crate::docker::PINNED_DAEMON_OPTION`] in the
+    /// options of a follow-up request (another database of the same
+    /// container) so it reaches the same daemon even if the user switched
+    /// docker contexts meanwhile.
+    pub fn docker_daemon_pin(&self) -> Option<&str> {
+        self.docker_daemon.as_deref()
+    }
+
+    /// Merge the `docker://` target with the address and credentials found
+    /// for the container: explicit values from the URL win.
+    fn resolve_docker_connection_info(
+        template: &ConnectionInfo,
+        docker_connection: crate::docker::DockerDatabaseConnection,
+    ) -> ConnectionInfo {
+        ConnectionInfo {
             database_type: docker_connection.database_type,
             host: Some(docker_connection.host),
             port: Some(docker_connection.port),
-            username: connection_info
+            username: template
                 .username
+                .clone()
                 .filter(|u| !u.is_empty())
                 .or(docker_connection.username),
-            password: connection_info
+            password: template
                 .password
+                .clone()
                 .filter(|p| !p.is_empty())
                 .or(docker_connection.password),
-            database: connection_info.database.or(docker_connection.database_name),
+            database: template
+                .database
+                .clone()
+                .or(docker_connection.database_name),
             file_path: None,
-            options: connection_info.options,
-            docker_container: Some(container_name.clone()),
-            use_tls: connection_info.use_tls,
-        };
+            options: template.options.clone(),
+            docker_container: template.docker_container.clone(),
+            use_tls: template.use_tls,
+        }
+    }
 
-        debug!(
-            "[Database::from_docker_url] Resolved Docker connection: {}@{}:{}/{}",
-            resolved_connection_info.username.as_deref().unwrap_or(""),
-            resolved_connection_info.host.as_deref().unwrap_or(""),
-            resolved_connection_info.port.unwrap_or(0),
-            resolved_connection_info.database.as_deref().unwrap_or("")
-        );
-
-        // Create database connection using the resolved info
-        let database = Self::from_connection_info_with_mode(
-            resolved_connection_info.clone(),
-            default_limit,
-            expanded_display_default,
-            None,
-            frontend_mode,
-        )
-        .await?;
-        Ok((database, Some(resolved_connection_info)))
+    /// The route of a Docker connection: direct, or through a `docker exec`
+    /// relay owned by this `Database`.
+    pub fn docker_route(&self) -> Option<&DockerRoute> {
+        self.docker_route.as_ref()
     }
 
     /// Interactive Docker container selection
@@ -575,9 +685,30 @@ impl Database {
         ssh_tunnel_config: Option<SSHTunnelConfig>,
         frontend_mode: FrontendMode,
     ) -> std::result::Result<Self, Box<dyn StdError>> {
+        let config = crate::config::Config::load();
+        Self::from_connection_info_with_config(
+            connection_info,
+            default_limit,
+            expanded_display_default,
+            ssh_tunnel_config,
+            frontend_mode,
+            &config,
+        )
+        .await
+    }
+
+    /// [`Database::from_connection_info_with_mode`] with the settings
+    /// supplied by the caller (no config files are read).
+    pub async fn from_connection_info_with_config(
+        connection_info: ConnectionInfo,
+        default_limit: Option<usize>,
+        expanded_display_default: Option<bool>,
+        ssh_tunnel_config: Option<SSHTunnelConfig>,
+        frontend_mode: FrontendMode,
+        config: &crate::config::Config,
+    ) -> std::result::Result<Self, Box<dyn StdError>> {
         debug!("[Database::from_connection_info] Creating database from connection info");
 
-        let config = crate::config::Config::load();
         let original_connection_info = connection_info.clone();
 
         // For SSH tunnel scenarios, we need to create a modified connection info
@@ -626,6 +757,9 @@ impl Database {
             database_client: Some(database_client),
             connection_info_override,
             ssh_tunnel,
+            docker_tunnel: None,
+            docker_route: None,
+            docker_daemon: None,
             expanded_display: expanded_display_default.unwrap_or(false),
             output_format: crate::cli::OutputFormat::Table,
             // Every construction path (direct URL, docker, vault, session)
@@ -1692,6 +1826,23 @@ impl Database {
         }
     }
 
+    /// `EXPLAIN ANALYZE` returning the engine's raw plan (PostgreSQL JSON).
+    /// Executes the statement, so it honours the read-only guard and refuses
+    /// statements the guard classifies as writes even when the guard is off.
+    pub async fn execute_explain_analyze_query_raw(
+        &mut self,
+        query: &str,
+    ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
+        crate::safety::check_read_only(query, &self.get_database_type())?;
+        match self.database_client {
+            Some(ref database_client) => database_client
+                .explain_analyze_query_raw(query)
+                .await
+                .map_err(|e| e.into()),
+            None => Err("No database client available".into()),
+        }
+    }
+
     pub async fn execute_explain_query_formatted(
         &mut self,
         query: &str,
@@ -2018,6 +2169,9 @@ impl Database {
             database_client: None, // No database client in test mode
             connection_info_override: None,
             ssh_tunnel: None, // No SSH tunnel in test mode
+            docker_tunnel: None,
+            docker_route: None,
+            docker_daemon: None,
             expanded_display: false,
             output_format: crate::cli::OutputFormat::Table,
             read_only: false,

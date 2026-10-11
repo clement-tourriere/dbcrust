@@ -5,7 +5,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
-use std::fs::{self, File};
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -424,9 +424,25 @@ impl SavedSession {
     }
 
     pub fn reconstruct_connection_url(&self) -> Result<String, String> {
-        if self.host.starts_with("DOCKER:") {
-            let container_name = self.host.strip_prefix("DOCKER:").unwrap_or(&self.host);
-            return Ok(format!("docker://{container_name}"));
+        if let Some(container) = self.host.strip_prefix("DOCKER:") {
+            // Keep the saved user, database, TLS and options (never a password)
+            let mut options: std::collections::BTreeMap<String, String> = self
+                .options
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            let use_tls = options
+                .remove("ssl")
+                .is_some_and(|value| value.eq_ignore_ascii_case("true"));
+            let target = crate::docker::DockerTarget {
+                user: Some(self.user.clone()).filter(|user| !user.is_empty()),
+                container: container.to_string(),
+                database: Some(self.dbname.clone()).filter(|db| !db.is_empty()),
+                options,
+                use_tls,
+                ..Default::default()
+            };
+            return Ok(target.render());
         }
 
         if let (Some(vault_mount), Some(vault_database), Some(vault_role)) = (
@@ -1117,7 +1133,7 @@ impl Config {
     fn save_recent_connections(&self) -> Result<(), Box<dyn Error>> {
         let path = Self::get_recent_connections_path()?;
         let content = toml::to_string_pretty(&self.recent_connections_storage)?;
-        fs::write(path, content)?;
+        write_file_atomically(&path, content.as_bytes())?;
         Ok(())
     }
 
@@ -1169,7 +1185,7 @@ impl Config {
     fn save_saved_sessions(&self) -> Result<(), Box<dyn Error>> {
         let path = Self::get_saved_sessions_path()?;
         let content = toml::to_string_pretty(&self.saved_sessions_storage)?;
-        fs::write(path, content)?;
+        write_file_atomically(&path, content.as_bytes())?;
         Ok(())
     }
 
@@ -1602,8 +1618,7 @@ impl Config {
             let toml = toml::to_string(self)
                 .map_err(|e| io::Error::other(format!("Serialization error: {e}")))?;
 
-            let mut file = File::create(&config_path)?;
-            file.write_all(toml.as_bytes())?;
+            write_file_atomically(&config_path, toml.as_bytes())?;
         }
         Ok(())
     }
@@ -1633,8 +1648,7 @@ impl Config {
         if let Some(config_path) = get_config_path() {
             ensure_config_dir(&config_path)?;
             let content = self.render_documented_config();
-            let mut file = File::create(&config_path)?;
-            file.write_all(content.as_bytes())?;
+            write_file_atomically(&config_path, content.as_bytes())?;
         }
         Ok(())
     }
@@ -2371,6 +2385,14 @@ impl Config {
         };
 
         let mut options = connection_info.options.clone();
+        if connection_info.is_docker_connection() {
+            // The daemon pin belongs to one live connection; TLS is part of
+            // the saved target (`ssl=true`, like in `docker://` URLs)
+            options.remove(crate::docker::PINNED_DAEMON_OPTION);
+            if connection_info.use_tls {
+                options.insert("ssl".to_string(), "true".to_string());
+            }
+        }
         if let Some(command) = password_command
             .map(str::trim)
             .filter(|command| !command.is_empty())
@@ -2766,6 +2788,23 @@ impl Config {
         &self.recent_connections_storage.connections
     }
 
+    /// Remove the recent connection stored under exactly `connection_url`
+    /// and persist the list. `Ok(false)` when there is no such entry.
+    pub fn remove_recent_connection(
+        &mut self,
+        connection_url: &str,
+    ) -> Result<bool, Box<dyn Error>> {
+        let before = self.recent_connections_storage.connections.len();
+        self.recent_connections_storage
+            .connections
+            .retain(|recent| recent.connection_url != connection_url);
+        if self.recent_connections_storage.connections.len() == before {
+            return Ok(false);
+        }
+        self.save_recent_connections()?;
+        Ok(true)
+    }
+
     pub fn clear_recent_connections(&mut self) -> Result<(), Box<dyn Error>> {
         self.recent_connections_storage.connections.clear();
         self.save_recent_connections()?;
@@ -2965,7 +3004,7 @@ impl Config {
     fn save_named_queries(&self) -> Result<(), Box<dyn Error>> {
         let path = Self::get_named_queries_path()?;
         let content = toml::to_string_pretty(&self.named_queries_storage)?;
-        fs::write(path, content)?;
+        write_file_atomically(&path, content.as_bytes())?;
         Ok(())
     }
 
@@ -3000,6 +3039,50 @@ impl Config {
 #[allow(dead_code)]
 fn get_config_dir_impl() -> Option<PathBuf> {
     home_dir().map(|home| home.join(".config").join("dbcrust"))
+}
+
+/// Replace `path` atomically: write a temp file next to it, then rename it
+/// over the original. A concurrent reader (another DBCrust process, or the
+/// desktop app's connection workers) sees either the old or the new file,
+/// never a truncated one. Symlinks are followed (the link itself is kept).
+///
+/// The temp file is created owner-only (0600 on Unix) before any content is
+/// written; afterwards it takes the existing file's permissions, so a file
+/// the user restricted stays restricted and new files stay private.
+pub fn write_file_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
+    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let file_name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "dbcrust".to_string());
+    // Unique per write: concurrent writers (threads, processes) never share
+    // a temp file, and `create_new` guarantees it starts with our mode
+    static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let temp = target.with_file_name(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        if let Ok(metadata) = fs::metadata(&target) {
+            fs::set_permissions(&temp, metadata.permissions())?;
+        }
+        fs::rename(&temp, &target)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
 }
 
 fn is_test_mode() -> bool {
@@ -3056,6 +3139,54 @@ mod tests {
     use crate::database::ConnectionInfo;
     use rstest::rstest;
     use std::env;
+
+    #[test]
+    fn atomic_write_replaces_content_and_keeps_symlinks_and_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.toml");
+        fs::write(&real, "old = 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        write_file_atomically(&real, b"new = 2\n").unwrap();
+        assert_eq!(fs::read_to_string(&real).unwrap(), "new = 2\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&real).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+
+            let link = dir.path().join("link.toml");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            write_file_atomically(&link, b"via = 3\n").unwrap();
+            assert!(
+                fs::symlink_metadata(&link)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(fs::read_to_string(&real).unwrap(), "via = 3\n");
+        }
+        // New files are private
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let fresh = dir.path().join("fresh.toml");
+            write_file_atomically(&fresh, b"a = 1\n").unwrap();
+            let mode = fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+        // No temp files left behind
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty());
+    }
     use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
@@ -3146,6 +3277,48 @@ mod tests {
         assert_eq!(session.database_type, DatabaseType::PostgreSQL);
         assert_eq!(session.file_path, None);
         assert_eq!(session.options.len(), 0);
+    }
+
+    #[rstest]
+    fn docker_sessions_keep_tls_and_drop_the_daemon_pin() {
+        let mut config = get_test_config();
+        let connection_info = ConnectionInfo {
+            database_type: DatabaseType::PostgreSQL,
+            host: Some("127.0.0.1".to_string()),
+            port: Some(49152),
+            username: Some("app".to_string()),
+            password: Some("secret".to_string()),
+            database: Some("shop".to_string()),
+            file_path: None,
+            options: HashMap::from([
+                ("sslmode".to_string(), "verify-full".to_string()),
+                (
+                    crate::docker::PINNED_DAEMON_OPTION.to_string(),
+                    "unix:///var/run/docker.sock".to_string(),
+                ),
+            ]),
+            docker_container: Some("pg".to_string()),
+            use_tls: true,
+        };
+        config
+            .save_session_from_connection_info("docker_tls", &connection_info)
+            .unwrap();
+
+        let session = config.get_session("docker_tls").unwrap();
+        assert!(
+            !session
+                .options
+                .contains_key(crate::docker::PINNED_DAEMON_OPTION)
+        );
+        let url = session.reconstruct_connection_url().unwrap();
+        // The relay port, the daemon and the password never come back
+        assert_eq!(url, "docker://app@pg/shop?ssl=true&sslmode=verify-full");
+        let target = crate::docker::DockerTarget::parse(&url).unwrap();
+        assert!(target.use_tls);
+        assert_eq!(
+            target.options.get("sslmode").map(String::as_str),
+            Some("verify-full")
+        );
     }
 
     #[rstest]
@@ -4057,6 +4230,15 @@ mod tests {
         };
         assert_eq!(
             docker_session.reconstruct_connection_url().unwrap(),
+            "docker://postgres@warehouse-postgres-1/warehouse"
+        );
+        let bare_docker_session = SavedSession {
+            user: String::new(),
+            dbname: String::new(),
+            ..docker_session.clone()
+        };
+        assert_eq!(
+            bare_docker_session.reconstruct_connection_url().unwrap(),
             "docker://warehouse-postgres-1"
         );
         assert_eq!(

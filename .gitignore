@@ -4,6 +4,8 @@
 dist/
 .DS_Store
 .venv/
+# Personal mise overrides (e.g. `mr_boxington = false`)
+mise.local.toml
 .mypy_cache/
 .ruff_cache/
 .vscode/

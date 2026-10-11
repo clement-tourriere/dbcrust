@@ -60,31 +60,40 @@ pipx install dbcrust
 ### Prerequisites
 
 - **Rust** stable — install from [rustup.rs](https://rustup.rs/)
-- **mise 2026.8.16+** (optional but recommended) — manages Bun, dev tools, and the Rust build cache
+- **mise 2026.8.16+** (optional but recommended) — manages dev tools and the Rust build cache. Not installed? Use the repository's `./bin/mise` wrapper in its place: it downloads a pinned mise on first use.
 
 ```bash
 git clone https://github.com/clement-tourriere/dbcrust.git
 cd dbcrust
 
-# Option A: with mise (recommended for development)
-mise install            # installs Bun, Commitizen, Mr Boxington, etc.
+# Option A: with mise (recommended) — or ./bin/mise without installing mise
+mise install            # installs Mr Boxington, Commitizen, hk, Bun (docs site), etc.
 mise run build          # release build
 mise run build:dev      # debug build (faster)
 mise run install        # build + install dbcrust and dbc into ~/.cargo/bin
 
-# Option B: cargo only (CLI only, no GUI)
+# Option B: cargo only (CLI only)
 cargo install --path . --locked --force
 ```
 
-### Building the GUI
+With mise, Cargo builds go through [Mr Boxington](https://mr-boxington.jdx.dev/), a shared build cache: rebuilds, other branches and worktrees reuse compiled crates. See [Build cache](/dbcrust/user-guide/development/#build-cache-mr-boxington).
 
-The desktop GUI requires Bun (for the frontend) and Tauri prerequisites. Mise handles Bun automatically.
+### Building the desktop app
+
+The desktop app is pure Rust ([GPUI Kit](https://gpui-kit.com)), so only a Rust toolchain is required. On Linux, install the GPUI system libraries first, for example on Debian/Ubuntu: `sudo apt install libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libx11-xcb-dev libvulkan1`.
 
 ```bash
-mise install              # installs Bun
-mise run gui:install      # install frontend deps
-mise run gui:dev          # development mode
-mise run gui:build        # production build
+mise run gui:dev          # run the app (debug build)
+mise run gui:build        # release build → target/release/dbcrust-gui
+mise run gui:install      # install dbcrust-gui into ~/.cargo/bin
+mise run gui:bundle       # macOS: target/release/bundle/DBCrust.app
+
+# no mise installed: the committed wrapper
+./bin/mise run gui:dev
+
+# cargo only
+cargo run -p dbcrust-gui
+cargo install --path gui --bin dbcrust-gui --locked
 ```
 
 See [Desktop GUI](/dbcrust/user-guide/gui/) for details.
@@ -255,10 +264,6 @@ dbcrust postgres://user:pass@localhost/db?sslmode=disable
 ```
 :::
 
-:::danger[GUI won't build]
-Make sure Bun is installed via mise:
-```bash
-mise install
-mise run gui:install
-```
+:::danger[Desktop app won't build]
+Update Rust (`mise upgrade rust` or `rustup update`; 1.85 or newer). On Linux, install the GPUI system libraries listed in [Building the desktop app](#building-the-desktop-app). The backend alone builds without them: `cargo test -p dbcrust-gui-core`.
 :::

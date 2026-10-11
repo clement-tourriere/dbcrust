@@ -1,0 +1,16 @@
+# Throwaway PostgreSQL for `mise run gui:screenshots` (demo data is seeded by
+# the harness). Bound to localhost only; removed again after the run.
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: shop
+      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: shop
+    ports:
+      - "127.0.0.1:${DBCRUST_SHOTS_PG_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U shop -d shop"]
+      interval: 1s
+      timeout: 3s
+      retries: 30

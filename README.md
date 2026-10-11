@@ -203,12 +203,27 @@ Guides: [Python API](https://clement-tourriere.github.io/dbcrust/python-api/over
 
 ## Desktop GUI
 
-A Tauri-based desktop app ships in the repo (built from source for now): CodeMirror SQL editor, schema explorer, visual EXPLAIN viewer, Docker discovery, multi-tab queries, and a system tray. See the [GUI guide](https://clement-tourriere.github.io/dbcrust/user-guide/gui/).
+A native, GPU-accelerated desktop app built with [GPUI Kit](https://gpui-kit.com), pure Rust on the same core as the CLI (built from source for now). See the [GUI guide](https://clement-tourriere.github.io/dbcrust/user-guide/gui/).
+
+![DBCrust desktop app](docs/public/screenshots/gui-query.png)
+
+- **Connect:** one searchable list of saved connections, recent ones and Docker containers, with Test / Save / Connect, environment labels and a Vault wizard. Docker containers connect even when their port isn't published or a VPN blocks the container network: DBCrust relays through Docker itself. Open several connections at once, read-only if you like.
+- **Explore:** a schema explorer with a cross-connection filter, and a table inspector showing columns, indexes, constraints, references, a data preview and DDL.
+- **Edit:** a SQL editor with schema-aware completion (aliases and CTEs resolved). Run the statement under the caret, run all, really cancel, format, keep history, and use named queries and `.sql` files.
+- **Results:** a virtualized results grid with distinct NULLs and numeric sorting, copy/export as CSV, TSV, JSON or Markdown, and a row inspector.
+- **Plans:** an EXPLAIN visualizer with plan tree, cost shares, row-estimate checks and recommendations.
+- **Navigate:** a command palette (`⌘K`), native menus, full keyboard shortcuts, light/dark themes following the OS plus bundled themes, and drafts that are autosaved and restored.
+- **Stays at hand:** closing the window keeps DBCrust in the menu bar / system tray with its connections and running queries; reopen or connect from there.
+
+<p>
+  <img src="docs/public/screenshots/gui-home.png" alt="Connect page" width="49%">
+  <img src="docs/public/screenshots/gui-explain.png" alt="EXPLAIN visualizer" width="49%">
+</p>
 
 ```bash
-mise install && mise run gui:install
-mise run gui:dev                       # development (hot-reload)
-mise run gui:build                     # production .app / .dmg / .msi
+mise run gui:dev                       # run the app
+mise run gui:build                     # release build (target/release/dbcrust-gui)
+mise run gui:bundle                    # macOS DBCrust.app
 ```
 
 ## Configuration
@@ -237,15 +252,15 @@ Full list of options: [configuration reference](https://clement-tourriere.github
 
 ## Development
 
-DBCrust uses [mise](https://mise.jdx.dev/) 2026.8.16+ for toolchain and task management. `mise install` installs Bun, Commitizen, and [Mr Boxington](https://mr-boxington.jdx.dev/), which puts a shared, self-pruning cache behind Cargo commands run through mise.
+DBCrust uses [mise](https://mise.jdx.dev/) 2026.8.16+ for toolchain and task management. `mise install` installs Bun (docs site), Commitizen, and [Mr Boxington](https://mr-boxington.jdx.dev/), which puts a shared, self-pruning cache behind Cargo commands run through mise. No mise? Run `./bin/mise` instead of `mise`: the committed wrapper downloads a pinned mise on first use.
 
 ```bash
 mise install
 mise run build:dev        # debug build          mise run build      # release build
 mise run test             # cargo test           mise run check      # fmt + lint + test
 mise run py:dev           # maturin develop      mise run py:test    # Python tests
-mise run gui:dev          # GUI with hot-reload  mise run docs       # docs dev server
-mbx doctor                # verify the Rust build cache
+mise run gui:dev          # desktop app         mise run docs       # docs dev server
+mise run cache:stats      # mbx cache savings    mbx doctor          # verify the Rust build cache
 ```
 
 With mise activated, plain `cargo` commands use the same cache. Set `MBX_DISABLE=1` for a one-off uncached Cargo command.
@@ -255,7 +270,7 @@ src/                Rust core — CLI, REPL, database backends, AI assistant
 ├── commands.rs     backslash command system (enum + strum)
 ├── database_*.rs   per-database implementations
 └── explain_tui/    interactive EXPLAIN visualizer (ratatui)
-gui/                Tauri desktop app (React + TypeScript, Bun)
+gui/                desktop app (GPUI Kit) — core/ is the GPUI-free backend
 python/             Python bindings (PyO3 + maturin) and Django integration
 docs/               documentation site (Astro Starlight)
 ```

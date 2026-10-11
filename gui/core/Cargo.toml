@@ -1,0 +1,21 @@
+[package]
+name = "dbcrust-gui-core"
+version = "0.37.2"
+edition = "2024"
+publish = false
+description = "GPUI-free backend of the DBCrust desktop app: per-connection database workers, config/storage ownership, and pure query/result/schema models"
+
+[dependencies]
+dbcrust = { path = "../..", default-features = false }
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+thiserror = "2"
+tracing = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[dev-dependencies]
+rstest = { version = "0.26", default-features = false }
+tempfile = "3"

@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">DBCrust icon</title>
+  <desc id="desc">A geometric blue crust ring around a database core.</desc>
+  <defs>
+    <linearGradient id="bg" x1="96" y1="64" x2="432" y2="448" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#111827"/>
+      <stop offset="1" stop-color="#020617"/>
+    </linearGradient>
+    <linearGradient id="crust" x1="112" y1="104" x2="400" y2="408" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2563eb"/>
+      <stop offset="1" stop-color="#67e8f9"/>
+    </linearGradient>
+    <linearGradient id="core" x1="164" y1="174" x2="348" y2="338" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#dbeafe"/>
+      <stop offset="1" stop-color="#67e8f9"/>
+    </linearGradient>
+    <filter id="shadow" x="52" y="52" width="408" height="408" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#020617" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+
+  <rect x="32" y="32" width="448" height="448" rx="108" fill="url(#bg)"/>
+
+  <g filter="url(#shadow)">
+    <path
+      fill="url(#crust)"
+      fill-rule="evenodd"
+      d="M256 72 372 102 440 172 440 340 372 410 256 440 140 410 72 340 72 172 140 102ZM256 152 329 170 376 218 376 294 329 342 256 360 183 342 136 294 136 218 183 170Z"
+      clip-rule="evenodd"
+    />
+  </g>
+
+  <path
+    d="M162 129 246 106"
+    fill="none"
+    stroke="#dbeafe"
+    stroke-linecap="round"
+    stroke-width="16"
+    opacity="0.46"
+  />
+
+  <path d="M340 170 383 127" stroke="#7dd3fc" stroke-width="16" stroke-linecap="round" opacity="0.66"/>
+
+  <rect x="174" y="182" width="164" height="34" rx="10" fill="url(#core)"/>
+  <rect x="154" y="239" width="204" height="34" rx="10" fill="#60a5fa"/>
+  <rect x="174" y="296" width="164" height="34" rx="10" fill="url(#core)"/>
+
+  <rect x="146" y="182" width="18" height="34" rx="6" fill="#38bdf8"/>
+  <rect x="368" y="239" width="18" height="34" rx="6" fill="#38bdf8"/>
+  <rect x="146" y="296" width="18" height="34" rx="6" fill="#38bdf8"/>
+</svg>

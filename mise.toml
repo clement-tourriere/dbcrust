@@ -51,49 +51,40 @@ depends = ["fmt", "lint", "test", "py:lint", "py:test"]
 # GUI Tasks
 # ══════════════════════════════════════════════════════════════════════════════
 
-[tasks."gui:install"]
-description = "Install GUI frontend dependencies"
-run = "if [ -f gui/node_modules/.package-lock.json ]; then rm -rf gui/node_modules; fi && bun install --cwd gui"
-
 [tasks."gui:dev"]
-description = "Start GUI in development mode (frontend + Tauri)"
-depends = ["gui:install"]
-run = "bun run --cwd gui tauri dev"
+description = "Run the desktop app (debug build)"
+run = "cargo run -p dbcrust-gui"
 
 [tasks."gui:build"]
-description = "Build GUI for production"
-depends = ["gui:install"]
-run = "bun run --cwd gui tauri build"
-
-[tasks."gui:frontend"]
-description = "Start only the frontend dev server (no Tauri)"
-depends = ["gui:install"]
-run = "bun run --cwd gui dev"
-
-[tasks."gui:build-frontend"]
-description = "Build only the frontend"
-depends = ["gui:install"]
-run = "bun run --cwd gui build"
-
-[tasks."gui:build-rust"]
-description = "Build only the Tauri Rust backend"
-run = "cargo build -p dbcrust-gui"
-
-[tasks."gui:build-rust-release"]
-description = "Build the Tauri Rust backend in release mode"
+description = "Build the desktop app in release mode"
 run = "cargo build -p dbcrust-gui --release"
 
-[tasks."gui:clean"]
-description = "Clean GUI build artifacts"
-run = """
-rm -rf gui/dist
-rm -rf gui/src-tauri/target
-rm -rf gui/node_modules
-"""
+[tasks."gui:install"]
+description = "Install the desktop app binary (dbcrust-gui) into ~/.cargo/bin"
+run = "cargo install --path gui --bin dbcrust-gui --locked --force"
+
+[tasks."gui:bundle"]
+description = "Build a macOS DBCrust.app bundle into target/release/bundle/"
+run = "bash gui/bundle/macos/bundle.sh"
+
+[tasks."gui:test"]
+description = "Run the desktop app backend tests (no GPUI needed)"
+run = "cargo test -p dbcrust-gui-core"
 
 [tasks."gui:lint"]
-description = "Lint the GUI Rust backend"
-run = 'cargo clippy -p dbcrust-gui -- -D "clippy::correctness" -D "clippy::suspicious"'
+description = "Clippy on the desktop app crates (same flags as CI)"
+run = [
+  "cargo clippy -p dbcrust-gui-core --all-targets --no-deps -- -D warnings",
+  "cargo clippy -p dbcrust-gui --no-deps -- -D warnings",
+]
+
+[tasks."gui:screenshots"]
+description = "Render the README/docs screenshots headlessly (seeded demo database)"
+run = "bash gui/scripts/screenshots.sh"
+
+[tasks."gui:clean"]
+description = "Remove desktop app build artifacts"
+run = "cargo clean -p dbcrust-gui -p dbcrust-gui-core"
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Python Tasks
@@ -174,6 +165,18 @@ depends = ["build", "gui:build", "py:build"]
 description = "Clean all build artifacts"
 run = """
 cargo clean
-rm -rf gui/dist gui/node_modules gui/src-tauri/target
+mbx clean
 rm -rf target
 """
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Build Cache (Mr Boxington)
+# ══════════════════════════════════════════════════════════════════════════════
+
+[tasks."cache:stats"]
+description = "Show what the shared Cargo build cache saved and how much disk it uses"
+run = ["mbx stats", "mbx cache stats"]
+
+[tasks."cache:gc"]
+description = "Reclaim build-cache disk space now (`mise run cache:gc -- --dry-run` to preview)"
+run = "mbx gc"
