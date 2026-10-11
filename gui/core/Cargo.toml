@@ -1,6 +1,6 @@
 [package]
 name = "dbcrust-gui-core"
-version = "0.37.2"
+version = "0.38.0"
 edition = "2024"
 publish = false
 description = "GPUI-free backend of the DBCrust desktop app: per-connection database workers, config/storage ownership, and pure query/result/schema models"

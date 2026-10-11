@@ -1,3 +1,13 @@
+## v0.38.0 (2026-10-11)
+
+### Feat
+
+- **gui**: rebuild the desktop app on GPUI Kit
+
+### Fix
+
+- **deps**: bump rustls to 0.23.45 (RUSTSEC-2026-0285)
+
 ## v0.37.2 (2026-09-08)
 
 ### Fix

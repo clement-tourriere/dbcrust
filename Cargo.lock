@@ -2791,7 +2791,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust"
-version = "0.37.2"
+version = "0.38.0"
 dependencies = [
  "aes-gcm",
  "arboard",
@@ -2844,7 +2844,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-gui"
-version = "0.37.2"
+version = "0.38.0"
 dependencies = [
  "async-channel",
  "chrono",
@@ -2868,7 +2868,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-gui-core"
-version = "0.37.2"
+version = "0.38.0"
 dependencies = [
  "chrono",
  "dbcrust",

@@ -1,6 +1,6 @@
 [package]
 name = "dbcrust-gui"
-version = "0.37.2"
+version = "0.38.0"
 edition = "2024"
 publish = false
 description = "DBCrust desktop app — a native GPU-accelerated database workbench built with GPUI Kit"
