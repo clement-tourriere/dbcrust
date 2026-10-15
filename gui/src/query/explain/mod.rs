@@ -105,7 +105,7 @@ impl ExplainView {
     }
 
     fn copy_plan(&self, window: &mut Window, cx: &mut App) {
-        cx.write_to_clipboard(ClipboardItem::new_string(self.model.raw.clone()));
+        crate::clipboard::write(self.model.raw.clone(), cx);
         let what = if self.model.raw_is_json {
             "plan JSON"
         } else {

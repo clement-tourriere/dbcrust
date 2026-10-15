@@ -159,9 +159,11 @@ pub enum SortDirection {
 
 /// A value as the sort sees it. Numbers order before text, which keeps the
 /// comparison a total order even for columns that mix both.
-enum SortKey<'a> {
+enum SortKey {
     Number(f64),
-    Text(&'a str),
+    /// Lower-cased once per value. UTF-8 orders like the code points it
+    /// encodes, so comparing the bytes compares the characters.
+    Text(String),
 }
 
 fn compare_keys(a: &SortKey, b: &SortKey) -> Ordering {
@@ -169,10 +171,7 @@ fn compare_keys(a: &SortKey, b: &SortKey) -> Ordering {
         (SortKey::Number(x), SortKey::Number(y)) => x.partial_cmp(y).unwrap_or(Ordering::Equal),
         (SortKey::Number(_), SortKey::Text(_)) => Ordering::Less,
         (SortKey::Text(_), SortKey::Number(_)) => Ordering::Greater,
-        (SortKey::Text(x), SortKey::Text(y)) => x
-            .chars()
-            .flat_map(char::to_lowercase)
-            .cmp(y.chars().flat_map(char::to_lowercase)),
+        (SortKey::Text(x), SortKey::Text(y)) => x.cmp(y),
     }
 }
 
@@ -187,7 +186,7 @@ pub fn sorted_order(result: &ResultSet, col: usize, direction: SortDirection) ->
             Some(value) => {
                 let key = match parse_number(value) {
                     Some(number) => SortKey::Number(number),
-                    None => SortKey::Text(value),
+                    None => SortKey::Text(value.chars().flat_map(char::to_lowercase).collect()),
                 };
                 keyed.push((ix, key));
             }
@@ -368,10 +367,16 @@ pub fn format_elapsed(elapsed: Duration) -> String {
     }
 }
 
-/// Live timer of a running statement: `0.4 s`, `12.0 s`, `2 min 05 s`.
+/// The running timer shows tenths of a second up to here, whole seconds
+/// after (it is repainted for every change it shows: see [`running_tick`]).
+const RUNNING_TENTHS_UNTIL: Duration = Duration::from_secs(2);
+
+/// Live timer of a running statement: `0.4 s`, `12 s`, `2 min 05 s`.
 pub fn format_running(elapsed: Duration) -> String {
-    if elapsed.as_secs() < 60 {
+    if elapsed < RUNNING_TENTHS_UNTIL {
         format!("{:.1} s", elapsed.as_secs_f64())
+    } else if elapsed.as_secs() < 60 {
+        format!("{} s", elapsed.as_secs())
     } else {
         format!(
             "{} min {:02} s",
@@ -379,6 +384,16 @@ pub fn format_running(elapsed: Duration) -> String {
             elapsed.as_secs() % 60
         )
     }
+}
+
+/// How long until [`format_running`] shows something else after `elapsed`:
+/// a tenth of a second at first, then just past the next whole second.
+pub fn running_tick(elapsed: Duration) -> Duration {
+    if elapsed < RUNNING_TENTHS_UNTIL {
+        return Duration::from_millis(100);
+    }
+    let into_second = Duration::from_nanos(u64::from(elapsed.subsec_nanos()));
+    Duration::from_secs(1) - into_second + Duration::from_millis(5)
 }
 
 /// The result set shown first for a multi-statement run: the last one that
@@ -525,6 +540,47 @@ mod tests {
             ),
             some(&["9", "10", "a", "b"])
         );
+    }
+
+    #[test]
+    fn text_keys_order_like_comparing_lowercased_characters() {
+        let values = [
+            "Zebra",
+            "zèbre",
+            "ÉCOLE",
+            "école",
+            "ecole",
+            "İstanbul",
+            "istanbul",
+            "ΣΟΦΙΑ",
+            "σοφια",
+            "straße",
+            "STRASSE",
+            "a\u{0}b",
+            "a",
+            "",
+            "ǅungla",
+            "ǆ",
+            "日本",
+            "z",
+            "Ab",
+            "aB",
+            "10a",
+            "9b",
+        ];
+        let reference = |direction: SortDirection| {
+            let mut order: Vec<usize> = (0..values.len()).collect();
+            let lower = |ix: &usize| values[*ix].chars().flat_map(char::to_lowercase);
+            order.sort_by(|a, b| match direction {
+                SortDirection::Ascending => lower(a).cmp(lower(b)),
+                SortDirection::Descending => lower(b).cmp(lower(a)),
+            });
+            order
+        };
+        let r = column(&values.map(Some));
+        for direction in [SortDirection::Ascending, SortDirection::Descending] {
+            assert_eq!(sorted_order(&r, 0, direction), reference(direction));
+        }
     }
 
     #[test]
@@ -741,10 +797,30 @@ mod tests {
 
     #[rstest]
     #[case(Duration::from_millis(40), "0.0 s")]
-    #[case(Duration::from_millis(3400), "3.4 s")]
+    #[case(Duration::from_millis(1960), "2.0 s")]
+    #[case(Duration::from_millis(2000), "2 s")]
+    #[case(Duration::from_millis(3400), "3 s")]
+    #[case(Duration::from_millis(59_999), "59 s")]
     #[case(Duration::from_secs(61), "1 min 01 s")]
     fn running_timer(#[case] d: Duration, #[case] expected: &str) {
         assert_eq!(format_running(d), expected);
+    }
+
+    #[test]
+    fn the_running_timer_repaints_when_its_text_changes() {
+        assert_eq!(running_tick(Duration::ZERO), Duration::from_millis(100));
+        assert_eq!(
+            running_tick(Duration::from_millis(1950)),
+            Duration::from_millis(100)
+        );
+        // Whole seconds: wake just past the next one, whatever the drift
+        for elapsed in [2_000, 2_400, 7_999, 61_250, 3_600_010] {
+            let elapsed = Duration::from_millis(elapsed);
+            let next = elapsed + running_tick(elapsed);
+            assert_eq!(next.as_secs(), elapsed.as_secs() + 1, "{elapsed:?}");
+            assert!(next.subsec_millis() <= 5, "{elapsed:?}");
+            assert_ne!(format_running(next), format_running(elapsed));
+        }
     }
 
     #[test]

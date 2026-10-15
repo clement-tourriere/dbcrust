@@ -314,20 +314,49 @@ impl Surfaces {
 /// have (plain, selected, hovered, in a card), darker or lighter where it
 /// would not (yellow on pale yellow in the light theme).
 pub fn tint_text(color: Hsla, cx: &App) -> Hsla {
-    let theme = cx.theme();
-    let surfaces = Surfaces::of(theme);
-    let targets: Vec<(Hsla, f32)> = [
+    let surfaces = Surfaces::of(cx.theme());
+    let row_surfaces = [
         surfaces.canvas,
         surfaces.sidebar,
         surfaces.selected,
         surfaces.selected_inactive,
         surfaces.hover,
         surfaces.raised,
-    ]
-    .into_iter()
-    .map(|surface| (over(surface, color.opacity(0.14)), MIN_ROW_CONTRAST))
-    .collect();
-    ensure_contrast(color, &targets)
+    ];
+    // The contrast search is far too slow to run for every chip of every
+    // frame, and its answer only changes with the theme
+    TINTS.with_borrow_mut(|tints| tints.get(color, row_surfaces))
+}
+
+thread_local! {
+    static TINTS: std::cell::RefCell<TintCache> = Default::default();
+}
+
+/// [`tint_text`] results, for the row surfaces they were computed on.
+#[derive(Default)]
+struct TintCache {
+    surfaces: Option<[Hsla; 6]>,
+    tints: Vec<(Hsla, Hsla)>,
+}
+
+impl TintCache {
+    fn get(&mut self, color: Hsla, surfaces: [Hsla; 6]) -> Hsla {
+        if self.surfaces != Some(surfaces) {
+            self.surfaces = Some(surfaces);
+            self.tints.clear();
+        }
+        // A handful of colors (PK, FK, NN, info…): a scan beats hashing floats
+        if let Some((_, tint)) = self.tints.iter().find(|(key, _)| *key == color) {
+            return *tint;
+        }
+        let targets: Vec<(Hsla, f32)> = surfaces
+            .into_iter()
+            .map(|surface| (over(surface, color.opacity(0.14)), MIN_ROW_CONTRAST))
+            .collect();
+        let tint = ensure_contrast(color, &targets);
+        self.tints.push((color, tint));
+        tint
+    }
 }
 
 /// Lay the surface hierarchy over `colors` (see the section comment).
@@ -700,6 +729,26 @@ mod tests {
                 }
             }
         });
+    }
+
+    #[test]
+    fn badge_tints_are_recomputed_for_new_surfaces() {
+        let yellow = hsla(0.14, 0.9, 0.5, 1.);
+        let light = [hsla(0., 0., 0.98, 1.); 6];
+        let dark = [hsla(0., 0., 0.1, 1.); 6];
+        let fresh = |surfaces: [Hsla; 6]| {
+            let targets: Vec<(Hsla, f32)> = surfaces
+                .into_iter()
+                .map(|surface| (over(surface, yellow.opacity(0.14)), MIN_ROW_CONTRAST))
+                .collect();
+            ensure_contrast(yellow, &targets)
+        };
+        let mut cache = TintCache::default();
+        assert_eq!(cache.get(yellow, light), fresh(light));
+        assert_eq!(cache.get(yellow, light), fresh(light));
+        assert_eq!(cache.get(yellow, dark), fresh(dark));
+        assert_ne!(fresh(light), fresh(dark), "the case must tell them apart");
+        assert_eq!(cache.tints.len(), 1);
     }
 
     #[test]

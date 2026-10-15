@@ -94,8 +94,78 @@ pub struct BuildContext<'a> {
 
 pub struct Built {
     pub rows: Vec<Row>,
-    /// Expanded tables whose description is not cached yet.
+    /// Expanded tables whose description is not cached yet and should be
+    /// fetched.
     pub needs_details: Vec<(ConnectionId, String)>,
+    /// Every expanded table still showing no columns: the ones being
+    /// fetched and the ones whose fetch failed (another view, such as the
+    /// inspector, may still describe them).
+    pub awaiting: Vec<(ConnectionId, String)>,
+}
+
+/// What the rows are built from in the app state: the live connections and
+/// the state of their table lists. When it is unchanged, an app state change
+/// (a label, read-only, the active connection, a description fetched for
+/// completion) needs a repaint, not a rebuild.
+#[derive(Default)]
+pub struct Shape(Vec<(ConnectionId, SchemaShape)>);
+
+enum SchemaShape {
+    Loading,
+    Failed(String),
+    /// The list itself, not its address: a freed list could otherwise be
+    /// mistaken for a new one allocated at the same place.
+    Ready(Arc<Vec<TableEntry>>),
+}
+
+impl SchemaShape {
+    fn of(schema: &SchemaState) -> Self {
+        match schema {
+            SchemaState::Loading => Self::Loading,
+            SchemaState::Failed(message) => Self::Failed(message.clone()),
+            SchemaState::Ready(tables) => Self::Ready(tables.clone()),
+        }
+    }
+
+    fn matches(&self, schema: &SchemaState) -> bool {
+        match (self, schema) {
+            (Self::Loading, SchemaState::Loading) => true,
+            (Self::Failed(a), SchemaState::Failed(b)) => a == b,
+            (Self::Ready(a), SchemaState::Ready(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+}
+
+impl Shape {
+    pub fn of(connections: &[LiveConnection]) -> Self {
+        Self(
+            connections
+                .iter()
+                .map(|live| (live.id(), SchemaShape::of(&live.schema)))
+                .collect(),
+        )
+    }
+
+    pub fn matches(&self, connections: &[LiveConnection]) -> bool {
+        self.0.len() == connections.len()
+            && self
+                .0
+                .iter()
+                .zip(connections)
+                .all(|((id, schema), live)| *id == live.id() && schema.matches(&live.schema))
+    }
+}
+
+/// Whether a description that an expanded table was waiting for (see
+/// [`Built::awaiting`]) has arrived, or its connection is gone.
+pub fn details_arrived(awaiting: &[DetailKey], connections: &[LiveConnection]) -> bool {
+    awaiting.iter().any(|(connection, key)| {
+        connections
+            .iter()
+            .find(|live| live.id() == *connection)
+            .is_none_or(|live| live.details.contains_key(key))
+    })
 }
 
 pub fn connection_row_id(id: ConnectionId) -> String {
@@ -113,6 +183,7 @@ pub fn build_rows(connections: &[LiveConnection], context: &BuildContext) -> Bui
     let mut built = Built {
         rows: Vec::new(),
         needs_details: Vec::new(),
+        awaiting: Vec::new(),
     };
     for live in connections {
         build_connection(live, context, &mut built);
@@ -317,6 +388,7 @@ fn build_table(
         ),
         None => match context.errors.get(&(connection, key.clone())) {
             Some(message) => {
+                built.awaiting.push((connection, key.clone()));
                 built.rows.push(child(
                     "failed",
                     RowKind::ColumnsFailed {
@@ -332,6 +404,7 @@ fn build_table(
                 ));
             }
             None => {
+                built.awaiting.push((connection, key.clone()));
                 built.needs_details.push((connection, key));
                 built.rows.push(child("loading", RowKind::ColumnsLoading));
             }

@@ -326,6 +326,106 @@ fn a_late_file_restore_does_not_take_back_a_newer_target(cx: &mut TestAppContext
     });
 }
 
+fn open_with(cx: &mut TestAppContext, store: ConfigStore) -> (AnyWindowHandle, Entity<Workspace>) {
+    crate::test_support::isolate();
+    cx.executor().allow_parking();
+    cx.update(|cx| {
+        crate::init(store, cx);
+        cx.set_global(RestoredState(GuiState::default()));
+        crate::open_main_window(WindowOptions::default(), cx).expect("open the main window")
+    })
+}
+
+#[gpui_kit::test]
+fn a_stalled_settings_write_cannot_hang_the_quit(cx: &mut TestAppContext) {
+    // The config.toml write stalls until the end of the test
+    let (release, stalled) = std::sync::mpsc::channel::<()>();
+    let stalled = std::sync::Mutex::new(stalled);
+    let store =
+        ConfigStore::from_config(Config::default_settings()).with_settings_writer(move |_| {
+            let _ = stalled
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(60));
+            Ok(())
+        });
+    let (_window, workspace) = open_with(cx, store.clone());
+    store.update_settings(|config| config.default_limit = 5);
+    let started = std::time::Instant::now();
+    cx.update(|cx| cx.dispatch_action(&act::Quit));
+    cx.run_until_parked();
+    // The deadline (2 s) covers the settings write: the user is asked
+    // instead of the quit hanging on it, or quitting without it
+    let waited = started.elapsed();
+    drop(release);
+    assert!(
+        waited < std::time::Duration::from_secs(10),
+        "the quit waited {waited:?} for the stalled write"
+    );
+    cx.update(|cx| assert!(!workspace.read(cx).quitting.get()));
+}
+
+#[gpui_kit::test]
+fn a_setting_changed_during_the_final_save_is_saved_before_quitting(cx: &mut TestAppContext) {
+    let cell: std::sync::Arc<std::sync::OnceLock<ConfigStore>> = Default::default();
+    let written: std::sync::Arc<std::sync::Mutex<Vec<usize>>> = Default::default();
+    let (edit_from, record) = (cell.clone(), written.clone());
+    let store = ConfigStore::from_config(Config::default_settings()).with_settings_writer(
+        move |snapshot| {
+            let mut written = record.lock().unwrap();
+            written.push(snapshot.default_limit);
+            if written.len() == 1 {
+                // The Settings page stays usable while the app quits
+                edit_from
+                    .get()
+                    .unwrap()
+                    .update_settings(|config| config.default_limit = 8);
+            }
+            Ok(())
+        },
+    );
+    cell.set(store.clone()).ok().unwrap();
+    let (_window, workspace) = open_with(cx, store.clone());
+    store.update_settings(|config| config.default_limit = 7);
+    cx.update(|cx| cx.dispatch_action(&act::Quit));
+    cx.run_until_parked();
+    cx.update(|cx| assert!(workspace.read(cx).quitting.get()));
+    assert!(
+        !store.has_unsaved_settings(),
+        "quit before the last change was saved"
+    );
+    assert_eq!(written.lock().unwrap().last(), Some(&8));
+}
+
+#[gpui_kit::test]
+fn quit_never_finishes_with_a_setting_changed_after_every_save(cx: &mut TestAppContext) {
+    let saves = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = saves.clone();
+    let store =
+        ConfigStore::from_config(Config::default_settings()).with_settings_writer(move |_| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        });
+    let (_window, workspace) = open_with(cx, store.clone());
+    cx.run_until_parked();
+    store.update_settings(|config| config.default_limit = 1);
+    cx.update(|cx| cx.dispatch_action(&act::Quit));
+    for attempt in 1..=3 {
+        // Run tasks until this attempt's flush (its settings save included)
+        // is over, but not the check that follows it on the UI thread
+        while saves.load(std::sync::atomic::Ordering::SeqCst) < attempt {
+            assert!(cx.executor().tick(), "attempt {attempt} never saved");
+        }
+        // The user changes a setting while the quit finishes saving
+        store.update_settings(|config| config.default_limit = attempt + 1);
+    }
+    cx.run_until_parked();
+    // Out of retries with a change still unsaved: ask, never quit
+    cx.update(|cx| assert!(!workspace.read(cx).quitting.get()));
+    assert!(store.has_unsaved_settings());
+    assert_eq!(saves.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
 #[gpui_kit::test]
 fn quit_without_running_queries_quits_immediately(cx: &mut TestAppContext) {
     let (_window, workspace) = open(cx);

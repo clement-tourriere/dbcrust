@@ -1,33 +1,44 @@
 //! Settings tab: desktop preferences (closing the window, startup, theme,
-//! editor font size) and the DBCrust settings that matter in the app, edited
-//! through the same schema as the CLI's `\config` (`dbcrust::config_editor`)
-//! so labels, ranges and validation are shared.
+//! editor font size), every shared DBCrust setting, and managers for the
+//! user data next to them (saved queries, SSH tunnels, the Vault cache,
+//! recent connections).
 //!
-//! Every change is applied immediately. DBCrust settings go through
-//! `ConfigStore::update` and the documented `config.toml` is saved in the
-//! background (comments are preserved); desktop preferences live in
-//! [`Preferences`] and `gui_state.toml`.
+//! DBCrust settings are edited through the same schema as the CLI's
+//! `\config` (`dbcrust::config_editor`), so labels, ranges and validation
+//! are shared; [`schema`] puts each field on one page. Controls read a
+//! cached snapshot and changes are saved in the background, keeping the
+//! documentation comments of `config.toml` ([`storage`]). Desktop
+//! preferences live in [`Preferences`] and `gui_state.toml`.
+
+mod saved_queries;
+mod schema;
+mod storage;
+mod tunnels;
+
+pub(crate) use storage::{flush_on_quit, has_unsaved_settings};
 
 use crate::about::{DOCS_URL, GITHUB_URL, VERSION};
 use crate::actions::About;
-use crate::app_state::AppState;
+use crate::app_state::{AppEvent, AppState};
 use crate::preferences::Preferences;
 use crate::theme;
 use crate::tray::{self, Availability, Wording};
+use dbcrust_gui_core::ConfigStore;
 use dbcrust_gui_core::dbcrust::config::Config;
-use dbcrust_gui_core::dbcrust::config_editor::{self, FieldKind, FieldSpec};
+use dbcrust_gui_core::dbcrust::config_editor;
 use dbcrust_gui_core::gui_state::{GuiState, StatementSeparators, ThemeModeSetting};
-use dbcrust_gui_core::{ConfigStore, GuiResult};
+use dbcrust_gui_core::store::VaultCache;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _, ThemeMode, WindowExt as _,
+    ActiveTheme as _, Disableable as _, Icon, Sizable as _, StyledExt as _, ThemeMode,
+    WindowExt as _,
     button::{Button, ButtonVariants as _},
     group_box::GroupBoxVariant,
     h_flex,
     notification::Notification,
     setting::{
-        NumberFieldOptions, RenderOptions, SettingField, SettingGroup, SettingItem, SettingPage,
-        Settings,
+        NumberFieldOptions, RenderOptions, SelectIndex, SettingField, SettingGroup, SettingItem,
+        SettingPage, Settings,
     },
     v_flex,
 };
@@ -35,27 +46,192 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use storage::{Clearable, SettingsCache};
+use strum::IntoEnumIterator;
 
 /// Width of the page list.
 const SETTINGS_NAV_WIDTH: Pixels = px(200.);
-/// Navigation plus a 720 px content column.
-const SETTINGS_MAX_WIDTH: Pixels = px(920.);
+/// Navigation plus a content column; wide enough for the saved query
+/// manager's list and editor side by side.
+const SETTINGS_MAX_WIDTH: Pixels = px(1040.);
+/// Space around the manager pages' content (title bar, tabs, status bar,
+/// page header): the manager fills the rest of the window.
+const MANAGER_CHROME_HEIGHT: Pixels = px(268.);
+const MANAGER_MIN_HEIGHT: Pixels = px(420.);
 
 /// Sentinel dropdown value for "no custom theme".
 const DEFAULT_THEME_OPTION: &str = "default";
 
+/// The Settings pages, in navigation order. Commands and other views open
+/// Settings on one of them ([`AppState::open_settings_page`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::EnumIter)]
+pub enum SettingsPage {
+    General,
+    Appearance,
+    Queries,
+    SavedQueries,
+    Connections,
+    SshTunnels,
+    Vault,
+    ResultsDisplay,
+    Ai,
+    Terminal,
+    Logging,
+    Files,
+}
+
+impl SettingsPage {
+    fn title(self) -> &'static str {
+        match self {
+            Self::General => "General",
+            Self::Appearance => "Appearance",
+            Self::Queries => "Queries",
+            Self::SavedQueries => "Saved queries",
+            Self::Connections => "Connections",
+            Self::SshTunnels => "SSH tunnels",
+            Self::Vault => "Vault",
+            Self::ResultsDisplay => "Results display",
+            Self::Ai => "AI assistant",
+            Self::Terminal => "Terminal (CLI)",
+            Self::Logging => "Logging",
+            Self::Files => "Files",
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Self::General => IconName::Settings,
+            Self::Appearance => IconName::Palette,
+            Self::Queries => IconName::SquareTerminal,
+            Self::SavedQueries => IconName::Bookmark,
+            Self::Connections => IconName::Database,
+            Self::SshTunnels => IconName::Route,
+            Self::Vault => IconName::KeyRound,
+            Self::ResultsDisplay => IconName::Table,
+            Self::Ai => IconName::Sparkles,
+            Self::Terminal => IconName::Terminal,
+            Self::Logging => IconName::ScrollText,
+            Self::Files => IconName::FolderOpen,
+        }
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::General => "Closing the window and starting up.",
+            Self::Appearance => "Theme and text size.",
+            Self::Queries => "Execution and the SQL editor.",
+            Self::SavedQueries => {
+                "Saved queries of every scope, shared with the dbcrust command line. Use $1, $2 \
+                 for parameters."
+            }
+            Self::Connections => "Defaults, recent connections and saved connections.",
+            Self::SshTunnels => {
+                "A connection to a host that matches a pattern goes through the pattern’s SSH \
+                 server. Patterns are regular expressions matched against the database host."
+            }
+            Self::Vault => "HashiCorp Vault credentials for vault:// connections.",
+            Self::ResultsDisplay => {
+                "How vectors, JSON, arrays and other complex values are formatted in results."
+            }
+            Self::Ai => {
+                "The AI assistant of the dbcrust command line (?? and \\ai). The desktop app \
+                 does not use it yet."
+            }
+            Self::Terminal => {
+                "These settings apply to the dbcrust command line only: its prompt, pager, \
+                 EXPLAIN mode and history."
+            }
+            Self::Logging => {
+                "Diagnostic logs, for the app and the command line. Changes take effect next \
+                 session."
+            }
+            Self::Files => "",
+        }
+    }
+
+    /// The page with its title, icon and description, before its groups.
+    fn page(self) -> SettingPage {
+        let page = SettingPage::new(self.title()).icon(Icon::new(self.icon()));
+        match self.description() {
+            "" => page,
+            description => page.description(description),
+        }
+    }
+}
+
 pub struct SettingsView {
     focus_handle: FocusHandle,
-    /// `Config::default()`, the target of every reset button.
+    /// Default settings, the target of every reset button.
     defaults: Rc<Config>,
+    selected_page: SettingsPage,
+    /// Bumped to re-apply `selected_page` to an open Settings tab.
+    navigation: u64,
+    saved_queries: Entity<saved_queries::SavedQueriesView>,
+    tunnels: Entity<tunnels::TunnelsView>,
+    tunnel_tester: Entity<tunnels::TunnelTester>,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl SettingsView {
-    pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        storage::ensure(cx);
+        let saved_queries = cx.new(|cx| saved_queries::SavedQueriesView::new(window, cx));
+        let tunnels = cx.new(|cx| tunnels::TunnelsView::new(window, cx));
+        let tunnel_tester = cx.new(|cx| tunnels::TunnelTester::new(window, cx));
+        let subscriptions = vec![
+            cx.subscribe(&AppState::global(cx), |_, _, event, cx| {
+                if matches!(event, AppEvent::StorageChanged) {
+                    storage::refresh(cx);
+                }
+            }),
+            cx.observe_global::<SettingsCache>(|_, cx| cx.notify()),
+        ];
+        storage::refresh(cx);
         Self {
             focus_handle: cx.focus_handle(),
-            defaults: Rc::new(Config::default()),
+            defaults: Rc::new(Config::default_settings()),
+            selected_page: SettingsPage::General,
+            navigation: 0,
+            saved_queries,
+            tunnels,
+            tunnel_tester,
+            _subscriptions: subscriptions,
         }
+    }
+
+    /// Show `page`, also when this Settings tab is already open.
+    pub fn select_page(&mut self, page: SettingsPage, cx: &mut Context<Self>) {
+        self.selected_page = page;
+        self.navigation += 1;
+        cx.notify();
+    }
+
+    /// Type `host` in SSH tunnels → Test a host (screenshot fixtures).
+    pub fn test_tunnel_host(&mut self, host: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.tunnel_tester
+            .update(cx, |tester, cx| tester.set_host(host, window, cx));
+    }
+
+    /// Every page, in [`SettingsPage`] order.
+    fn pages(&self, cx: &App) -> Vec<SettingPage> {
+        SettingsPage::iter()
+            .map(|page| match page {
+                SettingsPage::General => self.general_page(cx),
+                SettingsPage::Appearance => self.appearance_page(cx),
+                SettingsPage::Queries => self.queries_page(),
+                SettingsPage::SavedQueries => self.saved_queries_page(),
+                SettingsPage::Connections => self.connections_page(cx),
+                SettingsPage::SshTunnels => self.tunnels_page(),
+                SettingsPage::Vault => self.vault_page(cx),
+                SettingsPage::ResultsDisplay
+                | SettingsPage::Ai
+                | SettingsPage::Terminal
+                | SettingsPage::Logging => page
+                    .page()
+                    .groups(schema::schema_groups(page, &self.defaults)),
+                SettingsPage::Files => self.files_page(cx),
+            })
+            .collect()
     }
 
     fn general_page(&self, cx: &App) -> SettingPage {
@@ -109,9 +285,8 @@ impl SettingsView {
             }
         }
 
-        SettingPage::new("General")
-            .icon(Icon::new(IconName::Settings))
-            .description("Closing the window and starting up.")
+        SettingsPage::General
+            .page()
             .default_open(true)
             .group(window)
             .group(
@@ -147,224 +322,396 @@ impl SettingsView {
             ));
         }
 
-        SettingPage::new("Appearance")
-            .icon(Icon::new(IconName::Palette))
-            .description("Theme and text size.")
-            .group(
-                SettingGroup::new()
-                    .title("Theme")
-                    .item(
-                        SettingItem::new(
-                            "Mode",
-                            SettingField::dropdown(
-                                vec![
-                                    ("system".into(), "System".into()),
-                                    ("light".into(), "Light".into()),
-                                    ("dark".into(), "Dark".into()),
-                                ],
-                                |cx: &App| mode_value(theme::appearance(cx).mode).into(),
-                                |value: SharedString, cx: &mut App| {
-                                    theme::set_mode(parse_mode(&value), cx);
-                                },
-                            )
-                            .default_value("system"),
+        SettingsPage::Appearance.page().group(
+            SettingGroup::new()
+                .title("Theme")
+                .item(
+                    SettingItem::new(
+                        "Mode",
+                        SettingField::dropdown(
+                            vec![
+                                ("system".into(), "System".into()),
+                                ("light".into(), "Light".into()),
+                                ("dark".into(), "Dark".into()),
+                            ],
+                            |cx: &App| mode_value(theme::appearance(cx).mode).into(),
+                            |value: SharedString, cx: &mut App| {
+                                theme::set_mode(parse_mode(&value), cx);
+                            },
                         )
-                        .description("System follows your OS appearance.")
-                        .keywords(["dark", "light", "appearance"]),
+                        .default_value("system"),
                     )
-                    .item(
-                        SettingItem::new(
-                            "Interface size",
-                            SettingField::dropdown(
-                                vec![
-                                    ("14".into(), "Compact".into()),
-                                    ("16".into(), "Default".into()),
-                                    ("18".into(), "Large".into()),
-                                ],
-                                |cx: &App| {
-                                    format!("{}", theme::appearance(cx).ui_font_size.round() as u32)
-                                        .into()
-                                },
-                                |value: SharedString, cx: &mut App| {
-                                    if let Ok(size) = value.parse::<f32>() {
-                                        theme::set_ui_font_size(size, cx);
-                                    }
-                                },
-                            )
-                            .default_value("16"),
+                    .description("System follows your OS appearance.")
+                    .keywords(["dark", "light", "appearance"]),
+                )
+                .item(
+                    SettingItem::new(
+                        "Interface size",
+                        SettingField::dropdown(
+                            vec![
+                                ("14".into(), "Compact".into()),
+                                ("16".into(), "Default".into()),
+                                ("18".into(), "Large".into()),
+                            ],
+                            |cx: &App| {
+                                format!("{}", theme::appearance(cx).ui_font_size.round() as u32)
+                                    .into()
+                            },
+                            |value: SharedString, cx: &mut App| {
+                                if let Ok(size) = value.parse::<f32>() {
+                                    theme::set_ui_font_size(size, cx);
+                                }
+                            },
                         )
-                        .description("Scales text and controls together.")
-                        .keywords(["zoom", "font", "density", "compact", "size"]),
+                        .default_value("16"),
                     )
-                    .item(
-                        SettingItem::new(
-                            "Color theme",
-                            SettingField::scrollable_dropdown(
-                                theme_options,
-                                |cx: &App| {
-                                    theme::appearance(cx)
-                                        .theme_name
-                                        .unwrap_or_else(|| DEFAULT_THEME_OPTION.into())
-                                },
-                                |value: SharedString, cx: &mut App| {
-                                    let name =
-                                        (value.as_ref() != DEFAULT_THEME_OPTION).then_some(value);
-                                    theme::set_theme(name, cx);
-                                },
-                            )
-                            .default_value(DEFAULT_THEME_OPTION),
+                    .description("Scales text and controls together.")
+                    .keywords(["zoom", "font", "density", "compact", "size"]),
+                )
+                .item(
+                    SettingItem::new(
+                        "Color theme",
+                        SettingField::scrollable_dropdown(
+                            theme_options,
+                            |cx: &App| {
+                                theme::appearance(cx)
+                                    .theme_name
+                                    .unwrap_or_else(|| DEFAULT_THEME_OPTION.into())
+                            },
+                            |value: SharedString, cx: &mut App| {
+                                let name =
+                                    (value.as_ref() != DEFAULT_THEME_OPTION).then_some(value);
+                                theme::set_theme(name, cx);
+                            },
                         )
-                        .description("A light or dark theme applies in its own mode.")
-                        .keywords([
-                            "catppuccin",
-                            "tokyo",
-                            "gruvbox",
-                            "solarized",
-                            "colors",
-                        ]),
-                    ),
-            )
+                        .default_value(DEFAULT_THEME_OPTION),
+                    )
+                    .description("A light or dark theme applies in its own mode.")
+                    .keywords([
+                        "catppuccin",
+                        "tokyo",
+                        "gruvbox",
+                        "solarized",
+                        "colors",
+                    ]),
+                ),
+        )
     }
 
     fn queries_page(&self) -> SettingPage {
-        let defaults = &self.defaults;
-        SettingPage::new("Queries")
-            .icon(Icon::new(IconName::SquareTerminal))
-            .description("Execution and the SQL editor.")
+        SettingsPage::Queries
+            .page()
             .group(
-                SettingGroup::new().title("Execution").items(
-                    [
-                        number_item(
-                            "default_limit",
-                            "Default row limit",
-                            "Rows fetched by a SELECT without its own LIMIT. 0 turns the limit off.",
-                            defaults,
-                        ),
-                        number_item(
-                            "query_timeout_seconds",
-                            "Query timeout",
-                            "Seconds before a running statement is stopped.",
-                            defaults,
-                        ),
-                        number_item(
-                            "metadata_timeout_seconds",
-                            "Schema timeout",
-                            "Seconds allowed to load tables, columns and completions.",
-                            defaults,
-                        ),
-                    ]
-                    .into_iter()
-                    .flatten(),
-                )
-                .item(statement_separators_item()),
+                SettingGroup::new()
+                    .title("Execution")
+                    .items(schema::schema_items(SettingsPage::Queries, &self.defaults))
+                    .item(statement_separators_item()),
             )
             .group(
                 SettingGroup::new()
                     .title("Editor")
-                    .item(editor_font_size_item())
-                    .items(bool_item(
-                        "autocomplete_enabled",
-                        "SQL completion",
-                        "Suggest keywords, tables and columns while typing.",
-                        defaults,
+                    .item(editor_font_size_item()),
+            )
+    }
+
+    /// A manager (list + editor) filling the window below the page header.
+    fn saved_queries_page(&self) -> SettingPage {
+        let manager = self.saved_queries.clone();
+        SettingsPage::SavedQueries.page().resettable(false).group(
+            SettingGroup::new().item(
+                SettingItem::render(move |_, window, _| {
+                    let height = (window.viewport_size().height - MANAGER_CHROME_HEIGHT)
+                        .max(MANAGER_MIN_HEIGHT);
+                    div().w_full().h(height).child(manager.clone())
+                })
+                .keywords([
+                    "saved queries",
+                    "named queries",
+                    "snippets",
+                    "\\ns",
+                    "sql",
+                ]),
+            ),
+        )
+    }
+
+    fn connections_page(&self, cx: &App) -> SettingPage {
+        let recents = storage::cache(cx).config.get_recent_connections().len();
+        let field = |path| schema::schema_item(path, &self.defaults);
+        SettingsPage::Connections
+            .page()
+            .group(
+                SettingGroup::new()
+                    .title("Safety")
+                    .items(field("read_only_default")),
+            )
+            .group(
+                SettingGroup::new()
+                    .title("Recent connections")
+                    .items(field("max_recent_connections"))
+                    .item(action_row(
+                        match recents {
+                            0 => "No recent connections stored.".to_string(),
+                            1 => "1 recent connection stored.".to_string(),
+                            n => format!("{n} recent connections stored."),
+                        },
+                        move || {
+                            Button::new("clear-recents")
+                                .outline()
+                                .small()
+                                .label("Clear recent connections…")
+                                .disabled(recents == 0)
+                                .on_click(|_, window, cx| {
+                                    storage::confirm_clear(Clearable::RecentConnections, window, cx)
+                                })
+                        },
+                        ["recent", "history", "clear"],
+                    )),
+            )
+            .group(
+                SettingGroup::new()
+                    .title("Saved connections")
+                    .item(action_row(
+                        "Saved connections, their credentials and environments are managed on \
+                         the Connections page."
+                            .to_string(),
+                        || {
+                            Button::new("open-connections")
+                                .outline()
+                                .small()
+                                .label("Open Connections")
+                                .on_click(|_, _, cx| {
+                                    AppState::global(cx).update(cx, |state, cx| state.open_home(cx))
+                                })
+                        },
+                        ["sessions", "saved connections", "credentials"],
                     )),
             )
     }
 
-    fn connections_page(&self) -> SettingPage {
-        let defaults = &self.defaults;
-        SettingPage::new("Connections")
-            .icon(Icon::new(IconName::Database))
-            .description("Defaults for new connections.")
-            .group(SettingGroup::new().title("Safety").items(bool_item(
-                "read_only_default",
-                "Open connections read-only",
-                "Block statements that change data on new connections. Turn it off per \
-                     connection when you need to write.",
-                defaults,
-            )))
-            .group(SettingGroup::new().title("History").items(number_item(
-                "max_recent_connections",
-                "Recent connections",
-                "How many recent connections to remember.",
-                defaults,
-            )))
+    fn tunnels_page(&self) -> SettingPage {
+        let tunnels = self.tunnels.clone();
+        let tester = self.tunnel_tester.clone();
+        SettingsPage::SshTunnels
+            .page()
+            .resettable(false)
+            .group(SettingGroup::new().title("Tunnels").item(
+                SettingItem::render(move |_, _, _| tunnels.clone()).keywords([
+                    "ssh",
+                    "tunnel",
+                    "bastion",
+                    "jump host",
+                    "pattern",
+                ]),
+            ))
             .group(
-                SettingGroup::new().title("Vault").items(
-                    [
-                        bool_item(
-                            "vault_credential_cache_enabled",
-                            "Cache Vault credentials",
-                            "Reuse short-lived credentials until they expire.",
-                            defaults,
-                        ),
-                        text_item(
-                            "vault_credential_process",
-                            "Credential process",
-                            "Command that prints a Vault token or credentials when a vault:// \
-                                 connection opens.",
-                            defaults,
-                        ),
-                    ]
-                    .into_iter()
-                    .flatten(),
-                ),
+                SettingGroup::new()
+                    .title("Test a host")
+                    .description("Shows which tunnel a database host would use. Nothing connects.")
+                    .item(
+                        SettingItem::render(move |_, _, _| tester.clone())
+                            .keywords(["ssh", "tunnel", "test", "host", "match"]),
+                    ),
             )
     }
 
-    fn files_page(&self) -> SettingPage {
-        let directory = Config::get_config_directory().ok();
-        let files: Vec<(&'static str, &'static str, Option<PathBuf>)> = vec![
-            (
-                "Settings",
-                "config.toml",
-                Config::get_config_file_path().ok(),
+    fn vault_page(&self, cx: &App) -> SettingPage {
+        let vault = storage::cache(cx).vault.clone();
+        let mut cached = SettingGroup::new().title("Cached credentials");
+        let (note_text, can_clear) = match &vault {
+            None => (Some("Reading the credential cache…"), false),
+            Some(VaultCache::Locked) => (
+                Some(
+                    "The cache is encrypted and no Vault token is available to read it. \
+                     Connect with Vault, then come back to see what it holds.",
+                ),
+                true,
             ),
-            (
-                "Saved sessions",
-                "sessions.toml",
-                Config::get_saved_sessions_path().ok(),
+            Some(VaultCache::Entries(entries)) if entries.is_empty() => (
+                Some(
+                    "No cached credentials. Vault connections cache theirs here until they \
+                     expire.",
+                ),
+                false,
             ),
-            (
-                "Named queries",
-                "named_queries.toml",
-                Config::get_named_queries_path().ok(),
-            ),
-            (
-                "Recent connections",
-                "recent.toml",
-                Config::get_recent_connections_path().ok(),
-            ),
-            ("Desktop state", "gui_state.toml", GuiState::path().ok()),
+            Some(VaultCache::Entries(_)) => (None, true),
+        };
+        if let Some(text) = note_text {
+            cached = cached.item(note(text));
+        }
+        if let Some(VaultCache::Entries(entries)) = vault {
+            for entry in entries {
+                cached = cached.item(vault_row(entry));
+            }
+        }
+        cached = cached.item(
+            SettingItem::render(move |_, _, _| {
+                h_flex().child(
+                    Button::new("clear-vault-cache")
+                        .outline()
+                        .small()
+                        .label("Clear cached credentials…")
+                        .disabled(!can_clear)
+                        .on_click(|_, window, cx| {
+                            storage::confirm_clear(Clearable::VaultCache, window, cx)
+                        }),
+                )
+            })
+            .keywords(["vault", "cache", "credentials", "clear"]),
+        );
+        SettingsPage::Vault
+            .page()
+            .groups(schema::schema_groups(SettingsPage::Vault, &self.defaults))
+            .group(cached)
+    }
+
+    fn files_page(&self, cx: &App) -> SettingPage {
+        let directory = storage::cache(cx).directory.clone();
+        let files: [(&'static str, &'static str); 5] = [
+            ("Settings", "config.toml"),
+            ("Saved sessions", "sessions.toml"),
+            ("Saved queries", "named_queries.toml"),
+            ("Recent connections", "recent.toml"),
+            ("Desktop state", "gui_state.toml"),
         ];
 
-        let mut storage = SettingGroup::new()
+        let mut storage_group = SettingGroup::new()
             .title("Storage")
             .description("Plain files you can back up or edit. The CLI uses the same ones.");
-        if let Some(directory) = directory {
-            storage = storage.item(path_item("Config directory", directory.clone(), true));
-            for (title, file, path) in files {
-                let path = path.unwrap_or_else(|| directory.join(file));
-                storage = storage.item(path_item(title, path, false));
+        if let Some(directory) = &directory {
+            storage_group =
+                storage_group.item(path_item("Config directory", directory.clone(), true));
+            for (title, file) in files {
+                storage_group = storage_group.item(path_item(title, directory.join(file), false));
             }
         } else {
-            storage = storage.item(SettingItem::render(|_, _, cx| {
-                div()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("The config directory could not be located.")
-            }));
+            storage_group = storage_group.item(note("The config directory could not be located."));
         }
+        let config_file = directory.map(|directory| directory.join("config.toml"));
 
-        SettingPage::new("Files")
-            .icon(Icon::new(IconName::FolderOpen))
+        SettingsPage::Files
+            .page()
             .resettable(false)
-            .group(storage)
+            .group(storage_group)
+            .group(
+                SettingGroup::new()
+                    .title("Edits outside the app")
+                    .item(action_row(
+                        "Read every file again after editing them, or after changes made with \
+                         the command line."
+                            .to_string(),
+                        || {
+                            Button::new("reload-config")
+                                .outline()
+                                .small()
+                                .icon(IconName::RefreshCw)
+                                .label("Reload from disk")
+                                .on_click(|_, _, cx| storage::reload(cx))
+                        },
+                        ["reload", "refresh", "disk", "external"],
+                    ))
+                    .item(action_row(
+                        "Open config.toml in your default editor. Reload when you are done."
+                            .to_string(),
+                        move || {
+                            let config_file = config_file.clone();
+                            Button::new("edit-config")
+                                .outline()
+                                .small()
+                                .icon(IconName::ExternalLink)
+                                .label("Open config.toml")
+                                .disabled(config_file.is_none())
+                                .on_click(move |_, _, cx| {
+                                    if let Some(path) = &config_file {
+                                        cx.open_with_system(path);
+                                    }
+                                })
+                        },
+                        ["config.toml", "editor", "edit", "open"],
+                    )),
+            )
             .group(
                 SettingGroup::new()
                     .title("About")
                     .item(SettingItem::render(|options, _, cx| about_row(options, cx))),
             )
     }
+}
+
+/// Text on the left, one button on the right.
+fn action_row<const N: usize>(
+    text: String,
+    button: impl Fn() -> Button + 'static,
+    keywords: [&'static str; N],
+) -> SettingItem {
+    let text: SharedString = text.into();
+    SettingItem::render(move |_, _, cx| {
+        h_flex()
+            .w_full()
+            .gap_3()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(text.clone()),
+            )
+            .child(div().flex_none().child(button()))
+    })
+    .keywords(keywords)
+}
+
+/// One cached Vault credential: where it is from and when it expires.
+fn vault_row(entry: dbcrust_gui_core::store::VaultCacheEntry) -> SettingItem {
+    let now = std::time::SystemTime::now().into();
+    let expiry = entry.expiry_label(now);
+    let expired = entry.is_expired(now);
+    let path = format!("{}/{}", entry.mount, entry.database);
+    let role = format!("role {}", entry.role);
+    SettingItem::render(move |_, _, cx| {
+        h_flex()
+            .w_full()
+            .gap_3()
+            .items_center()
+            .child(
+                Icon::new(IconName::KeyRound)
+                    .small()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .child(path.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(role.clone()),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .w(px(120.))
+                    .text_right()
+                    .text_xs()
+                    .text_color(if expired {
+                        cx.theme().warning
+                    } else {
+                        cx.theme().muted_foreground
+                    })
+                    .child(expiry.clone()),
+            )
+    })
+    .keywords(["vault", "cached", "credentials", "lease"])
 }
 
 fn mode_value(mode: ThemeModeSetting) -> &'static str {
@@ -491,41 +838,6 @@ fn store(cx: &App) -> ConfigStore {
     AppState::global(cx).read(cx).store().clone()
 }
 
-fn read_value(cx: &App, spec: &'static FieldSpec) -> String {
-    store(cx).read(|config| (spec.get)(config))
-}
-
-/// Apply `value` to the config through the shared schema (validated), then
-/// save and re-apply runtime settings. Failures are shown as notifications.
-fn write_value(cx: &mut App, spec: &'static FieldSpec, value: String) {
-    let store = store(cx);
-    let applied = store.update_settings(|config| {
-        config_editor::apply_value(config, spec.path, &value).map(|_| ())
-    });
-    if let Err(error) = applied {
-        notify(
-            cx,
-            Notification::error(error).title(format!("Couldn’t change {}", spec.label)),
-        );
-        return;
-    }
-    config_editor::reapply_runtime_settings(&store.snapshot());
-    cx.spawn(async move |cx| {
-        let saved: GuiResult<()> = cx
-            .background_spawn(async move { store.save_settings() })
-            .await;
-        if let Err(error) = saved {
-            cx.update(|cx| {
-                notify(
-                    cx,
-                    Notification::error(error.to_string()).title("Couldn’t save settings"),
-                );
-            });
-        }
-    })
-    .detach();
-}
-
 fn notify(cx: &mut App, note: Notification) {
     let window = cx.active_window().or_else(|| cx.windows().first().copied());
     if let Some(window) = window {
@@ -533,83 +845,6 @@ fn notify(cx: &mut App, note: Notification) {
             .update(cx, |_, window, cx| window.push_notification(note, cx))
             .ok();
     }
-}
-
-fn bool_item(
-    key: &'static str,
-    title: &'static str,
-    description: &'static str,
-    defaults: &Rc<Config>,
-) -> Option<SettingItem> {
-    let spec = config_editor::find_spec(key)?;
-    let default = (spec.get)(defaults) == "true";
-    Some(
-        SettingItem::new(
-            title,
-            SettingField::switch(
-                move |cx: &App| read_value(cx, spec) == "true",
-                move |value: bool, cx: &mut App| write_value(cx, spec, value.to_string()),
-            )
-            .default_value(default),
-        )
-        .description(description)
-        .keywords([spec.path, spec.label]),
-    )
-}
-
-fn number_item(
-    key: &'static str,
-    title: &'static str,
-    description: &'static str,
-    defaults: &Rc<Config>,
-) -> Option<SettingItem> {
-    let spec = config_editor::find_spec(key)?;
-    let FieldKind::UInt { min, max } = spec.kind else {
-        return None;
-    };
-    let default = (spec.get)(defaults).parse::<f64>().unwrap_or(min as f64);
-    Some(
-        SettingItem::new(
-            title,
-            SettingField::number_input(
-                NumberFieldOptions {
-                    min: min as f64,
-                    max: max as f64,
-                    step: 1.0,
-                },
-                move |cx: &App| read_value(cx, spec).parse::<f64>().unwrap_or(default),
-                move |value: f64, cx: &mut App| {
-                    write_value(cx, spec, format!("{}", value.round().max(0.0) as u64));
-                },
-            )
-            .default_value(default),
-        )
-        .description(description)
-        .keywords([spec.path, spec.label]),
-    )
-}
-
-fn text_item(
-    key: &'static str,
-    title: &'static str,
-    description: &'static str,
-    defaults: &Rc<Config>,
-) -> Option<SettingItem> {
-    let spec = config_editor::find_spec(key)?;
-    let default = (spec.get)(defaults);
-    Some(
-        SettingItem::new(
-            title,
-            SettingField::input(
-                move |cx: &App| SharedString::from(read_value(cx, spec)),
-                move |value: SharedString, cx: &mut App| write_value(cx, spec, value.to_string()),
-            )
-            .default_value(default),
-        )
-        .layout(Axis::Vertical)
-        .description(description)
-        .keywords([spec.path, spec.label]),
-    )
 }
 
 // ----- Files and About -----
@@ -649,9 +884,7 @@ fn path_item(title: &'static str, path: PathBuf, is_directory: bool) -> SettingI
                             .icon(IconName::Copy)
                             .tooltip("Copy path")
                             .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                    copy_target.clone(),
-                                ));
+                                crate::clipboard::write(copy_target.clone(), cx);
                             }),
                     )
                     .child(
@@ -669,14 +902,26 @@ fn path_item(title: &'static str, path: PathBuf, is_directory: bool) -> SettingI
 
 /// Show a file in the OS file manager (or open the directory). A file that
 /// does not exist yet reveals its parent directory instead.
-fn reveal(path: &Path, is_directory: bool, cx: &App) {
-    if is_directory {
-        cx.open_with_system(path);
-    } else if path.exists() {
-        cx.reveal_path(path);
-    } else if let Some(parent) = path.parent() {
-        cx.open_with_system(parent);
-    }
+fn reveal(path: &Path, is_directory: bool, cx: &mut App) {
+    let path = path.to_path_buf();
+    cx.spawn(async move |cx| {
+        let exists = if is_directory {
+            true
+        } else {
+            let check = path.clone();
+            cx.background_spawn(async move { check.exists() }).await
+        };
+        cx.update(|cx| {
+            if is_directory {
+                cx.open_with_system(&path);
+            } else if exists {
+                cx.reveal_path(&path);
+            } else if let Some(parent) = path.parent() {
+                cx.open_with_system(parent);
+            }
+        });
+    })
+    .detach();
 }
 
 fn about_row(options: &RenderOptions, cx: &App) -> AnyElement {
@@ -745,68 +990,268 @@ impl Render for SettingsView {
             .justify_center()
             .bg(cx.theme().background)
             .child(
-                // A ~200 px navigation and a content column that stops at
-                // ~720 px instead of stretching across a wide window
+                // A ~200 px navigation and a content column that stops
+                // instead of stretching across a wide window
                 div().h_full().w_full().max_w(SETTINGS_MAX_WIDTH).child(
-                    Settings::new("dbcrust-settings")
+                    Settings::new(("dbcrust-settings", self.navigation))
+                        .default_selected_index(SelectIndex {
+                            page_ix: self.selected_page as usize,
+                            group_ix: None,
+                        })
                         .with_group_variant(GroupBoxVariant::Outline)
                         .sidebar_width(SETTINGS_NAV_WIDTH)
                         .sidebar_size_range(px(160.)..px(280.))
-                        .pages([
-                            self.general_page(cx),
-                            self.appearance_page(cx),
-                            self.queries_page(),
-                            self.connections_page(),
-                            self.files_page(),
-                        ]),
+                        .pages(self.pages(cx)),
                 ),
             )
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     // GPUI's `test` macro (glob-imported through `super::*`) would shadow
     // the built-in `#[test]`
     use std::prelude::v1::test;
 
     use super::*;
+    use crate::RestoredState;
+    use gpui_kit::test::TestWindowExt as _;
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
 
-    #[test]
-    fn every_setting_key_exists_in_the_shared_schema() {
-        for key in [
-            "default_limit",
-            "query_timeout_seconds",
-            "metadata_timeout_seconds",
-            "autocomplete_enabled",
-            "read_only_default",
-            "max_recent_connections",
-            "vault_credential_cache_enabled",
-            "vault_credential_process",
-        ] {
-            assert!(config_editor::find_spec(key).is_some(), "{key} missing");
+    /// Open the main window with `store` and Settings on `page`.
+    pub(crate) fn open(
+        cx: &mut TestAppContext,
+        store: ConfigStore,
+        page: SettingsPage,
+    ) -> (
+        AnyWindowHandle,
+        Entity<crate::workspace::Workspace>,
+        Entity<SettingsView>,
+    ) {
+        crate::test_support::isolate();
+        cx.executor().allow_parking();
+        let (window, workspace) = cx.update(|cx| {
+            crate::init(store, cx);
+            cx.set_global(RestoredState(GuiState::default()));
+            crate::open_main_window(WindowOptions::default(), cx).expect("open window")
+        });
+        cx.update(|cx| {
+            AppState::global(cx).update(cx, |state, cx| state.open_settings_page(page, cx))
+        });
+        cx.run_until_parked();
+        let settings = cx.update(|cx| workspace.read(cx).settings_view().expect("Settings tab"));
+        (window, workspace, settings)
+    }
+
+    /// Let background work (and the delayed settings save) finish until
+    /// `done` holds.
+    pub(crate) fn settle(cx: &mut TestAppContext, done: impl Fn(&App) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            cx.executor().advance_clock(storage::SAVE_DELAY);
+            cx.run_until_parked();
+            if cx.update(|cx| done(cx)) {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "background Settings work timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 
-    #[test]
-    fn numeric_settings_are_unsigned_integers() {
-        for key in [
-            "default_limit",
-            "query_timeout_seconds",
-            "max_recent_connections",
-        ] {
-            let spec = config_editor::find_spec(key).expect("spec");
-            assert!(matches!(spec.kind, FieldKind::UInt { .. }), "{key}");
+    #[gpui_kit::test]
+    fn every_schema_field_is_on_exactly_one_page(cx: &mut TestAppContext) {
+        let (_, _, settings) = open(
+            cx,
+            ConfigStore::from_config(Config::default_settings()),
+            SettingsPage::General,
+        );
+        let rendered = cx.update(|cx| {
+            schema::tests::rendered_by(|| {
+                settings.read(cx).pages(cx);
+            })
+        });
+        let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+        for path in rendered {
+            *counts.entry(path).or_default() += 1;
         }
+        for spec in config_editor::schema() {
+            assert_eq!(
+                counts.remove(spec.path),
+                Some(1),
+                "`{}` must be on exactly one Settings page (see settings/schema.rs)",
+                spec.path
+            );
+        }
+        assert!(counts.is_empty(), "not in the schema: {counts:?}");
     }
 
-    #[test]
-    fn writing_through_the_schema_validates_ranges() {
-        let mut config = Config::default();
-        assert!(config_editor::apply_value(&mut config, "query_timeout_seconds", "45").is_ok());
-        assert_eq!(config.query_timeout_seconds, 45);
-        assert!(config_editor::apply_value(&mut config, "query_timeout_seconds", "0").is_err());
-        assert_eq!(config.query_timeout_seconds, 45);
+    #[gpui_kit::test]
+    fn pages_follow_the_navigation_order(cx: &mut TestAppContext) {
+        let (_, _, settings) = open(
+            cx,
+            ConfigStore::from_config(Config::default_settings()),
+            SettingsPage::General,
+        );
+        cx.update(|cx| {
+            assert_eq!(
+                settings.read(cx).pages(cx).len(),
+                SettingsPage::iter().count()
+            )
+        });
+    }
+
+    #[gpui_kit::test]
+    fn opening_a_page_selects_it_in_the_open_settings_tab(cx: &mut TestAppContext) {
+        let (window, workspace, settings) = open(
+            cx,
+            ConfigStore::from_config(Config::default_settings()),
+            SettingsPage::General,
+        );
+        cx.update(|cx| {
+            AppState::global(cx).update(cx, |state, cx| {
+                state.open_settings_page(SettingsPage::SavedQueries, cx)
+            })
+        });
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert_eq!(workspace.read(cx).settings_view().unwrap(), settings);
+            assert_eq!(settings.read(cx).selected_page, SettingsPage::SavedQueries);
+        });
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+    }
+
+    /// A store whose `config.toml` writes are recorded (the value of
+    /// `pager_command` and `default_limit` each time) instead of written.
+    fn recording_store() -> (ConfigStore, Arc<Mutex<Vec<(String, usize)>>>) {
+        let writes: Arc<Mutex<Vec<(String, usize)>>> = Arc::default();
+        let recorded = writes.clone();
+        let store = ConfigStore::from_config(Config::default_settings()).with_settings_writer(
+            move |config| {
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((config.pager_command.clone(), config.default_limit));
+                Ok(())
+            },
+        );
+        (store, writes)
+    }
+
+    #[gpui_kit::test]
+    fn edits_reach_the_store_at_once_and_disk_once(cx: &mut TestAppContext) {
+        let (store, writes) = recording_store();
+        let (_, _, _) = open(cx, store.clone(), SettingsPage::Terminal);
+        let pager = config_editor::find_spec("pager_command").unwrap();
+        cx.update(|cx| {
+            // Typing: every keystroke is a value, the space is kept
+            for text in ["less", "less ", "less -", "less -S"] {
+                storage::write_value(cx, pager, text.to_string());
+            }
+            assert_eq!(storage::read_value(cx, pager), "less -S");
+            // In the store already; config.toml is written after the burst
+            assert_eq!(store.read(|config| config.pager_command.clone()), "less -S");
+            assert!(store.has_unsaved_settings());
+        });
+        assert!(
+            writes.lock().unwrap().is_empty(),
+            "nothing written per keystroke"
+        );
+        settle(cx, |_| !store.has_unsaved_settings());
+        // A few more save delays: nothing else to write
+        for _ in 0..3 {
+            cx.executor().advance_clock(storage::SAVE_DELAY);
+            cx.run_until_parked();
+        }
+        let writes = writes.lock().unwrap();
+        assert_eq!(writes.len(), 1, "{writes:?}");
+        assert_eq!(writes[0].0, "less -S");
+    }
+
+    #[gpui_kit::test]
+    fn a_safety_setting_applies_before_the_next_connection(cx: &mut TestAppContext) {
+        let store = ConfigStore::from_config(Config::default_settings());
+        let (_, _, _) = open(cx, store.clone(), SettingsPage::Connections);
+        let read_only = config_editor::find_spec("read_only_default").unwrap();
+        cx.update(|cx| {
+            storage::write_value(cx, read_only, "true".into());
+            storage::enqueue(
+                storage::Edit::Tunnel {
+                    old: None,
+                    pattern: r"^db\.prod$".into(),
+                    target: "deploy@bastion".into(),
+                },
+                cx,
+            )
+            .unwrap();
+        });
+        // No save has run (the clock has not moved): a connection opened now
+        // reads its settings from the store and already sees both
+        let snapshot = store.snapshot();
+        assert!(snapshot.read_only_default);
+        assert!(snapshot.ssh_tunnel_patterns.contains_key(r"^db\.prod$"));
+    }
+
+    #[gpui_kit::test]
+    fn reload_never_saves_over_the_files_it_reads(cx: &mut TestAppContext) {
+        let (store, writes) = recording_store();
+        let (_, _, _) = open(cx, store.clone(), SettingsPage::Files);
+        let limit = config_editor::find_spec("default_limit").unwrap();
+        cx.update(|cx| {
+            storage::write_value(cx, limit, "321".into());
+            storage::reload(cx);
+        });
+        // The reload ran (no clock advance, so the delayed save did not):
+        // it was refused instead of writing this edit over the files first
+        cx.run_until_parked();
+        assert!(
+            writes.lock().unwrap().is_empty(),
+            "Reload wrote config.toml before reading it"
+        );
+        assert!(store.has_unsaved_settings());
+        assert_eq!(store.read(|config| config.default_limit), 321);
+        settle(cx, |_| !store.has_unsaved_settings());
+        assert_eq!(
+            writes.lock().unwrap().last().map(|write| write.1),
+            Some(321)
+        );
+    }
+
+    #[gpui_kit::test]
+    fn the_quit_flush_writes_what_is_still_pending(cx: &mut TestAppContext) {
+        let store = ConfigStore::from_config(Config::default_settings());
+        let (_, _, _) = open(cx, store.clone(), SettingsPage::Queries);
+        let limit = config_editor::find_spec("default_limit").unwrap();
+        let flush = cx.update(|cx| {
+            storage::write_value(cx, limit, "222".into());
+            flush_on_quit(cx)
+        });
+        assert!(store.has_unsaved_settings());
+        flush(std::time::Instant::now() + std::time::Duration::from_secs(5)).unwrap();
+        assert!(!store.has_unsaved_settings());
+    }
+
+    #[gpui_kit::test]
+    fn invalid_values_are_refused_with_the_schema_message(cx: &mut TestAppContext) {
+        let store = ConfigStore::from_config(Config::default_settings());
+        let (_, _, _) = open(cx, store.clone(), SettingsPage::Queries);
+        cx.update(|cx| {
+            let error = storage::enqueue(
+                storage::Edit::Value("query_timeout_seconds", "0".into()),
+                cx,
+            )
+            .unwrap_err();
+            assert!(error.contains("between"), "{error}");
+            let spec = config_editor::find_spec("query_timeout_seconds").unwrap();
+            assert_eq!(
+                storage::read_value(cx, spec),
+                Config::default_settings().query_timeout_seconds.to_string()
+            );
+        });
     }
 
     #[test]

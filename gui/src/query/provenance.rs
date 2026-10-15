@@ -21,6 +21,7 @@
 
 use dbcrust_gui_core::dbcrust::sql_buffer::{Boundary, SplitMode, split_statement_spans_with};
 use dbcrust_gui_core::statements::StatementIndex;
+use std::collections::HashSet;
 use std::ops::Range;
 
 /// A piece of SQL that ran, and how it sat in the buffer.
@@ -112,9 +113,10 @@ fn terminated(sql: &str, mode: SplitMode) -> Option<&str> {
 /// engines run the whole buffer as one statement.
 pub(super) fn is_stale(ran: &[Executed], now: &StatementIndex) -> bool {
     let text = now.text();
-    let statements: Vec<&str> = if ran.iter().any(|executed| executed.aligned) {
+    // A set: after a large "Run all", every executed statement is looked up
+    let statements: HashSet<&str> = if ran.iter().any(|executed| executed.aligned) {
         if now.config().unsplit {
-            vec![text.trim()]
+            HashSet::from([text.trim()])
         } else {
             now.statements()
                 .iter()
@@ -122,7 +124,7 @@ pub(super) fn is_stale(ran: &[Executed], now: &StatementIndex) -> bool {
                 .collect()
         }
     } else {
-        Vec::new()
+        HashSet::new()
     };
     ran.iter().any(|executed| {
         if executed.aligned {

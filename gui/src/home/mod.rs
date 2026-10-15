@@ -69,6 +69,9 @@ pub struct HomeView {
     /// What each saved session opens, by name (from the saved fields).
     session_identities: HashMap<String, TargetIdentity>,
     recents: Vec<RecentEntry>,
+    /// What each recent entry opens (parsed from its URL once per list load,
+    /// not per row per frame or per search keystroke), by position.
+    recent_identities: Vec<Option<TargetIdentity>>,
     docker: DockerListState,
     /// The daemon `docker` was listed from: containers connect through it.
     docker_daemon: Option<DockerDaemon>,
@@ -146,6 +149,7 @@ impl HomeView {
             form,
             sessions,
             session_identities,
+            recent_identities: recent_identities(&recents),
             recents,
             docker: DockerListState::Loading,
             docker_daemon: None,
@@ -220,8 +224,14 @@ impl HomeView {
         let store = AppState::global(cx).read(cx).store().clone();
         self.sessions = store.sessions();
         self.session_identities = session_identities(&store);
-        self.recents = store.recent_connections();
+        self.set_recents(store.recent_connections());
         self.rebuild(cx);
+    }
+
+    /// Replace the recent entries (and what each opens).
+    pub(super) fn set_recents(&mut self, recents: Vec<RecentEntry>) {
+        self.recent_identities = recent_identities(&recents);
+        self.recents = recents;
     }
 
     /// The Docker daemon the list came from (it travels with the list).
@@ -302,11 +312,8 @@ impl HomeView {
                 self.session_identities.get(&session.name).cloned(),
             );
         }
-        for recent in &self.recents {
-            bind(
-                launcher::recent_key(&recent.url),
-                TargetIdentity::from_url(&recent.url),
-            );
+        for (recent, identity) in self.recents.iter().zip(&self.recent_identities) {
+            bind(launcher::recent_key(&recent.url), identity.clone());
         }
         if let DockerListState::Ready { containers, .. } = &self.docker {
             for container in containers {
@@ -467,21 +474,37 @@ impl HomeView {
     /// session, the stored URL of a recent entry, a listed container on the
     /// daemon that listed it.
     pub(super) fn entry_identity(&self, entry: &Entry) -> Option<TargetIdentity> {
+        let (identity, follows_context) = self.entry_target(entry)?;
+        Some(if follows_context {
+            identity.with_docker_daemon(self.current_docker_pin.as_deref())
+        } else {
+            identity
+        })
+    }
+
+    /// What `entry` opens before the current Docker context is applied, and
+    /// whether it applies: a saved session or a recent `docker://` URL opens
+    /// on the context current when it connects, a listed container on the
+    /// daemon that listed it.
+    fn entry_target(&self, entry: &Entry) -> Option<(TargetIdentity, bool)> {
         match entry.source {
             Source::Session(ix) => self
                 .sessions
                 .get(ix)
                 .and_then(|session| self.session_identities.get(&session.name))
                 .cloned()
-                .map(|identity| identity.with_docker_daemon(self.current_docker_pin.as_deref())),
+                .map(|identity| (identity, true)),
             Source::Recent(ix) => self
-                .recents
+                .recent_identities
                 .get(ix)
-                .and_then(|recent| TargetIdentity::from_url(&recent.url))
-                .map(|identity| identity.with_docker_daemon(self.current_docker_pin.as_deref())),
+                .cloned()
+                .flatten()
+                .map(|identity| (identity, true)),
             Source::Docker(ix) => match &self.docker {
                 DockerListState::Ready { containers, .. } => containers.get(ix).map(|container| {
-                    TargetIdentity::container(&container.name, self.docker_pin.as_deref())
+                    let identity =
+                        TargetIdentity::container(&container.name, self.docker_pin.as_deref());
+                    (identity, false)
                 }),
                 _ => None,
             },
@@ -505,14 +528,7 @@ impl HomeView {
         cx: &App,
     ) -> Option<ConnectionId> {
         let identity = self.entry_identity(entry)?;
-        let state = AppState::global(cx);
-        let state = state.read(cx);
-        state
-            .connections()
-            .iter()
-            .filter(|live| read_only.is_none_or(|wanted| live.summary.read_only == wanted))
-            .find(|live| live.identity.as_ref() == Some(&identity))
-            .map(|live| live.id())
+        live_with(&identity, read_only, cx)
     }
 
     // ── Connecting ────────────────────────────────────────────────────
@@ -553,29 +569,93 @@ impl HomeView {
         let Some(entry) = self.listing.entry(key).cloned() else {
             return;
         };
-        let read_only = self.effective_read_only(key, read_only, cx);
+        // Everything the connect needs is taken from the list now: a search,
+        // a filter or a reload while the Docker context resolves cannot
+        // drop or redirect it
+        let target = self.entry_target(&entry);
+        let plan = ConnectPlan {
+            key: key.to_string(),
+            subject: entry.title.clone(),
+            request: self.request_for(&entry),
+            session: match entry.source {
+                Source::Session(ix) => self.sessions.get(ix).map(|session| session.name.clone()),
+                _ => None,
+            },
+            read_only: self.effective_read_only(key, read_only, cx),
+            waits_for_context: target
+                .as_ref()
+                .is_some_and(|(identity, follows)| *follows && identity.is_docker()),
+            target,
+        };
         // A Docker session opens on the context that is current right now:
-        // only a connection on that very daemon is the one to reuse
-        self.current_docker_pin = (self.resolve_docker_pin)();
+        // only a connection on that very daemon is the one to reuse. Which
+        // one is current is read from Docker's config files, off the UI
+        // thread; anything else connects at once.
+        let resolve = self.resolve_docker_pin;
+        let pin = cx.background_spawn(async move { resolve() });
+        let waiting = plan.waits_for_context.then_some(plan.clone());
+        if waiting.is_none() {
+            self.connect_plan(plan, cx);
+        }
+        cx.spawn(async move |this, cx| {
+            let pin = pin.await;
+            this.update(cx, |this, cx| {
+                if this.current_docker_pin != pin {
+                    this.current_docker_pin = pin;
+                    cx.notify();
+                }
+                if let Some(plan) = waiting {
+                    this.connect_plan(plan, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn connect_plan(&mut self, plan: ConnectPlan, cx: &mut Context<Self>) {
         let state = AppState::global(cx);
-        if let Some(live) = self.live_for(&entry, Some(read_only), cx) {
+        // A saved session's request only names it: the connection opens what
+        // the store holds for that name when it starts. Read what it opens
+        // from there too, now, so the connection is recorded as what it
+        // really opens even if the session was edited since the click (a
+        // session deleted meanwhile fails as not found, recorded as nothing)
+        let target = match &plan.session {
+            Some(name) => {
+                let store = state.read(cx).store().clone();
+                store
+                    .read(|config| config.get_session(name).map(TargetIdentity::from_session))
+                    .map(|identity| (identity, true))
+            }
+            None => plan.target,
+        };
+        let identity = target.map(|(identity, follows_context)| {
+            if follows_context {
+                identity.with_docker_daemon(self.current_docker_pin.as_deref())
+            } else {
+                identity
+            }
+        });
+        if let Some(live) = identity
+            .as_ref()
+            .and_then(|identity| live_with(identity, Some(plan.read_only), cx))
+        {
             state.update(cx, |state, cx| state.open_workspace(live, cx));
             return;
         }
-        let Some(request) = self.request_for(&entry) else {
+        let Some(request) = plan.request else {
             return;
         };
         let request = request
-            .read_only(read_only)
+            .read_only(plan.read_only)
             .vault_addr(vault::remembered_addr());
-        let identity = self.entry_identity(&entry);
-        let environment = self.env_tag(key);
+        let environment = self.env_tag(&plan.key);
         state.update(cx, |state, cx| {
             state.start_attempt(
                 AttemptSpec {
                     kind: AttemptKind::Connect,
-                    target: key.to_string(),
-                    subject: entry.title.clone(),
+                    target: plan.key,
+                    subject: plan.subject,
                     request,
                     identity,
                     environment,
@@ -1112,6 +1192,45 @@ fn session_identities(store: &ConfigStore) -> HashMap<String, TargetIdentity> {
             .map(|(name, saved)| (name, TargetIdentity::from_session(&saved)))
             .collect()
     })
+}
+
+/// A Connect, as the list described it when it was asked for.
+#[derive(Clone)]
+struct ConnectPlan {
+    key: String,
+    subject: String,
+    /// `None`: nothing to open (a stopped container).
+    request: Option<ConnectRequest>,
+    /// The saved session the request names: what it opens is read when it
+    /// connects (see `HomeView::connect_plan`).
+    session: Option<String>,
+    /// What it opens, and whether the current Docker context applies (for a
+    /// saved session, as listed when it was clicked).
+    target: Option<(TargetIdentity, bool)>,
+    read_only: bool,
+    /// It opens on the current Docker context: connect once that is known.
+    waits_for_context: bool,
+}
+
+/// The open connection with `identity`; with `read_only` given, only one
+/// opened in that mode.
+fn live_with(identity: &TargetIdentity, read_only: Option<bool>, cx: &App) -> Option<ConnectionId> {
+    AppState::global(cx)
+        .read(cx)
+        .connections()
+        .iter()
+        .filter(|live| read_only.is_none_or(|wanted| live.summary.read_only == wanted))
+        .find(|live| live.identity.as_ref() == Some(identity))
+        .map(|live| live.id())
+}
+
+/// What each recent entry opens, parsed from its URL (`None` when it does
+/// not parse), in list order.
+fn recent_identities(recents: &[RecentEntry]) -> Vec<Option<TargetIdentity>> {
+    recents
+        .iter()
+        .map(|recent| TargetIdentity::from_url(&recent.url))
+        .collect()
 }
 
 fn unix_now() -> i64 {

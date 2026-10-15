@@ -88,6 +88,11 @@ pub enum AppEvent {
         table: TableEntry,
     },
     OpenSettings,
+    OpenSettingsPage(crate::settings::SettingsPage),
+    OpenSavedQuery {
+        entry: dbcrust_gui_core::store::SavedQuery,
+        sql: String,
+    },
     OpenHome,
     /// A connect or test attempt of the Connections page changed (started,
     /// moved to another phase, failed, finished).
@@ -769,6 +774,25 @@ impl AppState {
         cx.emit(AppEvent::OpenSettings);
     }
 
+    /// Open Settings and select the requested management page.
+    pub fn open_settings_page(
+        &mut self,
+        page: crate::settings::SettingsPage,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(AppEvent::OpenSettingsPage(page));
+    }
+
+    /// Open a query tab bound to this saved query's stable storage key.
+    pub fn open_saved_query(
+        &mut self,
+        entry: dbcrust_gui_core::store::SavedQuery,
+        sql: String,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(AppEvent::OpenSavedQuery { entry, sql });
+    }
+
     pub fn open_home(&mut self, cx: &mut Context<Self>) {
         cx.emit(AppEvent::OpenHome);
     }
@@ -785,5 +809,27 @@ impl AppState {
     pub fn storage_changed(&mut self, cx: &mut Context<Self>) {
         cx.emit(AppEvent::StorageChanged);
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+impl AppState {
+    /// Replace the table list of a connection as a schema refresh does
+    /// (`None`: it is loading again).
+    pub(crate) fn replace_schema(
+        &mut self,
+        id: ConnectionId,
+        tables: Option<Vec<TableEntry>>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(live) = self.connections.iter_mut().find(|c| c.id() == id) {
+            live.schema = match tables {
+                Some(tables) => SchemaState::Ready(Arc::new(tables)),
+                None => SchemaState::Loading,
+            };
+            live.details.clear();
+            cx.emit(AppEvent::SchemaChanged(id));
+            cx.notify();
+        }
     }
 }

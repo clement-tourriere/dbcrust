@@ -5,6 +5,7 @@ pub mod about;
 pub mod actions;
 pub mod app_state;
 pub mod assets;
+pub mod clipboard;
 pub mod commands;
 pub mod explorer;
 pub mod home;
@@ -55,14 +56,21 @@ impl Global for MainWindow {}
 /// key bindings, menus, global state. Call once, first thing in `run`; the
 /// asset source passed to the application must be [`assets()`].
 pub fn init(store: ConfigStore, cx: &mut App) {
+    init_with_state(store, GuiState::load(), cx);
+}
+
+/// [`init`] with `gui_state.toml` already read (`main` reads it while the
+/// login shell's `PATH` is being imported).
+pub fn init_with_state(store: ConfigStore, gui_state: GuiState, cx: &mut App) {
     gpui_kit::init(cx);
-    let gui_state = GuiState::load();
     theme::init(&gui_state, cx);
     Preferences::init(&gui_state, cx);
     cx.set_global(RestoredState(gui_state));
     AppState::init(store, cx);
 
     commands::bind_keys(cx);
+    // Copy and cut shortcuts in any window count as copies (see `clipboard`)
+    clipboard::observe_copy_keys(cx);
     cx.set_menus(commands::menus());
     cx.set_dock_menu(commands::dock_menu());
 

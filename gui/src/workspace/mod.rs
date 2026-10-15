@@ -29,6 +29,7 @@ use crate::app_state::{AppEvent, AppState};
 use crate::explorer::Explorer;
 use crate::home::HomeView;
 use crate::inspector::TableInspector;
+use crate::preferences::Preferences;
 use crate::query::{QueryTab, QueryTabEvent};
 use crate::settings::SettingsView;
 use crate::{about, palette, theme};
@@ -82,6 +83,8 @@ pub struct Workspace {
     renaming: Option<TabRename>,
     /// Repaints the status bar while a query runs (live elapsed time).
     ticker: Option<Task<()>>,
+    /// Running queries the tray menu was last told about.
+    tray_running: usize,
     /// Closed query tabs, most recent last (see "Reopen closed tab").
     closed_tabs: Vec<ClosedTab>,
     /// The only writer of `gui_state.toml` for drafts and layout.
@@ -111,7 +114,8 @@ impl Workspace {
 
         let subscriptions = vec![
             cx.subscribe_in(&app_state, window, Self::on_app_event),
-            cx.observe(&app_state, |_, _, cx| cx.notify()),
+            cx.observe(&app_state, |this, _, cx| this.app_state_changed(cx)),
+            cx.observe_global::<Preferences>(|this, cx| this.app_state_changed(cx)),
             cx.subscribe(
                 &sidebar_state,
                 |this, state, _: &ResizablePanelEvent, cx| {
@@ -123,6 +127,9 @@ impl Workspace {
             cx.observe_window_appearance(window, |_, _, cx| {
                 theme::on_system_appearance_changed(cx);
             }),
+            // Copying in another app means leaving this window first: a
+            // background copy started before must not replace it
+            crate::clipboard::track_window_activation(window, cx),
             // Dock → Quit and other paths that bypass `request_quit`
             cx.on_app_quit(|this, cx| {
                 let saving = this.save_before_exit(cx);
@@ -162,6 +169,7 @@ impl Workspace {
             tab_scroll: ScrollHandle::new(),
             renaming: None,
             ticker: None,
+            tray_running: 0,
             closed_tabs: Vec::new(),
             writer: lifecycle::new_writer(),
             submitted: None,
@@ -437,11 +445,15 @@ impl Workspace {
         if matches!(event, QueryTabEvent::TitleChanged) {
             self.update_window_title(window, cx);
         }
-        if matches!(
-            event,
-            QueryTabEvent::StatusChanged | QueryTabEvent::ConnectionChanged
-        ) {
-            // The tray's status line counts running queries
+        // The tray's status line counts running queries; a status change is
+        // also every caret move, which must not rebuild the tray menu
+        let tray_stale = match event {
+            QueryTabEvent::ConnectionChanged => true,
+            QueryTabEvent::StatusChanged => self.running_queries(cx) != self.tray_running,
+            _ => false,
+        };
+        if tray_stale {
+            self.tray_running = self.running_queries(cx);
             crate::tray::state_changed(cx);
         }
         if matches!(event, QueryTabEvent::ConnectionChanged)
@@ -497,6 +509,26 @@ impl Workspace {
         }
     }
 
+    fn open_settings_page(
+        &mut self,
+        page: crate::settings::SettingsPage,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_settings_tab(window, cx);
+        if let Some(settings) = self.settings_view() {
+            settings.update(cx, |settings, cx| settings.select_page(page, cx));
+        }
+    }
+
+    /// The Settings view, used by UI tests and screenshot fixtures.
+    pub fn settings_view(&self) -> Option<Entity<SettingsView>> {
+        self.tabs.iter().find_map(|tab| match &tab.kind {
+            TabKind::Settings(view) => Some(view.clone()),
+            _ => None,
+        })
+    }
+
     /// The Connections page (the screenshot harness and tests drive it).
     pub fn connections_view(&self) -> Option<Entity<HomeView>> {
         self.home_view().map(|(_, home)| home)
@@ -541,6 +573,38 @@ impl Workspace {
                 self.open_table_tab(*connection, table.clone(), window, cx);
             }
             AppEvent::OpenSettings => self.open_settings_tab(window, cx),
+            AppEvent::OpenSettingsPage(page) => self.open_settings_page(*page, window, cx),
+            AppEvent::OpenSavedQuery { entry, sql } => {
+                // An engine query runs on a connection of that engine: the
+                // active one if it fits, else the first that does
+                let connection = {
+                    let state = AppState::global(cx).read(cx);
+                    match &entry.scope {
+                        dbcrust_gui_core::dbcrust::config::NamedQueryScope::DatabaseType(
+                            engine,
+                        ) => state
+                            .active()
+                            .filter(|live| &live.summary.db_type == engine)
+                            .or_else(|| {
+                                state
+                                    .connections()
+                                    .iter()
+                                    .find(|live| &live.summary.db_type == engine)
+                            })
+                            .or(state.active())
+                            .map(|live| live.id()),
+                        _ => state.active().map(|live| live.id()),
+                    }
+                };
+                let query = self.open_query_tab(
+                    connection,
+                    Some(entry.name.clone()),
+                    sql.clone(),
+                    window,
+                    cx,
+                );
+                query.update(cx, |query, cx| query.bind_saved_query(entry.clone(), cx));
+            }
             AppEvent::OpenHome => self.show_home(window, cx),
             AppEvent::Connected(id) => self.on_connected(*id, window, cx),
             AppEvent::ConnectFailed(error) => {
@@ -555,8 +619,20 @@ impl Workspace {
             | AppEvent::AttemptChanged(_)
             | AppEvent::ActiveConnectionChanged(_)
             | AppEvent::SchemaChanged(_)
-            | AppEvent::StorageChanged => cx.notify(),
+            | AppEvent::StorageChanged => self.app_state_changed(cx),
         }
+    }
+
+    /// The tab in front holds cached views (a table inspector is one, a
+    /// query tab embeds its editor and results as ones; see
+    /// [`WorkspaceTab::content`]): what they read from the app state or the
+    /// preferences must reach them. Tabs in the back render from scratch when
+    /// they come forward.
+    fn app_state_changed(&mut self, cx: &mut Context<Self>) {
+        if let Some(tab) = self.active_tab() {
+            tab.notify_content(cx);
+        }
+        cx.notify();
     }
 
     /// Bring a connection that is already open forward: the query tab of it
@@ -964,7 +1040,14 @@ impl Workspace {
                             .size_full()
                             .bg(cx.theme().sidebar)
                             .text_color(cx.theme().sidebar_foreground)
-                            .child(self.explorer.clone()),
+                            // Cached: it watches the app state itself, and
+                            // must not re-render each visible row whenever
+                            // the editor or the status bar repaints
+                            .child(
+                                self.explorer
+                                    .clone()
+                                    .cached(StyleRefinement::default().size_full()),
+                            ),
                     ),
             )
             .child(resizable_panel().child(main))
@@ -985,7 +1068,9 @@ impl Render for Workspace {
         let body = self.render_body(cx);
         let status_bar = self.render_status_bar(cx);
 
-        v_flex()
+        // The editor, inputs and selectable text copy without the app's
+        // helpers: count those copies before they happen
+        crate::clipboard::track_copy_actions(v_flex())
             .id("workspace")
             .key_context("Workspace")
             .track_focus(&self.focus_handle)
@@ -1029,6 +1114,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_connection))
             .on_action(cx.listener(Self::on_show_home))
             .on_action(cx.listener(Self::on_open_settings))
+            .on_action(
+                cx.listener(|this, _: &act::ManageSavedQueries, window, cx| {
+                    this.open_settings_page(crate::settings::SettingsPage::SavedQueries, window, cx)
+                }),
+            )
             .on_action(cx.listener(Self::on_command_palette))
             .on_action(cx.listener(Self::on_about))
             .on_action(cx.listener(Self::on_toggle_sidebar))

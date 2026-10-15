@@ -24,6 +24,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::Arc;
 use strum::IntoEnumIterator;
 
 /// How many rows each group shows, with and without a query.
@@ -37,16 +38,23 @@ const RECENT_CONNECTIONS: usize = 5;
 /// Subsequence match of `query` in `text`, case-insensitive. `None` when some
 /// query character cannot be found in order; otherwise higher is better
 /// (contiguous runs, word starts and early matches score more).
+#[cfg(test)]
 pub(crate) fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
     let query: Vec<char> = query
         .chars()
         .filter(|c| !c.is_whitespace())
         .flat_map(char::to_lowercase)
         .collect();
+    let text: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
+    fuzzy_prepared(&query, &text)
+}
+
+/// [`fuzzy_score`] over a query and a text already lower-cased (the query
+/// without whitespace).
+fn fuzzy_prepared(query: &[char], text: &[char]) -> Option<i32> {
     if query.is_empty() {
         return Some(0);
     }
-    let text: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
 
     let mut score = 0;
     let mut next = 0; // next query char to place
@@ -75,9 +83,7 @@ pub(crate) fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
         return None;
     }
 
-    let haystack: String = text.iter().collect();
-    let needle: String = query.iter().collect();
-    if let Some(at) = haystack.find(&needle) {
+    if let Some(at) = text.windows(query.len()).position(|window| window == query) {
         score += 30;
         if at == 0 {
             score += 20;
@@ -88,6 +94,7 @@ pub(crate) fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
 
 /// Every whitespace-separated word of `query` must match `label` or the
 /// extra `keywords`; a label match counts double.
+#[cfg(test)]
 pub(crate) fn match_score(query: &str, label: &str, keywords: &str) -> Option<i32> {
     let mut total = 0;
     for word in query.split_whitespace() {
@@ -137,7 +144,7 @@ enum Target {
     Switch(ConnectionId),
     ConnectSession(String),
     ConnectRecent(Box<RecentEntry>),
-    OpenTable(ConnectionId, TableEntry),
+    OpenTable(ConnectionId, Arc<Vec<TableEntry>>, usize),
     OpenQuery {
         connection: ConnectionId,
         name: String,
@@ -179,9 +186,16 @@ struct Entry {
     target: Target,
 }
 
+/// The non-empty groups for a query, in display order.
+type Visible = Vec<(GroupKind, Vec<Rc<Entry>>)>;
+
 /// Everything the palette can offer, captured when it opens.
 struct Model {
     entries: Vec<Rc<Entry>>,
+    /// Lower-cased label and keywords of each entry (see [`Model::prepare`]).
+    search: Vec<(Vec<char>, Vec<char>)>,
+    /// The last query and what it shows.
+    visible_cache: RefCell<Option<(String, Rc<Visible>)>>,
     table_heading: SharedString,
     scope: Scope,
 }
@@ -203,6 +217,8 @@ impl Model {
         }
         if scope == Scope::Tabs {
             return Self {
+                search: Self::prepare(&entries),
+                visible_cache: RefCell::new(None),
                 entries,
                 table_heading: "Tables".into(),
                 scope,
@@ -316,7 +332,7 @@ impl Model {
         if let Some(live) = active {
             table_heading = format!("Tables in {}", live.summary.label).into();
             if let Some(tables) = live.schema.tables() {
-                for table in tables.iter() {
+                for (index, table) in tables.iter().enumerate() {
                     let kind = table.kind.label().to_string();
                     entries.push(Rc::new(Entry {
                         group: GroupKind::Tables,
@@ -328,7 +344,7 @@ impl Model {
                         mono: true,
                         disabled: false,
                         context: active_tag.clone(),
-                        target: Target::OpenTable(live.id(), table.clone()),
+                        target: Target::OpenTable(live.id(), tables.clone(), index),
                     }));
                 }
             }
@@ -353,16 +369,41 @@ impl Model {
         }
 
         Self {
+            search: Self::prepare(&entries),
+            visible_cache: RefCell::new(None),
             entries,
             table_heading,
             scope,
         }
     }
 
+    /// The label and keywords of every entry, lower-cased once for the
+    /// whole life of the palette (in `entries` order).
+    fn prepare(entries: &[Rc<Entry>]) -> Vec<(Vec<char>, Vec<char>)> {
+        let fold = |text: &str| text.chars().flat_map(char::to_lowercase).collect();
+        entries
+            .iter()
+            .map(|entry| (fold(&entry.label), fold(&entry.keywords)))
+            .collect()
+    }
+
     /// Entries matching `query`, best first within each non-empty group.
-    fn visible(&self, query: &str) -> Vec<(GroupKind, Vec<Rc<Entry>>)> {
+    /// The dialog renders on every frame (the caret blinks): the result is
+    /// kept until the query changes (the entries never do).
+    fn visible(&self, query: &str) -> Rc<Visible> {
         let query = query.trim();
-        [
+        if let Some((previous, visible)) = self.visible_cache.borrow().as_ref()
+            && previous == query
+        {
+            return visible.clone();
+        }
+        // Every word must match the label or the keywords; a label match
+        // counts double (see `match_score`)
+        let words: Vec<Vec<char>> = query
+            .split_whitespace()
+            .map(|word| word.chars().flat_map(char::to_lowercase).collect())
+            .collect();
+        let visible: Visible = [
             GroupKind::Tabs,
             GroupKind::Commands,
             GroupKind::Connections,
@@ -380,10 +421,22 @@ impl Model {
             let mut scored: Vec<(i32, Rc<Entry>)> = self
                 .entries
                 .iter()
-                .filter(|entry| entry.group == group)
-                .filter_map(|entry| {
-                    match_score(query, &entry.label, &entry.keywords)
-                        .map(|score| (score, entry.clone()))
+                .zip(&self.search)
+                .filter(|(entry, _)| entry.group == group)
+                // Without a query everything matches in declaration order:
+                // the first `limit` are the answer
+                .take(if query.is_empty() {
+                    group.limit()
+                } else {
+                    usize::MAX
+                })
+                .filter_map(|(entry, (label, keywords))| {
+                    let score = words.iter().try_fold(0, |total, word| {
+                        let in_label = fuzzy_prepared(word, label).map(|score| score * 2);
+                        let in_keywords = fuzzy_prepared(word, keywords);
+                        Some(total + in_label.into_iter().chain(in_keywords).max()?)
+                    })?;
+                    Some((score, entry.clone()))
                 })
                 .collect();
             if !query.is_empty() {
@@ -397,7 +450,10 @@ impl Model {
                 .collect();
             (!entries.is_empty()).then_some((group, entries))
         })
-        .collect()
+        .collect();
+        let visible = Rc::new(visible);
+        *self.visible_cache.borrow_mut() = Some((query.to_string(), visible.clone()));
+        visible
     }
 
     fn heading(&self, group: GroupKind) -> SharedString {
@@ -483,9 +539,10 @@ impl Entry {
             }),
             Target::ConnectSession(name) => connect(ConnectRequest::session(name), cx),
             Target::ConnectRecent(recent) => connect(ConnectRequest::recent(*recent), cx),
-            Target::OpenTable(connection, table) => {
-                AppState::global(cx)
-                    .update(cx, |state, cx| state.open_table(connection, table, cx));
+            Target::OpenTable(connection, tables, index) => {
+                AppState::global(cx).update(cx, |state, cx| {
+                    state.open_table(connection, tables[index].clone(), cx)
+                });
             }
             Target::OpenQuery {
                 connection,
@@ -650,15 +707,18 @@ pub(crate) fn open(
                 );
 
                 let on_query = query.clone();
+                let on_query_state = state.clone();
                 let on_confirm_model = model.clone();
                 let on_confirm_query = query.clone();
                 let on_confirm_tab = pick_tab.clone();
                 content.child(
                     command
-                        .on_query(move |text, window, _| {
+                        .on_query(move |text, _, cx| {
                             if *on_query.borrow() != text {
                                 *on_query.borrow_mut() = text.to_string();
-                                window.refresh();
+                                // Repaint the dialog, not every view of the
+                                // window (a refresh ignores cached views)
+                                on_query_state.update(cx, |_, cx| cx.notify());
                             }
                         })
                         .on_confirm(move |path: IndexPath, window, cx| {
@@ -759,5 +819,161 @@ mod tests {
         let label = match_score("plan", "Plan", "").unwrap();
         let keyword = match_score("plan", "Explain statement", "plan").unwrap();
         assert!(label > keyword);
+    }
+
+    fn entry(group: GroupKind, label: &str, keywords: &str) -> Rc<Entry> {
+        Rc::new(Entry {
+            group,
+            label: label.to_string().into(),
+            detail: None,
+            keywords: keywords.to_string(),
+            leading: Leading::Icon(IconName::Search),
+            shortcut: None,
+            mono: false,
+            disabled: false,
+            context: None,
+            target: Target::Command(AppCommand::NewQuery),
+        })
+    }
+
+    fn model(scope: Scope) -> Model {
+        let mut entries = vec![
+            entry(GroupKind::Tabs, "Query 1", "tab"),
+            entry(GroupKind::Tabs, "orders.sql", "tab file"),
+        ];
+        for command in AppCommand::iter().filter(|command| command.in_palette()) {
+            entries.push(entry(
+                GroupKind::Commands,
+                command.label(),
+                &command.keywords().join(" "),
+            ));
+        }
+        entries.push(entry(
+            GroupKind::Connections,
+            "Switch to shop",
+            "SQLite shop.db",
+        ));
+        entries.push(entry(
+            GroupKind::Connections,
+            "Connect to Prod",
+            "session saved app",
+        ));
+        for i in 0..60 {
+            entries.push(entry(
+                GroupKind::Tables,
+                &format!("{}.Table_{i}", ["public", "Sales", "ÉTÉ"][i % 3]),
+                "table",
+            ));
+        }
+        entries.push(entry(
+            GroupKind::Queries,
+            "Revenue by month",
+            "SELECT date_trunc('month', created_at), sum(total) FROM orders GROUP BY 1",
+        ));
+        Model {
+            search: Model::prepare(&entries),
+            visible_cache: RefCell::new(None),
+            entries,
+            table_heading: "Tables".into(),
+            scope,
+        }
+    }
+
+    /// What `visible` returned before the search terms were prepared once
+    /// per palette: every entry scored with [`match_score`].
+    fn reference(model: &Model, query: &str) -> Vec<(GroupKind, Vec<String>)> {
+        let query = query.trim();
+        [
+            GroupKind::Tabs,
+            GroupKind::Commands,
+            GroupKind::Connections,
+            GroupKind::Tables,
+            GroupKind::Queries,
+        ]
+        .into_iter()
+        .filter(|group| match (model.scope, group) {
+            (Scope::Tabs, group) => *group == GroupKind::Tabs,
+            (Scope::Everything, GroupKind::Tabs) => !query.is_empty(),
+            (Scope::Everything, _) => true,
+        })
+        .filter_map(|group| {
+            let mut scored: Vec<(i32, &Rc<Entry>)> = model
+                .entries
+                .iter()
+                .filter(|entry| entry.group == group)
+                .filter_map(|entry| {
+                    match_score(query, &entry.label, &entry.keywords).map(|score| (score, entry))
+                })
+                .collect();
+            if !query.is_empty() {
+                scored.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
+            }
+            let labels: Vec<String> = scored
+                .into_iter()
+                .map(|(_, entry)| entry.label.to_string())
+                .take(group.limit())
+                .collect();
+            (!labels.is_empty()).then_some((group, labels))
+        })
+        .collect()
+    }
+
+    fn shown(visible: &Visible) -> Vec<(GroupKind, Vec<String>)> {
+        visible
+            .iter()
+            .map(|(group, entries)| {
+                (
+                    *group,
+                    entries
+                        .iter()
+                        .map(|entry| entry.label.to_string())
+                        .collect(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn prepared_search_ranks_like_scoring_each_entry() {
+        for scope in [Scope::Everything, Scope::Tabs] {
+            let model = model(scope);
+            for query in [
+                "",
+                " ",
+                "q",
+                "run",
+                "RUN ALL",
+                "tab",
+                "été",
+                "ete",
+                "sales tab",
+                "table_5",
+                "t1",
+                "conn prod",
+                "month",
+                "sum orders",
+                "zzz",
+                "o",
+                "  run   st ",
+            ] {
+                assert_eq!(
+                    shown(&model.visible(query)),
+                    reference(&model, query),
+                    "{scope:?} {query:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn results_are_worked_out_once_per_query() {
+        let model = model(Scope::Everything);
+        let first = model.visible("run");
+        assert!(Rc::ptr_eq(&first, &model.visible("run")));
+        // The same query, trimmed
+        assert!(Rc::ptr_eq(&first, &model.visible(" run ")));
+        let other = model.visible("tab");
+        assert!(!Rc::ptr_eq(&first, &other));
+        assert_eq!(shown(&model.visible("run")), shown(&first));
     }
 }

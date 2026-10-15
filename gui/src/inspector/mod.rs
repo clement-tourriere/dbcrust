@@ -36,6 +36,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use model::Described;
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -139,6 +140,12 @@ pub struct TableInspector {
     /// The connection's schema was reloaded since we last described.
     schema_refreshing: bool,
     columns_scroll: UniformListScrollHandle,
+    indexes_scroll: UniformListScrollHandle,
+    references_scroll: UniformListScrollHandle,
+    constraints_list: ListState,
+    /// The connection's tables by name, for the foreign key links (see
+    /// `sections.rs`); rebuilt when the connection's table list is replaced.
+    table_lookup: RefCell<Option<schema::TableLookup>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -191,6 +198,10 @@ impl TableInspector {
             count_task: None,
             schema_refreshing: schema_loading,
             columns_scroll: UniformListScrollHandle::default(),
+            indexes_scroll: UniformListScrollHandle::default(),
+            references_scroll: UniformListScrollHandle::default(),
+            constraints_list: ListState::new(0, ListAlignment::Top, px(240.)),
+            table_lookup: RefCell::new(None),
             _subscriptions: vec![subscription],
         };
         inspector.load_details(false, window, cx);

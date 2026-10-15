@@ -899,7 +899,7 @@ impl Worker {
         // Routing information, not part of what a session is
         info.options.remove(dbcrust::docker::PINNED_DAEMON_OPTION);
         self.store
-            .update(|config| config.save_session_from_connection_info(name, &info))
+            .update_sessions(|config| config.save_session_from_connection_info(name, &info))
             .map_err(|e| GuiError::Storage(format!("Could not save session \"{name}\": {e}")))?;
         self.summary.session_name = Some(name.to_string());
         Ok(())
@@ -946,8 +946,9 @@ mod tests {
     }
 
     fn test_store() -> ConfigStore {
-        // Tests run with DBCRUST_CONFIG_DIR isolation from the core's test
-        // heuristic; an in-memory default config is enough here.
+        // Connections record recents from their worker thread: keep every
+        // thread out of the real config directory, not only named ones
+        crate::test_support::isolate();
         ConfigStore::from_config(dbcrust::config::Config::default())
     }
 

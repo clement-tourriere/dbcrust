@@ -85,8 +85,6 @@ impl Stale {
     }
 }
 
-/// How often the running timer is redrawn.
-const TICK: Duration = Duration::from_millis(100);
 /// A statement that finishes within this time never replaces the previous
 /// results with the running screen, so quick queries do not flash.
 const RUNNING_GRACE: Duration = Duration::from_millis(150);
@@ -201,6 +199,9 @@ pub struct ResultsView {
     stale: Option<Stale>,
     /// Redraws the running timer; dropped (cancelled) when the run ends.
     ticker: Option<Task<()>>,
+    /// How many times it rendered (tests watch what a repaint reaches).
+    #[cfg(test)]
+    renders: usize,
 }
 
 impl ResultsView {
@@ -211,6 +212,8 @@ impl ResultsView {
             view: View::Empty,
             stale: None,
             ticker: None,
+            #[cfg(test)]
+            renders: 0,
         }
     }
 
@@ -253,7 +256,7 @@ impl ResultsView {
         self.view = match content {
             ResultsContent::Empty => View::Empty,
             ResultsContent::Running { since, statement } => {
-                self.start_ticker(window, cx);
+                self.start_ticker(since, window, cx);
                 // Keep what was on screen (looking through a run that was
                 // already in progress), unless there was nothing to keep.
                 let previous = match previous {
@@ -318,10 +321,13 @@ impl ResultsView {
         cx.notify();
     }
 
-    fn start_ticker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// Repaint while the statement runs, when the timer would show
+    /// something else (and to leave the grace period).
+    fn start_ticker(&mut self, since: Instant, window: &mut Window, cx: &mut Context<Self>) {
         self.ticker = Some(cx.spawn_in(window, async move |this, cx| {
             loop {
-                cx.background_executor().timer(TICK).await;
+                let wait = model::running_tick(since.elapsed());
+                cx.background_executor().timer(wait).await;
                 let running = this.update(cx, |this, cx| {
                     let running = matches!(this.view, View::Running { .. });
                     if running {
@@ -448,6 +454,49 @@ impl ResultsView {
             }
         ))
     }
+
+    /// How many times the panel and the grid on screen rendered.
+    pub(crate) fn renders(&self, cx: &App) -> (usize, Option<usize>) {
+        (
+            self.renders,
+            self.active_grid().map(|grid| grid.read(cx).renders),
+        )
+    }
+
+    /// Act on the grid on screen as the user would.
+    pub(crate) fn with_grid(
+        results: &Entity<Self>,
+        window: &mut Window,
+        cx: &mut App,
+        act: impl FnOnce(&mut ResultGrid, &mut Window, &mut Context<ResultGrid>),
+    ) {
+        let grid = results
+            .read(cx)
+            .active_grid()
+            .expect("a grid on screen")
+            .clone();
+        grid.update(cx, |grid, cx| act(grid, window, cx));
+    }
+
+    /// "Copy all" of the grid on screen (rendered in the background), then
+    /// an immediate copy of one of its cells, as in quick succession.
+    pub(crate) fn copy_all_then_cell(
+        results: &Entity<Self>,
+        row: usize,
+        col: usize,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let grid = results
+            .read(cx)
+            .active_grid()
+            .expect("a grid on screen")
+            .clone();
+        grid.update(cx, |grid, cx| {
+            grid.copy_all(ExportFormat::Csv, window, cx);
+            grid.copy_cell(row, col, window, cx);
+        });
+    }
 }
 
 impl Focusable for ResultsView {
@@ -458,6 +507,10 @@ impl Focusable for ResultsView {
 
 impl Render for ResultsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         let body = self.body(&self.view, window, cx);
         div()
             .id("results-panel")
@@ -526,7 +579,12 @@ impl ResultsView {
         };
         let result = &tab.result;
         let content = match &tab.grid {
-            Some(grid) => grid.clone().into_any_element(),
+            // Cached: repainting the panel (the stale banner, a spinner) does
+            // not lay out the visible rows again; the grid repaints itself
+            Some(grid) => grid
+                .clone()
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
             None => message_state(result, cx),
         };
         // After a failed run the banner already says the results are old
@@ -605,9 +663,7 @@ impl ResultsView {
                                 .ghost()
                                 .xsmall()
                                 .on_click(move |_, window, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        message.clone(),
-                                    ));
+                                    crate::clipboard::write(message.clone(), cx);
                                     window.push_notification(
                                         Notification::success("Copied error").id::<ErrorNotice>(),
                                         cx,
@@ -1195,7 +1251,7 @@ fn error_state(error: &GuiError, statement: &str, cx: &App) -> AnyElement {
                         .outline()
                         .small()
                         .on_click(move |_, window, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(message.clone()));
+                            crate::clipboard::write(message.clone(), cx);
                             window.push_notification(
                                 Notification::success("Copied error").id::<ErrorNotice>(),
                                 cx,

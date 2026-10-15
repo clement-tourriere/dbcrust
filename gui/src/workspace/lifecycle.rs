@@ -24,16 +24,17 @@ use crate::preferences::{self, Preferences};
 use crate::query::QueryTab;
 use crate::tray::{self, CloseAction, Wording};
 use dbcrust_gui_core::ConnectionId;
-use dbcrust_gui_core::gui_state::{Draft, GuiState};
+use dbcrust_gui_core::gui_state::{Draft, DraftTarget, GuiState};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _, WindowExt as _,
     button::{Button, ButtonVariant, ButtonVariants as _},
     dialog::DialogFooter,
+    input::Rope,
     notification::Notification,
 };
 use gpui_kit::*;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(3);
 /// How long quitting waits for the final save.
@@ -45,17 +46,57 @@ struct AutosaveNotice;
 struct PreferencesNotice;
 
 /// The persisted part of the workspace, compared to skip redundant writes.
+/// Taking one every few seconds copies no query text: drafts hold the
+/// editors' ropes, turned into text on the writer thread.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Snapshot {
-    drafts: Vec<Draft>,
+    drafts: Vec<DraftSnapshot>,
     sidebar_visible: bool,
     sidebar_width: f32,
 }
 
+/// A query tab with text, as autosave sees it.
+#[derive(Clone, Debug)]
+struct DraftSnapshot {
+    /// The tab and its edit revision stand for the text (see `eq`).
+    tab: EntityId,
+    revision: u64,
+    title: String,
+    /// A copy-on-write snapshot of the editor's text.
+    sql: Rope,
+    connection_key: Option<String>,
+    target: Option<DraftTarget>,
+}
+
+impl PartialEq for DraftSnapshot {
+    /// A tab holds the same text as long as its edit revision is the same
+    /// (the length is compared too, against an edit that would not bump it):
+    /// no buffer is compared character by character.
+    fn eq(&self, other: &Self) -> bool {
+        self.tab == other.tab
+            && self.revision == other.revision
+            && self.sql.len() == other.sql.len()
+            && self.title == other.title
+            && self.connection_key == other.connection_key
+            && self.target == other.target
+    }
+}
+
+impl DraftSnapshot {
+    fn to_draft(&self) -> Draft {
+        Draft {
+            title: self.title.clone(),
+            sql: self.sql.to_string(),
+            connection_key: self.connection_key.clone(),
+            target: self.target.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 impl Snapshot {
-    pub(super) fn drafts(&self) -> &[Draft] {
-        &self.drafts
+    pub(super) fn drafts(&self) -> Vec<Draft> {
+        self.drafts.iter().map(DraftSnapshot::to_draft).collect()
     }
 
     pub(super) fn sidebar_visible(&self) -> bool {
@@ -64,8 +105,9 @@ impl Snapshot {
 }
 
 impl Snapshot {
-    fn apply(self, state: &mut GuiState) {
-        state.drafts = self.drafts;
+    /// Runs on the writer thread.
+    fn apply(&self, state: &mut GuiState) {
+        state.drafts = self.drafts.iter().map(DraftSnapshot::to_draft).collect();
         state.sidebar_visible = self.sidebar_visible;
         state.sidebar_width = self.sidebar_width;
     }
@@ -74,7 +116,7 @@ impl Snapshot {
 /// The workspace's single writer of `gui_state.toml`.
 pub(super) fn new_writer() -> OrderedWriter<Snapshot> {
     OrderedWriter::new(|snapshot: &Snapshot| {
-        GuiState::update(|state| snapshot.clone().apply(state)).map_err(|error| error.to_string())
+        GuiState::update(|state| snapshot.apply(state)).map_err(|error| error.to_string())
     })
 }
 
@@ -124,11 +166,13 @@ impl Workspace {
                     let TabKind::Query(query) = &tab.kind else {
                         return None;
                     };
+                    let id = query.entity_id();
                     let query = query.read(cx);
-                    let sql = query.sql(cx);
-                    (!sql.trim().is_empty()).then(|| Draft {
+                    (!query.is_blank(cx)).then(|| DraftSnapshot {
+                        tab: id,
+                        revision: query.edit_revision(),
                         title: query.title().to_string(),
-                        sql,
+                        sql: query.sql_snapshot(cx),
                         connection_key: tab.connection_key.clone(),
                         target: query.draft_target(),
                     })
@@ -197,9 +241,12 @@ impl Workspace {
     }
 
     /// Queue the current state (unless the file already holds it) and wait,
-    /// on a background thread, until the writer is idle. Preferences still
-    /// waiting for the disk are written first; failing to save one is logged
-    /// but never holds the quit back (the drafts are what must not be lost).
+    /// on a background thread, until the writer is idle. Settings and
+    /// preferences still waiting for the disk are written first, on a
+    /// thread of their own: `timeout` bounds the whole flush, so a write
+    /// that stalls ends in `TimedOut` (the user decides) instead of a hang.
+    /// A settings save that fails is reported like the drafts; failing to
+    /// save the preferences is only logged.
     fn flush_state(&mut self, timeout: Duration, cx: &App) -> Task<FlushOutcome> {
         let snapshot = self.snapshot(cx);
         if !self.writer.is_saved(&snapshot) {
@@ -207,11 +254,27 @@ impl Workspace {
             self.submitted = Some(snapshot);
         }
         let flusher = self.writer.flusher();
+        let settings = crate::settings::flush_on_quit(cx);
         cx.background_spawn(async move {
-            if let Err(error) = preferences::flush() {
-                tracing::warn!("could not save the preferences on exit: {error}");
+            let deadline = Instant::now() + timeout;
+            let (done, finished) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let settings = settings(deadline);
+                if let Err(error) = preferences::flush() {
+                    tracing::warn!("could not save the preferences on exit: {error}");
+                }
+                let _ = done.send(settings);
+            });
+            let Ok(settings) = finished.recv_timeout(timeout) else {
+                return FlushOutcome::TimedOut;
+            };
+            match flusher.wait(deadline.saturating_duration_since(Instant::now())) {
+                FlushOutcome::Saved => match settings {
+                    Ok(()) => FlushOutcome::Saved,
+                    Err(error) => FlushOutcome::Failed(error),
+                },
+                outcome => outcome,
             }
-            flusher.wait(timeout)
         })
     }
 
@@ -278,8 +341,9 @@ impl Workspace {
         self.flush_then_quit(0, window, cx);
     }
 
-    /// Save, then quit — unless the drafts changed while saving (the editor
-    /// stays usable meanwhile): then save again, a few times at most.
+    /// Save, then quit — unless the drafts or the settings changed while
+    /// saving (the app stays usable meanwhile): then save again, a few
+    /// times at most, and ask the user rather than quit with them unsaved.
     fn flush_then_quit(&mut self, attempt: u8, window: &mut Window, cx: &mut Context<Self>) {
         const MAX_ATTEMPTS: u8 = 3;
         let flush = self.flush_state(FINAL_SAVE_TIMEOUT, cx);
@@ -289,11 +353,24 @@ impl Workspace {
                 this.quit_task = None;
                 match outcome {
                     FlushOutcome::Saved => {
+                        // Checked here, on the UI thread, right before
+                        // quitting: no edit can land in between
                         let snapshot = this.snapshot(cx);
-                        if this.writer.is_saved(&snapshot) || attempt + 1 >= MAX_ATTEMPTS {
+                        let saved = this.writer.is_saved(&snapshot)
+                            && !crate::settings::has_unsaved_settings(cx);
+                        if saved {
                             this.finish_quit(cx);
-                        } else {
+                        } else if attempt + 1 < MAX_ATTEMPTS {
                             this.flush_then_quit(attempt + 1, window, cx);
+                        } else {
+                            // Never quit with changes that are not on disk:
+                            // the user decides
+                            this.save_failed_on_quit(
+                                "Your queries or settings kept changing while they were saved."
+                                    .to_string(),
+                                window,
+                                cx,
+                            );
                         }
                     }
                     FlushOutcome::Failed(error) => this.save_failed_on_quit(error, window, cx),
@@ -324,7 +401,7 @@ impl Workspace {
         tray::reveal_window(window, cx);
         window.push_notification(
             Notification::error(error.clone())
-                .title("Couldn’t save your open queries")
+                .title("Couldn’t save before quitting")
                 .autohide(false)
                 .id::<AutosaveNotice>(),
             cx,
@@ -338,9 +415,10 @@ impl Workspace {
                         .small()
                         .text_color(cx.theme().warning),
                 )
-                .title("Couldn’t save your open queries")
+                .title("Couldn’t save before quitting")
                 .description(format!(
-                    "{error} Quitting now loses the unsaved text of your query tabs."
+                    "{error} Quitting now loses what is not saved: the text of your query \
+                     tabs or recent settings changes."
                 ))
                 .confirm()
                 .ok_text("Quit anyway")
@@ -601,5 +679,76 @@ mod tests {
         assert_eq!(query_number("Top customers"), None);
         assert_eq!(query_number("Query"), None);
         assert_eq!(query_number("Query x"), None);
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::Workspace;
+    use crate::RestoredState;
+    use dbcrust_gui_core::ConfigStore;
+    use dbcrust_gui_core::dbcrust::config::Config;
+    use dbcrust_gui_core::gui_state::GuiState;
+    use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, WindowOptions};
+
+    fn open(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<Workspace>) {
+        crate::test_support::isolate();
+        cx.update(|cx| {
+            crate::init(ConfigStore::from_config(Config::default()), cx);
+            cx.set_global(RestoredState(GuiState::default()));
+            crate::open_main_window(WindowOptions::default(), cx).expect("open the main window")
+        })
+    }
+
+    #[gpui_kit::test]
+    fn a_snapshot_changes_with_the_text_and_keeps_it_exactly(cx: &mut TestAppContext) {
+        let (window, workspace) = open(cx);
+        let query = cx
+            .update_window(window, |_, window, cx| {
+                workspace.update(cx, |workspace, cx| {
+                    workspace.open_query_tab(None, None, String::new(), window, cx);
+                    workspace.open_query_tab(
+                        None,
+                        Some("Scratch".into()),
+                        "select 1".into(),
+                        window,
+                        cx,
+                    )
+                })
+            })
+            .expect("window");
+        let snapshot = |cx: &mut TestAppContext| cx.update(|cx| workspace.read(cx).snapshot(cx));
+
+        // Nothing changed: equal, so autosave writes nothing
+        let first = snapshot(cx);
+        assert_eq!(snapshot(cx), first);
+        let drafts = first.drafts();
+        assert_eq!(drafts.len(), 1, "a blank tab is not a draft");
+        assert_eq!(drafts[0].sql, "select 1");
+
+        // An edit of the same length is a change, and the text is kept as is
+        let text = "select 2\n\n  -- é\tdone ";
+        cx.update_window(window, |_, window, cx| {
+            query.update(cx, |query, cx| query.set_sql("select 2".into(), window, cx));
+        })
+        .expect("window");
+        let second = snapshot(cx);
+        assert_ne!(second, first);
+        assert_eq!(second.drafts()[0].sql, "select 2");
+        cx.update_window(window, |_, window, cx| {
+            query.update(cx, |query, cx| query.set_sql(text.into(), window, cx));
+        })
+        .expect("window");
+        let third = snapshot(cx);
+        assert_ne!(third, second);
+        let mut state = GuiState::default();
+        third.apply(&mut state);
+        assert_eq!(state.drafts.len(), 1);
+        assert_eq!(state.drafts[0].sql, text);
+        assert_eq!(state.drafts[0].title, "Scratch");
+
+        // A rename alone is a change too
+        cx.update(|cx| query.update(cx, |query, cx| query.rename("Renamed", cx)));
+        assert_ne!(snapshot(cx), third);
     }
 }

@@ -366,9 +366,19 @@ pub struct CachedVaultCredentials {
 /// Vault credential storage - stored in a separate encrypted file
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct VaultCredentialStorage {
+    /// Runtime cache-read status, never serialized or exposed as a setting.
+    #[serde(skip)]
+    locked: bool,
     // Key: "mount_path/database_name/role_name"
     #[serde(default)]
     pub cached_credentials: HashMap<String, CachedVaultCredentials>,
+}
+
+impl VaultCredentialStorage {
+    /// The cache file exists but no Vault token is available to decrypt it.
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -522,11 +532,26 @@ pub struct NamedQuery {
     pub description: Option<String>,
 }
 
+/// A user-data file the `Config` helpers write themselves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageFile {
+    /// `sessions.toml`
+    SavedSessions,
+    /// `recent.toml`
+    RecentConnections,
+    /// `vault_credentials.enc`
+    VaultCredentials,
+}
+
 /// Named queries storage - stored in a separate file
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct NamedQueriesStorage {
     #[serde(default)]
     pub queries: HashMap<String, NamedQuery>,
+    /// Why `named_queries.toml` exists but could not be read or parsed.
+    /// Such a file is never overwritten: the queries it holds would be lost.
+    #[serde(skip)]
+    unreadable: Option<String>,
 }
 
 impl NamedQueriesStorage {
@@ -637,6 +662,114 @@ impl NamedQueriesStorage {
     /// Delete a query by name and scope, returns true if query existed
     pub fn delete_by_name_and_scope(&mut self, name: &str, scope: &NamedQueryScope) -> bool {
         self.remove(name, scope).is_some()
+    }
+
+    /// The name part of a key built by [`Self::generate_key`] for `scope`.
+    /// Names may contain `::`, so the scope prefix is stripped rather than
+    /// splitting on the separator.
+    pub fn name_in_key<'a>(key: &'a str, scope: &NamedQueryScope) -> &'a str {
+        let prefix = Self::generate_key("", scope);
+        key.strip_prefix(prefix.as_str()).unwrap_or(key)
+    }
+
+    /// Insert a query (`old_key: None`) or edit, rename and re-scope the one
+    /// stored at `old_key`, in memory and in one step: the old key is removed
+    /// and the new one inserted together, so a rename can never lose the
+    /// query. A rename keeps the original `created_at`. Refuses to overwrite
+    /// another query. Returns the new key.
+    pub fn replace(
+        &mut self,
+        old_key: Option<&str>,
+        name: &str,
+        entry: NamedQuery,
+    ) -> Result<String, String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Enter a name for the saved query.".to_string());
+        }
+        if entry.query.trim().is_empty() {
+            return Err("Write SQL for the saved query.".to_string());
+        }
+        let key = Self::generate_key(name, &entry.scope);
+        if old_key != Some(key.as_str()) && self.queries.contains_key(&key) {
+            return Err(match &entry.scope {
+                NamedQueryScope::Global => {
+                    format!("A global saved query named “{name}” already exists.")
+                }
+                NamedQueryScope::DatabaseType(engine) => format!(
+                    "A saved query named “{name}” already exists for {}.",
+                    engine.display_name()
+                ),
+                NamedQueryScope::Session(session) => {
+                    format!("A saved query named “{name}” already exists for session “{session}”.")
+                }
+            });
+        }
+        let entry = match old_key {
+            Some(old_key) => {
+                let old = self
+                    .queries
+                    .remove(old_key)
+                    .ok_or_else(|| "This saved query no longer exists.".to_string())?;
+                NamedQuery {
+                    created_at: old.created_at,
+                    ..entry
+                }
+            }
+            None => entry,
+        };
+        self.queries.insert(key.clone(), entry);
+        Ok(key)
+    }
+
+    /// Write `named_queries.toml` atomically (a failed write leaves the
+    /// previous file in place).
+    pub fn save_to_disk(&self) -> Result<(), Box<dyn Error>> {
+        self.save_to(&Config::get_named_queries_path()?)
+    }
+
+    fn save_to(&self, path: &Path) -> Result<(), Box<dyn Error>> {
+        if let Some(reason) = &self.unreadable {
+            return Err(format!(
+                "{} could not be read ({reason}). Fix or move it, then reload: \
+                 saving now would replace the queries it holds.",
+                path.display()
+            )
+            .into());
+        }
+        let content = toml::to_string_pretty(self)?;
+        write_file_atomically(path, content.as_bytes())?;
+        Ok(())
+    }
+
+    /// Read `path`; a missing file is an empty storage. A file that exists
+    /// but cannot be read or parsed gives an empty storage that refuses to
+    /// be saved ([`Self::is_unreadable`]).
+    fn load_from(path: &Path) -> Self {
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Self::default(),
+            Err(e) => {
+                eprintln!("Error reading named queries file: {e}");
+                return Self::unreadable(e.to_string());
+            }
+        };
+        toml::from_str(&content).unwrap_or_else(|e| {
+            eprintln!("Error parsing named queries file: {e}");
+            Self::unreadable(e.to_string())
+        })
+    }
+
+    fn unreadable(reason: String) -> Self {
+        Self {
+            unreadable: Some(reason),
+            ..Self::default()
+        }
+    }
+
+    /// `named_queries.toml` exists but could not be read: saving is refused.
+    pub fn is_unreadable(&self) -> bool {
+        self.unreadable.is_some()
     }
 }
 
@@ -817,6 +950,18 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
+        Self::defaults_with_storage(!is_test_mode())
+    }
+}
+
+impl Config {
+    /// Default settings with empty user-data stores and no filesystem access.
+    /// Suitable for reset controls and non-blocking UI initialization.
+    pub fn default_settings() -> Self {
+        Self::defaults_with_storage(false)
+    }
+
+    fn defaults_with_storage(load_storage: bool) -> Self {
         Config {
             default_limit: 100,
             expanded_display_default: false,
@@ -846,44 +991,25 @@ impl Default for Config {
             vector_display: crate::vector_display::VectorDisplayConfig::default(),
             complex_display: crate::complex_display::ComplexDisplayConfig::default(),
             ai: crate::ai::config::AiConfig::default(),
-            recent_connections_storage: {
-                // For tests, use empty storage to avoid loading user data
-                let is_test = is_test_mode();
-
-                if is_test {
-                    RecentConnectionsStorage::default()
-                } else {
-                    Self::load_recent_connections()
-                }
+            recent_connections_storage: if load_storage {
+                Self::load_recent_connections()
+            } else {
+                RecentConnectionsStorage::default()
             },
-            saved_sessions_storage: {
-                // For tests, use empty storage to avoid loading user data
-                let is_test = is_test_mode();
-
-                if is_test {
-                    SavedSessionsStorage::default()
-                } else {
-                    Self::load_saved_sessions()
-                }
+            saved_sessions_storage: if load_storage {
+                Self::load_saved_sessions()
+            } else {
+                SavedSessionsStorage::default()
             },
-            vault_credential_storage: {
-                // For tests, use empty storage to avoid loading user data
-                let is_test = is_test_mode();
-
-                if is_test {
-                    VaultCredentialStorage::default()
-                } else {
-                    Self::load_vault_credentials()
-                }
+            vault_credential_storage: if load_storage {
+                Self::load_vault_credentials()
+            } else {
+                VaultCredentialStorage::default()
             },
-            named_queries_storage: {
-                // For tests, use empty storage to avoid loading user data
-                let is_test = is_test_mode();
-                if is_test {
-                    NamedQueriesStorage::default()
-                } else {
-                    Self::load_named_queries()
-                }
+            named_queries_storage: if load_storage {
+                Self::load_named_queries()
+            } else {
+                NamedQueriesStorage::default()
             },
         }
     }
@@ -1019,7 +1145,8 @@ static CONFIG_SAVING_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 impl Config {
     /// Get the configuration directory path - single source of truth for all config files.
     ///
-    /// By default this is `~/.config/dbcrust`. Set `DBCRUST_CONFIG_DIR` to force
+    /// Every user file of DBCrust resolves its directory here. By default
+    /// this is `~/.config/dbcrust`. Set `DBCRUST_CONFIG_DIR` to force
     /// a specific directory (useful when the Python/Django process runs with a
     /// different `HOME`, such as Docker, systemd, or IDE-launched servers).
     /// Tests still use an isolated temp directory unless explicitly overridden.
@@ -1197,18 +1324,26 @@ impl Config {
     fn load_vault_credentials_with_optional_token(
         vault_token: Option<&str>,
     ) -> VaultCredentialStorage {
-        let path = match Self::get_vault_credentials_path() {
-            Ok(path) => path,
+        match Self::get_vault_credentials_path() {
+            Ok(path) => Self::load_vault_credentials_from(&path, vault_token),
             Err(e) => {
                 eprintln!("Error getting vault credentials path: {e}");
-                return VaultCredentialStorage::default();
+                VaultCredentialStorage::default()
             }
-        };
+        }
+    }
+
+    /// The startup loader: a cache that cannot be decrypted for a reason
+    /// other than a missing token is deleted.
+    fn load_vault_credentials_from(
+        path: &Path,
+        vault_token: Option<&str>,
+    ) -> VaultCredentialStorage {
         if !path.exists() {
             return VaultCredentialStorage::default();
         }
 
-        let encrypted_data = match fs::read(&path) {
+        let encrypted_data = match fs::read(path) {
             Ok(data) => data,
             Err(e) => {
                 eprintln!("Error reading vault credentials file: {e}");
@@ -1233,12 +1368,15 @@ impl Config {
             // unlocked after the process returns a token.
             Err(crate::vault_encryption::EncryptionError::NoVaultToken) => {
                 debug!("Vault credential cache remains locked until authentication");
-                VaultCredentialStorage::default()
+                VaultCredentialStorage {
+                    locked: true,
+                    ..Default::default()
+                }
             }
             Err(e) => {
                 // Any other failure means the cache is malformed or was
                 // encrypted with different key material.
-                if let Err(remove_err) = fs::remove_file(&path) {
+                if let Err(remove_err) = fs::remove_file(path) {
                     eprintln!("Error decrypting vault credentials file: {e}");
                     eprintln!("Failed to remove corrupted vault credentials file: {remove_err}");
                 } else {
@@ -1448,8 +1586,15 @@ impl Config {
                             config.vault_credential_storage = Self::load_vault_credentials();
                             config.named_queries_storage = Self::load_named_queries();
 
-                            // Check if config file is missing any fields and upgrade if needed
-                            if !config.has_all_fields(&content) {
+                            // Move legacy queries before a documented save can omit the old map.
+                            let had_legacy = !config.named_queries.is_empty();
+                            if let Err(error) = config.migrate_legacy_named_queries() {
+                                tracing::warn!(%error, "Could not migrate legacy saved queries");
+                                return config;
+                            }
+                            // Also remove migrated entries from config.toml so a deleted query
+                            // cannot be resurrected by a later reload.
+                            if had_legacy || !config.has_all_fields(&content) {
                                 if let Err(e) = config.save_with_documentation() {
                                     // Silent fallback - don't spam user with config save errors
                                     eprintln!(
@@ -2132,6 +2277,22 @@ impl Config {
                 self.history.cleanup_after_days
             ));
 
+            // Legacy unscoped saved queries move to named_queries.toml when
+            // the config loads. If that write failed they are still in
+            // memory: keep them here so saving settings never drops them.
+            if !self.named_queries.is_empty() {
+                let legacy: std::collections::BTreeMap<_, _> = self.named_queries.iter().collect();
+                if let Ok(table) = toml::to_string(&legacy) {
+                    content
+                        .push_str("# Saved queries from an older DBCrust version. They move to\n");
+                    content
+                        .push_str("# named_queries.toml the next time the configuration loads.\n");
+                    content.push_str("[named_queries]\n");
+                    content.push_str(&table);
+                    content.push('\n');
+                }
+            }
+
             content
         }
     }
@@ -2182,38 +2343,132 @@ impl Config {
             .all(|field| file_content.contains(field))
     }
 
-    pub fn add_named_query(&mut self, name: &str, query: &str) -> Result<(), Box<dyn Error>> {
-        self.named_queries
-            .insert(name.to_string(), query.to_string());
-        self.save()?;
+    /// Migrate old unscoped queries before rewriting config.toml. A scoped
+    /// global with the same name wins. Memory changes only after persistence.
+    fn migrate_legacy_named_queries(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.named_queries.is_empty() {
+            return Ok(());
+        }
+        self.migrate_legacy_named_queries_to(&Self::get_named_queries_path()?)
+    }
+
+    fn migrate_legacy_named_queries_to(&mut self, path: &Path) -> Result<(), Box<dyn Error>> {
+        // An existing file that could not be read is left alone (and the
+        // legacy queries stay in config.toml): `save_to` refuses it
+        let mut storage = self.named_queries_storage.clone();
+        for (name, sql) in &self.named_queries {
+            let key = NamedQueriesStorage::generate_key(name, &NamedQueryScope::Global);
+            storage.queries.entry(key).or_insert_with(|| NamedQuery {
+                query: sql.clone(),
+                scope: NamedQueryScope::Global,
+                created_at: Utc::now(),
+                description: None,
+            });
+        }
+        storage.save_to(path)?;
+        self.named_queries_storage = storage;
+        self.named_queries.clear();
         Ok(())
     }
 
-    /// Add a named query with scope support (new API)
+    /// Save a global query using the dedicated storage file.
+    pub fn add_named_query(&mut self, name: &str, query: &str) -> Result<(), Box<dyn Error>> {
+        self.add_named_query_with_scope(name, query, NamedQueryScope::Global)
+    }
+
+    /// Save a query, preserving its creation date and description on overwrite.
     pub fn add_named_query_with_scope(
         &mut self,
         name: &str,
         query: &str,
         scope: NamedQueryScope,
     ) -> Result<(), Box<dyn Error>> {
-        let named_query = NamedQuery {
+        let key = NamedQueriesStorage::generate_key(name, &scope);
+        let old = self.named_queries_storage.queries.get(&key);
+        let entry = NamedQuery {
             query: query.to_string(),
             scope,
-            created_at: chrono::Utc::now(),
-            description: None,
+            created_at: old.map_or_else(Utc::now, |entry| entry.created_at),
+            description: old.and_then(|entry| entry.description.clone()),
         };
-
-        self.named_queries_storage.insert(name, named_query);
-        self.save_named_queries()?;
+        self.replace_named_query(old.map(|_| key.as_str()), name, entry)?;
+        self.named_queries.remove(name);
         Ok(())
     }
 
+    /// Delete a legacy in-memory entry or a migrated global query.
     pub fn delete_named_query(&mut self, name: &str) -> Result<bool, Box<dyn Error>> {
-        let existed = self.named_queries.remove(name).is_some();
-        if existed {
-            self.save()?;
+        let existed = self.delete_named_query_with_scope(name, &NamedQueryScope::Global)?;
+        let legacy = self.named_queries.remove(name).is_some();
+        if legacy {
+            self.save_with_documentation()?;
         }
-        Ok(existed)
+        Ok(existed || legacy)
+    }
+
+    /// Insert, rename or re-scope in one transaction (see
+    /// [`NamedQueriesStorage::replace`]) and persist `named_queries.toml`.
+    /// Memory changes only once the file is written, so a failed write
+    /// leaves the original entry intact.
+    pub fn replace_named_query(
+        &mut self,
+        old_key: Option<&str>,
+        name: &str,
+        entry: NamedQuery,
+    ) -> Result<String, Box<dyn Error>> {
+        let mut storage = self.named_queries_storage.clone();
+        let key = storage.replace(old_key, name, entry)?;
+        storage.save_to_disk()?;
+        self.named_queries_storage = storage;
+        Ok(key)
+    }
+
+    /// Update the optional description without changing SQL or identity.
+    pub fn set_named_query_description(
+        &mut self,
+        key: &str,
+        description: Option<String>,
+    ) -> Result<(), Box<dyn Error>> {
+        let mut entry = self
+            .get_named_query_with_scope(key)
+            .cloned()
+            .ok_or("This saved query no longer exists.")?;
+        entry.description = description;
+        let name = NamedQueriesStorage::name_in_key(key, &entry.scope).to_string();
+        self.replace_named_query(Some(key), &name, entry)?;
+        Ok(())
+    }
+
+    /// Replace this config's copy of one user-data file's content with
+    /// `other`'s. The desktop app changes sessions, recents and the Vault
+    /// cache on a copy of its config (the helpers write their file), then
+    /// publishes the result this way, so its store lock is never held for
+    /// file I/O.
+    pub fn copy_storage_from(&mut self, other: &Config, file: StorageFile) {
+        match file {
+            StorageFile::SavedSessions => {
+                self.saved_sessions_storage = other.saved_sessions_storage.clone();
+            }
+            StorageFile::RecentConnections => {
+                self.recent_connections_storage = other.recent_connections_storage.clone();
+            }
+            StorageFile::VaultCredentials => {
+                self.vault_credential_storage = other.vault_credential_storage.clone();
+            }
+        }
+    }
+
+    /// The scoped saved queries (`named_queries.toml`).
+    pub fn named_queries_storage(&self) -> &NamedQueriesStorage {
+        &self.named_queries_storage
+    }
+
+    /// Mutable access to the scoped saved queries, for callers that change
+    /// them in memory and persist a copy with
+    /// [`NamedQueriesStorage::save_to_disk`] themselves (the desktop app
+    /// writes outside its config lock).
+    pub fn named_queries_storage_mut(&mut self) -> &mut NamedQueriesStorage {
+        &mut self.named_queries_storage
     }
 
     /// Delete a named query from the new storage (new API)
@@ -2222,17 +2477,21 @@ impl Config {
         name: &str,
         scope: &NamedQueryScope,
     ) -> Result<bool, Box<dyn Error>> {
-        let existed = self
-            .named_queries_storage
-            .delete_by_name_and_scope(name, scope);
+        let mut storage = self.named_queries_storage.clone();
+        let existed = storage.delete_by_name_and_scope(name, scope);
         if existed {
-            self.save_named_queries()?;
+            storage.save_to_disk()?;
+            self.named_queries_storage = storage;
         }
         Ok(existed)
     }
 
     pub fn get_named_query(&self, name: &str) -> Option<&String> {
-        self.named_queries.get(name)
+        self.named_queries.get(name).or_else(|| {
+            self.named_queries_storage
+                .get(name, &NamedQueryScope::Global)
+                .map(|entry| &entry.query)
+        })
     }
 
     /// Get a named query from the new storage (new API)
@@ -2967,45 +3226,63 @@ impl Config {
 
     /// Clear all cached vault credentials
     pub fn clear_vault_credentials(&mut self) -> Result<(), Box<dyn Error>> {
+        // Removing a cache does not require the token that encrypted it.
+        let path = Self::get_vault_credentials_path()?;
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
         self.vault_credential_storage.cached_credentials.clear();
-        self.save_vault_credentials()
+        self.vault_credential_storage.locked = false;
+        Ok(())
     }
 
     /// Load named queries from separate file
     fn load_named_queries() -> NamedQueriesStorage {
         match Self::get_named_queries_path() {
-            Ok(path) => {
-                if path.exists() {
-                    match fs::read_to_string(&path) {
-                        Ok(content) => match toml::from_str(&content) {
-                            Ok(storage) => storage,
-                            Err(e) => {
-                                eprintln!("Error parsing named queries file: {e}");
-                                NamedQueriesStorage::default()
-                            }
-                        },
-                        Err(e) => {
-                            eprintln!("Error reading named queries file: {e}");
-                            NamedQueriesStorage::default()
-                        }
-                    }
-                } else {
-                    NamedQueriesStorage::default()
-                }
-            }
+            Ok(path) => NamedQueriesStorage::load_from(&path),
             Err(e) => {
                 eprintln!("Error getting named queries path: {e}");
-                NamedQueriesStorage::default()
+                NamedQueriesStorage::unreadable(e.to_string())
             }
         }
     }
 
-    /// Save named queries to separate file
-    fn save_named_queries(&self) -> Result<(), Box<dyn Error>> {
-        let path = Self::get_named_queries_path()?;
-        let content = toml::to_string_pretty(&self.named_queries_storage)?;
-        write_file_atomically(&path, content.as_bytes())?;
-        Ok(())
+    /// Look at the encrypted Vault credential cache with the ambient Vault
+    /// token, for display. Unlike the loader used at startup it never
+    /// changes the file: a cache it cannot decrypt (no token, or a token
+    /// other than the one it was saved with) is reported as locked and kept.
+    pub fn inspect_vault_credential_cache() -> VaultCredentialStorage {
+        match Self::get_vault_credentials_path() {
+            Ok(path) => Self::inspect_vault_credential_cache_at(&path, None),
+            Err(_) => VaultCredentialStorage::default(),
+        }
+    }
+
+    /// `vault_token: None` uses the ambient token sources.
+    fn inspect_vault_credential_cache_at(
+        path: &Path,
+        vault_token: Option<&str>,
+    ) -> VaultCredentialStorage {
+        let locked = VaultCredentialStorage {
+            locked: true,
+            ..Default::default()
+        };
+        let encrypted = match fs::read(path) {
+            Ok(data) => data,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                return VaultCredentialStorage::default();
+            }
+            Err(_) => return locked,
+        };
+        match vault_token {
+            Some(token) => crate::vault_encryption::decrypt_data_with_token(&encrypted, token),
+            None => crate::vault_encryption::decrypt_data(&encrypted),
+        }
+        .ok()
+        .and_then(|data| toml::from_slice::<VaultCredentialStorage>(&data).ok())
+        .unwrap_or(locked)
     }
 
     /// Get all cached vault credentials (for display/debugging)
@@ -3097,7 +3374,30 @@ fn is_test_mode() -> bool {
             .unwrap_or(false)
 }
 
+/// The config directory pinned for this whole process by
+/// [`set_config_dir_override`]. Nothing sets it in the CLI or the app.
+static CONFIG_DIR_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Pin every DBCrust user file of this process (config.toml, sessions,
+/// recents, saved queries, the Vault cache, history, the AI key file and
+/// the desktop app's state) under `path`, on every thread at once, without
+/// touching the environment (which other threads may read concurrently).
+/// It wins over `DBCRUST_CONFIG_DIR`, the test heuristic and the home
+/// directory. Set it before any file is read; the first call wins, and a
+/// later call returns whether `path` is the one in effect. For test
+/// harnesses.
+#[doc(hidden)]
+pub fn set_config_dir_override(path: PathBuf) -> bool {
+    let in_effect = CONFIG_DIR_OVERRIDE.get_or_init(|| path.clone());
+    *in_effect == path
+}
+
+/// The one place the config directory is chosen from: the process override,
+/// then `DBCRUST_CONFIG_DIR`.
 fn get_config_dir_override() -> Option<PathBuf> {
+    if let Some(path) = CONFIG_DIR_OVERRIDE.get() {
+        return Some(path.clone());
+    }
     let raw = std::env::var_os(DBCRUST_CONFIG_DIR_ENV)?;
     if raw.is_empty() {
         return None;
@@ -3194,6 +3494,276 @@ mod tests {
 
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn test_config_legacy_queries_migrate_without_overwriting_global_queries() {
+        let mut config = Config::default_settings();
+        config
+            .named_queries
+            .insert("legacy-migrate-new".into(), "SELECT 1".into());
+        config
+            .named_queries
+            .insert("legacy-migrate-duplicate".into(), "SELECT old".into());
+        let global = NamedQuery {
+            query: "SELECT newer".into(),
+            scope: NamedQueryScope::Global,
+            created_at: Utc::now(),
+            description: Some("Keep this".into()),
+        };
+        config
+            .named_queries_storage
+            .insert("legacy-migrate-duplicate", global.clone());
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("named_queries.toml");
+        config.migrate_legacy_named_queries_to(&path).unwrap();
+        assert!(config.named_queries.is_empty());
+        assert_eq!(
+            config
+                .named_queries_storage
+                .get("legacy-migrate-new", &NamedQueryScope::Global)
+                .unwrap()
+                .query,
+            "SELECT 1"
+        );
+        let preserved = config
+            .named_queries_storage
+            .get("legacy-migrate-duplicate", &NamedQueryScope::Global)
+            .unwrap();
+        assert_eq!(preserved.query, global.query);
+        assert_eq!(preserved.description, global.description);
+        assert_eq!(preserved.created_at, global.created_at);
+        let reloaded: NamedQueriesStorage =
+            toml::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert!(
+            reloaded
+                .get("legacy-migrate-new", &NamedQueryScope::Global)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_config_failed_migration_keeps_legacy_queries() {
+        let mut config = Config::default_settings();
+        config
+            .named_queries
+            .insert("keep-me".into(), "SELECT 1".into());
+        let directory = tempfile::tempdir().unwrap();
+        // An occupied directory cannot be atomically replaced by a file.
+        assert!(
+            config
+                .migrate_legacy_named_queries_to(directory.path())
+                .is_err()
+        );
+        assert_eq!(
+            config.named_queries.get("keep-me").map(String::as_str),
+            Some("SELECT 1")
+        );
+        assert!(config.named_queries_storage.queries.is_empty());
+    }
+
+    #[test]
+    fn test_config_documented_save_keeps_unmigrated_legacy_queries() {
+        let mut config = Config::default_settings();
+        assert!(
+            !config
+                .render_documented_config()
+                .contains("[named_queries]")
+        );
+        config
+            .named_queries
+            .insert("legacy \"quoted\"".into(), "SELECT 1\nFROM t".into());
+        let rendered = config.render_documented_config();
+        let reparsed: Config = toml::from_str(&rendered).expect("valid TOML");
+        assert_eq!(reparsed.named_queries, config.named_queries);
+        // Root-level keys still parse as root keys
+        assert_eq!(reparsed.default_limit, config.default_limit);
+    }
+
+    #[test]
+    fn test_config_replacing_a_named_query_is_atomic_in_memory() {
+        let mut storage = NamedQueriesStorage::default();
+        let entry = |sql: &str, scope: NamedQueryScope| NamedQuery {
+            query: sql.into(),
+            scope,
+            created_at: Utc::now(),
+            description: None,
+        };
+        let first = storage
+            .replace(None, " a::b ", entry("SELECT 1", NamedQueryScope::Global))
+            .unwrap();
+        assert_eq!(first, "global::a::b");
+        assert_eq!(
+            NamedQueriesStorage::name_in_key(&first, &NamedQueryScope::Global),
+            "a::b"
+        );
+        let created = storage.queries[&first].created_at;
+        storage
+            .replace(None, "other", entry("SELECT 2", NamedQueryScope::Global))
+            .unwrap();
+        // Collision: nothing changes
+        let error = storage
+            .replace(
+                Some(&first),
+                "other",
+                entry("SELECT 3", NamedQueryScope::Global),
+            )
+            .unwrap_err();
+        assert!(error.contains("already exists"), "{error}");
+        assert_eq!(storage.queries[&first].query, "SELECT 1");
+        // Rename + re-scope keeps the creation date
+        let scope = NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL);
+        let moved = storage
+            .replace(Some(&first), "a::b", entry("SELECT 4", scope.clone()))
+            .unwrap();
+        assert!(!storage.queries.contains_key(&first));
+        assert_eq!(storage.queries[&moved].created_at, created);
+        assert_eq!(storage.queries[&moved].scope, scope);
+        // A missing source is an error, not an insert
+        assert!(
+            storage
+                .replace(
+                    Some(&first),
+                    "x",
+                    entry("SELECT 5", NamedQueryScope::Global)
+                )
+                .is_err()
+        );
+        assert_eq!(storage.queries.len(), 2);
+    }
+
+    #[test]
+    fn test_config_dir_override_pins_every_user_file_for_the_process() {
+        // The same directory the test heuristic picks, so other tests in
+        // this process are unaffected
+        let dir = std::env::temp_dir().join(format!("dbcrust_test_{}", std::process::id()));
+        assert!(set_config_dir_override(dir.clone()));
+        assert!(
+            !set_config_dir_override(dir.join("elsewhere")),
+            "the first call wins"
+        );
+        let paths = std::thread::spawn(|| {
+            [
+                Config::get_config_directory().unwrap(),
+                Config::get_config_file_path().unwrap(),
+                Config::get_recent_connections_path().unwrap(),
+                Config::get_saved_sessions_path().unwrap(),
+                Config::get_named_queries_path().unwrap(),
+                Config::get_vault_credentials_path().unwrap(),
+                Config::get_config_dir().unwrap(),
+            ]
+        })
+        .join()
+        .unwrap();
+        for path in paths {
+            assert!(path.starts_with(&dir), "{}", path.display());
+        }
+    }
+
+    #[test]
+    fn test_config_unreadable_named_queries_file_is_never_overwritten() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("named_queries.toml");
+        let broken = "[queries.\"global::kept\"\nquery = ";
+        fs::write(&path, broken).unwrap();
+        let storage = NamedQueriesStorage::load_from(&path);
+        assert!(storage.is_unreadable());
+        assert!(storage.queries.is_empty());
+
+        // Migration keeps the legacy queries in memory and the file intact
+        let mut config = Config::default_settings();
+        config.named_queries_storage = storage.clone();
+        config
+            .named_queries
+            .insert("legacy".into(), "SELECT 1".into());
+        assert!(config.migrate_legacy_named_queries_to(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), broken);
+        assert!(config.named_queries.contains_key("legacy"));
+        // ...and so does any other save
+        let mut edited = storage;
+        edited
+            .replace(
+                None,
+                "new",
+                NamedQuery {
+                    query: "SELECT 2".into(),
+                    scope: NamedQueryScope::Global,
+                    created_at: Utc::now(),
+                    description: None,
+                },
+            )
+            .unwrap();
+        assert!(edited.save_to(&path).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), broken);
+
+        // A missing file is simply empty, and can be written
+        let missing = directory.path().join("missing.toml");
+        let fresh = NamedQueriesStorage::load_from(&missing);
+        assert!(!fresh.is_unreadable());
+        fresh.save_to(&missing).unwrap();
+    }
+
+    #[test]
+    fn test_config_inspecting_the_vault_cache_never_deletes_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("vault_credentials.enc");
+        // A valid cache, saved with token A (e.g. from a credential process)
+        let mut cache = VaultCredentialStorage::default();
+        cache.cached_credentials.insert(
+            "database/orders/reader".into(),
+            CachedVaultCredentials {
+                username: "v-reader".into(),
+                password: "secret".into(),
+                lease_id: "lease".into(),
+                lease_duration: 3600,
+                issue_time: Utc::now(),
+                expire_time: Utc::now() + chrono::Duration::hours(1),
+                renewable: true,
+                mount_path: "database".into(),
+                database_name: "orders".into(),
+                role_name: "reader".into(),
+            },
+        );
+        let plaintext = toml::to_string_pretty(&cache).unwrap();
+        let encrypted =
+            crate::vault_encryption::encrypt_data_with_token(plaintext.as_bytes(), "token-A")
+                .unwrap();
+        fs::write(&path, &encrypted).unwrap();
+
+        // Settings looks at it while token B is the one available
+        let seen = Config::inspect_vault_credential_cache_at(&path, Some("token-B"));
+        assert!(seen.is_locked());
+        assert!(seen.cached_credentials.is_empty());
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            encrypted,
+            "the cache is kept as is"
+        );
+        // ...and it is still readable with its own token
+        let readable = Config::inspect_vault_credential_cache_at(&path, Some("token-A"));
+        assert!(!readable.is_locked());
+        assert_eq!(readable.cached_credentials.len(), 1);
+
+        // No cache at all is not locked
+        let missing = Config::inspect_vault_credential_cache_at(
+            &directory.path().join("none"),
+            Some("token-B"),
+        );
+        assert!(!missing.is_locked());
+    }
+
+    #[test]
+    fn test_config_legacy_helpers_preserve_documented_settings() {
+        let mut config = Config::default_settings();
+        // The legacy helpers must touch named_queries.toml only.
+        config.add_named_query("legacy-helper", "SELECT 1").unwrap();
+        assert_eq!(
+            config.get_named_query("legacy-helper").map(String::as_str),
+            Some("SELECT 1")
+        );
+        assert!(config.named_queries.is_empty());
+        assert!(config.delete_named_query("legacy-helper").unwrap());
+        assert!(config.get_named_query("legacy-helper").is_none());
+    }
 
     // Test helper function to get a clean config for tests
     fn get_test_config() -> Config {

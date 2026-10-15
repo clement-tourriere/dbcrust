@@ -18,8 +18,8 @@ use gpui_kit::*;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// Orders saves to the same file or saved query, across tabs: each save
 /// takes a number when it is submitted, and one that runs after a newer save
@@ -49,6 +49,31 @@ fn save_in_order<E>(
     Ok(true)
 }
 
+/// The ordering identity of a saved query: its storage key, however the
+/// tab is bound to it (toolbar `Named` target or manager `KeyedQuery`), so
+/// two tabs saving the same query are ordered against each other. A legacy
+/// key saves into the global query of the same name.
+fn query_order_key(storage_key: &str) -> String {
+    let key = match storage_key.strip_prefix("legacy::") {
+        Some(name) => dbcrust_gui_core::dbcrust::config::NamedQueriesStorage::generate_key(
+            name,
+            &dbcrust_gui_core::dbcrust::config::NamedQueryScope::Global,
+        ),
+        None => storage_key.to_string(),
+    };
+    format!("query:{key}")
+}
+
+/// [`query_order_key`] of the query `name` saved for `scope` (`None`:
+/// every connection).
+fn named_order_key(name: &str, scope: Option<&DatabaseType>) -> String {
+    use dbcrust_gui_core::dbcrust::config::{NamedQueriesStorage, NamedQueryScope};
+    let scope = scope.map_or(NamedQueryScope::Global, |engine| {
+        NamedQueryScope::DatabaseType(engine.clone())
+    });
+    query_order_key(&NamedQueriesStorage::generate_key(name.trim(), &scope))
+}
+
 /// Write `text` unless a newer save to `path` already did: true when written.
 fn write_in_order(path: &Path, text: &str, sequence: u64) -> Result<bool, String> {
     save_in_order(format!("file:{}", path.display()), sequence, || {
@@ -69,18 +94,29 @@ pub(super) enum SaveTarget {
         name: String,
         scope: Option<DatabaseType>,
     },
+    /// A saved query of any scope (opened from Settings → Saved queries),
+    /// by its storage key; `scope` is its readable scope label.
+    KeyedQuery {
+        key: String,
+        name: String,
+        scope: String,
+    },
 }
 
 /// A save target and the text it held when it was last loaded or saved.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Baseline {
     target: SaveTarget,
-    text: String,
+    /// Shared with a background comparison (see `refresh_modified`).
+    text: Arc<str>,
 }
 
 impl Baseline {
     pub(super) fn new(target: SaveTarget, text: String) -> Self {
-        Self { target, text }
+        Self {
+            target,
+            text: text.into(),
+        }
     }
 
     pub(super) fn target(&self) -> &SaveTarget {
@@ -91,16 +127,27 @@ impl Baseline {
         &self.text
     }
 
+    pub(super) fn shared_text(&self) -> Arc<str> {
+        self.text.clone()
+    }
+
+    /// This baseline is the one `text` was taken from (every bind makes a
+    /// new one, even with the same text).
+    pub(super) fn holds(&self, text: &Arc<str>) -> bool {
+        Arc::ptr_eq(&self.text, text)
+    }
+
     pub(super) fn file_path(&self) -> Option<&Path> {
         match &self.target {
             SaveTarget::File(path) => Some(path),
-            SaveTarget::Named { .. } => None,
+            SaveTarget::Named { .. } | SaveTarget::KeyedQuery { .. } => None,
         }
     }
 
     pub(super) fn describe(&self) -> String {
         match &self.target {
             SaveTarget::File(path) => path.display().to_string(),
+            SaveTarget::KeyedQuery { name, scope, .. } => format!("Saved query “{name}” · {scope}"),
             SaveTarget::Named { name, scope } => format!(
                 "Saved query “{name}” · {}",
                 scope
@@ -112,6 +159,23 @@ impl Baseline {
 }
 
 impl QueryTab {
+    /// Bind a tab opened by the manager, including session-scoped queries.
+    pub fn bind_saved_query(
+        &mut self,
+        entry: dbcrust_gui_core::store::SavedQuery,
+        cx: &mut Context<Self>,
+    ) {
+        self.bind(
+            SaveTarget::KeyedQuery {
+                scope: dbcrust_gui_core::store::scope_label(&entry.scope),
+                key: entry.key,
+                name: entry.name,
+            },
+            entry.query,
+            cx,
+        );
+    }
+
     /// Ask for a `.sql` file and load it into this tab.
     pub fn open_sql_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let picked = cx.prompt_for_paths(PathPromptOptions {
@@ -200,6 +264,9 @@ impl QueryTab {
             .as_ref()
             .map(|baseline| match baseline.target() {
                 SaveTarget::File(path) => DraftTarget::File { path: path.clone() },
+                SaveTarget::KeyedQuery { key, .. } => {
+                    DraftTarget::SavedQueryKey { key: key.clone() }
+                }
                 SaveTarget::Named { name, scope } => DraftTarget::SavedQuery {
                     name: name.clone(),
                     engine: scope.clone(),
@@ -218,6 +285,24 @@ impl QueryTab {
         cx: &mut Context<Self>,
     ) {
         match target {
+            DraftTarget::SavedQueryKey { key } => {
+                let store = AppState::global(cx).read(cx).store().clone();
+                let generation = self.begin_rebind();
+                cx.spawn(async move |this, cx| {
+                    let entry = cx
+                        .background_spawn(async move { store.saved_query(&key) })
+                        .await;
+                    if let Some(entry) = entry {
+                        this.update(cx, |tab, cx| {
+                            if tab.still_current(generation) {
+                                tab.bind_saved_query(entry, cx);
+                            }
+                        })
+                        .ok();
+                    }
+                })
+                .detach();
+            }
             DraftTarget::File { path } => {
                 let read = path.clone();
                 let generation = self.begin_rebind();
@@ -267,6 +352,46 @@ impl QueryTab {
             .as_ref()
             .map(|baseline| baseline.target().clone());
         match target {
+            Some(SaveTarget::KeyedQuery { key, name, scope }) => {
+                let buffer = self.sql(cx);
+                if buffer.trim().is_empty() {
+                    return;
+                }
+                let store = AppState::global(cx).read(cx).store().clone();
+                let generation = self.begin_rebind();
+                let sequence = next_save();
+                let saved_buffer = buffer.clone();
+                let saved_key = key.clone();
+                cx.spawn_in(window, async move |this, cx| {
+                    let result = cx
+                        .background_spawn(async move {
+                            // A legacy entry moves to the global scope: its key changes
+                            let mut saved_as = saved_key.clone();
+                            save_in_order(query_order_key(&key), sequence, || {
+                                saved_as =
+                                    store.save_named_query_by_key(&saved_key, &saved_buffer)?;
+                                Ok::<_, dbcrust_gui_core::GuiError>(())
+                            })
+                            .map(|written| written.then_some(saved_as))
+                        })
+                        .await;
+                    this.update_in(cx, |tab, window, cx| match result {
+                        Ok(Some(key)) => {
+                            if tab.still_current(generation) {
+                                tab.bind(SaveTarget::KeyedQuery { key, name, scope }, buffer, cx);
+                            }
+                            AppState::global(cx).update(cx, |state, cx| state.storage_changed(cx));
+                        }
+                        Ok(None) => {}
+                        Err(error) => window.push_notification(
+                            Notification::error(error.to_string()).title("Couldn’t save query"),
+                            cx,
+                        ),
+                    })
+                    .ok();
+                })
+                .detach();
+            }
             Some(SaveTarget::File(path)) => {
                 let text = self.sql(cx);
                 self.write_file(path, text, window, cx);
@@ -498,7 +623,7 @@ impl QueryTab {
         let saved_scope = scope.clone();
         let generation = self.begin_rebind();
         let sequence = next_save();
-        let key = format!("query:{saved_scope:?}:{saved_name}");
+        let key = named_order_key(&saved_name, saved_scope.as_ref());
         let saving = cx.background_spawn(async move {
             save_in_order(key, sequence, || {
                 store.save_named_query(&saved_name, &sql, saved_scope)
@@ -621,8 +746,10 @@ fn suggested_file_name(title: &str) -> String {
 mod tests {
     // Explicit imports: see the note in `editor.rs` tests
     use super::{
-        is_default_title, read_sql_file, save_in_order, suggested_file_name, write_in_order,
+        is_default_title, named_order_key, query_order_key, read_sql_file, save_in_order,
+        suggested_file_name, write_in_order,
     };
+    use dbcrust_gui_core::DatabaseType;
     use dbcrust_gui_core::completion::leading_keyword;
     use std::path::Path;
 
@@ -761,6 +888,40 @@ mod tests {
         assert_eq!(
             save_in_order::<()>(String::from("test:failing"), 4, || Ok(())),
             Ok(true)
+        );
+    }
+
+    #[rstest::rstest]
+    #[case("daily", None, "global::daily")]
+    #[case("daily", None, "legacy::daily")]
+    #[case(" daily ", None, "global::daily")]
+    #[case("daily", Some(DatabaseType::PostgreSQL), "postgresql::daily")]
+    fn a_saved_query_has_one_ordering_identity(
+        #[case] name: &str,
+        #[case] engine: Option<DatabaseType>,
+        #[case] storage_key: &str,
+    ) {
+        // A toolbar-bound tab and a manager-bound tab save the same query
+        assert_eq!(
+            named_order_key(name, engine.as_ref()),
+            query_order_key(storage_key)
+        );
+    }
+
+    #[test]
+    fn an_older_save_from_another_tab_never_lands_last() {
+        // The manager-opened tab saved newer SQL (12) first; the toolbar
+        // tab's older save (11) of the same query must be skipped
+        let key = "global::ordering-shared";
+        assert_eq!(
+            save_in_order::<()>(query_order_key(key), 12, || Ok(())),
+            Ok(true)
+        );
+        assert_eq!(
+            save_in_order::<()>(named_order_key("ordering-shared", None), 11, || {
+                panic!("an older save must not run")
+            }),
+            Ok(false)
         );
     }
 

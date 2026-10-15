@@ -138,6 +138,9 @@ pub fn open(
                             .child(
                                 Clipboard::new(("inspect-copy", ix))
                                     .tooltip("Copy value")
+                                    // It writes the clipboard itself: a copy
+                                    // still rendering must not replace it
+                                    .on_copied(|_, _, cx| crate::clipboard::written_elsewhere(cx))
                                     .value_fn(move |_, _| {
                                         let value =
                                             copy_result.rows.get(row).and_then(|r| r.get(ix));

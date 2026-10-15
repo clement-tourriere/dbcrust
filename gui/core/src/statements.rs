@@ -23,6 +23,7 @@ use dbcrust::database::DatabaseType;
 pub use dbcrust::sql_buffer::{Boundary, SplitMode, SqlDialect, StatementSpan};
 use dbcrust::sql_buffer::{has_blank_line_separator, split_statement_spans_with};
 use std::ops::Range;
+use std::sync::Arc;
 
 /// What part of the buffer an execution covers (shown in the editor's
 /// hint bar).
@@ -95,7 +96,7 @@ pub fn dialect_of(db_type: Option<&DatabaseType>) -> SqlDialect {
 /// that hold a blank line) happens once, in [`StatementIndex::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatementIndex {
-    text: String,
+    text: Arc<str>,
     config: SplitConfig,
     spans: Vec<StatementSpan>,
     /// The buffer is one statement that holds a blank line the splitter
@@ -106,14 +107,20 @@ pub struct StatementIndex {
 
 impl StatementIndex {
     pub fn new(text: &str, config: SplitConfig) -> Self {
+        Self::from_shared(Arc::from(text), config)
+    }
+
+    /// [`Self::new`] over text the caller already owns (a snapshot of the
+    /// editor taken off the UI thread): the text is not copied again.
+    pub fn from_shared(text: Arc<str>, config: SplitConfig) -> Self {
         let spans = if config.unsplit {
             Vec::new()
         } else {
-            split_statement_spans_with(text, config.mode)
+            split_statement_spans_with(&text, config.mode)
         };
         let single_with_blank_line = matches!(spans.as_slice(), [only] if has_blank_line_separator(&text[only.range.clone()]));
         Self {
-            text: text.to_string(),
+            text,
             config,
             spans,
             single_with_blank_line,
@@ -146,47 +153,59 @@ impl StatementIndex {
     }
 
     fn execution(&self, index: usize) -> Execution {
-        let range = self.spans[index].range.clone();
-        Execution {
-            sql: self.text[range.clone()].to_string(),
-            range,
-            kind: TargetKind::Statement {
+        let (range, kind) = self.statement_target(index);
+        self.execute(range, kind)
+    }
+
+    fn statement_target(&self, index: usize) -> (Range<usize>, TargetKind) {
+        (
+            self.spans[index].range.clone(),
+            TargetKind::Statement {
                 index,
                 count: self.spans.len(),
             },
-        }
+        )
+    }
+
+    fn document_target(&self, scope: Range<usize>) -> Option<(Range<usize>, TargetKind)> {
+        let range = trim_range(&self.text, scope);
+        (!range.is_empty()).then_some((range, TargetKind::Document))
     }
 
     fn document(&self, scope: Range<usize>) -> Option<Execution> {
-        let range = trim_range(&self.text, scope);
-        (!range.is_empty()).then(|| Execution {
+        self.document_target(scope)
+            .map(|(range, kind)| self.execute(range, kind))
+    }
+
+    fn execute(&self, range: Range<usize>, kind: TargetKind) -> Execution {
+        Execution {
             sql: self.text[range.clone()].to_string(),
             range,
-            kind: TargetKind::Document,
-        })
+            kind,
+        }
     }
 
     /// What "Run" executes for `selection` (a caret is an empty range): the
     /// selection as selected, or the statement the caret belongs to. `None`
     /// for a blank buffer or a blank selection.
     pub fn resolve(&self, selection: Range<usize>) -> Option<Execution> {
+        self.target(selection)
+            .map(|(range, kind)| self.execute(range, kind))
+    }
+
+    /// The range and kind [`Self::resolve`] would execute, without copying
+    /// its text (the toolbar hint asks on every caret move).
+    pub fn target(&self, selection: Range<usize>) -> Option<(Range<usize>, TargetKind)> {
         let selection = clamp(&self.text, selection);
         if !selection.is_empty() {
             let range = trim_range(&self.text, selection);
-            if range.is_empty() {
-                return None;
-            }
-            return Some(Execution {
-                sql: self.text[range.clone()].to_string(),
-                range,
-                kind: TargetKind::Selection,
-            });
+            return (!range.is_empty()).then_some((range, TargetKind::Selection));
         }
         if self.config.unsplit {
-            return self.document(0..self.text.len());
+            return self.document_target(0..self.text.len());
         }
         self.owner(selection.start)
-            .map(|index| self.execution(index))
+            .map(|index| self.statement_target(index))
     }
 
     /// The statement the caret will run, if the buffer has more than one:
@@ -481,6 +500,35 @@ mod tests {
         assert_eq!(execution.sql, "SELECT 1;  SELECT 2");
         assert_eq!(execution.kind, TargetKind::Selection);
         assert!(index.resolve(0..2).is_none());
+    }
+
+    #[test]
+    fn target_is_what_resolve_executes() {
+        let unsplit = StatementIndex::new(
+            SCRIPT,
+            SplitConfig {
+                mode: SplitMode::Semicolons,
+                unsplit: true,
+            },
+        );
+        for index in [semicolons(SCRIPT), smart(SCRIPT), unsplit, semicolons("  ")] {
+            let len = index.text().len();
+            let selections = (0..=len)
+                .map(|caret| caret..caret)
+                .chain((0..=len).map(|end| 0..end))
+                .chain((0..=len).map(|start| start..len));
+            for selection in selections {
+                let resolved = index.resolve(selection.clone());
+                assert_eq!(
+                    index.target(selection.clone()),
+                    resolved.as_ref().map(|e| (e.range.clone(), e.kind)),
+                    "{selection:?}"
+                );
+                if let Some(execution) = resolved {
+                    assert_eq!(execution.sql, &index.text()[execution.range.clone()]);
+                }
+            }
+        }
     }
 
     #[test]

@@ -408,9 +408,7 @@ fn open_details(title: String, failure: AttemptFailure, window: &mut Window, cx:
                                     .icon(IconName::Copy)
                                     .label("Copy")
                                     .on_click(move |_, window, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            copied.clone(),
-                                        ));
+                                        crate::clipboard::write(copied.clone(), cx);
                                         window.push_notification(
                                             Notification::success("Copied the ports line"),
                                             cx,

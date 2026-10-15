@@ -83,10 +83,10 @@ With mise, Cargo builds go through [Mr Boxington](https://mr-boxington.jdx.dev/)
 The desktop app is pure Rust ([GPUI Kit](https://gpui-kit.com)), so only a Rust toolchain is required. On Linux, install the GPUI system libraries first, for example on Debian/Ubuntu: `sudo apt install libxkbcommon-x11-dev libwayland-dev libfontconfig-dev libx11-xcb-dev libvulkan1`.
 
 ```bash
-mise run gui:dev          # run the app (debug build)
-mise run gui:build        # release build → target/release/dbcrust-gui
+mise run gui:dev          # run the app (dev build, optimised dependencies)
+mise run gui:build        # optimised build → target/gui-release/dbcrust-gui
 mise run gui:install      # install dbcrust-gui into ~/.cargo/bin
-mise run gui:bundle       # macOS: target/release/bundle/DBCrust.app
+mise run gui:bundle       # macOS: target/gui-release/bundle/DBCrust.app
 
 # no mise installed: the committed wrapper
 ./bin/mise run gui:dev

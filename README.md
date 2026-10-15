@@ -222,7 +222,7 @@ A native, GPU-accelerated desktop app built with [GPUI Kit](https://gpui-kit.com
 
 ```bash
 mise run gui:dev                       # run the app
-mise run gui:build                     # release build (target/release/dbcrust-gui)
+mise run gui:build                     # optimised build (target/gui-release/dbcrust-gui)
 mise run gui:bundle                    # macOS DBCrust.app
 ```
 

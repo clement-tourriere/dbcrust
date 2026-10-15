@@ -554,7 +554,7 @@ pub(super) fn entry_menu(
         let entry = entry.clone();
         window.listener_for(view, move |this, _: &ClickEvent, window, cx| {
             let text = this.copyable_target(&entry);
-            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            crate::clipboard::write(text, cx);
             window.push_notification(Notification::success("Copied the target"), cx);
         })
     };

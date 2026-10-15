@@ -52,19 +52,19 @@ depends = ["fmt", "lint", "test", "py:lint", "py:test"]
 # ══════════════════════════════════════════════════════════════════════════════
 
 [tasks."gui:dev"]
-description = "Run the desktop app (debug build)"
-run = "cargo run -p dbcrust-gui"
+description = "Run the desktop app (debug build of the app, optimised dependencies)"
+run = "cargo run -p dbcrust-gui --profile gui-dev"
 
 [tasks."gui:build"]
-description = "Build the desktop app in release mode"
-run = "cargo build -p dbcrust-gui --release"
+description = "Build the desktop app in release mode (target/gui-release/dbcrust-gui)"
+run = "cargo build -p dbcrust-gui --profile gui-release"
 
 [tasks."gui:install"]
 description = "Install the desktop app binary (dbcrust-gui) into ~/.cargo/bin"
-run = "cargo install --path gui --bin dbcrust-gui --locked --force"
+run = "cargo install --path gui --bin dbcrust-gui --profile gui-release --locked --force"
 
 [tasks."gui:bundle"]
-description = "Build a macOS DBCrust.app bundle into target/release/bundle/"
+description = "Build a macOS DBCrust.app bundle into target/gui-release/bundle/"
 run = "bash gui/bundle/macos/bundle.sh"
 
 [tasks."gui:test"]

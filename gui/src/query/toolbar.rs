@@ -59,16 +59,14 @@ impl Density {
 
 impl QueryTab {
     pub(super) fn render_toolbar(&self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let live = self.live(cx);
+        let live = self.cached_summary.clone();
         let bound = live.is_some();
         let running = self.is_running();
         let cancelling = self.is_cancelling();
         let blank = self.is_blank(cx);
         let can_run = bound && !blank;
-        let supports_analyze = live
-            .as_ref()
-            .is_some_and(|(_, s)| s.supports_explain_analyze());
-        let db_type = live.as_ref().map(|(_, s)| s.db_type.clone());
+        let supports_analyze = live.as_ref().is_some_and(|s| s.supports_explain_analyze());
+        let db_type = live.as_ref().map(|s| s.db_type.clone());
         let view = cx.entity().downgrade();
         let density = Density::of(self.toolbar_width.get());
         let full = density == Density::Full;
@@ -258,14 +256,21 @@ impl QueryTab {
                 }
             });
 
-        // Measures the toolbar so the next frame knows which labels fit
+        // Measures the toolbar so the next frame knows which labels fit.
+        // When they change, the tab repaints right after this frame (a
+        // notify during a draw would only wait for some later frame; a
+        // window refresh would repaint every view, cached or not)
         let measured = self.toolbar_width.clone();
+        let tab = cx.entity().downgrade();
         let ruler = canvas(
-            move |bounds, window, _| {
+            move |bounds, _, cx| {
                 let before = Density::of(measured.get());
                 measured.set(bounds.size.width);
                 if Density::of(bounds.size.width) != before {
-                    window.refresh();
+                    let tab = tab.clone();
+                    cx.defer(move |cx| {
+                        tab.update(cx, |_, cx| cx.notify()).ok();
+                    });
                 }
             },
             |_, _, _, _| {},
@@ -285,10 +290,10 @@ impl QueryTab {
             .border_color(border)
             .bg(background)
             .child(ruler)
-            .child(self.connection_picker(live.as_ref().map(|(_, s)| s), view, cx))
+            .child(self.connection_picker(live.as_deref(), view, cx))
             // Which environment this runs against, in words and colour
-            .children(live.as_ref().and_then(|(_, s)| environment_chip(s.id, cx)))
-            .when(live.as_ref().is_some_and(|(_, s)| s.read_only), |this| {
+            .children(live.as_ref().and_then(|s| environment_chip(s.id, cx)))
+            .when(live.as_ref().is_some_and(|s| s.read_only), |this| {
                 this.child(read_only_chip(cx))
             })
             .child(Separator::vertical().h_4().mx_1())
@@ -503,7 +508,13 @@ fn saved_queries_menu(
             .item(PopupMenuItem::label("No saved queries yet"))
             .item(PopupMenuItem::label(
                 "Use Save to keep the current query here",
-            ));
+            ))
+            .separator()
+            .menu_with_icon(
+                "Manage saved queries…",
+                IconName::Settings,
+                Box::new(crate::actions::ManageSavedQueries),
+            );
     }
     menu = menu.item(PopupMenuItem::label(
         "Saved queries · click to insert or open",
@@ -554,7 +565,11 @@ fn saved_queries_menu(
             }),
         );
     }
-    menu
+    menu.separator().menu_with_icon(
+        "Manage saved queries…",
+        IconName::Settings,
+        Box::new(crate::actions::ManageSavedQueries),
+    )
 }
 
 fn history_menu(menu: PopupMenu, view: &WeakEntity<QueryTab>, cx: &App) -> PopupMenu {

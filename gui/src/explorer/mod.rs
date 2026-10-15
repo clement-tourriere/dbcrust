@@ -11,6 +11,8 @@
 mod dialogs;
 mod menus;
 mod rows;
+#[cfg(test)]
+mod tests;
 
 use crate::app_state::{AppEvent, AppState};
 use crate::theme;
@@ -35,6 +37,7 @@ use gpui_kit::*;
 use rows::{BuildContext, DetailKey, Row, RowKind};
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
 
 /// Every row has the same height: the list is virtualized by it.
@@ -61,6 +64,15 @@ pub struct Explorer {
     /// Table descriptions being fetched, and fetches that failed.
     loading: HashSet<DetailKey>,
     errors: HashMap<DetailKey, String>,
+    /// What `rows` were built from (see [`rows::Shape`]), and the expanded
+    /// tables still showing no columns, loading or failed.
+    shape: rows::Shape,
+    awaiting: Vec<DetailKey>,
+    /// Per-connection display facts, gathered once per render for the rows.
+    looks: HashMap<ConnectionId, Rc<ConnectionLook>>,
+    active: Option<ConnectionId>,
+    #[cfg(test)]
+    rebuilds: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -73,15 +85,16 @@ impl Explorer {
                 .clean_on_escape()
         });
         let subscriptions = vec![
+            // A description landing emits `SchemaChanged` without notifying
             cx.subscribe(&state, |this, _, event: &AppEvent, cx| match event {
-                AppEvent::SchemaChanged(_)
-                | AppEvent::Connected(_)
-                | AppEvent::Disconnected(_)
-                | AppEvent::ActiveConnectionChanged(_) => this.rebuild(cx),
+                AppEvent::SchemaChanged(_) | AppEvent::Connected(_) | AppEvent::Disconnected(_) => {
+                    this.sync_with_state(cx)
+                }
+                AppEvent::ActiveConnectionChanged(_) => cx.notify(),
                 _ => {}
             }),
             // read-only toggles, session renames, … notify without an event
-            cx.observe(&state, |this, _, cx| this.rebuild(cx)),
+            cx.observe(&state, |this, _, cx| this.sync_with_state(cx)),
             cx.subscribe_in(&filter, window, |this, input, event: &InputEvent, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.filter_text = input.read(cx).value();
@@ -99,6 +112,12 @@ impl Explorer {
             expansion: HashMap::new(),
             loading: HashSet::new(),
             errors: HashMap::new(),
+            shape: rows::Shape::default(),
+            awaiting: Vec::new(),
+            looks: HashMap::new(),
+            active: None,
+            #[cfg(test)]
+            rebuilds: 0,
             _subscriptions: subscriptions,
         };
         explorer.rebuild(cx);
@@ -112,6 +131,23 @@ impl Explorer {
 
     // ---- model ----------------------------------------------------------
 
+    /// The app state changed. Rebuilding walks every table of every
+    /// connection, so it only happens when what the rows are made of
+    /// changed; anything else (labels, read-only, the active connection, a
+    /// description fetched for completion) is a repaint.
+    fn sync_with_state(&mut self, cx: &mut Context<Self>) {
+        let stale = {
+            let state = AppState::global(cx).read(cx);
+            let connections = state.connections();
+            !self.shape.matches(connections) || rows::details_arrived(&self.awaiting, connections)
+        };
+        if stale {
+            self.rebuild(cx);
+        } else {
+            cx.notify();
+        }
+    }
+
     fn rebuild(&mut self, cx: &mut Context<Self>) {
         let state = AppState::global(cx);
         let built = {
@@ -121,9 +157,15 @@ impl Explorer {
                 expansion: &self.expansion,
                 errors: &self.errors,
             };
+            self.shape = rows::Shape::of(state.connections());
             rows::build_rows(state.connections(), &context)
         };
         self.rows = built.rows;
+        self.awaiting = built.awaiting;
+        #[cfg(test)]
+        {
+            self.rebuilds += 1;
+        }
         if let Some(selected) = &self.selected
             && !self.rows.iter().any(|row| &row.id == selected)
         {
@@ -552,22 +594,8 @@ impl Explorer {
         let focused = self.focus_handle.contains_focused(window, cx);
         let filter = self.filter_text.clone();
 
-        let (connection, active) = {
-            let state = AppState::global(cx).read(cx);
-            let active = state.active_id() == Some(row.connection);
-            let live = state.connection(row.connection);
-            (
-                live.map(|live| ConnectionLook {
-                    accent: widgets::connection_accent(live.accent, cx),
-                    db_type: live.summary.db_type.clone(),
-                    label: live.summary.label.clone(),
-                    target: live.summary.display_url.clone(),
-                    read_only: live.summary.read_only,
-                    loading: matches!(live.schema, crate::app_state::SchemaState::Loading),
-                }),
-                active,
-            )
-        };
+        let connection = self.looks.get(&row.connection).cloned();
+        let active = self.active == Some(row.connection);
         let surfaces = theme::surfaces(cx);
         let theme = cx.theme();
         let (fg, muted, danger) = (theme.sidebar_foreground, surfaces.label, theme.danger);
@@ -854,23 +882,21 @@ impl Explorer {
                             .child(highlighted(&entry.name, &filter, cx)),
                     );
                 if let Some(look) = &connection {
-                    let (connection_id, table) = (row.connection, entry.clone());
-                    let select_sql =
-                        schema::select_star_sql(&look.db_type, &table, schema::PREVIEW_ROWS);
+                    // Built on click: rows render on every scroll frame
+                    let (connection_id, db_type, table) =
+                        (row.connection, look.db_type.clone(), table.clone());
                     let query_data = Button::new(child_id(&id, "query-data"))
                         .ghost()
                         .xsmall()
                         .icon(IconName::Play)
                         .tooltip("Query data")
                         .on_click(move |_, _, cx| {
+                            let entry = table.entry();
+                            let sql =
+                                schema::select_star_sql(&db_type, entry, schema::PREVIEW_ROWS);
+                            let title = Some(entry.name.clone());
                             AppState::global(cx).update(cx, |state, cx| {
-                                state.open_query(
-                                    connection_id,
-                                    Some(table.name.clone()),
-                                    select_sql.clone(),
-                                    true,
-                                    cx,
-                                )
+                                state.open_query(connection_id, title, sql, true, cx)
                             });
                             cx.stop_propagation();
                         })
@@ -878,8 +904,8 @@ impl Explorer {
                     line = line.child(hover_actions(vec![query_data, more_button()]));
                 }
                 line = line.tooltip({
-                    let text = entry.qualified_name();
-                    move |window, cx| Tooltip::new(text.clone()).build(window, cx)
+                    let table = table.clone();
+                    move |window, cx| Tooltip::new(table.entry().qualified_name()).build(window, cx)
                 });
             }
             RowKind::Column {
@@ -1047,7 +1073,7 @@ fn highlighted(name: &str, filter: &str, cx: &App) -> AnyElement {
 }
 
 pub(crate) fn copy_text(text: String, what: &str, window: &mut Window, cx: &mut App) {
-    cx.write_to_clipboard(ClipboardItem::new_string(text));
+    crate::clipboard::write(text, cx);
     window.push_notification(Notification::success(format!("Copied {what}")), cx);
 }
 
@@ -1063,7 +1089,28 @@ impl Focusable for Explorer {
 
 impl Render for Explorer {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let has_connections = !AppState::global(cx).read(cx).connections().is_empty();
+        let (looks, active) = {
+            let state = AppState::global(cx).read(cx);
+            let looks = state
+                .connections()
+                .iter()
+                .map(|live| {
+                    let look = ConnectionLook {
+                        accent: widgets::connection_accent(live.accent, cx),
+                        db_type: live.summary.db_type.clone(),
+                        label: live.summary.label.clone(),
+                        target: live.summary.display_url.clone(),
+                        read_only: live.summary.read_only,
+                        loading: matches!(live.schema, crate::app_state::SchemaState::Loading),
+                    };
+                    (live.id(), Rc::new(look))
+                })
+                .collect();
+            (looks, state.active_id())
+        };
+        self.looks = looks;
+        self.active = active;
+        let has_connections = !self.looks.is_empty();
         let theme = cx.theme();
         let (background, foreground) = (theme.sidebar, theme.sidebar_foreground);
         let body = if has_connections {

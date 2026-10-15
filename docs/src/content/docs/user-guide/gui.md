@@ -12,10 +12,10 @@ DBCrust ships a native desktop app built with [GPUI Kit](https://gpui-kit.com) �
 The app is built from source for now. mise installs the Rust toolchain (1.85+) for you — on Linux you also need the usual GPUI system libraries (`libxkbcommon-x11`, `libwayland`, `libfontconfig`, Vulkan). Without mise installed, run the same tasks with the repository's `./bin/mise` wrapper, e.g. `./bin/mise run gui:dev`.
 
 ```bash
-mise run gui:dev        # run the app (debug build)
-mise run gui:build      # release build → target/release/dbcrust-gui
+mise run gui:dev        # run the app (dev build, optimised dependencies)
+mise run gui:build      # optimised build → target/gui-release/dbcrust-gui
 mise run gui:install    # install dbcrust-gui into ~/.cargo/bin
-mise run gui:bundle     # macOS: target/release/bundle/DBCrust.app
+mise run gui:bundle     # macOS: target/gui-release/bundle/DBCrust.app
 ```
 
 Builds run through [Mr Boxington](https://mr-boxington.jdx.dev/), so rebuilds — and builds in other worktrees and branches — restore cached crates instead of compiling them again. Without mise: `cargo run -p dbcrust-gui` from the repository root (uncached).
@@ -184,15 +184,30 @@ Press `⌘K` (`Ctrl+K`) to search every command, open connection, saved session,
 
 ![Settings](/dbcrust/screenshots/gui-settings.png)
 
-**Settings** (`⌘,`) covers:
+**Settings** (`⌘,`) covers every setting of `config.toml`, plus the data saved next to it:
 
 - **General:** keep running in the menu bar when the window is closed, hide the Dock icon meanwhile (macOS), and reopen unsaved queries at launch.
 - **Appearance:** System, Light or Dark (follows the OS by default), interface size, and bundled color themes — Catppuccin, Tokyo Night, Gruvbox and Solarized.
-- **Queries:** default row limit and query timeout, shared with the CLI (the timeout applies immediately), the editor font size, and statement separators (`;` and blank lines between `SELECT` queries, or `;` only).
-- **Connections:** connection-related DBCrust settings.
-- **Files:** where every storage file lives, with a button to reveal it.
+- **Queries:** default row limit, query timeout (applies immediately) and schema timeout, shared with the CLI; the editor font size; statement separators (`;` and blank lines between `SELECT` queries, or `;` only).
+- **Saved queries:** every saved query, in every scope (see below).
+- **Connections:** open new connections read-only, how many recent connections to keep, **Clear recent connections…**, and a link to the Connections page, where saved connections are managed.
+- **SSH tunnels:** host patterns and their SSH servers (see below).
+- **Vault:** credential caching and the credential process, and what the encrypted cache holds — mount, database, role and expiry, never a secret — with **Clear cached credentials…**.
+- **Results display:** how vectors, JSON, arrays and other complex values are formatted.
+- **AI assistant**, **Terminal (CLI)** and **Logging:** settings of the `dbcrust` command line (AI assistant, prompt, pager, EXPLAIN mode, history, log files). Settings read when a session starts say so.
+- **Files:** where every storage file lives, **Reload from disk** after editing them by hand or with the CLI, and **Open config.toml** in your editor.
 
-DBCrust settings are written to `config.toml` with its documentation comments preserved. Desktop-only state (theme, sidebar, drafts) lives in `gui_state.toml` next to it.
+Changes apply as you make them and are written to `config.toml` a moment later, with its documentation comments preserved. Desktop-only state (theme, sidebar, drafts) lives in `gui_state.toml` next to it.
+
+### Saved queries
+
+The **Saved queries** page lists global, per-engine and per-session queries together. Search names, SQL and descriptions, filter by scope, and edit a query's name, scope, description and SQL (with highlighting, and the parameters it takes: `$1`, `$2`, `$*`, `$@`). **Save changes** (`⌘S`) refuses to overwrite another query of the same name and scope; renaming keeps the creation date. **Open in new tab** opens the SQL in a query tab that saves back to the query, **Duplicate** starts a copy, and **Delete…** asks first. Reach the page from **Manage saved queries…** in the command palette or at the bottom of a query tab's saved queries menu.
+
+Saved queries are stored in `named_queries.toml`. Unscoped queries from an older `config.toml` move there as global queries the next time DBCrust starts.
+
+### SSH tunnels
+
+A pattern is a regular expression matched against a database host; a connection to a matching host goes through the pattern's SSH server (`[user[:password]@]host[:port]`). A target in backticks runs a command when connecting — the app never runs it while you edit or test. Passwords are masked in the list but stored in plain text in `config.toml`: prefer SSH keys or an agent. **Test a host** shows which pattern a hostname matches without connecting; if several match, only one is used and which one is not predictable, so keep patterns from overlapping.
 
 ![The app in light mode](/dbcrust/screenshots/gui-query-light.png)
 

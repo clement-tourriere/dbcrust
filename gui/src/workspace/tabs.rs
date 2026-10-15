@@ -221,12 +221,37 @@ impl WorkspaceTab {
         }
     }
 
+    /// Table inspectors are cached views: they render again when they (or
+    /// a view inside them) notify, not on every repaint of the workspace (a
+    /// status bar tick, a tab hover, a caret move in the status line).
+    ///
+    /// Query tabs are not cached themselves: they embed their editor and
+    /// their results as cached views, and a cached view that renders again
+    /// renders everything inside it (GPUI's `prepaint_view` sets
+    /// `window.refreshing` for its subtree), so a cached tab would repaint
+    /// its results and their grid on every caret blink. Uncached, the tab's
+    /// own render is the toolbar and the split; the editor and the results
+    /// repaint only when they change.
+    ///
+    /// What these views read from elsewhere reaches them through
+    /// [`WorkspaceTab::notify_content`].
     pub fn content(&self) -> AnyElement {
+        let fill = || StyleRefinement::default().size_full();
         match &self.kind {
             TabKind::Home(view) => view.clone().into_any_element(),
             TabKind::Query(view) => view.clone().into_any_element(),
-            TabKind::Table(view) => view.clone().into_any_element(),
+            TabKind::Table(view) => view.clone().cached(fill()).into_any_element(),
             TabKind::Settings(view) => view.clone().into_any_element(),
+        }
+    }
+
+    /// Something a tab's cached views may show changed outside of them (the
+    /// app state, preferences): render them again.
+    pub fn notify_content(&self, cx: &mut App) {
+        match &self.kind {
+            TabKind::Query(view) => view.update(cx, |tab, cx| tab.notify_views(cx)),
+            TabKind::Table(view) => view.update(cx, |_, cx| cx.notify()),
+            TabKind::Home(_) | TabKind::Settings(_) => {}
         }
     }
 

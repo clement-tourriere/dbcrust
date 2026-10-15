@@ -1,12 +1,13 @@
 //! The inspector's tabs: columns, indexes, constraints, references, data
 //! preview and DDL.
 
-use super::model::{ColumnLine, Described};
+use super::model::{ColumnLine, Described, ForeignKeyLine, ReferenceLine};
 use super::{CountState, DataState, Section, TableInspector};
 use crate::app_state::AppState;
 use crate::explorer::copy_text;
 use crate::theme::{self, Surfaces};
-use dbcrust_gui_core::schema::{self, ColumnOutline};
+use dbcrust_gui_core::dbcrust::db::CheckConstraintInfo;
+use dbcrust_gui_core::schema::{self, ColumnOutline, IndexOutline};
 use dbcrust_gui_core::{ConnectionId, DatabaseType, TableEntry};
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -546,82 +547,21 @@ impl TableInspector {
                 cx,
             );
         }
-        let theme = cx.theme();
-        let (muted, border, warning, info, mono) = (
-            theme.muted_foreground,
-            theme.border,
-            theme.warning,
-            theme.info,
-            theme.mono_font_family.clone(),
-        );
-        let rows = described.indexes.iter().map(|index| {
-            let id: SharedString = format!("index:{}", index.name).into();
-            let (kind, color) = if index.primary {
-                ("PRIMARY KEY".to_string(), warning)
-            } else if index.unique {
-                ("UNIQUE".to_string(), info)
-            } else {
-                (index.method.to_uppercase(), muted)
-            };
-            let copy_text_value = index
-                .statement
-                .clone()
-                .unwrap_or_else(|| format!("({})", index.columns.join(", ")));
-            let tooltip = index.statement.clone();
-            h_flex()
-                .id(id.clone())
-                .min_h(px(ROW_HEIGHT))
-                .px_4()
-                .py_1()
-                .gap_0()
-                .text_size(px(12.))
-                .border_b_1()
-                .border_color(border.opacity(0.5))
-                .hover(|style| style.bg(muted.opacity(0.06)))
-                .child(
-                    body_cell(Some(NAME_WIDTH + 40.))
-                        .font_family(mono.clone())
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(index.name.clone()),
-                )
-                .child(body_cell(Some(TYPE_WIDTH)).child(h_flex().child(chip(kind, color, cx))))
-                .child(
-                    body_cell(Some(NAME_WIDTH + 40.))
-                        .font_family(mono.clone())
-                        .child(index.columns.join(", ")),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .px_2()
-                        .truncate()
-                        .font_family(mono.clone())
-                        .text_size(px(12.))
-                        .text_color(muted)
-                        .child(match (&index.statement, &index.predicate) {
-                            (Some(statement), _) => statement.clone(),
-                            (None, Some(predicate)) => format!("WHERE {predicate}"),
-                            (None, None) => String::new(),
-                        })
-                        .id(SharedString::from(format!("{id}/definition")))
-                        .when_some(tooltip, |this, text| {
-                            this.tooltip(move |window, cx| {
-                                Tooltip::new(text.clone()).build(window, cx)
-                            })
-                        }),
-                )
-                .child(
-                    Button::new(SharedString::from(format!("{id}/copy")))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Copy)
-                        .tooltip("Copy definition")
-                        .on_click(move |_, window, cx| {
-                            copy_text(copy_text_value.clone(), "index definition", window, cx)
-                        }),
-                )
-        });
+        // Virtualized: only the rows on screen are built
+        let rows = {
+            let described = described.clone();
+            uniform_list(
+                "inspector-index-rows",
+                described.indexes.len(),
+                cx.processor(move |_, range: Range<usize>, _, cx| {
+                    range
+                        .map(|ix| index_row(&described.indexes[ix], cx))
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.indexes_scroll)
+            .size_full()
+        };
         v_flex()
             .size_full()
             .child(header_row(
@@ -634,12 +574,13 @@ impl TableInspector {
                 cx,
             ))
             .child(
-                v_flex()
+                div()
                     .id("inspector-indexes")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
-                    .children(rows),
+                    .relative()
+                    .child(rows)
+                    .vertical_scrollbar(&self.indexes_scroll),
             )
             .into_any_element()
     }
@@ -660,133 +601,115 @@ impl TableInspector {
                 cx,
             );
         }
+        // Virtualized (rows of two heights: the group titles are lower)
+        let count = ConstraintRow::count(described);
+        if self.constraints_list.item_count() != count {
+            self.constraints_list.reset(count);
+        }
+        let described = described.clone();
+        div()
+            .id("inspector-constraints")
+            .size_full()
+            .relative()
+            .child(
+                list(
+                    self.constraints_list.clone(),
+                    cx.processor(
+                        move |this, ix, _, cx| match ConstraintRow::at(&described, ix) {
+                            Some(ConstraintRow::ForeignKeys) => {
+                                group_title("Foreign keys", described.foreign_keys.len(), cx)
+                                    .into_any_element()
+                            }
+                            Some(ConstraintRow::ForeignKey(fk)) => this
+                                .foreign_key_row(&described.foreign_keys[fk], cx)
+                                .into_any_element(),
+                            Some(ConstraintRow::Checks) => group_title(
+                                "Check constraints",
+                                described.details.check_constraints.len(),
+                                cx,
+                            )
+                            .into_any_element(),
+                            Some(ConstraintRow::Check(check)) => {
+                                check_row(&described.details.check_constraints[check], cx)
+                                    .into_any_element()
+                            }
+                            None => div().into_any_element(),
+                        },
+                    ),
+                )
+                .size_full(),
+            )
+            .vertical_scrollbar(&self.constraints_list)
+            .into_any_element()
+    }
+
+    fn foreign_key_row(&self, fk: &ForeignKeyLine, cx: &App) -> impl IntoElement + use<> {
         let theme = cx.theme();
         let (muted, border, mono) = (
             theme.muted_foreground,
             theme.border,
             theme.mono_font_family.clone(),
         );
-        let connection = self.connection;
-        let db_type = self.db_type.clone();
-
-        let foreign_keys = described.foreign_keys.iter().map(|fk| {
-            let id: SharedString = format!("fk:{}", fk.name).into();
-            let (mapping, target_entry) = match &fk.parsed {
-                Some(parsed) => (
-                    parsed.columns.join(", "),
-                    self.find_table(&db_type, &parsed.target, cx),
-                ),
-                None => (String::new(), None),
-            };
-            let target_label = fk
-                .parsed
-                .as_ref()
-                .map(|parsed| format!("{}({})", parsed.target, parsed.target_columns.join(", ")))
-                .unwrap_or_else(|| fk.definition.clone());
-            let actions = fk
-                .parsed
-                .as_ref()
-                .map(|parsed| parsed.actions.clone())
-                .unwrap_or_default();
-            h_flex()
-                .id(id.clone())
-                .min_h(px(ROW_HEIGHT))
-                .px_4()
-                .py_1()
-                .text_size(px(12.))
-                .border_b_1()
-                .border_color(border.opacity(0.5))
-                .child(
-                    body_cell(Some(NAME_WIDTH + 40.))
-                        .font_family(mono.clone())
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(fk.name.clone()),
-                )
-                .child(
-                    body_cell(Some(TYPE_WIDTH + 40.))
-                        .font_family(mono.clone())
-                        .child(mapping),
-                )
-                .child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .px_2()
-                        .gap_2()
-                        .child(arrow(muted))
-                        .child(table_link(
-                            SharedString::from(format!("{id}/target")),
-                            target_label,
-                            target_entry,
-                            connection,
-                            mono.clone(),
-                            cx,
-                        ))
-                        .child(
-                            div()
-                                .text_size(px(11.))
-                                .text_color(muted)
-                                .truncate()
-                                .child(actions),
-                        ),
-                )
-        });
-
-        let checks = details.check_constraints.iter().map(|check| {
-            let id: SharedString = format!("check:{}", check.name).into();
-            let expression = check.definition.trim().to_string();
-            h_flex()
-                .id(id.clone())
-                .min_h(px(ROW_HEIGHT))
-                .px_4()
-                .py_1()
-                .text_size(px(12.))
-                .border_b_1()
-                .border_color(border.opacity(0.5))
-                .child(
-                    body_cell(Some(NAME_WIDTH + 40.))
-                        .font_family(mono.clone())
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(check.name.clone()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .px_2()
-                        .font_family(mono.clone())
-                        .text_size(px(12.))
-                        .text_color(muted)
-                        .truncate()
-                        .child(expression.clone())
-                        .id(SharedString::from(format!("{id}/expression")))
-                        .tooltip(move |window, cx| {
-                            Tooltip::new(expression.clone()).build(window, cx)
-                        }),
-                )
-        });
-
-        v_flex()
-            .id("inspector-constraints")
-            .size_full()
-            .overflow_y_scrollbar()
-            .when(!described.foreign_keys.is_empty(), |this| {
-                this.child(group_title(
-                    "Foreign keys",
-                    described.foreign_keys.len(),
-                    cx,
-                ))
-                .children(foreign_keys)
-            })
-            .when(!details.check_constraints.is_empty(), |this| {
-                this.child(group_title(
-                    "Check constraints",
-                    details.check_constraints.len(),
-                    cx,
-                ))
-                .children(checks)
-            })
-            .into_any_element()
+        let id: SharedString = format!("fk:{}", fk.name).into();
+        let (mapping, target_entry) = match &fk.parsed {
+            Some(parsed) => (
+                parsed.columns.join(", "),
+                self.find_table(&self.db_type, &parsed.target, cx),
+            ),
+            None => (String::new(), None),
+        };
+        let target_label = fk
+            .parsed
+            .as_ref()
+            .map(|parsed| format!("{}({})", parsed.target, parsed.target_columns.join(", ")))
+            .unwrap_or_else(|| fk.definition.clone());
+        let actions = fk
+            .parsed
+            .as_ref()
+            .map(|parsed| parsed.actions.clone())
+            .unwrap_or_default();
+        h_flex()
+            .id(id.clone())
+            .min_h(px(ROW_HEIGHT))
+            .px_4()
+            .py_1()
+            .text_size(px(12.))
+            .border_b_1()
+            .border_color(border.opacity(0.5))
+            .child(
+                body_cell(Some(NAME_WIDTH + 40.))
+                    .font_family(mono.clone())
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(fk.name.clone()),
+            )
+            .child(
+                body_cell(Some(TYPE_WIDTH + 40.))
+                    .font_family(mono.clone())
+                    .child(mapping),
+            )
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .px_2()
+                    .gap_2()
+                    .child(arrow(muted))
+                    .child(table_link(
+                        SharedString::from(format!("{id}/target")),
+                        target_label,
+                        target_entry,
+                        self.connection,
+                        mono.clone(),
+                        cx,
+                    ))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(muted)
+                            .truncate()
+                            .child(actions),
+                    ),
+            )
     }
 
     // ---- referenced by --------------------------------------------------
@@ -804,73 +727,21 @@ impl TableInspector {
             };
             return empty_state(IconName::Inbox, "No references found", hint, cx);
         }
-        let theme = cx.theme();
-        let (muted, border, mono) = (
-            theme.muted_foreground,
-            theme.border,
-            theme.mono_font_family.clone(),
-        );
-        let connection = self.connection;
-        let db_type = self.db_type.clone();
-        let this_name = self.table.name.clone();
-
-        let rows = described.references.iter().map(|reference| {
-            let id: SharedString =
-                format!("ref:{}:{}", reference.table, reference.constraint).into();
-            let entry = self.find_table_in(&db_type, reference, cx);
-            let mapping = reference
-                .parsed
-                .as_ref()
-                .map(|parsed| {
-                    format!(
-                        "{}.{} → {}.{}",
-                        reference.name,
-                        parsed.columns.join(", "),
-                        this_name,
-                        parsed.target_columns.join(", ")
-                    )
-                })
-                .unwrap_or_else(|| reference.definition.clone());
-            h_flex()
-                .id(id.clone())
-                .min_h(px(ROW_HEIGHT))
-                .px_4()
-                .py_1()
-                .text_size(px(12.))
-                .border_b_1()
-                .border_color(border.opacity(0.5))
-                .child(
-                    h_flex()
-                        .flex_none()
-                        .w(px(NAME_WIDTH + 40.))
-                        .px_2()
-                        .child(table_link(
-                            SharedString::from(format!("{id}/table")),
-                            reference.table.clone(),
-                            entry,
-                            connection,
-                            mono.clone(),
-                            cx,
-                        )),
-                )
-                .child(
-                    body_cell(Some(TYPE_WIDTH + 40.))
-                        .font_family(mono.clone())
-                        .text_color(muted)
-                        .child(reference.constraint.clone()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .px_2()
-                        .truncate()
-                        .font_family(mono.clone())
-                        .text_size(px(12.))
-                        .child(mapping),
-                )
-        });
-
+        // Virtualized: a table many others point at lists them all
+        let rows = {
+            let described = described.clone();
+            uniform_list(
+                "inspector-reference-rows",
+                described.references.len(),
+                cx.processor(move |this, range: Range<usize>, _, cx| {
+                    range
+                        .map(|ix| this.reference_row(&described.references[ix], cx))
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.references_scroll)
+            .size_full()
+        };
         v_flex()
             .size_full()
             .child(header_row(
@@ -882,14 +753,77 @@ impl TableInspector {
                 cx,
             ))
             .child(
-                v_flex()
+                div()
                     .id("inspector-references")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
-                    .children(rows),
+                    .relative()
+                    .child(rows)
+                    .vertical_scrollbar(&self.references_scroll),
             )
             .into_any_element()
+    }
+
+    fn reference_row(&self, reference: &ReferenceLine, cx: &App) -> Stateful<Div> {
+        let theme = cx.theme();
+        let (muted, border, mono) = (
+            theme.muted_foreground,
+            theme.border,
+            theme.mono_font_family.clone(),
+        );
+        let id: SharedString = format!("ref:{}:{}", reference.table, reference.constraint).into();
+        let entry = self.find_table_in(&self.db_type, reference, cx);
+        let mapping = reference
+            .parsed
+            .as_ref()
+            .map(|parsed| {
+                format!(
+                    "{}.{} → {}.{}",
+                    reference.name,
+                    parsed.columns.join(", "),
+                    self.table.name,
+                    parsed.target_columns.join(", ")
+                )
+            })
+            .unwrap_or_else(|| reference.definition.clone());
+        h_flex()
+            .id(id.clone())
+            .min_h(px(ROW_HEIGHT))
+            .px_4()
+            .py_1()
+            .text_size(px(12.))
+            .border_b_1()
+            .border_color(border.opacity(0.5))
+            .child(
+                h_flex()
+                    .flex_none()
+                    .w(px(NAME_WIDTH + 40.))
+                    .px_2()
+                    .child(table_link(
+                        SharedString::from(format!("{id}/table")),
+                        reference.table.clone(),
+                        entry,
+                        self.connection,
+                        mono.clone(),
+                        cx,
+                    )),
+            )
+            .child(
+                body_cell(Some(TYPE_WIDTH + 40.))
+                    .font_family(mono.clone())
+                    .text_color(muted)
+                    .child(reference.constraint.clone()),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px_2()
+                    .truncate()
+                    .font_family(mono)
+                    .text_size(px(12.))
+                    .child(mapping),
+            )
     }
 
     // ---- data -----------------------------------------------------------
@@ -1038,31 +972,210 @@ impl TableInspector {
         target: &str,
         cx: &App,
     ) -> Option<TableEntry> {
-        let state = AppState::global(cx);
-        let state = state.read(cx);
-        let tables = state.connection(self.connection)?.schema.tables()?;
-        schema::find_table(db_type, tables, target, self.table.schema.as_deref()).cloned()
+        self.with_tables(cx, |tables| {
+            tables
+                .find(db_type, target, self.table.schema.as_deref())
+                .cloned()
+        })
     }
 
     fn find_table_in(
         &self,
         db_type: &DatabaseType,
-        reference: &super::model::ReferenceLine,
+        reference: &ReferenceLine,
         cx: &App,
     ) -> Option<TableEntry> {
-        let state = AppState::global(cx);
-        let state = state.read(cx);
-        let tables = state.connection(self.connection)?.schema.tables()?;
         let qualified = if reference.schema.is_empty() {
             reference.name.clone()
         } else {
             format!("\"{}\".\"{}\"", reference.schema, reference.name)
         };
-        schema::find_table(db_type, tables, &qualified, None).cloned()
+        self.with_tables(cx, |tables| tables.find(db_type, &qualified, None).cloned())
+    }
+
+    /// The connection's tables, indexed by name: the links of every frame
+    /// look them up instead of scanning the whole list. The index follows
+    /// the connection's current snapshot (a schema refresh replaces it).
+    fn with_tables<R>(
+        &self,
+        cx: &App,
+        find: impl FnOnce(&schema::TableLookup) -> Option<R>,
+    ) -> Option<R> {
+        let state = AppState::global(cx);
+        let tables = state
+            .read(cx)
+            .connection(self.connection)?
+            .schema
+            .tables()?;
+        let mut lookup = self.table_lookup.borrow_mut();
+        if !lookup.as_ref().is_some_and(|lookup| lookup.is_for(tables)) {
+            *lookup = Some(schema::TableLookup::new(tables.clone()));
+        }
+        lookup.as_ref().and_then(find)
     }
 }
 
 // ---- row and cell builders ----------------------------------------------
+
+/// A row of the Constraints tab: the foreign keys, then the checks, each
+/// group under its title (a group without rows has none).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConstraintRow {
+    ForeignKeys,
+    ForeignKey(usize),
+    Checks,
+    Check(usize),
+}
+
+impl ConstraintRow {
+    fn count(described: &Described) -> usize {
+        let group = |rows: usize| if rows == 0 { 0 } else { rows + 1 };
+        group(described.foreign_keys.len()) + group(described.details.check_constraints.len())
+    }
+
+    fn at(described: &Described, ix: usize) -> Option<Self> {
+        Self::locate(
+            described.foreign_keys.len(),
+            described.details.check_constraints.len(),
+            ix,
+        )
+    }
+
+    fn locate(foreign_keys: usize, checks: usize, ix: usize) -> Option<Self> {
+        let mut ix = ix;
+        if foreign_keys > 0 {
+            if ix == 0 {
+                return Some(Self::ForeignKeys);
+            }
+            if ix <= foreign_keys {
+                return Some(Self::ForeignKey(ix - 1));
+            }
+            ix -= foreign_keys + 1;
+        }
+        if checks > 0 {
+            if ix == 0 {
+                return Some(Self::Checks);
+            }
+            if ix <= checks {
+                return Some(Self::Check(ix - 1));
+            }
+        }
+        None
+    }
+}
+
+fn index_row(index: &IndexOutline, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    let (muted, border, warning, info, mono) = (
+        theme.muted_foreground,
+        theme.border,
+        theme.warning,
+        theme.info,
+        theme.mono_font_family.clone(),
+    );
+    let id: SharedString = format!("index:{}", index.name).into();
+    let (kind, color) = if index.primary {
+        ("PRIMARY KEY".to_string(), warning)
+    } else if index.unique {
+        ("UNIQUE".to_string(), info)
+    } else {
+        (index.method.to_uppercase(), muted)
+    };
+    let copy_text_value = index
+        .statement
+        .clone()
+        .unwrap_or_else(|| format!("({})", index.columns.join(", ")));
+    let tooltip = index.statement.clone();
+    h_flex()
+        .id(id.clone())
+        .min_h(px(ROW_HEIGHT))
+        .px_4()
+        .py_1()
+        .gap_0()
+        .text_size(px(12.))
+        .border_b_1()
+        .border_color(border.opacity(0.5))
+        .hover(|style| style.bg(muted.opacity(0.06)))
+        .child(
+            body_cell(Some(NAME_WIDTH + 40.))
+                .font_family(mono.clone())
+                .font_weight(FontWeight::MEDIUM)
+                .child(index.name.clone()),
+        )
+        .child(body_cell(Some(TYPE_WIDTH)).child(h_flex().child(chip(kind, color, cx))))
+        .child(
+            body_cell(Some(NAME_WIDTH + 40.))
+                .font_family(mono.clone())
+                .child(index.columns.join(", ")),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .px_2()
+                .truncate()
+                .font_family(mono.clone())
+                .text_size(px(12.))
+                .text_color(muted)
+                .child(match (&index.statement, &index.predicate) {
+                    (Some(statement), _) => statement.clone(),
+                    (None, Some(predicate)) => format!("WHERE {predicate}"),
+                    (None, None) => String::new(),
+                })
+                .id(SharedString::from(format!("{id}/definition")))
+                .when_some(tooltip, |this, text| {
+                    this.tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
+                }),
+        )
+        .child(
+            Button::new(SharedString::from(format!("{id}/copy")))
+                .ghost()
+                .xsmall()
+                .icon(IconName::Copy)
+                .tooltip("Copy definition")
+                .on_click(move |_, window, cx| {
+                    copy_text(copy_text_value.clone(), "index definition", window, cx)
+                }),
+        )
+}
+
+fn check_row(check: &CheckConstraintInfo, cx: &App) -> Stateful<Div> {
+    let theme = cx.theme();
+    let (muted, border, mono) = (
+        theme.muted_foreground,
+        theme.border,
+        theme.mono_font_family.clone(),
+    );
+    let id: SharedString = format!("check:{}", check.name).into();
+    let expression = check.definition.trim().to_string();
+    h_flex()
+        .id(id.clone())
+        .min_h(px(ROW_HEIGHT))
+        .px_4()
+        .py_1()
+        .text_size(px(12.))
+        .border_b_1()
+        .border_color(border.opacity(0.5))
+        .child(
+            body_cell(Some(NAME_WIDTH + 40.))
+                .font_family(mono.clone())
+                .font_weight(FontWeight::MEDIUM)
+                .child(check.name.clone()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .px_2()
+                .font_family(mono)
+                .text_size(px(12.))
+                .text_color(muted)
+                .truncate()
+                .child(expression.clone())
+                .id(SharedString::from(format!("{id}/expression")))
+                .tooltip(move |window, cx| Tooltip::new(expression.clone()).build(window, cx)),
+        )
+}
 
 fn header_row(cells: &[(&'static str, Option<f32>)], cx: &App) -> impl IntoElement + use<> {
     let theme = cx.theme();
@@ -1399,4 +1512,44 @@ fn pill(text: String, cx: &App) -> Div {
         .font_family(theme.mono_font_family.clone())
         .text_size(px(11.))
         .child(text)
+}
+
+#[cfg(test)]
+mod tests {
+    // GPUI's `test` macro (glob-imported through `super::*`) would shadow
+    // the built-in `#[test]`
+    use std::prelude::v1::test;
+
+    use super::ConstraintRow::{self, *};
+
+    fn rows(foreign_keys: usize, checks: usize) -> Vec<Option<ConstraintRow>> {
+        (0..foreign_keys + checks + 3)
+            .map(|ix| ConstraintRow::locate(foreign_keys, checks, ix))
+            .collect()
+    }
+
+    #[test]
+    fn constraint_rows_are_each_group_under_its_title() {
+        assert_eq!(
+            rows(2, 1),
+            [
+                Some(ForeignKeys),
+                Some(ForeignKey(0)),
+                Some(ForeignKey(1)),
+                Some(Checks),
+                Some(Check(0)),
+                None
+            ]
+        );
+        // A group without rows has no title
+        assert_eq!(
+            rows(0, 2),
+            [Some(Checks), Some(Check(0)), Some(Check(1)), None, None]
+        );
+        assert_eq!(
+            rows(1, 0),
+            [Some(ForeignKeys), Some(ForeignKey(0)), None, None]
+        );
+        assert_eq!(rows(0, 0), [None, None, None]);
+    }
 }

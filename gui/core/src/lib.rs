@@ -25,6 +25,8 @@ pub mod schema;
 pub mod sql_format;
 pub mod statements;
 pub mod store;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod types;
 pub mod url_builder;
 pub mod vault;

@@ -334,11 +334,19 @@ fn is_table_modifier(up: &str) -> bool {
 /// statement still belongs to it, completion must not offer the previous
 /// query's tables and aliases to the next one.
 pub fn statement_scope(text: &str, caret: usize, config: SplitConfig) -> Range<usize> {
-    let caret = floor_boundary(text, caret);
     if config.unsplit {
         return 0..text.len();
     }
-    let index = StatementIndex::new(text, config);
+    scope_in(&StatementIndex::new(text, config), caret)
+}
+
+/// [`statement_scope`] in a document already split.
+fn scope_in(index: &StatementIndex, caret: usize) -> Range<usize> {
+    let text = index.text();
+    let caret = floor_boundary(text, caret);
+    if index.config().unsplit {
+        return 0..text.len();
+    }
     let previous = index
         .statements()
         .iter()
@@ -446,10 +454,31 @@ pub fn analyze_with(
     db_type: Option<&DatabaseType>,
     separators: StatementSeparators,
 ) -> Option<Plan> {
+    let index = StatementIndex::new(text, completion_split(separators, db_type));
+    analyze_indexed(&index, caret, db_type)
+}
+
+/// How completion splits the buffer of an engine: like running it (MongoDB
+/// input is one unit).
+pub fn completion_split(
+    separators: StatementSeparators,
+    db_type: Option<&DatabaseType>,
+) -> SplitConfig {
+    let unsplit = matches!(db_type, Some(DatabaseType::MongoDB));
+    SplitConfig::new(separators, db_type, unsplit)
+}
+
+/// [`analyze_with`] over a document already split into statements (the
+/// split must follow the engine: see [`completion_split`]).
+pub fn analyze_indexed(
+    index: &StatementIndex,
+    caret: usize,
+    db_type: Option<&DatabaseType>,
+) -> Option<Plan> {
+    let text = index.text();
     let caret = floor_boundary(text, caret);
     let dialect = Dialect::of(db_type);
-    let unsplit = matches!(db_type, Some(DatabaseType::MongoDB));
-    let scope = statement_scope(text, caret, SplitConfig::new(separators, db_type, unsplit));
+    let scope = scope_in(index, caret);
     // A gap holds no statement (comment-only text, or text after a `;`): the
     // scope is empty and only the whole text shows that the caret is inside
     // a comment or a string
@@ -1105,20 +1134,69 @@ enum Tier {
 
 /// How well `prefix` matches `label` (case-insensitive); `None` = no match.
 /// The second value orders matches within a tier (higher is better).
+#[cfg(test)]
 fn match_label(prefix: &str, label: &str) -> Option<(Tier, i32)> {
     if prefix.is_empty() {
         return Some((Tier::Prefix, 0));
     }
     let p: Vec<char> = prefix.chars().flat_map(char::to_lowercase).collect();
-    let l: Vec<char> = label.chars().flat_map(char::to_lowercase).collect();
-    if l == p {
+    match_prepared(&p, &PreparedName::new(label))
+}
+
+/// A label as [`match_prepared`] reads it: case-folded, and as written (for
+/// word boundaries).
+#[derive(Debug)]
+struct PreparedName {
+    lower: Vec<char>,
+    original: Vec<char>,
+}
+
+impl PreparedName {
+    fn new(label: &str) -> Self {
+        Self {
+            lower: label.chars().flat_map(char::to_lowercase).collect(),
+            original: label.chars().collect(),
+        }
+    }
+}
+
+/// The table labels of one schema snapshot, prepared once for matching.
+/// Completion requests of the same snapshot share it, so a keystroke does
+/// not case-fold thousands of names again. Labels not found here (columns,
+/// keywords, CTEs) are prepared on the fly: results are identical either way.
+#[derive(Debug, Default)]
+pub struct CompletionNames(HashMap<String, PreparedName>);
+
+impl CompletionNames {
+    /// Prepare the bare and the schema-qualified label of every table.
+    pub fn new(tables: &[TableEntry]) -> Self {
+        let mut names = HashMap::with_capacity(tables.len() * 2);
+        for table in tables {
+            for name in [table.name.clone(), table.qualified_name()] {
+                if let std::collections::hash_map::Entry::Vacant(slot) = names.entry(name) {
+                    let prepared = PreparedName::new(slot.key());
+                    slot.insert(prepared);
+                }
+            }
+        }
+        Self(names)
+    }
+}
+
+/// [`match_label`] over a case-folded prefix and a prepared label.
+fn match_prepared(p: &[char], name: &PreparedName) -> Option<(Tier, i32)> {
+    if p.is_empty() {
+        return Some((Tier::Prefix, 0));
+    }
+    let l = &name.lower;
+    if l.as_slice() == p {
         return Some((Tier::Exact, 0));
     }
-    if l.starts_with(&p) {
+    if l.starts_with(p) {
         return Some((Tier::Prefix, -((l.len() - p.len()) as i32)));
     }
     // Word-boundary: the prefix starts a word inside the label
-    let original: Vec<char> = label.chars().collect();
+    let original = &name.original;
     if original.len() == l.len() {
         for ix in 1..original.len() {
             let before = original[ix - 1];
@@ -1126,7 +1204,7 @@ fn match_label(prefix: &str, label: &str) -> Option<(Tier, i32)> {
             let boundary = !before.is_alphanumeric()
                 || (before.is_lowercase() && here.is_uppercase())
                 || (before.is_alphabetic() != here.is_alphabetic());
-            if boundary && l[ix..].starts_with(&p) {
+            if boundary && l[ix..].starts_with(p) {
                 return Some((
                     Tier::Boundary,
                     -(ix as i32) * 4 - (l.len() - p.len()) as i32,
@@ -1138,7 +1216,7 @@ fn match_label(prefix: &str, label: &str) -> Option<(Tier, i32)> {
     let mut wanted = p.iter().peekable();
     let mut gaps = 0i32;
     let mut run_started = false;
-    for c in &l {
+    for c in l {
         match wanted.peek() {
             Some(next) if *next == c => {
                 wanted.next();
@@ -1194,6 +1272,8 @@ struct Entry {
 
 struct Collector<'a> {
     prefix: &'a str,
+    folded_prefix: Vec<char>,
+    names: Option<&'a CompletionNames>,
     context: &'a Context,
     existing: &'a str,
     /// The word already typed is itself a candidate.
@@ -1217,7 +1297,15 @@ impl Collector<'_> {
             self.complete = true;
             return;
         }
-        let Some((tier, fine)) = match_label(self.prefix, &label) else {
+        let prepared;
+        let name = match self.names.and_then(|names| names.0.get(&label)) {
+            Some(name) => name,
+            None => {
+                prepared = PreparedName::new(&label);
+                &prepared
+            }
+        };
+        let Some((tier, fine)) = match_prepared(&self.folded_prefix, name) else {
             return;
         };
         // Keywords keep their curated order; names favour the shorter match
@@ -1311,9 +1399,21 @@ fn quote_always(quote: char, ident: &str) -> String {
 
 /// Build the ranked candidates for `plan`.
 pub fn suggest(plan: &Plan, schema: &SchemaView<'_>) -> Vec<Candidate> {
+    suggest_prepared(plan, schema, None)
+}
+
+/// [`suggest`] with the table labels of `schema` prepared beforehand (see
+/// [`CompletionNames`]); `names` must come from the same table list.
+pub fn suggest_prepared(
+    plan: &Plan,
+    schema: &SchemaView<'_>,
+    names: Option<&CompletionNames>,
+) -> Vec<Candidate> {
     let dialect = Dialect::of(schema.db_type);
     let mut out = Collector {
         prefix: &plan.prefix,
+        folded_prefix: plan.prefix.chars().flat_map(char::to_lowercase).collect(),
+        names,
         context: &plan.context,
         existing: &plan.existing,
         complete: false,
@@ -2236,6 +2336,131 @@ mod tests {
                 columns: &columns,
             },
         )
+    }
+
+    // ---- prepared requests ----
+
+    fn mixed_schema() -> Vec<TableEntry> {
+        let mut tables = shop();
+        tables.extend([
+            entry(Some("main"), "Orders_Archive", TableKind::Table),
+            entry(Some("audit"), "orders", TableKind::Table),
+            entry(Some("audit"), "OrderEvents", TableKind::View),
+            entry(
+                Some("reporting"),
+                "café_ventes",
+                TableKind::MaterializedView,
+            ),
+            entry(Some("reporting"), "IStatus", TableKind::Table),
+        ]);
+        tables
+    }
+
+    const REQUESTS: &[&str] = &[
+        "SELECT * FROM |",
+        "SELECT * FROM or|",
+        "SELECT * FROM OR|",
+        "SELECT * FROM oe|",
+        "SELECT * FROM audit.|",
+        "SELECT * FROM audit.or|",
+        "SELECT * FROM caf|",
+        "SELECT * FROM st|",
+        "SELECT * FROM orders|",
+        "SELECT * FROM \"or|",
+        "SELECT o.| FROM orders o",
+        "SELECT cu| FROM orders o JOIN customers c ON c.id = o.customer_id",
+        "SELECT 1;\n\nSEL|",
+        "sel|",
+        "SELECT * FROM orders WHERE |",
+        "INSERT INTO orders (|",
+    ];
+
+    #[rstest]
+    #[case(DatabaseType::SQLite)]
+    #[case(DatabaseType::PostgreSQL)]
+    #[case(DatabaseType::MySQL)]
+    fn prepared_names_rank_exactly_like_matching_on_the_fly(#[case] db_type: DatabaseType) {
+        let tables = mixed_schema();
+        let columns = shop_columns();
+        let names = CompletionNames::new(&tables);
+        let schema = SchemaView {
+            db_type: Some(&db_type),
+            tables: &tables,
+            columns: &columns,
+        };
+        for marked in REQUESTS {
+            let (text, caret) = at_caret(marked);
+            let Some(plan) = analyze(&text, caret, Some(&db_type)) else {
+                continue;
+            };
+            assert_eq!(
+                suggest_prepared(&plan, &schema, Some(&names)),
+                suggest(&plan, &schema),
+                "{marked}"
+            );
+        }
+    }
+
+    #[rstest]
+    #[case(StatementSeparators::SemicolonsOnly, Some(DatabaseType::PostgreSQL))]
+    #[case(
+        StatementSeparators::SemicolonsAndBlankLines,
+        Some(DatabaseType::PostgreSQL)
+    )]
+    #[case(
+        StatementSeparators::SemicolonsAndBlankLines,
+        Some(DatabaseType::MongoDB)
+    )]
+    #[case(StatementSeparators::SemicolonsAndBlankLines, None)]
+    fn an_index_built_once_analyses_like_the_text(
+        #[case] separators: StatementSeparators,
+        #[case] db_type: Option<DatabaseType>,
+    ) {
+        let text = "SELECT 1;\n\nSELECT * FROM orders o\nWHERE o.\n\n-- note\nselect c. from customers c; 'é'";
+        let index = StatementIndex::new(text, completion_split(separators, db_type.as_ref()));
+        for caret in 0..=text.len() + 1 {
+            assert_eq!(
+                analyze_indexed(&index, caret, db_type.as_ref()),
+                analyze_with(text, caret, db_type.as_ref(), separators),
+                "caret {caret}"
+            );
+        }
+    }
+
+    /// A large schema: one completion request (what runs off the UI thread
+    /// on a keystroke) stays well within a frame budget in release builds;
+    /// the bound here is generous for unoptimized test builds.
+    #[test]
+    fn a_large_schema_completes_quickly() {
+        let tables: Vec<TableEntry> = (0..5_000)
+            .map(|i| {
+                entry(
+                    Some(["public", "sales", "audit"][i % 3]),
+                    &format!("table_{i:05}_events"),
+                    TableKind::Table,
+                )
+            })
+            .collect();
+        let columns = HashMap::new();
+        let schema = SchemaView {
+            db_type: Some(&DatabaseType::PostgreSQL),
+            tables: &tables,
+            columns: &columns,
+        };
+        let started = std::time::Instant::now();
+        let names = CompletionNames::new(&tables);
+        let prepared_in = started.elapsed();
+        let text = "SELECT 1;\n".repeat(2_000) + "SELECT * FROM tab";
+        let started = std::time::Instant::now();
+        let plan = analyze(&text, text.len(), Some(&DatabaseType::PostgreSQL)).expect("a plan");
+        let candidates = suggest_prepared(&plan, &schema, Some(&names));
+        let requested_in = started.elapsed();
+        assert_eq!(candidates.len(), MAX_CANDIDATES);
+        assert!(
+            prepared_in < std::time::Duration::from_secs(2)
+                && requested_in < std::time::Duration::from_secs(2),
+            "preparing took {prepared_in:?}, a request {requested_in:?}"
+        );
     }
 
     // ---- tokenizer ----

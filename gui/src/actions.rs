@@ -49,6 +49,7 @@ actions!(
         // Navigation
         ShowHome,
         OpenSettings,
+        ManageSavedQueries,
         CommandPalette,
         FocusExplorer,
         ToggleSidebar,

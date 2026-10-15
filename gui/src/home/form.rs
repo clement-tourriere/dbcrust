@@ -1276,7 +1276,7 @@ pub(super) fn save_session(
             .map_err(|e| GuiError::Storage(format!("Could not read this connection: {e}")))?,
     };
     store
-        .update(|config| -> Result<(), Box<dyn std::error::Error>> {
+        .update_sessions(|config| -> Result<(), Box<dyn std::error::Error>> {
             config.save_session_from_connection_info(name, &info)?;
             if let Some(old) = renamed_from.as_deref() {
                 config.delete_session(old)?;

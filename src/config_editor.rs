@@ -1278,26 +1278,35 @@ fn persist(config: &Config) -> Result<(), String> {
 
 /// Apply runtime side effects for a changed key; returns a note for the user.
 fn apply_side_effects(config: &Config, path: &str) -> &'static str {
+    reapply_runtime_setting(config, path);
+    if takes_effect_next_session(path) {
+        " (takes effect next session)"
+    } else {
+        ""
+    }
+}
+
+/// Push one changed field into the process-wide runtime state (vector and
+/// complex value formatting, the query timeout). Cheap: only the affected
+/// section is copied; fields without runtime state are a no-op.
+pub fn reapply_runtime_setting(config: &Config, path: &str) {
     if path.starts_with("vector_display.") {
         crate::vector_display::set_global_vector_config(config.vector_display.clone());
-        ""
     } else if path.starts_with("complex_display.") {
         crate::complex_display::set_global_complex_config(config.complex_display.clone());
-        ""
     } else if path == "query_timeout_seconds" {
         crate::database::set_query_timeout_seconds(config.query_timeout_seconds);
-        ""
-    } else if path.starts_with("logging.")
+    }
+}
+
+/// Whether a field is consumed when a session starts rather than live.
+pub fn takes_effect_next_session(path: &str) -> bool {
+    path.starts_with("logging.")
         || path.starts_with("history.")
         || matches!(
             path,
             "autocomplete_enabled" | "show_banner" | "multiline_prompt_indicator"
         )
-    {
-        " (takes effect next session)"
-    } else {
-        ""
-    }
 }
 
 /// Re-sync global runtime state from config (after `\config edit` reload).
@@ -1391,6 +1400,19 @@ pub fn validate_tunnel_target(config: &Config, target: &str) -> Result<(), Strin
     } else {
         Err("cannot parse tunnel target (expected [user[:password]@]host[:port])".to_string())
     }
+}
+
+/// Safely preview every matching host pattern, sorted for presentation.
+/// Targets are returned as data; backtick commands are never evaluated.
+pub fn matching_tunnel_patterns(config: &Config, host: &str) -> Vec<(String, String)> {
+    let mut matches: Vec<_> = config
+        .ssh_tunnel_patterns
+        .iter()
+        .filter(|(pattern, _)| regex::Regex::new(pattern).is_ok_and(|regex| regex.is_match(host)))
+        .map(|(pattern, target)| (pattern.clone(), target.clone()))
+        .collect();
+    matches.sort_by(|a, b| a.0.cmp(&b.0));
+    matches
 }
 
 // ---------------------------------------------------------------------------
@@ -1902,6 +1924,37 @@ mod tests {
             "user@jump:2222".to_string(),
         );
         config
+    }
+
+    #[test]
+    fn test_config_tunnel_preview_never_executes_commands() {
+        let mut config = Config::default_settings();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("must-not-exist");
+        config
+            .ssh_tunnel_patterns
+            .insert("^db".into(), format!("`touch {}`", marker.display()));
+        config
+            .ssh_tunnel_patterns
+            .insert("internal$".into(), "user:secret@bastion".into());
+        let matches = matching_tunnel_patterns(&config, "db.internal");
+        assert_eq!(matches.len(), 2);
+        for (_, target) in matches {
+            validate_tunnel_target(&config, &target).unwrap();
+        }
+        assert!(!marker.exists());
+    }
+
+    #[rstest::rstest]
+    #[case("logging.level", true)]
+    #[case("history.cleanup_after_days", true)]
+    #[case("autocomplete_enabled", true)]
+    #[case("show_banner", true)]
+    #[case("multiline_prompt_indicator", true)]
+    #[case("query_timeout_seconds", false)]
+    #[case("ai.temperature", false)]
+    fn test_config_next_session_metadata(#[case] path: &str, #[case] expected: bool) {
+        assert_eq!(takes_effect_next_session(path), expected);
     }
 
     #[test]

@@ -8,8 +8,8 @@
 //!   `status()`, `cursor(cx)`
 //! - `run_current`, `run_all`, `explain`, `cancel`, `set_sql`
 //! - emits [`QueryTabEvent`] when the title, the status or the binding
-//!   changes. `StatusChanged` is also emitted when the caret moves to
-//!   another line/column, so the status bar can show the position.
+//!   changes, and `CursorMoved` when the caret moves to another line/column
+//!   (only the status bar's position depends on it).
 //!
 //! Layout: a slim toolbar (execution target, Run statement/selection and
 //! Run all, Explain, Save, saved queries, history, files) above a vertical
@@ -50,8 +50,7 @@ use files::Baseline;
 use gpui_kit::component::{
     ActiveTheme as _, Theme, WindowExt as _,
     input::{
-        Editor, EditorState, Enter, IndentInline, InputEvent, RangeDecorationCollection,
-        RopeExt as _,
+        EditorState, Enter, IndentInline, InputEvent, RangeDecorationCollection, Rope, RopeExt as _,
     },
     notification::Notification,
     resizable::{ResizableState, resizable_panel, v_resizable},
@@ -80,7 +79,12 @@ pub enum QueryStatus {
 #[derive(Clone, Debug)]
 pub enum QueryTabEvent {
     TitleChanged,
+    /// [`QueryTab::status`] changed (a run started, finished, failed or was
+    /// cancelled, or a rebind reset it).
     StatusChanged,
+    /// The caret moved to another line or column ([`QueryTab::cursor`]).
+    /// Nothing else changed: no running-query or tray state depends on it.
+    CursorMoved,
     ConnectionChanged,
 }
 
@@ -156,8 +160,10 @@ impl TargetHint {
 /// What the results on screen were produced from, to tell when they no
 /// longer match the editor (see `provenance.rs`).
 struct RanFrom {
-    /// The statements exactly as they were executed, and what stood against them.
-    executed: Vec<Executed>,
+    /// The statements exactly as they were executed, and what stood against
+    /// them (shared with the background split of a large buffer, which checks
+    /// them against the new index).
+    executed: Arc<[Executed]>,
     connection: Option<ConnectionId>,
 }
 
@@ -176,18 +182,38 @@ struct ActiveRun {
     _task: Task<()>,
 }
 
-/// A [`StatementIndex`] and what it was built for.
+/// A [`StatementIndex`] and what it was built for. Shared with the
+/// completion provider, which reuses it when it matches the text it is
+/// asked about.
 struct IndexEntry {
     revision: u64,
     config: SplitConfig,
     index: Arc<StatementIndex>,
 }
 
+/// Up to this size, an edit re-splits the buffer at once (well under a
+/// millisecond): the hint, the highlight and the freshness of the results
+/// follow every keystroke. A larger buffer is split off the UI thread once
+/// typing pauses for [`INDEX_DEBOUNCE`]; until then they keep their previous
+/// state (the editor moves the highlight along with the text). Run, Explain
+/// and Format always use an index of the current text.
+const SYNC_INDEX_BYTES: usize = 64 * 1024;
+const INDEX_DEBOUNCE: Duration = Duration::from_millis(75);
+/// Comparing a buffer of the same length as the file it was loaded from (to
+/// show the unsaved-changes dot) moves off the UI thread above this size.
+const SYNC_COMPARE_BYTES: usize = 64 * 1024;
+
 /// Longest tab title the user can type.
 pub const MAX_TITLE_CHARS: usize = 80;
 
 pub struct QueryTab {
     connection: Option<ConnectionId>,
+    /// The summary of the bound connection for what is worked out on every
+    /// repaint (the toolbar, the split): copied from [`AppState`] when the
+    /// binding changes and on every `AppState` notification (every change of
+    /// a live connection's summary comes with one), not on each editor
+    /// notification. Commands read [`Self::summary`] instead.
+    cached_summary: Option<Arc<ConnectionSummary>>,
     /// Shared with the completion provider.
     connection_cell: Rc<Cell<Option<ConnectionId>>>,
     /// The last connection this tab was bound to — kept while unbound, so
@@ -211,6 +237,9 @@ pub struct QueryTab {
     /// Width of the toolbar as last painted: decides which labels fit.
     toolbar_width: Rc<Cell<Pixels>>,
     editor: Entity<EditorState>,
+    /// The editor as a cached view: a repaint of the toolbar or the results
+    /// (a spinner frame, a grid scroll) does not lay the editor out again.
+    editor_pane: Entity<editor::EditorPane>,
     results: Entity<ResultsView>,
     split: Entity<ResizableState>,
     status: QueryStatus,
@@ -222,7 +251,10 @@ pub struct QueryTab {
     hint_key: Option<(u64, std::ops::Range<usize>, SplitConfig)>,
     /// The statements of the buffer as of `revision`, shared by everything
     /// that needs boundaries (see [`QueryTab::statement_index`]).
-    index: RefCell<Option<IndexEntry>>,
+    index: Rc<RefCell<Option<IndexEntry>>>,
+    /// The background split of a large buffer, and the revision and split it
+    /// is for (see [`SYNC_INDEX_BYTES`]).
+    index_task: Option<(u64, SplitConfig, Task<()>)>,
     /// The fill behind the statement the caret will run.
     highlight: RangeDecorationCollection,
     /// What the highlight was last worked out for: revision, split, selection
@@ -237,6 +269,10 @@ pub struct QueryTab {
     /// How many times the highlight was worked out (not just looked up).
     #[cfg(test)]
     highlight_scans: usize,
+    /// How many times the results were checked against the buffer on the UI
+    /// thread.
+    #[cfg(test)]
+    stale_scans: usize,
     cursor: (usize, usize),
     _subscriptions: Vec<Subscription>,
 }
@@ -252,7 +288,10 @@ impl QueryTab {
         cx: &mut Context<Self>,
     ) -> Self {
         let connection_cell = Rc::new(Cell::new(connection));
-        let editor = editor::new_editor_state(sql, connection_cell.clone(), window, cx);
+        let index = Rc::new(RefCell::new(None));
+        let editor =
+            editor::new_editor_state(sql, connection_cell.clone(), index.clone(), window, cx);
+        let editor_pane = cx.new(|cx| editor::EditorPane::new(editor.clone(), cx));
         let highlight = editor.update(cx, |editor, cx| {
             editor.create_range_decorations_collection(Vec::new(), cx)
         });
@@ -269,19 +308,27 @@ impl QueryTab {
             cx.subscribe_in(&editor, window, Self::on_editor_event),
             cx.observe(&editor, |this, _, cx| this.on_editor_notified(cx)),
             // Connections opening/closing and read-only toggles change the toolbar
-            cx.observe(&app_state, |_, _, cx| cx.notify()),
+            cx.observe(&app_state, |this, _, cx| {
+                if this.refresh_summary(cx) {
+                    // The split follows the engine
+                    this.schedule_index(cx);
+                }
+                cx.notify();
+            }),
             // The editor font size and the statement separators are settings
             cx.observe_global::<Preferences>(|this, cx| {
+                this.schedule_index(cx);
                 this.on_editor_notified(cx);
                 // What counts as a statement may have changed under the results
                 this.refresh_stale(cx);
-                cx.notify();
+                this.notify_views(cx);
             }),
             // The highlight is a tint of the theme
             cx.observe_global::<Theme>(|this, cx| this.refresh_highlight(cx)),
         ];
         let mut tab = Self {
             connection,
+            cached_summary: None,
             connection_cell,
             last_bound: connection,
             title: title.unwrap_or_else(|| "Query".to_string()).into(),
@@ -292,6 +339,7 @@ impl QueryTab {
             stale: None,
             toolbar_width: Rc::new(Cell::new(px(0.))),
             editor,
+            editor_pane,
             results,
             split,
             status: QueryStatus::Idle,
@@ -300,7 +348,8 @@ impl QueryTab {
             revision: 0,
             hint: TargetHint::None,
             hint_key: None,
-            index: RefCell::new(None),
+            index,
+            index_task: None,
             highlight,
             highlight_key: None,
             highlight_tint: None,
@@ -308,9 +357,13 @@ impl QueryTab {
             highlight_writes: 0,
             #[cfg(test)]
             highlight_scans: 0,
+            #[cfg(test)]
+            stale_scans: 0,
             cursor: (1, 1),
             _subscriptions: subscriptions,
         };
+        tab.refresh_summary(cx);
+        tab.schedule_index(cx);
         tab.refresh_hint(cx);
         tab.refresh_highlight(cx);
         tab
@@ -347,6 +400,8 @@ impl QueryTab {
             self.last_bound = connection;
         }
         self.connection_cell.set(connection);
+        self.refresh_summary(cx);
+        self.schedule_index(cx);
         if switching || interrupted.is_some() {
             self.ran = None;
             self.stale = None;
@@ -376,11 +431,44 @@ impl QueryTab {
     }
 
     pub fn sql(&self, cx: &App) -> String {
-        self.editor.read(cx).value().to_string()
+        self.editor.read(cx).text().to_string()
+    }
+
+    /// The buffer as an immutable, cheaply cloned snapshot (draft autosave
+    /// turns it into text on its writer thread).
+    pub fn sql_snapshot(&self, cx: &App) -> Rope {
+        self.editor.read(cx).text().clone()
+    }
+
+    /// Bumped on every change of the buffer (typing, undo, programmatic
+    /// edits); a tab keeps the same text as long as it stays the same.
+    pub fn edit_revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The buffer holds nothing but whitespace.
+    pub fn is_blank(&self, cx: &App) -> bool {
+        !self
+            .editor
+            .read(cx)
+            .text()
+            .chars()
+            .any(|c| !c.is_whitespace())
     }
 
     pub fn status(&self) -> QueryStatus {
         self.status.clone()
+    }
+
+    /// Render the tab again, and the views it embeds cached (the editor, the
+    /// results and their grid): for a change outside the tab that any of
+    /// them may show (the app state, the preferences). A change of their own
+    /// repaints only them.
+    pub fn notify_views(&mut self, cx: &mut Context<Self>) {
+        self.editor_pane.update(cx, |_, cx| cx.notify());
+        // The grid is cached inside the results: it renders with them
+        self.results.update(cx, |_, cx| cx.notify());
+        cx.notify();
     }
 
     /// 1-based (line, column) of the caret, for the status bar.
@@ -443,6 +531,9 @@ impl QueryTab {
     fn edited(&mut self, cx: &mut Context<Self>) {
         self.revision += 1;
         self.refresh_modified(cx);
+        // A large buffer is split in the background; the hint, the highlight
+        // and the freshness of the results follow when that lands
+        self.schedule_index(cx);
         self.refresh_stale(cx);
         self.on_editor_notified(cx);
         cx.notify();
@@ -450,31 +541,75 @@ impl QueryTab {
 
     /// Recompute whether the buffer differs from what was loaded or saved.
     pub(super) fn refresh_modified(&mut self, cx: &mut Context<Self>) {
-        let modified = self.baseline.as_ref().is_some_and(|baseline| {
-            let editor = self.editor.read(cx);
-            // Cheap check first: most edits change the length
-            editor.text().len() != baseline.text().len() || *editor.text() != *baseline.text()
-        });
+        let rope = self.editor.read(cx).text();
+        let modified = match self.baseline.as_ref() {
+            None => false,
+            // Most edits change the length
+            Some(baseline) if rope.len() != baseline.text().len() => true,
+            Some(baseline) if rope.len() <= SYNC_COMPARE_BYTES => *rope != *baseline.text(),
+            Some(baseline) => {
+                // Same length, large: compare off the UI thread. The answer
+                // applies only to this text and this very baseline: a newer
+                // edit or bind asks again, while a save that starts (and may
+                // fail) meanwhile changes neither.
+                let rope = rope.clone();
+                let text = baseline.shared_text();
+                let revision = self.revision;
+                let comparing = cx.background_spawn({
+                    let text = text.clone();
+                    async move { rope != *text }
+                });
+                cx.spawn(async move |this, cx| {
+                    let modified = comparing.await;
+                    this.update(cx, |tab, cx| {
+                        let same_baseline = tab
+                            .baseline
+                            .as_ref()
+                            .is_some_and(|baseline| baseline.holds(&text));
+                        if tab.revision == revision && same_baseline {
+                            tab.set_modified(modified, cx);
+                        }
+                    })
+                    .ok();
+                })
+                .detach();
+                return;
+            }
+        };
+        self.set_modified(modified, cx);
+    }
+
+    fn set_modified(&mut self, modified: bool, cx: &mut Context<Self>) {
         if modified != self.modified {
             self.modified = modified;
             // The tab chrome (title bar of the tab) shows it
             cx.emit(QueryTabEvent::TitleChanged);
+            cx.notify();
         }
-    }
-
-    /// Why the results on screen no longer match the editor, if they don't.
-    fn compute_stale(&self, cx: &App) -> Option<Stale> {
-        let ran = self.ran.as_ref()?;
-        if ran.connection != self.connection {
-            return Some(Stale::ConnectionChanged);
-        }
-        let now = self.statement_index(cx);
-        provenance::is_stale(&ran.executed, &now).then_some(Stale::Edited)
     }
 
     /// Tell the results panel whether it is showing a previous run.
     pub(super) fn refresh_stale(&mut self, cx: &mut Context<Self>) {
-        let stale = self.compute_stale(cx);
+        let stale = match &self.ran {
+            None => None,
+            Some(ran) if ran.connection != self.connection => Some(Stale::ConnectionChanged),
+            Some(ran) => {
+                // A large buffer being split: the split checks it when it lands
+                let Some(now) = self.index_now(cx) else {
+                    return;
+                };
+                let executed = ran.executed.clone();
+                #[cfg(test)]
+                {
+                    self.stale_scans += 1;
+                }
+                provenance::is_stale(&executed, &now).then_some(Stale::Edited)
+            }
+        };
+        self.show_stale(stale, cx);
+    }
+
+    fn show_stale(&mut self, stale: Option<Stale>, cx: &mut Context<Self>) {
         if stale != self.stale {
             self.stale = stale;
             self.results
@@ -490,19 +625,20 @@ impl QueryTab {
         cx: &mut Context<Self>,
     ) {
         self.ran = Some(RanFrom {
-            executed,
+            executed: executed.into(),
             connection: self.connection,
         });
         self.stale = None;
         self.refresh_stale(cx);
     }
 
-    /// The editor repainted: the caret or the selection may have moved.
+    /// The editor repainted (the caret blinks, the text or the selection
+    /// changed): only a move of the caret or the selection does any work.
     fn on_editor_notified(&mut self, cx: &mut Context<Self>) {
         let cursor = self.cursor(cx).unwrap_or((1, 1));
         if cursor != self.cursor {
             self.cursor = cursor;
-            cx.emit(QueryTabEvent::StatusChanged);
+            cx.emit(QueryTabEvent::CursorMoved);
         }
         if self.refresh_hint(cx) {
             cx.notify();
@@ -513,12 +649,103 @@ impl QueryTab {
     /// How this tab's buffer is split: the engine's grammar and whether it
     /// splits at all, under the user's preference.
     pub(super) fn split_config(&self, cx: &App) -> SplitConfig {
-        let summary = self.summary(cx);
+        let summary = self.cached_summary.as_deref();
         SplitConfig::new(
             preferences::statement_separators(cx),
-            summary.as_ref().map(|s| &s.db_type),
-            summary.as_ref().is_some_and(|s| s.runs_unsplit()),
+            summary.map(|s| &s.db_type),
+            summary.is_some_and(|s| s.runs_unsplit()),
         )
+    }
+
+    /// Copy the summary of the bound connection from [`AppState`] when it
+    /// differs from the one held; true when it did.
+    fn refresh_summary(&mut self, cx: &App) -> bool {
+        let state = AppState::global(cx);
+        let live = self
+            .connection
+            .and_then(|id| state.read(cx).connection(id))
+            .map(|live| &live.summary);
+        let changed = self.cached_summary.as_deref() != live;
+        if changed {
+            self.cached_summary = live.cloned().map(Arc::new);
+        }
+        changed
+    }
+
+    /// The index of the current text, if it can be had without blocking the
+    /// UI thread: always for a small buffer (built now if needed), for a
+    /// large one only once its background split landed.
+    fn index_now(&self, cx: &App) -> Option<Arc<StatementIndex>> {
+        (self.editor.read(cx).text().len() <= SYNC_INDEX_BYTES || self.index_is_current(cx))
+            .then(|| self.statement_index(cx))
+    }
+
+    fn index_is_current(&self, cx: &App) -> bool {
+        let config = self.split_config(cx);
+        let len = self.editor.read(cx).text().len();
+        self.index.borrow().as_ref().is_some_and(|entry| {
+            entry.revision == self.revision
+                && entry.config == config
+                && entry.index.text().len() == len
+        })
+    }
+
+    /// For a large buffer whose index is out of date: split it on the
+    /// background executor once edits pause, then refresh what depends on it.
+    fn schedule_index(&mut self, cx: &mut Context<Self>) {
+        let rope = self.editor.read(cx).text();
+        if rope.len() <= SYNC_INDEX_BYTES || self.index_is_current(cx) {
+            self.index_task = None;
+            return;
+        }
+        let (revision, config) = (self.revision, self.split_config(cx));
+        if matches!(&self.index_task, Some((r, c, _)) if *r == revision && *c == config) {
+            return;
+        }
+        let rope = rope.clone();
+        // Whether the results on screen still match is checked against the
+        // new index there too: it looks up every statement of the buffer
+        let ran = self.ran.as_ref().map(|ran| ran.executed.clone());
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(INDEX_DEBOUNCE).await;
+            let (index, checked) = cx
+                .background_spawn(async move {
+                    let index = StatementIndex::from_shared(Arc::from(rope.to_string()), config);
+                    let checked = ran.map(|executed| {
+                        let edited = provenance::is_stale(&executed, &index);
+                        (executed, edited)
+                    });
+                    (index, checked)
+                })
+                .await;
+            this.update(cx, |tab, cx| {
+                if tab.revision != revision || tab.split_config(cx) != config {
+                    // Superseded: the newer change scheduled its own split
+                    return;
+                }
+                *tab.index.borrow_mut() = Some(IndexEntry {
+                    revision,
+                    config,
+                    index: Arc::new(index),
+                });
+                match checked {
+                    // The same results, on the same connection: the check holds
+                    Some((executed, edited))
+                        if tab.ran.as_ref().is_some_and(|ran| {
+                            Arc::ptr_eq(&ran.executed, &executed)
+                                && ran.connection == tab.connection
+                        }) =>
+                    {
+                        tab.show_stale(edited.then_some(Stale::Edited), cx)
+                    }
+                    _ => tab.refresh_stale(cx),
+                }
+                tab.on_editor_notified(cx);
+                cx.notify();
+            })
+            .ok();
+        });
+        self.index_task = Some((revision, config, task));
     }
 
     /// The statements of the buffer as it is now. Built once per document
@@ -538,7 +765,10 @@ impl QueryTab {
         {
             return entry.index.clone();
         }
-        let index = Arc::new(StatementIndex::new(&editor.text().to_string(), config));
+        let index = Arc::new(StatementIndex::from_shared(
+            Arc::from(editor.text().to_string()),
+            config,
+        ));
         *cached = Some(IndexEntry {
             revision: self.revision,
             config,
@@ -556,16 +786,21 @@ impl QueryTab {
         if self.hint_key.as_ref() == Some(&key) {
             return false;
         }
+        // A large buffer being split: worked out when the split lands
+        let Some(index) = self.index_now(cx) else {
+            return false;
+        };
         self.hint_key = Some(key);
-        let rope = state.text().clone();
-        let index = self.statement_index(cx);
-        let hint = match index.resolve(selection) {
+        let hint = match index.target(selection) {
             None => TargetHint::None,
-            Some(execution) => match execution.kind {
-                TargetKind::Selection => TargetHint::Selection {
-                    first: rope.offset_to_point(execution.range.start).row + 1,
-                    last: rope.offset_to_point(execution.range.end).row + 1,
-                },
+            Some((range, kind)) => match kind {
+                TargetKind::Selection => {
+                    let rope = state.text();
+                    TargetHint::Selection {
+                        first: rope.offset_to_point(range.start).row + 1,
+                        last: rope.offset_to_point(range.end).row + 1,
+                    }
+                }
                 TargetKind::Statement { index, count } => TargetHint::Statement { index, count },
                 TargetKind::Document => TargetHint::Document,
             },
@@ -593,12 +828,16 @@ impl QueryTab {
         if self.highlight_key.as_ref() == Some(&key) {
             return;
         }
+        // A large buffer being split: the editor moves the highlight along
+        // with the text until the split lands
+        let Some(index) = self.index_now(cx) else {
+            return;
+        };
         self.highlight_key = Some(key);
         #[cfg(test)]
         {
             self.highlight_scans += 1;
         }
-        let index = self.statement_index(cx);
         let wanted = index.highlight(selection);
         let held = self.highlight.get_ranges(cx);
         let up_to_date = held.len() == usize::from(wanted.is_some())
@@ -679,15 +918,6 @@ impl QueryTab {
         }
     }
 
-    fn is_blank(&self, cx: &App) -> bool {
-        !self
-            .editor
-            .read(cx)
-            .text()
-            .chars()
-            .any(|c| !c.is_whitespace())
-    }
-
     fn set_title(&mut self, title: impl Into<SharedString>, cx: &mut Context<Self>) {
         let title = title.into();
         if self.title != title {
@@ -753,13 +983,20 @@ impl Focusable for QueryTab {
 impl Render for QueryTab {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let toolbar = self.render_toolbar(window, cx);
-        let editor = div().size_full().overflow_hidden().child(
-            Editor::new(&self.editor)
-                .bordered(false)
-                .size_full()
-                .text_size(preferences::editor_font_size(cx))
-                .text_color(cx.theme().foreground),
-        );
+        // Cached views: each repaints only when its own state changes, so
+        // typing does not lay out the results, and a results repaint (a
+        // spinner frame, a grid scroll) does not lay out the editor. This only
+        // holds because the tab itself is not cached: a cached view that
+        // renders again renders everything inside it (GPUI's `prepaint_view`
+        // sets `window.refreshing` for its subtree). See `WorkspaceTab::content`.
+        let editor = self
+            .editor_pane
+            .clone()
+            .cached(StyleRefinement::default().size_full());
+        let results = self
+            .results
+            .clone()
+            .cached(StyleRefinement::default().size_full());
         let split = v_resizable("query-split")
             .with_state(&self.split)
             .child(
@@ -771,7 +1008,7 @@ impl Render for QueryTab {
             .child(
                 resizable_panel()
                     .size_range(px(120.)..Pixels::MAX)
-                    .child(self.results.clone()),
+                    .child(results),
             );
 
         v_flex()

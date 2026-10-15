@@ -6,6 +6,7 @@ use dbcrust::database::DatabaseType;
 use dbcrust::db::{ColumnInfo, IndexInfo};
 use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 
 /// Parse `Database::list_tables` output (header row `Schema, Name, Type,
 /// Owner`, then one row per object). Columns are located by header name so
@@ -1125,6 +1126,50 @@ pub fn reports_references(db_type: &DatabaseType) -> bool {
     matches!(db_type, DatabaseType::PostgreSQL)
 }
 
+/// The tables of one schema snapshot by name, to resolve many foreign key
+/// targets (the table inspector draws one link per foreign key and
+/// reference, every frame) without scanning the whole list for each.
+/// Resolves exactly like [`find_table`]; build a new one when the snapshot
+/// changes ([`TableLookup::is_for`]).
+pub struct TableLookup {
+    tables: Arc<Vec<TableEntry>>,
+    /// Positions in `tables`, in list order, by `TableEntry::name`.
+    by_name: HashMap<String, Vec<usize>>,
+}
+
+impl TableLookup {
+    pub fn new(tables: Arc<Vec<TableEntry>>) -> Self {
+        let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, table) in tables.iter().enumerate() {
+            by_name.entry(table.name.clone()).or_default().push(index);
+        }
+        Self { tables, by_name }
+    }
+
+    /// Whether this lookup was built from `tables` (the same snapshot).
+    pub fn is_for(&self, tables: &Arc<Vec<TableEntry>>) -> bool {
+        Arc::ptr_eq(&self.tables, tables)
+    }
+
+    /// [`find_table`] over the snapshot.
+    pub fn find(
+        &self,
+        db_type: &DatabaseType,
+        target: &str,
+        from_schema: Option<&str>,
+    ) -> Option<&TableEntry> {
+        let parts = split_qualified(target);
+        let (schema, name) = target_parts(&parts)?;
+        let named = self.by_name.get(name)?;
+        pick_table(
+            db_type,
+            named.iter().map(|&index| &self.tables[index]),
+            schema,
+            from_schema,
+        )
+    }
+}
+
 /// Resolve a foreign key target (`customers`, `public.customers`,
 /// `"Orders"`) against the table list of a connection.
 pub fn find_table<'a>(
@@ -1133,34 +1178,52 @@ pub fn find_table<'a>(
     target: &str,
     from_schema: Option<&str>,
 ) -> Option<&'a TableEntry> {
-    let unquoted: Vec<String> = split_qualified(target);
-    let (schema, name) = match unquoted.as_slice() {
-        [name] => (None, name.as_str()),
-        [schema, name] => (Some(schema.as_str()), name.as_str()),
-        [.., schema, name] => (Some(schema.as_str()), name.as_str()),
-        [] => return None,
-    };
-    let candidates = tables.iter().filter(|entry| entry.name == name);
+    let parts = split_qualified(target);
+    let (schema, name) = target_parts(&parts)?;
+    pick_table(
+        db_type,
+        tables.iter().filter(|entry| entry.name == name),
+        schema,
+        from_schema,
+    )
+}
+
+/// The schema (if qualified) and the name of a split target.
+fn target_parts(parts: &[String]) -> Option<(Option<&str>, &str)> {
+    match parts {
+        [] => None,
+        [name] => Some((None, name.as_str())),
+        [.., schema, name] => Some((Some(schema.as_str()), name.as_str())),
+    }
+}
+
+/// Among the tables called like the target (in list order): the one in the
+/// target's schema; unqualified, the one in the referencing table's schema,
+/// else in a default schema, else the first.
+fn pick_table<'a>(
+    db_type: &DatabaseType,
+    named: impl Iterator<Item = &'a TableEntry>,
+    schema: Option<&str>,
+    from_schema: Option<&str>,
+) -> Option<&'a TableEntry> {
+    let named: Vec<&TableEntry> = named.collect();
     match schema {
-        Some(schema) => candidates
+        Some(schema) => named
             .into_iter()
             .find(|entry| entry.schema.as_deref() == Some(schema)),
-        None => {
-            let candidates: Vec<&TableEntry> = candidates.collect();
-            candidates
-                .iter()
-                .find(|entry| entry.schema.as_deref() == from_schema)
-                .or_else(|| {
-                    candidates.iter().find(|entry| {
-                        entry
-                            .schema
-                            .as_deref()
-                            .is_none_or(|schema| is_default_schema(db_type, schema))
-                    })
+        None => named
+            .iter()
+            .find(|entry| entry.schema.as_deref() == from_schema)
+            .or_else(|| {
+                named.iter().find(|entry| {
+                    entry
+                        .schema
+                        .as_deref()
+                        .is_none_or(|schema| is_default_schema(db_type, schema))
                 })
-                .or(candidates.first())
-                .copied()
-        }
+            })
+            .or(named.first())
+            .copied(),
     }
 }
 
@@ -1882,6 +1945,56 @@ mod tests {
         let found = find_table(&DatabaseType::PostgreSQL, &tables, target, from)
             .map(|entry| entry.qualified_name());
         assert_eq!(found.as_deref(), expected);
+        let lookup = TableLookup::new(Arc::new(tables));
+        let looked_up = lookup
+            .find(&DatabaseType::PostgreSQL, target, from)
+            .map(|entry| entry.qualified_name());
+        assert_eq!(looked_up, found);
+    }
+
+    #[test]
+    fn the_lookup_resolves_like_a_scan() {
+        let tables = Arc::new(vec![
+            table(None, "orders", TableKind::Table),
+            table(Some("main"), "orders", TableKind::Table),
+            table(Some("sales"), "orders", TableKind::Table),
+            table(Some("public"), "orders", TableKind::Table),
+            table(Some("sales"), "Line.Items", TableKind::Table),
+            table(Some("Sales"), "items", TableKind::View),
+            table(Some("public"), "items", TableKind::Table),
+        ]);
+        let lookup = TableLookup::new(tables.clone());
+        assert!(lookup.is_for(&tables));
+        assert!(!lookup.is_for(&Arc::new(tables.as_ref().clone())));
+        let targets = [
+            "orders",
+            "sales.orders",
+            "\"sales\".\"orders\"",
+            "db.sales.orders",
+            "missing.orders",
+            "\"Line.Items\"",
+            "sales.\"Line.Items\"",
+            "items",
+            "Sales.items",
+            "ITEMS",
+            "",
+            ".",
+        ];
+        for db_type in [
+            DatabaseType::PostgreSQL,
+            DatabaseType::SQLite,
+            DatabaseType::MySQL,
+        ] {
+            for target in targets {
+                for from in [None, Some("sales"), Some("main"), Some("Sales")] {
+                    assert_eq!(
+                        lookup.find(&db_type, target, from),
+                        find_table(&db_type, &tables, target, from),
+                        "{db_type:?} {target} from {from:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

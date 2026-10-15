@@ -469,7 +469,7 @@ fn record_recent(
     database: &Database,
     connection_info: Option<&ConnectionInfo>,
 ) {
-    let result = store.update(|config: &mut Config| {
+    let result = store.update_recents(|config: &mut Config| {
         if url.starts_with("vault://") {
             match connection_info {
                 Some(info) => config.add_recent_connection_with_options(
@@ -732,6 +732,7 @@ mod tests {
 
         // Identity (summary, drafts) is the canonical container target: the
         // user and database, no password, no relay address, no daemon pin.
+        crate::test_support::isolate();
         let store = ConfigStore::from_config(Config::default());
         let request = ConnectRequest::info(info);
         assert_eq!(
@@ -778,6 +779,7 @@ mod tests {
 
     #[test]
     fn docker_recents_keep_user_database_and_options_but_never_a_password_or_port() {
+        crate::test_support::isolate();
         let store = ConfigStore::from_config(Config::default());
         let mut info = docker_info("tt2-postgres-1", "analytics");
         info.options.insert("sslmode".into(), "require".into());

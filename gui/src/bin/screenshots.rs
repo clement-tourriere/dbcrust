@@ -116,6 +116,85 @@ fn main() {
         seed_home_fixtures(&temp.path().join("config"));
     }
     let store = ConfigStore::load();
+    if args
+        .only
+        .as_deref()
+        .is_some_and(|only| only.starts_with("settings-"))
+    {
+        use dbcrust_gui_core::DatabaseType;
+        use dbcrust_gui_core::dbcrust::config::NamedQueryScope;
+        let postgres = || NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL);
+        let sqlite = || NamedQueryScope::DatabaseType(DatabaseType::SQLite);
+        for (name, sql, scope, description) in [
+            (
+                "active_customers",
+                "-- Customers who ordered recently\nSELECT id, name, country, last_order_at\nFROM customers\nWHERE last_order_at > CURRENT_DATE - $1::interval\nORDER BY last_order_at DESC\nLIMIT $2;",
+                postgres(),
+                "Customers with an order in the last N days.",
+            ),
+            (
+                "orders_by_country",
+                "SELECT country, COUNT(*) AS orders\nFROM orders\nGROUP BY country\nORDER BY orders DESC;",
+                NamedQueryScope::Global,
+                "Order volume per country.",
+            ),
+            (
+                "recent_orders",
+                "SELECT * FROM orders WHERE customer_id = $1 ORDER BY created_at DESC LIMIT 20;",
+                sqlite(),
+                "The last orders of one customer.",
+            ),
+            (
+                "slow_statements",
+                "SELECT query, calls, mean_exec_time\nFROM pg_stat_statements\nORDER BY mean_exec_time DESC\nLIMIT 20;",
+                postgres(),
+                "",
+            ),
+            (
+                "table_sizes",
+                "SELECT relname, pg_size_pretty(pg_total_relation_size(relid))\nFROM pg_catalog.pg_statio_user_tables\nORDER BY pg_total_relation_size(relid) DESC;",
+                postgres(),
+                "Largest tables first, indexes included.",
+            ),
+            (
+                "daily_signups",
+                "SELECT date_trunc('day', created_at) AS day, COUNT(*)\nFROM users\nWHERE created_at >= $1\nGROUP BY 1 ORDER BY 1;",
+                NamedQueryScope::Global,
+                "",
+            ),
+            (
+                "health_check",
+                "SELECT 1;",
+                NamedQueryScope::Session("warehouse-prod".into()),
+                "Connectivity check for this saved session.",
+            ),
+            (
+                "top_products",
+                "SELECT product_id, SUM(quantity) AS sold\nFROM order_items GROUP BY product_id\nORDER BY sold DESC LIMIT $1;",
+                sqlite(),
+                "",
+            ),
+        ] {
+            store
+                .update_named_query(None, name, sql, scope, Some(description.into()))
+                .expect("seed saved query");
+        }
+        store.update_settings(|config| {
+            for (pattern, target) in [
+                (r"^db\.internal\..*$", "deploy@bastion.example.com:2222"),
+                (
+                    r"^warehouse\.prod$",
+                    "analyst:s3cret@warehouse-gw.example.com",
+                ),
+                (r"\.rds\.amazonaws\.com$", "ops@`bastion-for rds`"),
+            ] {
+                config
+                    .ssh_tunnel_patterns
+                    .insert(pattern.into(), target.into());
+            }
+        });
+        store.save_settings().expect("seed tunnels");
+    }
     cx.update(|cx| dbcrust_gui::init(store, cx));
 
     let (window, workspace) = cx
@@ -145,6 +224,38 @@ fn main() {
         shots.cx.run_until_parked();
     }
     shots.capture("home");
+
+    if let Some(name) = args
+        .only
+        .as_deref()
+        .filter(|name| name.starts_with("settings-"))
+    {
+        use dbcrust_gui::settings::SettingsPage;
+        let page = if name == "settings-ssh-tunnels" {
+            SettingsPage::SshTunnels
+        } else {
+            SettingsPage::SavedQueries
+        };
+        shots.cx.update(|cx| {
+            AppState::global(cx).update(cx, |state, cx| state.open_settings_page(page, cx))
+        });
+        shots.settle(Duration::from_millis(600));
+        if page == SettingsPage::SshTunnels {
+            let workspace = workspace.clone();
+            shots.with_window(|window, cx| {
+                if let Some(settings) = workspace.read(cx).settings_view() {
+                    settings.update(cx, |settings, cx| {
+                        settings.test_tunnel_host("db.internal.example.com", window, cx)
+                    });
+                }
+            });
+            shots.settle(Duration::from_millis(200));
+        }
+        shots.capture(name);
+        println!("screenshots written to {}", args.out.display());
+        let _ = std::fs::remove_dir_all(&demo_dir);
+        return;
+    }
 
     // Extra states of the Connections page, rendered on request only
     // (`--only home-new`, `home-docker`, …); they are not docs screenshots

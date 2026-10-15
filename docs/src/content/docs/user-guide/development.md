@@ -61,7 +61,7 @@ The binary is named `dbcrust`. A short alias `dbc` is also built (see `src/bin/d
 ### Desktop app
 
 ```bash
-mise run gui:dev            # run the app (debug build)
+mise run gui:dev            # run the app (dev build, optimised dependencies)
 mise run gui:build          # release build
 mise run gui:test           # backend tests (dbcrust-gui-core, no GPUI needed)
 mise run gui:lint           # clippy on both GUI crates
@@ -220,8 +220,8 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 | `lint` | Clippy with strict settings |
 | `fmt` | `cargo fmt` |
 | `check` | fmt → lint → test |
-| `gui:dev` | Run the desktop app (debug) |
-| `gui:build` | Release build of the desktop app |
+| `gui:dev` | Run the desktop app (dev build, optimised dependencies) |
+| `gui:build` | Optimised build of the desktop app (`target/gui-release`) |
 | `gui:install` | Install `dbcrust-gui` into `~/.cargo/bin` |
 | `gui:bundle` | macOS `DBCrust.app` bundle |
 | `gui:test` | Backend tests (`dbcrust-gui-core`) |

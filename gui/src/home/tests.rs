@@ -49,7 +49,7 @@ fn list(
     cx.update(|cx| {
         home.update(cx, |home, cx| {
             home.sessions = sessions;
-            home.recents = recents;
+            home.set_recents(recents);
             home.docker = DockerListState::Ready {
                 containers: Vec::new(),
                 context: Some("orbstack".into()),
@@ -1271,12 +1271,16 @@ fn a_docker_session_is_reused_only_on_the_daemon_it_was_connected_on(cx: &mut Te
         "a daemon that cannot be confirmed is declined"
     );
 
-    // Connecting re-resolves the current context: on B the session opens anew
+    // Connecting re-resolves the current context (off the UI thread): on B
+    // the session opens anew
     cx.update(|cx| {
         home.update(cx, |home, cx| {
             home.resolve_docker_pin = pin_b;
             home.connect_key("session:dock", None, cx);
         });
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
         assert!(
             AppState::global(cx)
                 .read(cx)
@@ -1577,5 +1581,95 @@ fn the_environment_picked_on_the_form_goes_with_the_live_connection(cx: &mut Tes
             state.environment_of(id).map(|tag| tag.label),
             Some("Production".to_string())
         );
+    });
+}
+
+#[gpui_kit::test]
+fn a_docker_connect_survives_a_filter_change_while_the_context_resolves(cx: &mut TestAppContext) {
+    let (_window, _workspace, home) = open(cx);
+    form::save_session(&store_of(cx), "dock", "docker://app@pg/shop", None).expect("save");
+    cx.update(|cx| home.update(cx, |home, cx| home.read_lists(cx)));
+
+    // Connect, then filter the session out before the Docker context is known
+    cx.update(|cx| {
+        home.update(cx, |home, cx| {
+            home.connect_key("session:dock", None, cx);
+            home.set_filter(Filter::Recent, cx);
+            assert!(home.listing.entry("session:dock").is_none());
+        })
+    });
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let attempt = AppState::global(cx)
+            .read(cx)
+            .attempt_for("session:dock")
+            .map(|attempt| attempt.subject.clone());
+        assert_eq!(
+            attempt.as_deref(),
+            Some("dock"),
+            "the connect still started"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn a_session_edited_while_the_context_resolves_is_recorded_as_what_it_opens(
+    cx: &mut TestAppContext,
+) {
+    let (_window, _workspace, home) = open(cx);
+    let store = store_of(cx);
+    form::save_session(&store, "dock", "docker://app@pg/shop", None).expect("save");
+    cx.update(|cx| home.update(cx, |home, cx| home.read_lists(cx)));
+    let listed = cx.update(|cx| {
+        let home = home.read(cx);
+        let entry = home.listing.entry("session:dock").cloned().expect("entry");
+        home.entry_identity(&entry).expect("identity")
+    });
+
+    // Connect, then the session points elsewhere before the context is known
+    cx.update(|cx| {
+        home.update(cx, |home, cx| {
+            home.resolve_docker_pin = pin_b;
+            home.connect_key("session:dock", None, cx);
+        })
+    });
+    form::save_session(&store, "dock", "docker://app@pg/other", None).expect("edit");
+    cx.run_until_parked();
+
+    // The connection opens the edited session (the request names it) and is
+    // recorded as that, never as the target it was listed with
+    let edited = store
+        .read(|config| config.get_session("dock").map(TargetIdentity::from_session))
+        .expect("the edited session")
+        .with_docker_daemon(pin_b().as_deref());
+    assert_ne!(edited, listed);
+    cx.update(|cx| {
+        let state = AppState::global(cx);
+        let attempt = state
+            .read(cx)
+            .attempt_for("session:dock")
+            .expect("an attempt");
+        assert_eq!(attempt.identity.as_ref(), Some(&edited));
+    });
+
+    // Deleted meanwhile: the attempt fails as not found and records nothing
+    cx.update(|cx| {
+        AppState::global(cx).update(cx, |state, cx| {
+            if let Some(id) = state.attempt_for("session:dock").map(|attempt| attempt.id) {
+                state.dismiss_attempt(id, cx);
+            }
+        })
+    });
+    cx.update(|cx| home.update(cx, |home, cx| home.read_lists(cx)));
+    cx.update(|cx| home.update(cx, |home, cx| home.connect_key("session:dock", None, cx)));
+    store.delete_session("dock").expect("delete");
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let state = AppState::global(cx);
+        let attempt = state
+            .read(cx)
+            .attempt_for("session:dock")
+            .expect("an attempt");
+        assert_eq!(attempt.identity, None);
     });
 }

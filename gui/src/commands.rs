@@ -92,6 +92,7 @@ pub enum AppCommand {
     // App
     About,
     OpenSettings,
+    ManageSavedQueries,
     Quit,
 }
 
@@ -161,6 +162,7 @@ impl AppCommand {
             AppCommand::GoToTab9 => "Go to last tab",
             AppCommand::About => "About DBCrust",
             AppCommand::OpenSettings => "Settings…",
+            AppCommand::ManageSavedQueries => "Manage saved queries…",
             AppCommand::Quit => "Quit DBCrust",
         }
     }
@@ -226,6 +228,9 @@ impl AppCommand {
             | AppCommand::GoToTab9 => &["switch", "jump", "number"],
             AppCommand::About => &["version", "license", "help"],
             AppCommand::OpenSettings => &["preferences", "config", "options", "appearance"],
+            AppCommand::ManageSavedQueries => {
+                &["named queries", "snippets", "bookmarks", "edit", "delete"]
+            }
             AppCommand::Quit => &["exit", "close app"],
         }
     }
@@ -268,7 +273,10 @@ impl AppCommand {
             | AppCommand::ToggleSidebar
             | AppCommand::ToggleTheme
             | AppCommand::CommandPalette => CommandCategory::View,
-            AppCommand::OpenSettings | AppCommand::About | AppCommand::Quit => CommandCategory::App,
+            AppCommand::ManageSavedQueries
+            | AppCommand::OpenSettings
+            | AppCommand::About
+            | AppCommand::Quit => CommandCategory::App,
         }
     }
 
@@ -313,6 +321,7 @@ impl AppCommand {
             | AppCommand::GoToTab9 => IconName::Hash,
             AppCommand::About => IconName::Info,
             AppCommand::OpenSettings => IconName::Settings,
+            AppCommand::ManageSavedQueries => IconName::Bookmark,
             AppCommand::Quit => IconName::Power,
         }
     }
@@ -360,7 +369,8 @@ impl AppCommand {
             AppCommand::CopySelection => &["secondary-c"],
             AppCommand::ExportResults => &["secondary-alt-e"],
             AppCommand::Quit => &["secondary-q"],
-            AppCommand::Disconnect
+            AppCommand::ManageSavedQueries
+            | AppCommand::Disconnect
             | AppCommand::ToggleReadOnly
             | AppCommand::SaveSession
             | AppCommand::About => &[],
@@ -441,6 +451,7 @@ impl AppCommand {
             | AppCommand::GoToTab7
             | AppCommand::GoToTab8
             | AppCommand::GoToTab9 => None,
+            AppCommand::ManageSavedQueries => Some(MenuSlot::File),
             AppCommand::About | AppCommand::OpenSettings | AppCommand::Quit => Some(MenuSlot::App),
         }
     }
@@ -500,6 +511,7 @@ impl AppCommand {
             AppCommand::ExportResults => Box::new(act::ExportResults),
             AppCommand::ShowHome => Box::new(act::ShowHome),
             AppCommand::OpenSettings => Box::new(act::OpenSettings),
+            AppCommand::ManageSavedQueries => Box::new(act::ManageSavedQueries),
             AppCommand::CommandPalette => Box::new(act::CommandPalette),
             AppCommand::FocusExplorer => Box::new(act::FocusExplorer),
             AppCommand::ToggleSidebar => Box::new(act::ToggleSidebar),

@@ -71,6 +71,10 @@ pub enum DraftTarget {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         engine: Option<dbcrust::database::DatabaseType>,
     },
+    /// A saved query of any scope (sessions included), by its storage key.
+    SavedQueryKey {
+        key: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -292,6 +296,14 @@ mod tests {
                     connection_key: None,
                     target: Some(DraftTarget::File {
                         path: "/tmp/scratch.sql".into(),
+                    }),
+                },
+                Draft {
+                    title: "Health".into(),
+                    sql: "SELECT 1".into(),
+                    connection_key: None,
+                    target: Some(DraftTarget::SavedQueryKey {
+                        key: "session::warehouse::health".into(),
                     }),
                 },
             ],

@@ -157,6 +157,23 @@ opt-level = 0          # No optimization for faster compile times during develop
 debug = true           # Include debug info
 split-debuginfo = "unpacked"  # macOS: faster incremental builds (up to 70% faster)
 
+# Desktop app builds (`mise run gui:*`). GPUI lays out, shapes text and
+# highlights SQL on the CPU every frame: size-optimised (`release`) or
+# unoptimised (`dev`) code makes typing and scrolling visibly lag.
+[profile.gui-release]
+inherits = "release"
+opt-level = 3
+
+# `mise run gui:dev`: dependencies (GPUI, tree-sitter, taffy…) optimised once
+# and cached; the app's own crates stay quick to rebuild and debuggable.
+[profile.gui-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.gui-dev.package."*"]
+opt-level = 3
+debug = false
+
 [profile.bench]
 opt-level = 3     # Maximum optimization for benchmarks
 lto = true        # Enable Link Time Optimization

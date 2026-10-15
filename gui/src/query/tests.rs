@@ -11,6 +11,7 @@ use crate::preferences::Preferences;
 use dbcrust_gui_core::dbcrust::config::Config;
 use dbcrust_gui_core::gui_state::StatementSeparators;
 use dbcrust_gui_core::{ConfigStore, ConnectRequest, ConnectionHandle, ConnectionId, RequestId};
+use gpui_kit::component::input::EditorState;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, Bounds, Entity, Focusable as _, HeadlessAppContext,
@@ -77,6 +78,12 @@ struct Env {
 
 impl Env {
     fn new(initial_sql: &str) -> Self {
+        Self::open(initial_sql, false)
+    }
+
+    /// `in_workspace`: the tab is a tab of the main window's workspace, as
+    /// in the app (otherwise it is the window's only view).
+    fn open(initial_sql: &str, in_workspace: bool) -> Self {
         crate::test_support::isolate();
         let dir = tempfile::tempdir().expect("temp dir");
         let database = dir.path().join("shop.db");
@@ -122,22 +129,45 @@ impl Env {
             .update(|cx| AppState::global(cx).read(cx).active_id())
             .expect("connected");
         let sql = initial_sql.to_string();
-        let (window, tab) = cx
-            .update(|cx| {
-                let mut options = crate::main_window_options(cx);
-                options.window_bounds = Some(WindowBounds::Windowed(Bounds {
-                    origin: Point::default(),
-                    size: size(px(1000.), px(700.)),
-                }));
-                options.focus = false;
-                options.show = false;
+        let mut options = cx.update(|cx| crate::main_window_options(cx));
+        options.window_bounds = Some(WindowBounds::Windowed(Bounds {
+            origin: Point::default(),
+            size: size(px(1000.), px(700.)),
+        }));
+        options.focus = false;
+        options.show = false;
+        let (window, tab) = if in_workspace {
+            let (window, workspace) = cx
+                .update(|cx| {
+                    // Never restore drafts other tests may have saved
+                    cx.set_global(crate::RestoredState(Default::default()));
+                    crate::open_main_window(options, cx)
+                })
+                .expect("open the main window");
+            let tab = cx
+                .update_window(window, |_, window, cx| {
+                    workspace.update(cx, |workspace, cx| {
+                        workspace.open_query_tab(
+                            Some(connection),
+                            Some("Test".into()),
+                            sql,
+                            window,
+                            cx,
+                        )
+                    })
+                })
+                .expect("open a query tab");
+            (window, tab)
+        } else {
+            cx.update(|cx| {
                 gpui_kit::open_window(options, cx, |window, cx| {
                     cx.new(|cx| {
                         QueryTab::new(Some(connection), Some("Test".into()), sql, window, cx)
                     })
                 })
             })
-            .expect("open window");
+            .expect("open window")
+        };
         let mut env = Self {
             cx,
             window,
@@ -1191,4 +1221,532 @@ fn a_selection_that_grows_a_clause_below_a_blank_line_is_stale() {
     env.caret(len);
     env.type_text("\n\nWHERE id = 1");
     assert_eq!(env.stale(), Some(Stale::Edited));
+}
+
+// ----- Keystrokes stay cheap -----
+
+impl Env {
+    /// Whether the tab's statement index is of the text as it is now.
+    fn index_is_current(&mut self) -> bool {
+        let tab = self.tab.clone();
+        self.cx.update(|cx| tab.read(cx).index_is_current(cx))
+    }
+
+    fn hint(&mut self) -> super::TargetHint {
+        let tab = self.tab.clone();
+        self.cx.update(|cx| tab.read(cx).hint.clone())
+    }
+}
+
+#[test]
+fn a_large_buffer_is_split_off_the_ui_thread_once_typing_pauses() {
+    let statements = 8_000;
+    let sql: String = (0..statements).map(|i| format!("SELECT {i};\n")).collect();
+    assert!(sql.len() > super::SYNC_INDEX_BYTES);
+    let mut env = Env::new("");
+    env.set_sql(&sql);
+    settle(&mut env.cx, Duration::from_millis(150));
+    assert!(env.index_is_current());
+    env.caret(sql.len());
+    assert_eq!(
+        env.hint(),
+        super::TargetHint::Statement {
+            index: statements - 1,
+            count: statements
+        }
+    );
+
+    // A keystroke does not split the buffer again on the UI thread
+    env.type_text("SELECT 77");
+    assert_eq!(env.sql().len(), sql.len() + "SELECT 77".len());
+    assert!(!env.index_is_current());
+
+    // Once typing pauses, the split lands and the hint follows
+    settle(&mut env.cx, Duration::from_millis(150));
+    assert!(env.index_is_current());
+    assert_eq!(
+        env.hint(),
+        super::TargetHint::Statement {
+            index: statements,
+            count: statements + 1
+        }
+    );
+
+    // Run never waits for the split: it executes the text as it is now
+    env.type_text(" + 1");
+    assert!(!env.index_is_current());
+    env.run_current();
+    env.wait_for_history(1);
+    assert_eq!(env.history_sql(), vec!["SELECT 77 + 1"]);
+}
+
+#[test]
+fn moving_the_caret_is_not_a_status_change() {
+    use super::QueryTabEvent;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let mut env = Env::new("SELECT 1;\nSELECT 22;");
+    let events: Rc<RefCell<Vec<QueryTabEvent>>> = Rc::default();
+    let tab = env.tab.clone();
+    let _subscription = env.cx.update(|cx| {
+        let events = events.clone();
+        cx.subscribe(&tab, move |_, event: &QueryTabEvent, _| {
+            events.borrow_mut().push(event.clone())
+        })
+    });
+    env.caret(14);
+    assert_eq!(env.cx.update(|cx| tab.read(cx).cursor(cx)), Some((2, 5)));
+    let seen = events.borrow().clone();
+    assert!(
+        seen.iter()
+            .any(|event| matches!(event, QueryTabEvent::CursorMoved)),
+        "{seen:?}"
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|event| matches!(event, QueryTabEvent::StatusChanged)),
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn the_toolbar_follows_a_read_only_toggle() {
+    let mut env = Env::new("SELECT 1");
+    let tab = env.tab.clone();
+    let read_only = |env: &mut Env| {
+        env.cx.update(|cx| {
+            tab.read(cx)
+                .cached_summary
+                .as_ref()
+                .expect("a bound tab knows its connection")
+                .read_only
+        })
+    };
+    assert!(!read_only(&mut env));
+    let id = env
+        .cx
+        .update(|cx| tab.read(cx).connection())
+        .expect("bound");
+    env.cx.update(|cx| {
+        AppState::global(cx).update(cx, |state, cx| state.set_read_only_guard(id, true, cx))
+    });
+    env.cx.run_until_parked();
+    assert!(read_only(&mut env));
+}
+
+#[test]
+fn a_large_file_edited_in_place_shows_as_modified() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let text = "SELECT 1;\n".repeat(10_000);
+    assert!(text.len() > super::SYNC_COMPARE_BYTES);
+    let mut env = Env::new("");
+    env.load_file(dir.path().join("big.sql"), &text);
+    env.cx.run_until_parked();
+    assert!(!env.modified());
+
+    // Same length, one character differs: compared off the UI thread
+    env.set_sql(&text.replacen('1', "2", 1));
+    env.cx.run_until_parked();
+    assert!(env.modified());
+    env.set_sql(&text);
+    env.cx.run_until_parked();
+    assert!(!env.modified());
+}
+
+// ----- Review fixes -----
+
+#[test]
+fn a_cell_copied_after_copy_all_stays_on_the_clipboard() {
+    let mut env = Env::new("SELECT name, email FROM customers ORDER BY id");
+    env.run_current();
+    env.wait_for_status("the rows", |status| {
+        matches!(status, QueryStatus::Done { .. })
+    });
+    let tab = env.tab.clone();
+    env.cx
+        .update_window(env.window, |_, window, cx| {
+            let results = tab.read(cx).results.clone();
+            // "Copy all" renders in the background; the cell is copied at once
+            super::results::ResultsView::copy_all_then_cell(&results, 0, 1, window, cx);
+        })
+        .expect("copy");
+    env.cx.run_until_parked();
+    let clipboard = env
+        .cx
+        .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(clipboard.as_deref(), Some("ada@example.com"));
+}
+
+#[test]
+fn a_failed_save_of_a_large_edited_file_keeps_it_modified() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    // The file's directory is gone: saving it fails
+    let path = dir.path().join("gone").join("big.sql");
+    let text = "SELECT 1;\n".repeat(10_000);
+    let mut env = Env::new("");
+    env.load_file(path, &text);
+    env.cx.run_until_parked();
+    assert!(!env.modified());
+
+    // An edit of the same length is compared off the UI thread; the save
+    // starts before that comparison answers, and fails
+    env.set_sql(&text.replacen('1', "2", 1));
+    env.save();
+    env.cx.run_until_parked();
+    assert!(env.modified(), "the edit was not saved");
+}
+
+#[test]
+fn completion_answers_from_the_schema_that_replaced_its_snapshot() {
+    use dbcrust_gui_core::{TableEntry, TableKind};
+
+    let mut env = Env::new("");
+    let id = env
+        .cx
+        .update(|cx| env.tab.read(cx).connection())
+        .expect("bound");
+    let tables = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| TableEntry {
+                schema: None,
+                name: name.to_string(),
+                kind: TableKind::Table,
+                owner: None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let replace = |env: &mut Env, list: Option<Vec<TableEntry>>| {
+        env.cx.update(|cx| {
+            AppState::global(cx).update(cx, |state, cx| state.replace_schema(id, list, cx))
+        });
+    };
+    let type_now = |env: &mut Env, text: &str| {
+        env.cx
+            .update_window(env.window, |_, window, cx| window.input(text, cx))
+            .expect("type");
+    };
+
+    // The table list is replaced while the request is worked out
+    type_now(&mut env, "SELECT * FROM or");
+    replace(&mut env, Some(tables(&["customers", "orders", "orbit"])));
+    env.cx.run_until_parked();
+    let (_, labels) = env.menu();
+    assert!(labels.contains(&"orbit".to_string()), "{labels:?}");
+
+    // Asked while the schema was loading, answered once it loaded
+    env.set_sql("");
+    replace(&mut env, None);
+    type_now(&mut env, "SELECT * FROM or");
+    replace(&mut env, Some(tables(&["orchid", "orders"])));
+    env.cx.run_until_parked();
+    let (_, labels) = env.menu();
+    assert!(labels.contains(&"orchid".to_string()), "{labels:?}");
+    assert!(!labels.contains(&"orbit".to_string()), "{labels:?}");
+}
+
+impl Env {
+    /// Draw the next frame as the app does: views that did not change are
+    /// reused from the previous one (a test frame from `render_frame`
+    /// refreshes every view instead).
+    fn draw(&mut self) {
+        self.cx
+            .update_window(self.window, |_, window, cx| window.draw(cx).clear(cx))
+            .expect("draw");
+    }
+
+    /// How many times the editor, the results panel and its grid rendered.
+    fn renders(&mut self) -> (usize, usize, usize) {
+        let tab = self.tab.clone();
+        self.cx.update(|cx| {
+            let tab = tab.read(cx);
+            let (results, grid) = tab.results.read(cx).renders(cx);
+            (
+                tab.editor_pane.read(cx).renders,
+                results,
+                grid.expect("a grid on screen"),
+            )
+        })
+    }
+}
+
+#[test]
+fn a_caret_blink_repaints_the_editor_but_not_the_results() {
+    let mut env = Env::open("SELECT name FROM customers", true);
+    env.run_current();
+    env.wait_for_status("the rows", |status| {
+        matches!(status, QueryStatus::Done { .. })
+    });
+    env.cx.run_until_parked();
+    env.draw();
+    env.draw();
+    let (editor, results, grid) = env.renders();
+
+    // The caret blinks: the editor repaints, the results and the grid are reused
+    let tab = env.tab.clone();
+    let editor_state = env.cx.update(|cx| tab.read(cx).editor.clone());
+    for _ in 0..3 {
+        env.cx
+            .update(|cx| editor_state.update(cx, |_, cx| cx.notify()));
+        env.draw();
+    }
+    let blinked = env.renders();
+    assert!(blinked.0 > editor, "{blinked:?}");
+    assert_eq!((blinked.1, blinked.2), (results, grid), "{blinked:?}");
+
+    // A preferences change reaches everything the tab embeds cached
+    env.cx
+        .update(|cx| Preferences::update(cx, |preferences| preferences.editor_font_size += 1.));
+    env.cx.run_until_parked();
+    env.draw();
+    let changed = env.renders();
+    assert!(changed.0 > blinked.0, "{changed:?}");
+    assert!(
+        changed.1 > blinked.1 && changed.2 > blinked.2,
+        "{changed:?}"
+    );
+
+    // …and so does an app state change, through the workspace
+    let before = env.renders();
+    env.cx
+        .update(|cx| AppState::global(cx).update(cx, |state, cx| state.storage_changed(cx)));
+    env.cx.run_until_parked();
+    env.draw();
+    let after = env.renders();
+    assert!(after.1 > before.1 && after.2 > before.2, "{after:?}");
+}
+
+#[test]
+fn a_large_buffer_checks_its_results_off_the_ui_thread() {
+    let statements = 8_000;
+    let sql: String = (0..statements).map(|i| format!("SELECT {i};\n")).collect();
+    let mut env = Env::new("");
+    env.set_sql(&sql);
+    settle(&mut env.cx, Duration::from_millis(150));
+    // The last statement runs
+    env.caret(sql.len());
+    env.run_current();
+    env.wait_for_history(1);
+    assert_eq!(
+        env.history_sql(),
+        vec![format!("SELECT {}", statements - 1)]
+    );
+    settle(&mut env.cx, Duration::from_millis(50));
+    assert_eq!(env.stale(), None);
+    let tab = env.tab.clone();
+    let scans = env.cx.update(|cx| tab.read(cx).stale_scans);
+
+    // An edit elsewhere: still current, worked out with the background split
+    env.caret(0);
+    env.type_text("-- note\n");
+    settle(&mut env.cx, Duration::from_millis(150));
+    assert!(env.index_is_current());
+    assert_eq!(env.stale(), None);
+
+    // An edit of what ran: previous results
+    let len = env.sql().len();
+    env.caret(len - 2);
+    env.type_text("0");
+    settle(&mut env.cx, Duration::from_millis(150));
+    assert!(env.index_is_current());
+    assert_eq!(env.stale(), Some(Stale::Edited));
+    assert_eq!(env.results_stale(), Some(Stale::Edited));
+    assert_eq!(
+        env.cx.update(|cx| tab.read(cx).stale_scans),
+        scans,
+        "no check of the whole buffer on the UI thread"
+    );
+}
+
+#[test]
+fn a_value_copied_from_the_row_inspector_stays_on_the_clipboard() {
+    let mut env = Env::new("SELECT name, email FROM customers ORDER BY id");
+    env.run_current();
+    env.wait_for_status("the rows", |status| {
+        matches!(status, QueryStatus::Done { .. })
+    });
+    let tab = env.tab.clone();
+    let results = env.cx.update(|cx| tab.read(cx).results.clone());
+    // The row sheet of the first row, slid in
+    env.cx
+        .update_window(env.window, |_, window, cx| {
+            super::results::ResultsView::with_grid(&results, window, cx, |grid, window, cx| {
+                grid.inspect_row(0, window, cx)
+            });
+        })
+        .expect("inspect");
+    for _ in 0..40 {
+        tick(&mut env.cx);
+        env.cx
+            .update_window(env.window, |_, window, cx| window.render_frame(cx))
+            .expect("frame");
+    }
+    env.cx
+        .update_window(env.window, |_, window, cx| {
+            // "Copy all" renders in the background; meanwhile the sheet's
+            // own "Copy value" button of the second field is clicked
+            super::results::ResultsView::with_grid(&results, window, cx, |grid, window, cx| {
+                grid.copy_all(dbcrust_gui_core::export::ExportFormat::Csv, window, cx)
+            });
+            window.click(("inspect-copy", 1usize), cx);
+        })
+        .expect("copy");
+    env.cx.run_until_parked();
+    let clipboard = env
+        .cx
+        .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(clipboard.as_deref(), Some("ada@example.com"));
+}
+
+#[cfg(target_os = "macos")]
+const CUT_KEYS: &str = "cmd-x";
+#[cfg(not(target_os = "macos"))]
+const CUT_KEYS: &str = "ctrl-x";
+
+impl Env {
+    /// Run the query, put `preload` on the clipboard, start "Copy all"
+    /// (rendered in the background) and, before it finishes, let `meanwhile`
+    /// act on the editor with its first six characters selected. Returns the
+    /// clipboard once everything settled.
+    fn copy_all_while(
+        &mut self,
+        preload: Option<&str>,
+        meanwhile: impl FnOnce(&Entity<EditorState>, &mut gpui_kit::Window, &mut App),
+    ) -> Option<String> {
+        self.run_current();
+        self.wait_for_status("the rows", |status| {
+            matches!(status, QueryStatus::Done { .. })
+        });
+        self.focus_editor();
+        if let Some(text) = preload {
+            self.cx.update(|cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text.to_string()))
+            });
+        }
+        let tab = self.tab.clone();
+        let results = self.cx.update(|cx| tab.read(cx).results.clone());
+        self.cx
+            .update_window(self.window, |_, window, cx| {
+                super::results::ResultsView::with_grid(&results, window, cx, |grid, window, cx| {
+                    grid.copy_all(dbcrust_gui_core::export::ExportFormat::Csv, window, cx)
+                });
+                let editor = tab.read(cx).editor.clone();
+                editor.update(cx, |editor, cx| editor.set_selected_range(0..6, cx));
+                meanwhile(&editor, window, cx);
+            })
+            .expect("copy");
+        self.cx.run_until_parked();
+        self.cx
+            .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()))
+    }
+}
+
+#[test]
+fn sql_cut_in_the_editor_after_copy_all_stays_on_the_clipboard() {
+    let mut env = Env::new("SELECT name, email FROM customers ORDER BY id");
+    // GPUI Kit's editor writes the clipboard itself
+    let clipboard = env.copy_all_while(None, |_, window, cx| window.press(CUT_KEYS, cx));
+    assert!(env.sql().starts_with(" name, email"), "{}", env.sql());
+    assert_eq!(clipboard.as_deref(), Some("SELECT"));
+}
+
+#[test]
+fn cutting_the_very_text_on_the_clipboard_after_copy_all_keeps_it() {
+    let mut env = Env::open("SELECT name, email FROM customers ORDER BY id", true);
+    let clipboard = env.copy_all_while(Some("SELECT"), |_, window, cx| window.press(CUT_KEYS, cx));
+    assert!(env.sql().starts_with(" name, email"), "{}", env.sql());
+    assert_eq!(clipboard.as_deref(), Some("SELECT"));
+}
+
+#[test]
+fn a_cut_or_copy_from_a_menu_after_copy_all_stays_on_the_clipboard() {
+    use gpui_kit::component::input::{Copy, Cut};
+
+    // A context or touch menu dispatches the action to the focused editor:
+    // no keystroke
+    let mut env = Env::open("SELECT name, email FROM customers ORDER BY id", true);
+    let clipboard = env.copy_all_while(None, |editor, window, cx| {
+        editor.focus_handle(cx).dispatch_action(&Cut, window, cx)
+    });
+    assert!(env.sql().starts_with(" name, email"), "{}", env.sql());
+    assert_eq!(clipboard.as_deref(), Some("SELECT"));
+
+    env.set_sql("SELECT name FROM customers");
+    let clipboard = env.copy_all_while(Some("before"), |editor, window, cx| {
+        editor.focus_handle(cx).dispatch_action(&Copy, window, cx)
+    });
+    assert_eq!(clipboard.as_deref(), Some("SELECT"));
+}
+
+#[cfg(target_os = "macos")]
+const COPY_KEYS: &str = "cmd-c";
+#[cfg(not(target_os = "macos"))]
+const COPY_KEYS: &str = "ctrl-c";
+
+#[test]
+fn the_copy_shortcut_copies_a_selected_column() {
+    let mut env = Env::open("SELECT name, email FROM customers ORDER BY id", true);
+    env.run_current();
+    env.wait_for_status("the rows", |status| {
+        matches!(status, QueryStatus::Done { .. })
+    });
+    let tab = env.tab.clone();
+    let results = env.cx.update(|cx| tab.read(cx).results.clone());
+    env.cx
+        .update_window(env.window, |_, window, cx| {
+            // The email column (column 0 is the row number), the results in focus
+            super::results::ResultsView::with_grid(&results, window, cx, |grid, _, cx| {
+                grid.select_column(2, cx)
+            });
+            let focus = results.focus_handle(cx);
+            window.focus(&focus, cx);
+            window.render_frame(cx);
+            // ⌘C / Ctrl-C through the key bindings: "Copy selection", which
+            // renders the column in the background
+            window.press(COPY_KEYS, cx);
+        })
+        .expect("copy");
+    env.cx.run_until_parked();
+    let clipboard = env
+        .cx
+        .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(
+        clipboard.as_deref(),
+        Some("ada@example.com\nalan@example.com")
+    );
+}
+
+#[test]
+fn copy_all_from_the_results_copy_menu_lands() {
+    use gpui_kit::test::TestWindowExt as _;
+
+    let mut env = Env::open("SELECT name, email FROM customers ORDER BY id", true);
+    env.run_current();
+    env.wait_for_status("the rows", |status| {
+        matches!(status, QueryStatus::Done { .. })
+    });
+    env.cx
+        .update_window(env.window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("results-copy", cx);
+        })
+        .expect("open the menu");
+    settle(&mut env.cx, Duration::from_millis(300));
+    env.cx
+        .update_window(env.window, |_, window, cx| {
+            window.render_frame(cx);
+            // Copy selection, a separator, the heading, then the formats: CSV first
+            window.within("popup-menu").click(3usize, cx);
+        })
+        .expect("choose CSV");
+    env.cx.run_until_parked();
+    let clipboard = env
+        .cx
+        .update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(
+        clipboard.as_deref(),
+        Some("name,email\r\nAda,ada@example.com\r\nAlan,alan@example.com\r\n")
+    );
 }

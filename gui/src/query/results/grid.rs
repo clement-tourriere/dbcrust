@@ -7,6 +7,7 @@
 
 use super::inspector;
 use super::model::{self, ColumnKind, ColumnProfile, SortDirection};
+use crate::clipboard;
 use dbcrust_gui_core::ResultSet;
 use dbcrust_gui_core::export::{self, ExportFormat};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -41,6 +42,8 @@ const FIRST_DATA_COLUMN: usize = 1;
 
 /// Row height of the grid, header included.
 const ROW_HEIGHT: f32 = 28.;
+/// Results with at least this many rows are sorted off the UI thread.
+const BACKGROUND_SORT_ROWS: usize = 5_000;
 /// Monospace values (identifiers, numbers, structured data) and headers.
 const MONO_SIZE: f32 = 12.;
 /// Prose values in the UI font read smaller than monospace at the same size.
@@ -52,8 +55,15 @@ const PROSE_SIZE: f32 = 12.5;
 
 pub struct GridDelegate {
     result: Arc<ResultSet>,
-    /// Display row → source row.
-    order: Vec<usize>,
+    /// Display row → source row (shared with copies and exports running in
+    /// the background).
+    order: Arc<Vec<usize>>,
+    /// Source row → display row.
+    inverse: Vec<usize>,
+    /// Bumped by every sort request: a background sort that finishes after
+    /// a newer request is dropped.
+    sort_generation: u64,
+    sort_task: Option<Task<()>>,
     profiles: Vec<ColumnProfile>,
     /// Header labels, converted once.
     names: Vec<SharedString>,
@@ -76,7 +86,10 @@ impl GridDelegate {
     ) -> Self {
         let digits = result.rows.len().max(1).to_string().len();
         Self {
-            order: (0..result.rows.len()).collect(),
+            order: Arc::new((0..result.rows.len()).collect()),
+            inverse: (0..result.rows.len()).collect(),
+            sort_generation: 0,
+            sort_task: None,
             names: result
                 .columns
                 .iter()
@@ -98,7 +111,8 @@ impl GridDelegate {
     }
 
     /// Order the loaded rows by `sort` (or restore the order the query
-    /// returned them in).
+    /// returned them in). A large result is sorted on the background
+    /// executor: the header shows the new sort at once, the rows follow.
     fn apply_sort(
         &mut self,
         sort: Option<(usize, SortDirection)>,
@@ -106,16 +120,50 @@ impl GridDelegate {
         cx: &mut Context<TableState<Self>>,
     ) {
         self.sort = sort;
-        let new_order = match sort {
-            None => (0..self.result.rows.len()).collect(),
-            Some((col, direction)) => model::sorted_order(&self.result, col, direction),
+        self.sort_generation += 1;
+        let generation = self.sort_generation;
+        let result = self.result.clone();
+        let order_of = move || match sort {
+            None => (0..result.rows.len()).collect(),
+            Some((col, direction)) => model::sorted_order(&result, col, direction),
         };
-        let previous = std::mem::replace(&mut self.order, new_order);
+        if self.result.rows.len() < BACKGROUND_SORT_ROWS {
+            self.sort_task = None;
+            self.install_order(order_of(), window, cx);
+        } else {
+            self.sort_task = Some(cx.spawn_in(window, async move |table, cx| {
+                let order = cx.background_spawn(async move { order_of() }).await;
+                table
+                    .update_in(cx, |table, window, cx| {
+                        let delegate = table.delegate_mut();
+                        if delegate.sort_generation == generation {
+                            delegate.sort_task = None;
+                            delegate.install_order(order, window, cx);
+                        }
+                    })
+                    .ok();
+            }));
+        }
+        cx.notify();
+    }
+
+    fn install_order(
+        &mut self,
+        order: Vec<usize>,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        let mut inverse = vec![0; order.len()];
+        for (display, &source) in order.iter().enumerate() {
+            inverse[source] = display;
+        }
+        self.inverse = inverse;
+        let previous = std::mem::replace(&mut self.order, Arc::new(order));
         // The selection is by row position; keep it on the same source row.
         cx.defer_in(window, move |table, _window, cx| {
             let moved = |display: usize, table: &TableState<GridDelegate>| {
                 let source = *previous.get(display)?;
-                table.delegate().order.iter().position(|&s| s == source)
+                table.delegate().inverse.get(source).copied()
             };
             match table.selection() {
                 TableSelection::Row(row) => {
@@ -467,6 +515,12 @@ pub struct ResultGrid {
     right_click: Rc<Cell<Option<(usize, usize)>>>,
     /// The row inspector sheet opened from this grid is (probably) showing.
     inspector_open: Rc<Cell<bool>>,
+    /// Text for the clipboard being rendered in the background; a newer copy
+    /// of this grid replaces (cancels) it.
+    copy_task: Option<Task<()>>,
+    /// How many times it rendered (tests watch what a repaint reaches).
+    #[cfg(test)]
+    pub(super) renders: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -492,6 +546,9 @@ impl ResultGrid {
             table,
             right_click,
             inspector_open: Rc::new(Cell::new(false)),
+            copy_task: None,
+            #[cfg(test)]
+            renders: 0,
             _subscriptions: vec![subscription, observation],
         }
     }
@@ -548,12 +605,19 @@ impl ResultGrid {
 
     // --- selection helpers --------------------------------------------------
 
+    /// Select table column `col` (the row number is column 0), as the user would.
+    #[cfg(test)]
+    pub(crate) fn select_column(&mut self, col: usize, cx: &mut Context<Self>) {
+        self.table
+            .update(cx, |table, cx| table.set_selected_col(col, cx));
+    }
+
     fn source_row(&self, display_row: usize, cx: &App) -> Option<usize> {
         self.table.read(cx).delegate().source_row(display_row)
     }
 
-    fn display_order<'a>(&self, cx: &'a App) -> &'a [usize] {
-        &self.table.read(cx).delegate().order
+    fn display_order(&self, cx: &App) -> Arc<Vec<usize>> {
+        self.table.read(cx).delegate().order.clone()
     }
 
     /// Whether Copy has something to copy.
@@ -610,11 +674,15 @@ impl ResultGrid {
     }
 
     pub fn copy_column_values(&mut self, col: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let text = export::column_to_text(&self.result, col, Some(self.display_order(cx)));
-        let count = self.result.row_count();
-        copy_text(
-            text,
-            format!("Copied {} values", model::group_thousands(count)),
+        let result = self.result.clone();
+        let order = self.display_order(cx);
+        let notice = format!(
+            "Copied {} values",
+            model::group_thousands(self.result.row_count())
+        );
+        self.copy_rendered(
+            move || export::column_to_text(&result, col, Some(&order)),
+            notice,
             window,
             cx,
         );
@@ -622,13 +690,42 @@ impl ResultGrid {
 
     /// The whole result (in the order shown) in `format`.
     pub fn copy_all(&mut self, format: ExportFormat, window: &mut Window, cx: &mut Context<Self>) {
-        let text = format.render(&self.result, Some(self.display_order(cx)));
+        let result = self.result.clone();
+        let order = self.display_order(cx);
         let notice = format!(
             "Copied {} as {}",
             model::row_count_label(self.result.row_count()),
             format.label()
         );
-        copy_text(text, notice, window, cx);
+        self.copy_rendered(
+            move || format.render(&result, Some(&order)),
+            notice,
+            window,
+            cx,
+        );
+    }
+
+    /// Render the text of a copy of many rows on the background executor,
+    /// then put it on the clipboard — unless another copy was asked for
+    /// meanwhile, here or anywhere else in the app (see `crate::clipboard`).
+    fn copy_rendered(
+        &mut self,
+        render: impl FnOnce() -> String + Send + 'static,
+        notice: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let ticket = clipboard::reserve(cx);
+        let text = cx.background_spawn(async move { render() });
+        self.copy_task = Some(cx.spawn_in(window, async move |_, cx| {
+            let text = text.await;
+            cx.update(|window, cx| {
+                if ticket.write(text, cx) {
+                    copy_notice(notice, window, cx);
+                }
+            })
+            .ok();
+        }));
     }
 
     /// Copy what is selected: a cell, a row (as TSV) or a column.
@@ -691,7 +788,7 @@ impl ResultGrid {
     /// the UI thread.
     pub fn export(&mut self, format: ExportFormat, window: &mut Window, cx: &mut Context<Self>) {
         let result = self.result.clone();
-        let order = self.display_order(cx).to_vec();
+        let order = self.display_order(cx);
         let file_name = format!("results.{}", format.extension());
         let receiver = cx.prompt_for_new_path(&export_directory(), Some(&file_name));
 
@@ -768,7 +865,11 @@ pub(super) fn copy_text(
     window: &mut Window,
     cx: &mut App,
 ) {
-    cx.write_to_clipboard(ClipboardItem::new_string(text));
+    clipboard::write(text, cx);
+    copy_notice(notice, window, cx);
+}
+
+fn copy_notice(notice: impl Into<SharedString>, window: &mut Window, cx: &mut App) {
     window.push_notification(Notification::success(notice).id::<CopyNotice>(), cx);
 }
 
@@ -798,6 +899,10 @@ fn remember_export_directory(file: &Path) {
 
 impl Render for ResultGrid {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         let grid = cx.entity();
         div()
             .id(("result-grid", self.table.entity_id()))
