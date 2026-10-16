@@ -355,8 +355,8 @@ reqwest = { version = "0.12.28", default-features = false }
 # DuckDB's engine version is encoded in the crate version (1.10506.0 = DuckDB
 # 1.5.6); exact pin, features chosen by `dbcrust-driver-duckdb`
 duckdb = { version = "=1.10506.0", default-features = false }
-mongodb = { version = "3.9", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
-bson = { version = "2.15", default-features = false }
+mongodb = { version = "3.9", default-features = false, features = ["rustls-tls", "compat-3-3-0", "bson-3"] }
+bson = { version = "3.1", default-features = false }
 elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
 # Use rustls-tls-ring to avoid aws-lc-rs cross-compilation issues on ARM64 Linux.
 # 0.15.2's Native reader uses `const ...: usize = 1 << 32`, breaking i686.

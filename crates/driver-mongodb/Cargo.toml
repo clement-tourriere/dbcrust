@@ -15,7 +15,7 @@ description = "DBCrust MongoDB driver (mongodb + bson)"
 [dependencies]
 dbcrust-core = { workspace = true }
 async-trait = { workspace = true }
-bson = { workspace = true }
+bson = { workspace = true, features = ["serde"] }
 futures-util = { workspace = true }
 mongodb = { workspace = true }
 percent-encoding = { workspace = true }

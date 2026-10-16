@@ -1,6 +1,6 @@
 //! MongoDB implementation of the database abstraction layer
 use async_trait::async_trait;
-use bson::{Bson, Document, doc};
+use bson::{Bson, Document, doc, raw::cstr};
 use dbcrust_core::complex_display::{
     ArrayDisplayAdapter, ComplexDataDisplay, ComplexDataType, ComplexDisplayConfig,
     ComplexTypeDetector, GenericComplexTypeDetector,
@@ -1773,11 +1773,15 @@ fn parse_regex_condition(condition: &str) -> Option<Document> {
     };
 
     let filter = if negated {
+        // BSON regex patterns are C strings: a pattern with a NUL byte cannot
+        // be sent, so it is not a regex condition
+        let pattern = pattern.try_into().ok()?;
+        let options = if case_insensitive { cstr!("i") } else { cstr!("") };
         doc! {
             field: {
                 "$not": Bson::RegularExpression(bson::Regex {
-                    pattern: pattern.to_string(),
-                    options: if case_insensitive { "i".to_string() } else { String::new() },
+                    pattern,
+                    options: options.to_owned(),
                 })
             }
         }
@@ -1943,8 +1947,8 @@ mod tests {
             Some(doc! {
                 "name": {
                     "$not": Bson::RegularExpression(bson::Regex {
-                        pattern: "x".to_string(),
-                        options: options.to_string(),
+                        pattern: "x".try_into().unwrap(),
+                        options: options.try_into().unwrap(),
                     })
                 }
             })
