@@ -135,6 +135,56 @@ pub fn strip_password_command_options_from_url(url: &str) -> Result<String, Stri
     Ok(parsed_url.to_string())
 }
 
+/// The URL of a stored AWS-connector target (S3, DynamoDB) with its secrets put
+/// back: the access key id and secret access key as user and password, secret
+/// options (the session token) as query parameters. Built from the typed
+/// connection, so the bucket or table, key prefix, endpoint, region and
+/// transport come back exactly.
+fn aws_url_with_credentials(
+    database_type: &DatabaseType,
+    host: Option<&str>,
+    port: Option<u16>,
+    user: &str,
+    bucket: &str,
+    prefix: Option<&str>,
+    options: &HashMap<String, String>,
+    secret: Option<&str>,
+) -> Result<String, String> {
+    let use_tls = options
+        .get("tls")
+        .is_none_or(|value| !value.eq_ignore_ascii_case("false"));
+    let info = crate::database::ConnectionInfo {
+        database_type: database_type.clone(),
+        host: host.map(str::to_string),
+        port,
+        use_tls,
+        username: (!user.is_empty()).then(|| user.to_string()),
+        database: (!bucket.is_empty()).then(|| bucket.to_string()),
+        file_path: prefix.filter(|p| !p.is_empty()).map(str::to_string),
+        options: options
+            .iter()
+            .filter(|(key, _)| !crate::password_sanitizer::is_secret_option_key(key))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+        ..Default::default()
+    };
+    let mut url = Url::parse(&info.to_url())
+        .map_err(|e| format!("Failed to build the {database_type} connection URL: {e}"))?;
+    if let Some(secret) = secret {
+        url.set_password(Some(secret))
+            .map_err(|_| "Failed to set the secret access key".to_string())?;
+    }
+    {
+        let mut query = url.query_pairs_mut();
+        for (key, value) in options {
+            if crate::password_sanitizer::is_secret_option_key(key) && !value.is_empty() {
+                query.append_pair(key, value);
+            }
+        }
+    }
+    Ok(url.to_string())
+}
+
 /// Option key under which a saved session's SSH password is kept in the
 /// store record (`secret_options`).
 pub(crate) const SSH_PASSWORD_SECRET_OPTION: &str = "ssh_password";
@@ -161,7 +211,10 @@ fn legacy_database_type(database_type: &DatabaseType) -> Option<crate::dbcrust_p
         | DatabaseType::SqlServer
         | DatabaseType::Redshift
         | DatabaseType::LibSql
-        | DatabaseType::InfluxDB => None,
+        | DatabaseType::InfluxDB
+        | DatabaseType::S3
+        | DatabaseType::DynamoDB
+        | DatabaseType::CloudWatchLogs => None,
     }
 }
 
@@ -175,6 +228,9 @@ fn binding_engine(database_type: &DatabaseType) -> Option<&'static str> {
         DatabaseType::Redshift => Some("redshift"),
         DatabaseType::LibSql => Some("libsql"),
         DatabaseType::InfluxDB => Some("influxdb"),
+        DatabaseType::S3 => Some("s3"),
+        DatabaseType::DynamoDB => Some("dynamodb"),
+        DatabaseType::CloudWatchLogs => Some("cloudwatch"),
         other => legacy_database_type(other).map(|legacy| legacy.as_str()),
     }
 }
@@ -241,6 +297,12 @@ pub(crate) fn tls_mode_from_options(options: &HashMap<String, String>) -> Option
             mode.push_str(&format!("@{org}"));
         }
         return Some(mode);
+    }
+    // S3, DynamoDB (`region` is only ever set by AWS connections): the transport and the
+    // region decide which endpoint a stored secret access key signs for, so it
+    // is never offered to a plain-HTTP endpoint or another region
+    if let (Some(region), Some(tls)) = (find("region"), find("tls")) {
+        return Some(format!("{tls}@{region}"));
     }
     ["sslmode", "ssl", "tls", "secure"].iter().find_map(|key| {
         options
@@ -473,6 +535,41 @@ impl RecentConnection {
 
         if self.database_type.is_file_based() {
             return Ok(original_url.clone());
+        }
+
+        // S3, DynamoDB: the host of the URL is the bucket or the region, so the
+        // generic lookup below would bind the secret to the wrong target
+        if self.database_type.is_aws() {
+            let info = crate::database::ConnectionInfo::parse_url(original_url).map_err(|e| {
+                format!(
+                    "Failed to parse recent connection URL '{}': {e}",
+                    crate::password_sanitizer::redact_url(original_url)
+                )
+            })?;
+            let user = info.username.clone().unwrap_or_default();
+            let bucket = info.database.clone().unwrap_or_default();
+            let credentials = lookup_connection_credentials(
+                &self.database_type,
+                info.host.as_deref().unwrap_or(""),
+                info.port.unwrap_or(0),
+                &bucket,
+                &user,
+                tls_mode_from_options(&info.options).as_deref(),
+            );
+            let mut options = info.options.clone();
+            for (key, value) in credentials.secret_options {
+                options.entry(key).or_insert(value);
+            }
+            return aws_url_with_credentials(
+                &self.database_type,
+                info.host.as_deref(),
+                info.port,
+                &user,
+                &bucket,
+                info.file_path.as_deref(),
+                &options,
+                credentials.password.as_deref(),
+            );
         }
 
         let mut parsed_url = Url::parse(original_url).map_err(|e| {
@@ -729,6 +826,35 @@ impl SavedSession {
             };
         }
 
+        if self.database_type == DatabaseType::S3 {
+            return format!(
+                "s3://{}{}",
+                self.dbname,
+                self.file_path
+                    .as_deref()
+                    .map(|prefix| format!("/{prefix}"))
+                    .unwrap_or_default()
+            );
+        }
+        if matches!(
+            self.database_type,
+            DatabaseType::DynamoDB | DatabaseType::CloudWatchLogs
+        ) {
+            return format!(
+                "{}://{}{}",
+                self.database_type.url_scheme(),
+                self.options.get("region").map_or("", String::as_str),
+                if self.dbname.is_empty() {
+                    String::new()
+                } else if self.dbname.starts_with("/aws/") {
+                    // written without the first slash, like the URL
+                    self.dbname.clone()
+                } else {
+                    format!("/{}", self.dbname)
+                }
+            );
+        }
+
         format!("{}@{}:{}/{}", self.user, self.host, self.port, self.dbname)
     }
 
@@ -806,6 +932,34 @@ impl SavedSession {
                 }
                 return Ok(url.to_string());
             }
+        }
+
+        // S3, DynamoDB: the bucket or region is where a host usually is, the
+        // endpoint (if any) a query parameter; the URL is rebuilt from the typed
+        // connection
+        if self.database_type.is_aws() {
+            let credentials = lookup_connection_credentials(
+                &self.database_type,
+                &self.host,
+                self.port,
+                &self.dbname,
+                &self.user,
+                tls_mode_from_options(&self.options).as_deref(),
+            );
+            let mut options = self.options.clone();
+            for (key, value) in credentials.secret_options {
+                options.entry(key).or_insert(value);
+            }
+            return aws_url_with_credentials(
+                &self.database_type,
+                (!self.host.is_empty()).then_some(self.host.as_str()),
+                (self.port != 0).then_some(self.port),
+                &self.user,
+                &self.dbname,
+                self.file_path.as_deref(),
+                &options,
+                credentials.password.as_deref(),
+            );
         }
 
         let url_scheme = self.database_type.url_scheme();
@@ -3023,17 +3177,24 @@ impl Config {
                     .clone(),
             )
         } else {
-            // For regular connections, use the actual connection details
+            // For regular connections, use the actual connection details.
+            // The AWS connectors have no host (AWS) and no port unless a custom
+            // endpoint is given: empty and 0 then, not localhost:5432
+            let s3 = connection_info.database_type.is_aws();
             (
                 connection_info
                     .host
                     .as_ref()
-                    .unwrap_or(&"localhost".to_string())
+                    .unwrap_or(&if s3 {
+                        String::new()
+                    } else {
+                        "localhost".to_string()
+                    })
                     .clone(),
                 connection_info
                     .port
                     .or_else(|| connection_info.default_port())
-                    .unwrap_or(5432),
+                    .unwrap_or(if s3 { 0 } else { 5432 }),
                 connection_info
                     .username
                     .as_ref()
@@ -3258,6 +3419,10 @@ impl Config {
     // Helper function to convert SQLite file paths to absolute paths for storage
     // This function expects relative paths (from sqlite:/// URLs) and converts them to absolute
     fn normalize_sqlite_path(file_path: &str) -> Result<String, Box<dyn Error>> {
+        // The in-memory database (`duckdb://:memory:`) is not a path
+        if file_path == crate::database::DUCKDB_MEMORY_PATH {
+            return Ok(file_path.to_string());
+        }
         let path = Path::new(file_path);
 
         // Make the relative path absolute based on current directory
@@ -4606,6 +4771,615 @@ mod tests {
     }
 
     #[rstest]
+    fn s3_sessions_rebuild_the_url_and_the_secrets_stay_in_the_store() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            let connection_info = ConnectionInfo::parse_url(
+                "s3://AKIAEXAMPLE:SECRET-canary-123@data-bucket/logs/2026/?region=eu-west-1\
+                 &endpoint=https://minio.internal:9000&session_token=TOKEN-canary-456",
+            )
+            .unwrap();
+            config
+                .save_session_from_connection_info("lake", &connection_info)
+                .unwrap();
+
+            let session = config.get_session("lake").unwrap();
+            assert_eq!(session.database_type, DatabaseType::S3);
+            assert_eq!(session.host, "minio.internal");
+            assert_eq!(session.port, 9000);
+            assert_eq!(session.user, "AKIAEXAMPLE");
+            assert_eq!(session.dbname, "data-bucket");
+            assert_eq!(session.file_path.as_deref(), Some("logs/2026/"));
+            assert_eq!(session.reconnect_target(), "s3://data-bucket/logs/2026/");
+            // neither the session nor its options ever hold a secret
+            let shown = format!("{session:?}");
+            assert!(!shown.contains("canary"), "{shown}");
+            assert!(!session.options.values().any(|v| v.contains("canary")));
+            assert!(!session.options.keys().any(|k| k.contains("token")));
+
+            let tls = tls_mode_from_options(&session.options);
+            assert_eq!(tls.as_deref(), Some("true@eu-west-1"));
+            save_connection_password(
+                &DatabaseType::S3,
+                "minio.internal",
+                9000,
+                "data-bucket",
+                "AKIAEXAMPLE",
+                tls.as_deref(),
+                "SECRET-canary-123",
+            )
+            .unwrap();
+
+            let url = session.reconstruct_connection_url().unwrap();
+            let again = ConnectionInfo::parse_url(&url).unwrap();
+            assert_eq!(again.username.as_deref(), Some("AKIAEXAMPLE"));
+            assert_eq!(
+                again.password.as_deref(),
+                Some("SECRET-canary-123"),
+                "{url}"
+            );
+            assert_eq!(
+                again.options.get("session_token").map(String::as_str),
+                Some("TOKEN-canary-456"),
+                "the session token comes back from the store"
+            );
+            assert_eq!(again.database.as_deref(), Some("data-bucket"));
+            assert_eq!(again.file_path.as_deref(), Some("logs/2026/"));
+            assert_eq!(again.host.as_deref(), Some("minio.internal"));
+            assert_eq!(again.port, Some(9000));
+            assert!(again.use_tls);
+            assert_eq!(
+                again.options.get("region").map(String::as_str),
+                Some("eu-west-1")
+            );
+        });
+    }
+
+    #[rstest]
+    fn s3_on_aws_has_no_host_or_port_in_its_session() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            let connection_info =
+                ConnectionInfo::parse_url("s3://prod-bucket?region=us-east-2&profile=prod-ro")
+                    .unwrap();
+            config
+                .save_session_from_connection_info("prod", &connection_info)
+                .unwrap();
+            let session = config.get_session("prod").unwrap();
+            assert_eq!(session.host, "");
+            assert_eq!(session.port, 0);
+            assert_eq!(session.dbname, "prod-bucket");
+            let url = session.reconstruct_connection_url().unwrap();
+            let again = ConnectionInfo::parse_url(&url).unwrap();
+            assert_eq!(again.host, None);
+            assert_eq!(again.port, None);
+            assert_eq!(again.database.as_deref(), Some("prod-bucket"));
+            assert_eq!(
+                again.options.get("profile").map(String::as_str),
+                Some("prod-ro")
+            );
+            assert_eq!(again.password, None);
+        });
+    }
+
+    #[rstest]
+    fn an_s3_secret_is_not_given_to_another_endpoint_region_or_plain_http() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mode = |url: &str| {
+                tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
+            };
+            let tls_eu = mode("s3://b?region=eu-west-1");
+            assert_eq!(tls_eu, "true@eu-west-1");
+            save_connection_password(
+                &DatabaseType::S3,
+                "",
+                0,
+                "b",
+                "AKIAEXAMPLE",
+                Some(&tls_eu),
+                "SECRET-canary-123",
+            )
+            .unwrap();
+            let lookup = |host: &str, port: u16, bucket: &str, user: &str, mode: &str| {
+                lookup_connection_password(&DatabaseType::S3, host, port, bucket, user, Some(mode))
+            };
+            assert_eq!(
+                lookup("", 0, "b", "AKIAEXAMPLE", &tls_eu).as_deref(),
+                Some("SECRET-canary-123")
+            );
+            // another endpoint, region, bucket, access key id, or plain HTTP
+            assert_eq!(
+                lookup("evil.example", 443, "b", "AKIAEXAMPLE", &tls_eu),
+                None
+            );
+            assert_eq!(
+                lookup("", 0, "b", "AKIAEXAMPLE", &mode("s3://b?region=us-east-1")),
+                None
+            );
+            assert_eq!(lookup("", 0, "other", "AKIAEXAMPLE", &tls_eu), None);
+            assert_eq!(lookup("", 0, "b", "AKIAOTHER", &tls_eu), None);
+            assert_eq!(
+                lookup(
+                    "",
+                    0,
+                    "b",
+                    "AKIAEXAMPLE",
+                    &mode("s3://b?region=eu-west-1&endpoint=http://h:9000")
+                ),
+                None
+            );
+        });
+    }
+
+    #[rstest]
+    fn s3_recent_connections_rebuild_the_url_with_the_stored_secret() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let connection_info = ConnectionInfo::parse_url(
+                "minio://AKIAEXAMPLE:SECRET-canary-123@localhost:9000/media/img/?tls=false",
+            )
+            .unwrap();
+            let recorded = connection_info.to_url();
+            assert!(!recorded.contains("canary"), "{recorded}");
+            let recent = RecentConnection {
+                connection_url: recorded,
+                display_name: "s3".to_string(),
+                timestamp: Utc::now(),
+                database_type: DatabaseType::S3,
+                success: true,
+                options: HashMap::new(),
+            };
+            // without a stored secret the URL comes back without one
+            let bare =
+                ConnectionInfo::parse_url(&recent.reconstruct_connection_url().unwrap()).unwrap();
+            assert_eq!(bare.password, None);
+            assert_eq!(bare.database.as_deref(), Some("media"));
+            assert_eq!(bare.file_path.as_deref(), Some("img/"));
+
+            save_connection_password(
+                &DatabaseType::S3,
+                "localhost",
+                9000,
+                "media",
+                "AKIAEXAMPLE",
+                tls_mode_from_options(&connection_info.options).as_deref(),
+                "SECRET-canary-123",
+            )
+            .unwrap();
+            let rebuilt =
+                ConnectionInfo::parse_url(&recent.reconstruct_connection_url().unwrap()).unwrap();
+            assert_eq!(rebuilt.password.as_deref(), Some("SECRET-canary-123"));
+            assert_eq!(rebuilt.host.as_deref(), Some("localhost"));
+            assert!(!rebuilt.use_tls);
+        });
+    }
+
+    #[rstest]
+    fn dynamodb_sessions_rebuild_the_url_and_the_secrets_stay_in_the_store() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            let connection_info = ConnectionInfo::parse_url(
+                "dynamodb://AKIAEXAMPLE:SECRET-canary-123@eu-west-1/Orders\
+                 ?endpoint=https://vpce.internal:8443&session_token=TOKEN-canary-456",
+            )
+            .unwrap();
+            config
+                .save_session_from_connection_info("orders", &connection_info)
+                .unwrap();
+
+            let session = config.get_session("orders").unwrap();
+            assert_eq!(session.database_type, DatabaseType::DynamoDB);
+            assert_eq!(session.host, "vpce.internal");
+            assert_eq!(session.port, 8443);
+            assert_eq!(session.user, "AKIAEXAMPLE");
+            assert_eq!(session.dbname, "Orders");
+            assert_eq!(session.reconnect_target(), "dynamodb://eu-west-1/Orders");
+            // neither the session nor its options ever hold a secret
+            let shown = format!("{session:?}");
+            assert!(!shown.contains("canary"), "{shown}");
+            assert!(!session.options.values().any(|v| v.contains("canary")));
+            assert!(!session.options.keys().any(|k| k.contains("token")));
+
+            let tls = tls_mode_from_options(&session.options);
+            assert_eq!(tls.as_deref(), Some("true@eu-west-1"));
+            save_connection_password(
+                &DatabaseType::DynamoDB,
+                "vpce.internal",
+                8443,
+                "Orders",
+                "AKIAEXAMPLE",
+                tls.as_deref(),
+                "SECRET-canary-123",
+            )
+            .unwrap();
+
+            let url = session.reconstruct_connection_url().unwrap();
+            let again = ConnectionInfo::parse_url(&url).unwrap();
+            assert_eq!(again.database_type, DatabaseType::DynamoDB);
+            assert_eq!(again.username.as_deref(), Some("AKIAEXAMPLE"));
+            assert_eq!(
+                again.password.as_deref(),
+                Some("SECRET-canary-123"),
+                "{url}"
+            );
+            assert_eq!(
+                again.options.get("session_token").map(String::as_str),
+                Some("TOKEN-canary-456"),
+                "the session token comes back from the store"
+            );
+            assert_eq!(again.database.as_deref(), Some("Orders"));
+            assert_eq!(again.host.as_deref(), Some("vpce.internal"));
+            assert_eq!(again.port, Some(8443));
+            assert!(again.use_tls);
+            assert_eq!(
+                again.options.get("region").map(String::as_str),
+                Some("eu-west-1")
+            );
+        });
+    }
+
+    #[rstest]
+    fn dynamodb_on_aws_has_no_host_or_port_in_its_session() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            let connection_info =
+                ConnectionInfo::parse_url("dynamodb://us-east-2?profile=prod-ro").unwrap();
+            config
+                .save_session_from_connection_info("prod", &connection_info)
+                .unwrap();
+            let session = config.get_session("prod").unwrap();
+            assert_eq!(session.host, "");
+            assert_eq!(session.port, 0);
+            assert_eq!(session.dbname, "");
+            assert_eq!(session.reconnect_target(), "dynamodb://us-east-2");
+            let url = session.reconstruct_connection_url().unwrap();
+            let again = ConnectionInfo::parse_url(&url).unwrap();
+            assert_eq!(again.host, None);
+            assert_eq!(again.port, None);
+            assert_eq!(again.database, None);
+            assert_eq!(
+                again.options.get("profile").map(String::as_str),
+                Some("prod-ro")
+            );
+            assert_eq!(
+                again.options.get("region").map(String::as_str),
+                Some("us-east-2")
+            );
+            assert_eq!(again.password, None);
+        });
+    }
+
+    #[rstest]
+    fn a_dynamodb_secret_is_not_given_to_another_endpoint_region_or_plain_http() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mode = |url: &str| {
+                tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
+            };
+            let tls_eu = mode("dynamodb://eu-west-1/Orders");
+            assert_eq!(tls_eu, "true@eu-west-1");
+            save_connection_password(
+                &DatabaseType::DynamoDB,
+                "",
+                0,
+                "Orders",
+                "AKIAEXAMPLE",
+                Some(&tls_eu),
+                "SECRET-canary-123",
+            )
+            .unwrap();
+            let lookup = |host: &str, port: u16, table: &str, user: &str, mode: &str| {
+                lookup_connection_password(
+                    &DatabaseType::DynamoDB,
+                    host,
+                    port,
+                    table,
+                    user,
+                    Some(mode),
+                )
+            };
+            assert_eq!(
+                lookup("", 0, "Orders", "AKIAEXAMPLE", &tls_eu).as_deref(),
+                Some("SECRET-canary-123")
+            );
+            // another endpoint, region, table, access key id, or plain HTTP
+            assert_eq!(
+                lookup("evil.example", 443, "Orders", "AKIAEXAMPLE", &tls_eu),
+                None
+            );
+            assert_eq!(
+                lookup(
+                    "",
+                    0,
+                    "Orders",
+                    "AKIAEXAMPLE",
+                    &mode("dynamodb://us-east-1/Orders")
+                ),
+                None
+            );
+            assert_eq!(lookup("", 0, "Other", "AKIAEXAMPLE", &tls_eu), None);
+            assert_eq!(lookup("", 0, "Orders", "AKIAOTHER", &tls_eu), None);
+            assert_eq!(
+                lookup(
+                    "",
+                    0,
+                    "Orders",
+                    "AKIAEXAMPLE",
+                    &mode("dynamodb://eu-west-1/Orders?endpoint=http://h:8000")
+                ),
+                None
+            );
+            // and it is not the S3 secret of the same name
+            assert_eq!(
+                lookup_connection_password(
+                    &DatabaseType::S3,
+                    "",
+                    0,
+                    "Orders",
+                    "AKIAEXAMPLE",
+                    Some(&tls_eu)
+                ),
+                None
+            );
+        });
+    }
+
+    #[rstest]
+    fn dynamodb_recent_connections_rebuild_the_url_with_the_stored_secret() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let connection_info = ConnectionInfo::parse_url(
+                "dynamodb+http://AKIAEXAMPLE:SECRET-canary-123@localhost:8000/Orders?region=local",
+            )
+            .unwrap();
+            let recorded = connection_info.to_url();
+            assert!(!recorded.contains("canary"), "{recorded}");
+            let recent = RecentConnection {
+                connection_url: recorded,
+                display_name: "dynamodb".to_string(),
+                timestamp: Utc::now(),
+                database_type: DatabaseType::DynamoDB,
+                success: true,
+                options: HashMap::new(),
+            };
+            // without a stored secret the URL comes back without one
+            let bare =
+                ConnectionInfo::parse_url(&recent.reconstruct_connection_url().unwrap()).unwrap();
+            assert_eq!(bare.password, None);
+            assert_eq!(bare.database.as_deref(), Some("Orders"));
+
+            save_connection_password(
+                &DatabaseType::DynamoDB,
+                "localhost",
+                8000,
+                "Orders",
+                "AKIAEXAMPLE",
+                tls_mode_from_options(&connection_info.options).as_deref(),
+                "SECRET-canary-123",
+            )
+            .unwrap();
+            let rebuilt =
+                ConnectionInfo::parse_url(&recent.reconstruct_connection_url().unwrap()).unwrap();
+            assert_eq!(rebuilt.password.as_deref(), Some("SECRET-canary-123"));
+            assert_eq!(rebuilt.host.as_deref(), Some("localhost"));
+            assert_eq!(rebuilt.port, Some(8000));
+            assert!(!rebuilt.use_tls);
+            assert_eq!(rebuilt.database.as_deref(), Some("Orders"));
+        });
+    }
+
+    #[rstest]
+    fn cloudwatch_sessions_rebuild_the_url_and_the_secrets_stay_in_the_store() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            let connection_info = ConnectionInfo::parse_url(
+                "cloudwatch://AKIAEXAMPLE:SECRET-canary-123@eu-west-1/aws/lambda/orders\
+                 ?since=30m&session_token=TOKEN-canary-456",
+            )
+            .unwrap();
+            config
+                .save_session_from_connection_info("logs", &connection_info)
+                .unwrap();
+
+            let session = config.get_session("logs").unwrap();
+            assert_eq!(session.database_type, DatabaseType::CloudWatchLogs);
+            assert_eq!(session.host, "");
+            assert_eq!(session.port, 0);
+            assert_eq!(session.user, "AKIAEXAMPLE");
+            assert_eq!(session.dbname, "/aws/lambda/orders");
+            assert_eq!(
+                session.reconnect_target(),
+                "cloudwatch://eu-west-1/aws/lambda/orders"
+            );
+            let shown = format!("{session:?}");
+            assert!(!shown.contains("canary"), "{shown}");
+            assert!(!session.options.values().any(|v| v.contains("canary")));
+            assert!(!session.options.keys().any(|k| k.contains("token")));
+
+            let tls = tls_mode_from_options(&session.options);
+            assert_eq!(tls.as_deref(), Some("true@eu-west-1"));
+            save_connection_password(
+                &DatabaseType::CloudWatchLogs,
+                "",
+                0,
+                "/aws/lambda/orders",
+                "AKIAEXAMPLE",
+                tls.as_deref(),
+                "SECRET-canary-123",
+            )
+            .unwrap();
+
+            let url = session.reconstruct_connection_url().unwrap();
+            let again = ConnectionInfo::parse_url(&url).unwrap();
+            assert_eq!(again.database_type, DatabaseType::CloudWatchLogs);
+            assert_eq!(
+                again.password.as_deref(),
+                Some("SECRET-canary-123"),
+                "{url}"
+            );
+            assert_eq!(
+                again.options.get("session_token").map(String::as_str),
+                Some("TOKEN-canary-456")
+            );
+            assert_eq!(again.database.as_deref(), Some("/aws/lambda/orders"));
+            assert_eq!(again.options.get("since").map(String::as_str), Some("30m"));
+            assert_eq!(
+                again.options.get("region").map(String::as_str),
+                Some("eu-west-1")
+            );
+        });
+    }
+
+    #[rstest]
+    fn a_cloudwatch_secret_is_not_given_to_another_group_region_or_service() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            save_connection_password(
+                &DatabaseType::CloudWatchLogs,
+                "",
+                0,
+                "/aws/lambda/orders",
+                "AKIAEXAMPLE",
+                Some("true@eu-west-1"),
+                "SECRET-canary-123",
+            )
+            .unwrap();
+            let lookup = |db: &DatabaseType, group: &str, mode: &str| {
+                lookup_connection_password(db, "", 0, group, "AKIAEXAMPLE", Some(mode))
+            };
+            assert_eq!(
+                lookup(
+                    &DatabaseType::CloudWatchLogs,
+                    "/aws/lambda/orders",
+                    "true@eu-west-1"
+                )
+                .as_deref(),
+                Some("SECRET-canary-123")
+            );
+            assert_eq!(
+                lookup(
+                    &DatabaseType::CloudWatchLogs,
+                    "/aws/lambda/orders",
+                    "true@us-east-1"
+                ),
+                None
+            );
+            assert_eq!(
+                lookup(
+                    &DatabaseType::CloudWatchLogs,
+                    "/aws/lambda/users",
+                    "true@eu-west-1"
+                ),
+                None
+            );
+            assert_eq!(
+                lookup(
+                    &DatabaseType::DynamoDB,
+                    "/aws/lambda/orders",
+                    "true@eu-west-1"
+                ),
+                None
+            );
+            assert_eq!(
+                lookup(&DatabaseType::S3, "/aws/lambda/orders", "true@eu-west-1"),
+                None
+            );
+        });
+    }
+
+    #[rstest]
+    fn cloudwatch_recent_connections_rebuild_the_url_with_the_stored_secret() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let connection_info = ConnectionInfo::parse_url(
+                "cloudwatch+http://AKIAEXAMPLE:SECRET-canary-123@localhost:4566/my-app?region=us-east-1",
+            )
+            .unwrap();
+            let recorded = connection_info.to_url();
+            assert!(!recorded.contains("canary"), "{recorded}");
+            let recent = RecentConnection {
+                connection_url: recorded,
+                display_name: "cloudwatch".to_string(),
+                timestamp: Utc::now(),
+                database_type: DatabaseType::CloudWatchLogs,
+                success: true,
+                options: HashMap::new(),
+            };
+            let bare =
+                ConnectionInfo::parse_url(&recent.reconstruct_connection_url().unwrap()).unwrap();
+            assert_eq!(bare.password, None);
+            assert_eq!(bare.database.as_deref(), Some("my-app"));
+
+            save_connection_password(
+                &DatabaseType::CloudWatchLogs,
+                "localhost",
+                4566,
+                "my-app",
+                "AKIAEXAMPLE",
+                tls_mode_from_options(&connection_info.options).as_deref(),
+                "SECRET-canary-123",
+            )
+            .unwrap();
+            let rebuilt =
+                ConnectionInfo::parse_url(&recent.reconstruct_connection_url().unwrap()).unwrap();
+            assert_eq!(rebuilt.password.as_deref(), Some("SECRET-canary-123"));
+            assert_eq!(rebuilt.host.as_deref(), Some("localhost"));
+            assert_eq!(rebuilt.port, Some(4566));
+            assert!(!rebuilt.use_tls);
+        });
+    }
+
+    #[rstest]
     fn redis_unix_socket_sessions_keep_the_socket() {
         let _env_lock = env_lock().lock().unwrap();
         let temp_dir = tempfile::tempdir().unwrap();
@@ -5816,6 +6590,18 @@ mod tests {
             "duckdb:///tmp/warehouse.duckdb?access_mode=read_only"
         );
         assert_eq!(file_session.reconnect_target(), "/tmp/warehouse.duckdb");
+    }
+
+    #[test]
+    fn test_duckdb_memory_database_is_never_turned_into_a_path() {
+        // `normalize_sqlite_path` makes saved file targets absolute; the
+        // in-memory database is not a file
+        assert_eq!(
+            Config::normalize_sqlite_path(":memory:").unwrap(),
+            ":memory:"
+        );
+        let relative = Config::normalize_sqlite_path("warehouse.duckdb").unwrap();
+        assert!(Path::new(&relative).is_absolute(), "{relative}");
     }
 
     #[rstest]

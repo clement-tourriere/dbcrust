@@ -545,6 +545,23 @@ mod tests {
     #[case("libsql://db-org.turso.io?authToken=Cnry-7f3a9")]
     #[case("turso://db-org.turso.io?auth_token=Cnry-7f3a9&namespace=x")]
     #[case("libsql+http://localhost:8080?AUTHTOKEN=Cnry-7f3a9")]
+    #[case("s3://AKIAEXAMPLE:Cnry-7f3a9@bucket/prefix?region=eu-west-1")]
+    #[case("s3://AKIAEXAMPLE:Cnry-7f3a9@bucket?endpoint=https://minio:9000")]
+    #[case("s3://bucket?session_token=Cnry-7f3a9&region=eu-west-1")]
+    #[case("s3://bucket?secret_access_key=Cnry-7f3a9")]
+    #[case("minio://root:Cnry-7f3a9@localhost:9000/bucket?tls=false")]
+    #[case("r2://KEY:Cnry-7f3a9@acct/bucket")]
+    #[case("dynamodb://AKIAEXAMPLE:Cnry-7f3a9@eu-west-1/Orders?profile=x")]
+    #[case("dynamodb://eu-west-1/Orders?session_token=Cnry-7f3a9")]
+    #[case("dynamodb+http://local:Cnry-7f3a9@localhost:8000?region=local")]
+    #[case("ddb://AKIAEXAMPLE:Cnry-7f3a9@?region=eu-west-1")]
+    #[case("cloudwatch://AKIAEXAMPLE:Cnry-7f3a9@eu-west-1/aws/lambda/x?since=1h")]
+    #[case("cloudwatch://eu-west-1?session_token=Cnry-7f3a9")]
+    #[case("cwlogs://AKIAEXAMPLE:Cnry-7f3a9@?region=eu-west-1")]
+    // DuckDB / DuckLake: object-store credentials next to the catalog options
+    #[case("duckdb://:memory:?ducklake=sqlite:/m.sqlite&s3_secret_key=Cnry-7f3a9")]
+    #[case("duckdb:///x.duckdb?s3_session_token=Cnry-7f3a9&data_path=s3://b/l/")]
+    #[case("duckdb://:memory:?data_path_secret=Cnry-7f3a9&ducklake=m.ducklake")]
     // percent-encoded and unusual passwords
     #[case("postgres://u:Cnry%2D7f3a9@h/db")]
     #[case("postgres://u:Cnry-7f3a9%40x@h/db")]
@@ -667,6 +684,12 @@ mod tests {
     #[case("application_name", false)]
     #[case("authSource", false)]
     #[case("passenger", false)]
+    #[case("s3_secret_key", true)]
+    #[case("s3_session_token", true)]
+    #[case("data_path_secret", true)]
+    #[case("data_path", false)]
+    #[case("ducklake", false)]
+    #[case("allowed_directories", false)]
     fn test_is_secret_key(#[case] key: &str, #[case] expected: bool) {
         assert_eq!(is_secret_key(key), expected);
     }

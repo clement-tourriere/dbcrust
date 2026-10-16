@@ -1476,3 +1476,310 @@ async fn postgres_enrollment_test_connects_and_stores_the_record() {
     assert_eq!(rows[0][0].as_deref(), Some("42"));
     h.gateway.close_all().await;
 }
+
+// ---- DuckDB files (opt-in `duckdb` feature) ----------------------------------
+
+#[cfg(feature = "duckdb")]
+mod duckdb {
+    use super::*;
+    use crate::database::{ConnectionInfo, DatabaseType};
+
+    /// `people(id, name)` with 3 rows, written through the real driver and
+    /// closed so the broker can open the file read-only.
+    async fn seeded_database(dir: &std::path::Path) -> PathBuf {
+        let path = dir.join("agents.duckdb");
+        let mut client = crate::drivers::create_database_client(ConnectionInfo {
+            database_type: DatabaseType::DuckDB,
+            file_path: Some(path.to_string_lossy().into_owned()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        for sql in [
+            "CREATE TABLE people(id INTEGER PRIMARY KEY, name VARCHAR NOT NULL)",
+            "INSERT INTO people VALUES (1, 'Ada'), (2, 'Bob'), (3, 'Cy')",
+        ] {
+            client.execute_query(sql).await.unwrap();
+        }
+        client.close().await.unwrap();
+        path
+    }
+
+    fn url(path: &std::path::Path) -> String {
+        format!("duckdb://{}", path.display())
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_duckdb_file_is_served_read_only_by_the_engine() {
+        let h = Harness::new().await;
+        let path = seeded_database(h.dir.path()).await;
+        let outcome = h
+            .enroll(EnrollRequest {
+                alias: "lake".into(),
+                url: url(&path),
+                description: Some("duckdb".into()),
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(outcome.engine, "duckdb");
+        assert!(outcome.target.starts_with("duckdb:"), "{}", outcome.target);
+
+        let list = h.send(ClientMessage::ListConnections { id: 1 }).await;
+        let ServerMessage::Connections { connections, .. } = list else {
+            panic!("{list:?}");
+        };
+        assert_eq!(connections[0].engine, "duckdb");
+        assert_eq!(connections[0].access, Access::ReadOnly);
+        assert!(connections[0].native_read_only);
+        let json = serde_json::to_string(&connections).unwrap();
+        assert!(!json.contains(path.to_str().unwrap()), "{json}");
+
+        let result = h
+            .query("lake", "SELECT id, name FROM people ORDER BY id")
+            .await;
+        let (columns, rows, truncated) = rows_of(&result);
+        assert_eq!(columns, vec!["id", "name"]);
+        assert_eq!(rows.len(), 3);
+        assert!(!truncated);
+        assert_eq!(rows[2][1].as_deref(), Some("Cy"));
+
+        // FROM-first and DESCRIBE are reads
+        for sql in ["FROM people SELECT name", "DESCRIBE people", "SHOW TABLES"] {
+            let response = h.query("lake", sql).await;
+            assert!(
+                matches!(response, ServerMessage::QueryResult { .. }),
+                "{sql}: {response:?}"
+            );
+        }
+
+        // Writes: refused by the classifier; and the file is untouched
+        for sql in [
+            "INSERT INTO people VALUES (9, 'Eve')",
+            "UPDATE people SET name = 'x'",
+            "DELETE FROM people",
+        ] {
+            let response = h.query("lake", sql).await;
+            assert_eq!(error_code(&response), ErrorCode::ReadOnlyViolation, "{sql}");
+        }
+        // DDL, file access, extensions, configuration: refused as such
+        let leak = h.dir.path().join("leak.csv");
+        for sql in [
+            "CREATE TABLE evil(i INT)".to_string(),
+            "DROP TABLE people".to_string(),
+            format!("COPY people TO '{}'", leak.display()),
+            "ATTACH '/tmp/other.duckdb' AS other".to_string(),
+            "INSTALL httpfs".to_string(),
+            "LOAD httpfs".to_string(),
+            "SET enable_external_access = true".to_string(),
+            "PRAGMA threads = 99".to_string(),
+            "SELECT * FROM read_csv('/etc/hosts')".to_string(),
+            "SELECT * FROM glob('/etc/*')".to_string(),
+            "SELECT getenv('HOME')".to_string(),
+            "SELECT * FROM '/etc/hosts.csv'".to_string(),
+            "SELECT 1; SELECT 2".to_string(),
+        ] {
+            let response = h.query("lake", &sql).await;
+            assert!(
+                matches!(
+                    error_code(&response),
+                    ErrorCode::DdlRefused | ErrorCode::MultiStatementRefused
+                ),
+                "{sql}: {response:?}"
+            );
+        }
+        assert!(!leak.exists());
+        let again = h.query("lake", "SELECT count(*) FROM people").await;
+        assert_eq!(rows_of(&again).1[0][0].as_deref(), Some("3"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_connection_the_gateway_builds_is_hardened_at_the_engine() {
+        // Bypass the classifier: what the engine refuses by itself
+        let h = Harness::new().await;
+        let path = seeded_database(h.dir.path()).await;
+        h.enroll(EnrollRequest {
+            alias: "lake".into(),
+            url: url(&path),
+            ..Default::default()
+        })
+        .await;
+        let resolved = h.registry.resolve("lake").unwrap();
+        let info = connection_info_for(&resolved, true, 30).unwrap();
+        assert_eq!(info.database_type, DatabaseType::DuckDB);
+        assert_eq!(
+            info.options
+                .get(crate::database::OPT_HARDEN_READ_ONLY)
+                .map(String::as_str),
+            Some("1")
+        );
+        let client = super::super::gateway::connect_for_record(&resolved, true, 30)
+            .await
+            .unwrap();
+        let setting = client
+            .execute_query_structured("SELECT current_setting('access_mode'), current_setting('enable_external_access'), current_setting('lock_configuration')")
+            .await
+            .unwrap();
+        assert_eq!(
+            setting.rows[0],
+            vec![
+                Some("read_only".to_string()),
+                Some("false".to_string()),
+                Some("true".to_string())
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn duckdb_aliases_never_get_writes_memory_or_options() {
+        let h = Harness::new().await;
+        let path = seeded_database(h.dir.path()).await;
+        for request in [
+            EnrollRequest {
+                alias: "w".into(),
+                url: url(&path),
+                allow_writes: true,
+                ..Default::default()
+            },
+            EnrollRequest {
+                alias: "m".into(),
+                url: "duckdb://:memory:".into(),
+                ..Default::default()
+            },
+            EnrollRequest {
+                alias: "x".into(),
+                url: format!("{}?extensions=httpfs", url(&path)),
+                ..Default::default()
+            },
+            EnrollRequest {
+                alias: "d".into(),
+                url: format!("{}?allowed_directories=/", url(&path)),
+                ..Default::default()
+            },
+        ] {
+            let url = request.url.clone();
+            assert!(h.admin.enroll(&request, None).await.is_err(), "{url}");
+        }
+        // The one refusal that says why
+        let error = h
+            .admin
+            .enroll(
+                &EnrollRequest {
+                    alias: "w".into(),
+                    url: url(&path),
+                    allow_writes: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("read-only for agents"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_file_swapped_behind_the_alias_is_not_followed() {
+        let h = Harness::new().await;
+        let path = seeded_database(h.dir.path()).await;
+        h.enroll(EnrollRequest {
+            alias: "lake".into(),
+            url: url(&path),
+            ..Default::default()
+        })
+        .await;
+        // Another database appears where the enrolled one was: through a symlink
+        let other = h.dir.path().join("other.duckdb");
+        std::fs::rename(&path, &other).unwrap();
+        std::os::unix::fs::symlink(&other, &path).unwrap();
+        let response = h.query("lake", "SELECT count(*) FROM people").await;
+        assert_eq!(error_code(&response), ErrorCode::ConnectionError);
+        // A moved file likewise
+        std::fs::remove_file(&path).unwrap();
+        let response = h.query("lake", "SELECT count(*) FROM people").await;
+        assert_eq!(error_code(&response), ErrorCode::ConnectionError);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn metadata_and_limits_work_for_a_duckdb_alias() {
+        let h = Harness::new().await;
+        let path = seeded_database(h.dir.path()).await;
+        h.enroll(EnrollRequest {
+            alias: "lake".into(),
+            url: url(&path),
+            max_rows: Some(2),
+            ..Default::default()
+        })
+        .await;
+        let tables = h
+            .send(ClientMessage::ListTables {
+                id: 2,
+                alias: "lake".into(),
+            })
+            .await;
+        let ServerMessage::Tables { tables, .. } = tables else {
+            panic!("expected tables");
+        };
+        assert!(tables.iter().any(|t| t.name == "people"), "{tables:?}");
+        let described = h
+            .send(ClientMessage::DescribeTable {
+                id: 3,
+                alias: "lake".into(),
+                table: "people".into(),
+            })
+            .await;
+        let ServerMessage::TableDescription { columns, .. } = described else {
+            panic!("expected table_description");
+        };
+        assert_eq!(
+            columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["id", "name"]
+        );
+        assert!(columns[0].primary_key);
+
+        let capped = h.query("lake", "SELECT id FROM people ORDER BY id").await;
+        let (_, rows, truncated) = rows_of(&capped);
+        assert_eq!(rows.len(), 2);
+        assert!(truncated);
+
+        let explained = h
+            .send(ClientMessage::Explain {
+                id: 4,
+                alias: "lake".into(),
+                sql: "SELECT * FROM people".into(),
+            })
+            .await;
+        assert!(
+            matches!(explained, ServerMessage::QueryResult { .. }),
+            "{explained:?}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_statement_past_the_timeout_is_stopped() {
+        let h = Harness::new().await;
+        let path = seeded_database(h.dir.path()).await;
+        h.enroll(EnrollRequest {
+            alias: "lake".into(),
+            url: url(&path),
+            timeout_secs: Some(1),
+            ..Default::default()
+        })
+        .await;
+        let started = Instant::now();
+        let response = h
+            .query(
+                "lake",
+                "SELECT count(*) FROM range(100000000000) a, range(100000000000) b",
+            )
+            .await;
+        assert_eq!(error_code(&response), ErrorCode::Timeout, "{response:?}");
+        assert!(started.elapsed() < Duration::from_secs(20));
+        let alive = h.query("lake", "SELECT 1").await;
+        assert!(
+            matches!(alive, ServerMessage::QueryResult { .. }),
+            "{alive:?}"
+        );
+    }
+}

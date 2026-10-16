@@ -89,6 +89,7 @@ pub fn database_type_for(engine: &str) -> Option<DatabaseType> {
         "mysql" => Some(DatabaseType::MySQL),
         "sqlite" => Some(DatabaseType::SQLite),
         "clickhouse" => Some(DatabaseType::ClickHouse),
+        "duckdb" => Some(DatabaseType::DuckDB),
         _ => None,
     }
 }
@@ -152,7 +153,8 @@ pub fn connection_info_for(
     );
 
     let password = (!resolved.record.secret.is_empty()).then(|| resolved.record.secret.to_string());
-    let info = if db_type == DatabaseType::SQLite {
+    // A file engine: the record's database is the (canonical) file path
+    let info = if matches!(db_type, DatabaseType::SQLite | DatabaseType::DuckDB) {
         ConnectionInfo {
             database_type: db_type,
             file_path: Some(target.database.clone()),
@@ -183,6 +185,19 @@ pub async fn connect_for_record(
     timeout_secs: u32,
 ) -> Result<Box<dyn DatabaseClient>, GatewayError> {
     let info = connection_info_for(resolved, read_only, timeout_secs)?;
+    if info.database_type == DatabaseType::DuckDB {
+        // The alias is bound to a canonical path. If that path now resolves
+        // somewhere else (a symlink or a rename swapped the file), the grant
+        // does not follow it
+        let enrolled = info.file_path.as_deref().unwrap_or_default();
+        if std::fs::canonicalize(enrolled).ok().as_deref() != Some(std::path::Path::new(enrolled)) {
+            return Err(GatewayError::new(
+                ErrorCode::ConnectionError,
+                "the DuckDB file is no longer at the location this alias was enrolled for; \
+                 re-enroll the alias",
+            ));
+        }
+    }
     match tokio::time::timeout(CONNECT_TIMEOUT, create_database_client(info)).await {
         Err(_) => Err(GatewayError::new(
             ErrorCode::ConnectionError,

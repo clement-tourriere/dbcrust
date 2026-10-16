@@ -1,0 +1,11 @@
+[package]
+name = "zip"
+version = "6.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Build-time stand-in for the yanked `zip` 6.x, patched in for libduckdb-sys (see DBCRUST_PATCH.md)"
+
+[features]
+# libduckdb-sys asks for `default-features = false, features = ["deflate"]`
+deflate = []

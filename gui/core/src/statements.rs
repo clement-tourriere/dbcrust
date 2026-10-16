@@ -82,7 +82,9 @@ impl SplitConfig {
 /// use the generic one.
 pub fn dialect_of(db_type: Option<&DatabaseType>) -> SqlDialect {
     match db_type {
-        Some(DatabaseType::PostgreSQL | DatabaseType::Redshift) => SqlDialect::PostgreSql,
+        Some(DatabaseType::PostgreSQL | DatabaseType::Redshift | DatabaseType::DuckDB) => {
+            SqlDialect::PostgreSql
+        }
         Some(DatabaseType::MySQL) => SqlDialect::MySql,
         Some(DatabaseType::SQLite | DatabaseType::LibSql) => SqlDialect::Sqlite,
         Some(DatabaseType::ClickHouse) => SqlDialect::ClickHouse,
@@ -654,6 +656,7 @@ mod tests {
             (DatabaseType::SqlServer, SqlDialect::Generic),
             (DatabaseType::Redshift, SqlDialect::PostgreSql),
             (DatabaseType::LibSql, SqlDialect::Sqlite),
+            (DatabaseType::DuckDB, SqlDialect::PostgreSql),
             (DatabaseType::InfluxDB, SqlDialect::Generic),
         ] {
             assert_eq!(dialect_of(Some(&db)), expected);

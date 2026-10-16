@@ -64,6 +64,12 @@ jobs:
           - { name: redshift, features: "redshift" }
           - { name: libsql, features: "libsql" }
           - { name: influxdb, features: "influxdb" }
+          # opt-in, not part of `bundled`; the AWS SDK needs Rust >= 1.94.1, which
+          # `stable` is (the exact minimum is pinned by the `rust-aws` job below)
+          - { name: s3, features: "s3" }
+          - { name: dynamodb, features: "dynamodb" }
+          - { name: cloudwatch, features: "cloudwatch" }
+          - { name: aws, features: "aws" }
           - { name: files, features: "files" }
           - { name: docker, features: "docker" }
           - { name: ai, features: "ai" }
@@ -83,6 +89,41 @@ jobs:
           PYO3_NO_PYTHON: "1"
         run: mbx check --locked -p dbcrust --no-default-features --features "${{ matrix.features }}"
 
+  # The AWS SDK crates declare Rust 1.94.1 (the workspace itself 1.91): this job
+  # pins that exact toolchain, so a dependency or a language feature that needs
+  # a newer compiler fails here, not in a user's `cargo install --features aws`.
+  # The ring-only TLS guarantee is checked on the AWS dependency tree too.
+  rust-aws:
+    name: Rust · AWS connectors (Rust 1.94.1)
+    needs: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94.1"
+          components: clippy
+      - name: Set up Mr Boxington
+        uses: jdx/mr-boxington-action@adc5c234c02592f7edd008bf81d5bc0e9584dc03 # v1.2.0
+        with:
+          version: "1.4.1"
+      - name: no aws-lc, no OpenSSL with the AWS SDK in the tree
+        run: |
+          for crate in aws-lc-rs aws-lc-sys openssl native-tls; do
+            if cargo tree --locked -p dbcrust --features aws --target all -i "$crate" > /dev/null 2>&1; then
+              echo "::error::$crate is in the dependency tree of the aws feature"
+              exit 1
+            fi
+          done
+      - name: clippy
+        run: mbx clippy --locked -p dbcrust-aws -p dbcrust-driver-s3 -p dbcrust-driver-dynamodb -p dbcrust-driver-cloudwatch --all-targets -- -D warnings
+      - name: tests
+        run: mbx test --locked -p dbcrust-aws -p dbcrust-driver-s3 -p dbcrust-driver-dynamodb -p dbcrust-driver-cloudwatch
+      - name: the root crate with the AWS connectors
+        env:
+          PYO3_NO_PYTHON: "1"
+        run: mbx check --locked -p dbcrust --features aws
+
   rust-slim:
     name: Rust · slim build (standard preset)
     needs: security
@@ -100,8 +141,16 @@ jobs:
         run: |
           cargo tree --locked -p dbcrust --no-default-features --features standard -e normal --prefix none \
             | awk '{print $1}' | sort -u > standard-crates.txt
-          if grep -xE '(mongodb|bson|clickhouse|elasticsearch|datafusion(-.*)?|arrow(-.*)?|parquet|bollard|genai|ratatui|arboard|redis|tiberius|dbcrust-(ai|docker|driver-(mongodb|clickhouse|elasticsearch|white-dragon|redis|mssql|redshift|libsql|influxdb|files)))' standard-crates.txt; then
+          if grep -xE '(mongodb|bson|clickhouse|elasticsearch|datafusion(-.*)?|arrow(-.*)?|parquet|bollard|genai|ratatui|arboard|redis|tiberius|duckdb|libduckdb-sys|aws-.*|dbcrust-(ai|docker|aws|driver-(mongodb|clickhouse|elasticsearch|white-dragon|redis|mssql|redshift|libsql|influxdb|s3|dynamodb|cloudwatch|duckdb|files)))' standard-crates.txt; then
             echo "::error::the standard preset pulls in a crate that belongs to an opt-in feature"
+            exit 1
+          fi
+      - name: the AWS connectors stay opt-in (not in the default `bundled` build)
+        # `aws`/`s3`/`dynamodb`/`cloudwatch` need Rust >= 1.94.1 and add ~36 crates; the release
+        # binaries and wheels must not compile them by accident
+        run: |
+          if cargo tree --locked -p dbcrust -e normal --prefix none | awk '{print $1}' | grep -E '^(aws-|dbcrust-(aws|driver-(s3|dynamodb|cloudwatch)))'; then
+            echo "::error::the default build pulls in an AWS crate"
             exit 1
           fi
       - name: one TLS stack (rustls on ring) across the workspace

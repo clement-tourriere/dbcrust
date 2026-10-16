@@ -102,7 +102,12 @@ The root crate (`dbcrust`) is split into Cargo features so a build only contains
 | `redshift` | Amazon Redshift (`redshift://`) — **in `bundled`, not in `standard`** | `sqlx` PostgreSQL protocol (no extra crate) |
 | `libsql` | libSQL / Turso over HTTP (`libsql://`, `turso://`, `libsql+http://`) — **in `bundled`, not in `standard`** | `reqwest` only (hand-written Hrana client) |
 | `influxdb` | InfluxDB v1/v2/v3 (`influxdb://`, `influxdb2://`, `influxdb3://`) — **in `bundled`, not in `standard`** | reqwest (rustls/ring) and `csv-core`, both already in the tree |
-| `files` | Parquet, CSV, JSON and DuckDB files | Apache DataFusion / Arrow / Parquet |
+| `s3` | Amazon S3, Cloudflare R2, MinIO (`s3://`, `r2://`, `minio://`) — **opt-in: not in `bundled`, not in `standard`; needs Rust ≥ 1.94.1** | AWS SDK (`aws-config`, `aws-sdk-s3`, `aws-smithy-http-client`), rustls on ring only |
+| `dynamodb` | Amazon DynamoDB (`dynamodb://`, `dynamodb+http://`, `ddb://`) — **opt-in: not in `bundled`, not in `standard`; needs Rust ≥ 1.94.1** | AWS SDK (`aws-config`, `aws-sdk-dynamodb`, `aws-smithy-http-client`), rustls on ring only |
+| `cloudwatch` | Amazon CloudWatch Logs (`cloudwatch://`, `cloudwatch+http://`, `cwlogs://`) — **opt-in: not in `bundled`, not in `standard`; needs Rust ≥ 1.94.1** | AWS SDK (`aws-config`, `aws-sdk-cloudwatchlogs`, `aws-smithy-http-client`), rustls on ring only |
+| `aws` | the AWS connectors as a group (`s3`, `dynamodb`, `cloudwatch`) — **opt-in, Rust ≥ 1.94.1** | the three above on one shared base |
+| `files` | Parquet, CSV and JSON files | Apache DataFusion / Arrow / Parquet |
+| `duckdb` | DuckDB database files, `:memory:` and DuckLake (`duckdb://`) — **opt-in: not in `bundled`, not in `standard`** (a C++ engine, see below) | `duckdb` =1.10506.0 (engine 1.5.6) with `bundled`, Parquet and JSON; a `zip` stand-in (`third_party/zip-stub`) |
 | `docker` | `docker://` URLs, `\docker`, container completion | bollard |
 | `ai` | `??`, `???`, `\ai`, the Python AI functions | genai, reqwest 0.13 |
 | `explain-tui` | `\x` plan TUI and the `\sv` schema browser | ratatui, textwrap |
@@ -120,6 +125,9 @@ mise run install:slim    # install it
 
 # a custom build: SQLite and ClickHouse with Docker discovery
 cargo build --no-default-features --features sqlite,clickhouse,docker
+
+# the default build plus the opt-in DuckDB engine (a C++17 compiler is required)
+cargo install --path . --locked --features duckdb
 
 # type-check the whole matrix (what CI does)
 mise run check:features
@@ -142,6 +150,23 @@ Cost of each feature, as unique crates added to the normal dependency tree (`car
 
 `influxdb` adds no registry crate to the lockfile: the HTTP client is hand-written on the `reqwest` 0.12 the other HTTP drivers use, and the Flux CSV is read with `csv-core`, already locked through DataFusion's `csv`. The `influxdb` crate was rejected because it wraps reqwest 0.13 with the aws-lc provider and speaks neither Flux nor v3. Its cost in the normal dependency tree is 2 crates (the driver and `csv-core`).
 
+`s3`, `dynamodb`, `cloudwatch` (and the `aws` umbrella) are the **opt-in** AWS connectors. They are not in `bundled`, so release binaries, wheels and the desktop app do not contain it, and it needs **Rust 1.94.1 or newer** because the AWS SDK crates declare that `rust-version` (the workspace stays on 1.91). The new crates, `dbcrust-aws` (shared credentials/region/HTTP foundation), `dbcrust-driver-s3`, `dbcrust-driver-dynamodb` and `dbcrust-driver-cloudwatch`, declare `rust-version = "1.94.1"` in their own manifests; the CI job `rust-aws` pins that exact toolchain and checks them with the root crate. `cargo install --features aws` on an older compiler stops with cargo's "requires rustc 1.94.1" message; a default build never compiles an AWS crate (CI checks `cargo tree -p dbcrust` for `aws-*`).
+
+It adds **31 crates to the lockfile** (23 `aws-*`/`aws-smithy-*`, plus `base64-simd`, `bytes-utils`, `crc-fast`, `outref`, `regex-lite`, `urlencoding`, `vsimd`, `xmlparser`) and bumps `itoa`, `ryu` and `tokio-util` to versions the SDK requires (34 new `Cargo.lock` entries in all; the normal dependency tree of `bundled` goes from 524 to 558 nodes, the two DBCrust crates included). Of the 34 lock entries, 29 are the shared AWS base (`aws-config`, the credential chain, SSO, STS and the ring HTTP client) and 5 are S3 itself (`aws-sdk-s3`, `aws-smithy-checksums`, `aws-smithy-eventstream`, `crc-fast`, the `tokio-util` bump); DynamoDB and CloudWatch Logs add **one registry crate each** on the same base (`aws-sdk-dynamodb` 1.130.0, `aws-sdk-cloudwatchlogs` 1.156.0; they share the locked `aws-smithy-*`, `aws-types`, `aws-runtime`, `aws-smithy-eventstream` and `tokio-util` with `aws-sdk-s3`, so no existing entry moved). Normal dependency tree of the `bundled` build (524 nodes, the DBCrust crates included): `s3` → 558 (+34), `dynamodb` → 554 (+30), `cloudwatch` → 555 (+31), all three (`aws`) → 562 (+38: S3's +34 and two SDK crates and two DBCrust driver crates). The dev-profile `dbcrust` binary goes from 338.2 MB to 360.0 MB with `--features s3` (+21.7 MB), 359.1 MB with `dynamodb` (+20.8), 358.0 MB with `cloudwatch` (+19.8) and **367.3 MB with `--features aws` (+29.0 MB, +7.3 MB over S3 alone)**; after `strip -x` 283.7 MB → 301.2 MB (`s3`) and 307.1 MB (`aws`, +23.4 MB, +5.9 MB over S3 alone). There is no C build: everything is pure Rust, and compile time is dominated by the generated SDK crates.
+
+TLS is **rustls on ring only**. The SDK's defaults enable `aws-smithy-runtime/default-https-client`, which pulls `aws-lc-rs` (a C/cmake build); every AWS crate here is built with `default-features = false`, `aws-smithy-http-client` with its `rustls-ring` feature only, and `dbcrust-aws` builds that HTTP client and injects it into every SDK configuration. `cargo tree --locked --workspace --target all -i aws-lc-rs` (and `aws-lc-sys`, `openssl`, `native-tls`) must keep reporting nothing, with and without `--features aws`; CI checks it. The legacy hyper 0.14 / rustls 0.21 client (`legacy-https-client`) must not be enabled either. The SDK's `test-util` (replay clients) is not used: it adds about fifteen test-only crates to the lockfile, so the AWS connector tests run the real SDK against an in-process HTTP server instead (S3's REST, DynamoDB's JSON 1.0, CloudWatch Logs' JSON 1.1).
+
+`duckdb` is the one connector that compiles a **C++ engine**: `libduckdb-sys` builds DuckDB's amalgamation (plus the Parquet and JSON extensions, which DuckLake and the file functions need) with the `cc` crate, so a C++17 compiler is required. Measured on a loaded 12-core machine:
+
+| | |
+|---|---|
+| Cold dev build of the DuckDB crates (no debuginfo) | 4 min 12 s wall, 917 s of user CPU (about 15 CPU-minutes); the figures of the release probe were 2 min 40 s wall / 18 CPU-minutes. Mr Boxington cannot cache the engine's build script, so repeat builds in a shared target directory can redo it: use a dedicated `CARGO_TARGET_DIR` (the CI workflow does) |
+| Dev binary, `standard` → `standard,duckdb` | 58.0 MiB → 165.2 MiB unstripped (+107 MiB), 54.3 MiB → 131.1 MiB stripped (+77 MiB): the dev profile compiles the C++ unoptimised. The release probe measured **+19 MB** stripped (+22.5 MB with Parquet and JSON) |
+| Crates in the normal tree | `bundled` 490 → 496 (`duckdb`, `libduckdb-sys`, `dbcrust-driver-duckdb`, `cast`, `fallible-iterator`, `fallible-streaming-iterator`); `standard` 272 → 300, because `standard` carries no Arrow |
+| Lockfile | +15 registry packages: `duckdb`, `libduckdb-sys`, `cast` and the two `fallible-*`; a second `crossterm` (two versions: one for Windows), `rustix` and `linux-raw-sys` (through `comfy-table`, which `duckdb` enables with its terminal feature); and the build-script-only `ureq`, `ureq-proto`, `utf8-zero`, `tar`, `filetime`, `xattr` (used by the non-bundled download mode) |
+
+`libduckdb-sys` also declares `zip = "^6"` as a build dependency, and **every `zip` release that range accepts is yanked**, which the cooldown check and `cargo audit` refuse. A 40-line stand-in crate named `zip` is patched in (`[patch.crates-io]`, `third_party/zip-stub/DBCRUST_PATCH.md`); only the unsupported non-bundled download mode ever calls it. `cargo tree --locked --workspace -i aws-lc-rs` must keep reporting nothing with the connector in the tree, and DuckDB is excluded from the 32-bit Python check and from the release binaries and wheels (`bundled` does not contain it).
+
 A disabled engine is still a `DatabaseType`: config files, sessions and `recent.toml` written by a full build keep parsing. Connecting to it fails with a message that names the feature, e.g. *"MongoDB support is not compiled into this build (enable the `mongodb` cargo feature, or install a full build)"*; `dbcrust-drivers` exposes `is_compiled`, `compiled_engines` and `required_feature` for code that has to adapt. URL-scheme completion only offers the schemes the build can serve, and the credential broker refuses to enrol an engine the build does not contain (`unsupported_engine`, same hint).
 
 #### Adding a connector
@@ -152,7 +177,7 @@ A disabled engine is still a `DatabaseType`: config files, sessions and `recent.
 4. Decide where it lives:
    * **Light** (small SDK, no heavy transitive tree): add it to `bundled` explicitly, with a changelog note, so the default build gains it.
    * **Heavy** (DuckDB, AWS SDKs …): leave it out of `bundled`; users opt in with `--features <name>`. Never add a connector to `bundled` silently.
-5. Add it to the matrix in `.github/workflows/ci.yml` (`rust-features`) and to `mise run check:features`.
+5. Add it to the matrix in `.github/workflows/ci.yml` (`rust-features`) and to `mise run check:features`. A connector whose `cargo check` is itself expensive (DuckDB compiles C++ in its build script) gets a dedicated path-filtered workflow instead of a matrix slot (`.github/workflows/duckdb.yml`), and stays out of the 32-bit Python check.
 
 ## Testing
 

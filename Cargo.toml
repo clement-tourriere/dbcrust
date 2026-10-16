@@ -157,8 +157,17 @@ mssql = ["dbcrust-drivers/mssql"]
 redshift = ["dbcrust-drivers/redshift"]
 libsql = ["dbcrust-drivers/libsql"]
 influxdb = ["dbcrust-drivers/influxdb"]
-# DataFusion: Parquet, CSV, JSON and DuckDB files (the heaviest connector)
+# AWS (opt-in, not in `bundled`: ~+36 crates and a Rust >= 1.94.1 toolchain).
+# `aws` is the umbrella that grows with every AWS service connector.
+s3 = ["dbcrust-drivers/s3"]
+dynamodb = ["dbcrust-drivers/dynamodb"]
+cloudwatch = ["dbcrust-drivers/cloudwatch"]
+aws = ["s3", "dynamodb", "cloudwatch"]
+# DataFusion: Parquet, CSV and JSON files (the heaviest default connector)
 files = ["dbcrust-drivers/files"]
+# DuckDB (embedded C++ engine, ~+20 MB, long cold build): opt-in, never in
+# `bundled`/`standard`
+duckdb = ["dbcrust-drivers/duckdb"]
 # Add-ons
 docker = ["dep:dbcrust-docker"]
 ai = ["dep:dbcrust-ai"]
@@ -237,7 +246,7 @@ resolver = "3"
 members = ["crates/*", "gui", "gui/core"]
 # Vendored upstream crates are path dependencies, not workspace members: they
 # keep their own manifest and are exempt from the workspace lints
-exclude = ["third_party/tiberius"]
+exclude = ["third_party/tiberius", "third_party/zip-stub"]
 # `dbcrust-agent` is the credential-free thin client shipped next to the CLI;
 # the library crates are listed so `cargo test`/`clippy` at the root cover them
 default-members = [
@@ -315,6 +324,9 @@ bollard = { version = "0.20", default-features = false, features = ["http", "pip
 # `crates/driver-*`): the registry depends on all of them, each driver only on
 # `dbcrust-core` and its own SDK.
 dbcrust-drivers = { path = "crates/drivers", default-features = false }
+# Shared AWS foundation (credentials, region, ring HTTP client) for the AWS
+# connectors; not a driver, and opt-in like them (Rust >= 1.94.1)
+dbcrust-aws = { path = "crates/aws", default-features = false }
 dbcrust-driver-postgres = { path = "crates/driver-postgres" }
 dbcrust-driver-mysql = { path = "crates/driver-mysql" }
 dbcrust-driver-sqlite = { path = "crates/driver-sqlite" }
@@ -327,7 +339,11 @@ dbcrust-driver-mssql = { path = "crates/driver-mssql" }
 dbcrust-driver-redshift = { path = "crates/driver-redshift" }
 dbcrust-driver-libsql = { path = "crates/driver-libsql" }
 dbcrust-driver-influxdb = { path = "crates/driver-influxdb" }
+dbcrust-driver-s3 = { path = "crates/driver-s3" }
+dbcrust-driver-dynamodb = { path = "crates/driver-dynamodb" }
+dbcrust-driver-cloudwatch = { path = "crates/driver-cloudwatch" }
 dbcrust-driver-files = { path = "crates/driver-files" }
+dbcrust-driver-duckdb = { path = "crates/driver-duckdb" }
 
 # Driver SDKs shared between the root crate (until its drivers move) and the
 # driver crates. Versions and the always-needed features live here; members add
@@ -336,6 +352,9 @@ async-trait = { version = "0.1", default-features = false }
 sqlx = { version = "0.8", default-features = false }
 pgvector = { version = "0.4", default-features = false }
 reqwest = { version = "0.12.28", default-features = false }
+# DuckDB's engine version is encoded in the crate version (1.10506.0 = DuckDB
+# 1.5.6); exact pin, features chosen by `dbcrust-driver-duckdb`
+duckdb = { version = "=1.10506.0", default-features = false }
 mongodb = { version = "3.9", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
 bson = { version = "2.15", default-features = false }
 elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
@@ -352,6 +371,15 @@ redis = { version = "=1.7.1", default-features = false, features = ["tokio-rustl
 # `winauth`/`integrated-auth-gssapi`/`sspi-rs`: SQL authentication only.
 tiberius = { path = "third_party/tiberius", default-features = false, features = ["rustls", "tds73", "tds80", "sql-browser-tokio"] }
 tokio-util = { version = "0.7", default-features = false, features = ["compat"] }
+# AWS SDK (feature `aws`/`s3`): exact pins, reviewed per the dependency policy
+# (age, maintainers, RustSec, new transitive crates). TLS is rustls on ring only:
+# `default-features = false` everywhere (the defaults pull aws-lc-rs) and the
+# ring HTTP client is injected by `dbcrust-aws`, see crates/aws/src/http.rs.
+aws-config = { version = "=1.12.0", default-features = false, features = ["rt-tokio", "behavior-version-latest"] }
+aws-smithy-http-client = { version = "=1.5.0", default-features = false, features = ["rustls-ring"] }
+aws-sdk-s3 = { version = "=1.152.0", default-features = false, features = ["rt-tokio"] }
+aws-sdk-dynamodb = { version = "=1.130.0", default-features = false, features = ["rt-tokio"] }
+aws-sdk-cloudwatchlogs = { version = "=1.156.0", default-features = false, features = ["rt-tokio"] }
 # InfluxDB: no SDK (see crates/driver-influxdb); csv-core reads the Flux/v3 CSV
 # streams record by record, already in the lockfile through `csv`
 csv-core = { version = "0.1.12", default-features = false }
@@ -380,3 +408,9 @@ type_complexity = "allow"
 enum_variant_names = "allow"
 too_many_arguments = "allow"
 should_implement_trait = "allow"
+
+# `libduckdb-sys` (feature `duckdb`) has a build dependency on `zip = "^6"`, every
+# release of which is yanked. Only its non-bundled download mode uses it, so a
+# stand-in crate replaces it: third_party/zip-stub/DBCRUST_PATCH.md
+[patch.crates-io]
+zip = { path = "third_party/zip-stub" }

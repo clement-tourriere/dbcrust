@@ -1,0 +1,39 @@
+[package]
+name = "dbcrust-driver-duckdb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust DuckDB driver (embedded engine, bundled C++ build)"
+
+# Layer 1 of the crate split: depends on `dbcrust-core` and this engine's SDK
+# only (never the root crate, secrets, Docker, AI or another driver); the
+# registry `dbcrust-drivers` is what links it into a build.
+#
+# DuckDB is an embedded C++ engine compiled from source (`bundled`: a C++17
+# compiler, a long cold build, about +20 MB), which is why the connector is
+# opt-in. `parquet` and `json` link those two extensions statically: DuckLake
+# stores its data as Parquet, and the file functions (`read_parquet`,
+# `read_json`) are most of what people open DuckDB for. With them the engine
+# needs no network access for everything except `INSTALL <other extension>`.
+# The crate's Arrow is the Arrow 58 of the lock (re-exported as `duckdb::arrow`),
+# so no second Arrow appears.
+[dependencies]
+dbcrust-core = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+duckdb = { workspace = true, features = ["bundled", "parquet", "json"] }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["sync", "time", "macros", "rt"] }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+rstest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

@@ -167,16 +167,47 @@ pub fn validate_enrollment_url(url: &str) -> Result<EnrollTarget, BrokerError> {
                 .to_string(),
         ));
     }
+    if db_type == DatabaseType::CloudWatchLogs {
+        // The queries only read, but what the credentials may do (including
+        // the billable StartQuery) is IAM, which a client cannot prove, and an
+        // SDK client would inherit the broker's AWS environment and ~/.aws
+        return Err(BrokerError::UnsupportedEngine(
+            "CloudWatch Logs enrollment for agents is not supported yet: what an access key may do is decided by IAM and cannot be proven from the client"
+                .to_string(),
+        ));
+    }
+    if db_type == DatabaseType::DynamoDB {
+        // Same reasoning as S3: the PartiQL guard keeps the client from
+        // offering a write, but what the credentials may do is IAM (which a
+        // client cannot prove), and an SDK client would inherit the broker's
+        // AWS environment and ~/.aws
+        return Err(BrokerError::UnsupportedEngine(
+            "DynamoDB enrollment for agents is not supported yet: what an access key may do is decided by IAM and cannot be proven from the client"
+                .to_string(),
+        ));
+    }
+    if db_type == DatabaseType::S3 {
+        // The commands only read, but what the credentials may do is IAM, which
+        // a client cannot prove (iam:SimulatePrincipalPolicy is rarely granted),
+        // and an SDK client would inherit the broker's AWS environment and
+        // ~/.aws: until enrollment pins region, endpoint and credentials
+        // explicitly, an agent gets no S3 alias
+        return Err(BrokerError::UnsupportedEngine(
+            "S3 enrollment for agents is not supported yet: what an access key may do is decided by IAM and cannot be proven from the client"
+                .to_string(),
+        ));
+    }
     if !matches!(
         db_type,
         DatabaseType::PostgreSQL
             | DatabaseType::MySQL
             | DatabaseType::SQLite
             | DatabaseType::ClickHouse
+            | DatabaseType::DuckDB
     ) {
         return Err(BrokerError::UnsupportedEngine(format!(
             "{db_type} is not supported by the broker in this version \
-             (PostgreSQL, MySQL/MariaDB, SQLite and ClickHouse are)"
+             (PostgreSQL, MySQL/MariaDB, SQLite, ClickHouse and DuckDB files are)"
         )));
     }
     if !dbcrust_drivers::is_compiled(&db_type) {
@@ -246,6 +277,36 @@ pub fn validate_enrollment_url(url: &str) -> Result<EnrollTarget, BrokerError> {
                 )));
             }
         }
+    }
+
+    if db_type == DatabaseType::DuckDB {
+        // A DuckDB file is read-only at the engine (`access_mode=READ_ONLY`,
+        // external access off, configuration locked; see the DuckDB driver),
+        // so a local file is the one DuckDB target an agent can be given.
+        // Nothing about the connection is configurable: no extensions, no
+        // allowed folders, no DuckLake, no :memory:
+        if tls_raw.is_some() || tls_bool.is_some() || !secret_options.is_empty() {
+            return Err(invalid("DuckDB aliases take no connection options"));
+        }
+        let raw_path = info
+            .file_path
+            .as_deref()
+            .filter(|p| !p.is_empty() && *p != dbcrust_core::database::DUCKDB_MEMORY_PATH)
+            .ok_or_else(|| {
+                invalid("duckdb:// needs the path of a database file; :memory: cannot be shared")
+            })?;
+        let path = std::fs::canonicalize(raw_path)
+            .map_err(|e| invalid(format!("DuckDB file {raw_path:?} is not accessible: {e}")))?;
+        if !path.is_file() {
+            return Err(invalid(format!("{} is not a file", path.display())));
+        }
+        let binding = TargetBinding::new("duckdb", "", None, &path.to_string_lossy(), "", None);
+        return Ok(EnrollTarget {
+            binding,
+            secret_options,
+            db_type,
+            needs_password: false,
+        });
     }
 
     if db_type == DatabaseType::SQLite {
@@ -430,8 +491,8 @@ pub struct Admin {
 /// `user@host:port/db` (or the file path for SQLite): non-secret, for humans.
 pub fn describe_target(binding: &TargetBinding) -> String {
     let t = binding.normalized();
-    if t.engine == "sqlite" {
-        return format!("sqlite:{}", t.database);
+    if matches!(t.engine.as_str(), "sqlite" | "duckdb") {
+        return format!("{}:{}", t.engine, t.database);
     }
     format!(
         "{}://{}@{}{}/{}",
@@ -477,6 +538,14 @@ impl Admin {
     ) -> Result<EnrollOutcome, BrokerError> {
         let policy = request.validate()?;
         let target = validate_enrollment_url(&request.url)?;
+        if target.db_type == DatabaseType::DuckDB && request.allow_writes {
+            // The file is opened read-only with external access off; there is
+            // no writable DuckDB profile that keeps COPY, ATTACH and the file
+            // functions closed, so agents never get one
+            return Err(forbidden(
+                "DuckDB aliases are read-only for agents: --allow-writes is not available",
+            ));
+        }
         let secret = match (target.needs_password, password) {
             (true, Some(p)) if !p.is_empty() => p,
             (true, _) => {
@@ -798,7 +867,6 @@ pub(crate) mod tests {
     #[case("white-dragon://host:7700")]
     #[case("parquet:///tmp/x.parquet")]
     #[case("csv:///tmp/x.csv")]
-    #[case("duckdb:///tmp/x.duckdb")]
     #[case("redis://alice@r")]
     #[case("rediss://alice@r:6380/1")]
     #[case("valkey://alice@r")]
@@ -814,6 +882,16 @@ pub(crate) mod tests {
     #[case("influxdb://alice@db.example/telemetry")]
     #[case("influxdb2s://db.example/bucket?org=acme")]
     #[case("influxdb3://db.example/mydb")]
+    #[case("s3://bucket")]
+    #[case("s3://AKIAEXAMPLE:secret@bucket?region=eu-west-1")]
+    #[case("r2://account/bucket")]
+    #[case("minio://localhost:9000/bucket")]
+    #[case("dynamodb://eu-west-1/Orders")]
+    #[case("dynamodb://AKIAEXAMPLE:secret@eu-west-1?profile=x")]
+    #[case("dynamodb+http://localhost:8000?region=local")]
+    #[case("cloudwatch://eu-west-1/aws/lambda/orders")]
+    #[case("cwlogs://AKIAEXAMPLE:secret@eu-west-1?profile=x")]
+    #[case("cloudwatch+http://localhost:4566?region=us-east-1")]
     fn unsupported_engines_are_rejected_as_such(#[case] u: &str) {
         assert!(
             matches!(url(u), Err(BrokerError::UnsupportedEngine(_))),
@@ -868,6 +946,39 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn s3_enrollment_explains_that_iam_cannot_be_proven() {
+        let err = url("s3://AKIAEXAMPLE:canary-secret-9@bucket").unwrap_err();
+        assert!(
+            matches!(&err, BrokerError::UnsupportedEngine(message)
+                if message.starts_with("S3 enrollment for agents is not supported yet")),
+            "{err:?}"
+        );
+        assert!(!err.to_string().contains("canary-secret-9"));
+    }
+
+    #[test]
+    fn dynamodb_enrollment_explains_that_iam_cannot_be_proven() {
+        let err = url("dynamodb://AKIAEXAMPLE:canary-secret-9@eu-west-1/Orders").unwrap_err();
+        assert!(
+            matches!(&err, BrokerError::UnsupportedEngine(message)
+                if message.starts_with("DynamoDB enrollment for agents is not supported yet")),
+            "{err:?}"
+        );
+        assert!(!err.to_string().contains("canary-secret-9"));
+    }
+
+    #[test]
+    fn cloudwatch_enrollment_explains_that_iam_cannot_be_proven() {
+        let err = url("cloudwatch://AKIAEXAMPLE:canary-secret-9@eu-west-1/aws/x").unwrap_err();
+        assert!(
+            matches!(&err, BrokerError::UnsupportedEngine(message)
+                if message.starts_with("CloudWatch Logs enrollment for agents is not supported yet")),
+            "{err:?}"
+        );
+        assert!(!err.to_string().contains("canary-secret-9"));
+    }
+
+    #[test]
     fn redis_enrollment_says_it_is_not_supported_yet() {
         let err = url("redis://alice@r").unwrap_err();
         assert!(
@@ -899,6 +1010,70 @@ pub(crate) mod tests {
             t.secret_options.get("sslpassword").map(String::as_str),
             Some("keypass")
         );
+    }
+
+    /// A broker built without the DuckDB connector cannot serve a DuckDB
+    /// alias, and says which feature is missing
+    #[cfg(not(feature = "duckdb"))]
+    #[test]
+    fn duckdb_enrollment_needs_the_duckdb_connector() {
+        let err = url("duckdb:///tmp/x.duckdb").unwrap_err();
+        assert!(
+            matches!(&err, BrokerError::UnsupportedEngine(message)
+                if message.contains("DuckDB support is not compiled") && message.contains("`duckdb`")),
+            "{err:?}"
+        );
+    }
+
+    #[cfg(feature = "duckdb")]
+    #[test]
+    fn duckdb_binds_the_canonical_path_and_needs_no_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("x.duckdb");
+        std::fs::write(&db, b"").unwrap();
+        let t = url(&format!("duckdb://{}", db.display())).unwrap();
+        assert_eq!(t.binding.engine, "duckdb");
+        assert!(!t.needs_password);
+        assert!(t.secret_options.is_empty());
+        assert_eq!(
+            t.binding.database,
+            std::fs::canonicalize(&db).unwrap().to_string_lossy()
+        );
+        // a symlink and a `..` spelling bind the same target
+        let link = dir.path().join("link.duckdb");
+        std::os::unix::fs::symlink(&db, &link).unwrap();
+        let via_link = url(&format!("duckdb://{}", link.display())).unwrap();
+        assert_eq!(via_link.binding.database, t.binding.database);
+        let dotted = format!(
+            "duckdb://{}/../{}/x.duckdb",
+            dir.path().display(),
+            dir.path().file_name().unwrap().to_string_lossy()
+        );
+        assert_eq!(url(&dotted).unwrap().binding.database, t.binding.database);
+        // human-readable description
+        assert!(describe_target(&t.binding).starts_with("duckdb:/"));
+    }
+
+    #[cfg(feature = "duckdb")]
+    #[rstest]
+    #[case::memory("duckdb://:memory:")]
+    #[case::empty_path("duckdb://")]
+    #[case::missing("duckdb:///definitely/not/here.duckdb")]
+    #[case::read_write_flag("duckdb:///tmp/x.duckdb?read_only=false")]
+    #[case::allowed_directories("duckdb:///tmp/x.duckdb?allowed_directories=/etc")]
+    #[case::extensions("duckdb:///tmp/x.duckdb?extensions=httpfs")]
+    #[case::install("duckdb:///tmp/x.duckdb?install_extensions=true")]
+    #[case::ducklake("duckdb:///tmp/x.duckdb?ducklake=sqlite:/tmp/m.sqlite")]
+    #[case::password("duckdb:///tmp/x.duckdb?password=x")]
+    fn duckdb_enrollment_takes_nothing_but_a_file(#[case] u: &str) {
+        assert!(url(u).is_err(), "{u} should be rejected");
+    }
+
+    #[cfg(feature = "duckdb")]
+    #[test]
+    fn duckdb_directories_and_non_files_are_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(url(&format!("duckdb://{}", dir.path().display())).is_err());
     }
 
     #[test]

@@ -65,10 +65,12 @@ macro_rules! connectors {
     };
 }
 
-// feature => engine(s) => client type. File formats are all served by
-// DataFusion (DuckDB files included until DuckDB gets a connector of its own).
+// feature => engine(s) => client type. Parquet, CSV and JSON files are served
+// by DataFusion; DuckDB databases by the embedded DuckDB engine, which is
+// opt-in (a C++ build, +20 MB): without its feature a `duckdb://` connection
+// is `ConnectorNotBuilt`, not an attempt to read the file as something else.
 connectors! {
-    "files" => Parquet | CSV | JSON | DuckDB => dbcrust_driver_files::DataFusionClient;
+    "files" => Parquet | CSV | JSON => dbcrust_driver_files::DataFusionClient;
     "mongodb" => MongoDB => dbcrust_driver_mongodb::MongoDBClient;
     "elasticsearch" => Elasticsearch => dbcrust_driver_elasticsearch::ElasticsearchClient;
     "clickhouse" => ClickHouse => dbcrust_driver_clickhouse::ClickHouseClient;
@@ -81,6 +83,10 @@ connectors! {
     "redshift" => Redshift => dbcrust_driver_redshift::RedshiftClient;
     "libsql" => LibSql => dbcrust_driver_libsql::LibSqlClient;
     "influxdb" => InfluxDB => dbcrust_driver_influxdb::InfluxClient;
+    "s3" => S3 => dbcrust_driver_s3::S3Client;
+    "dynamodb" => DynamoDB => dbcrust_driver_dynamodb::DynamoClient;
+    "cloudwatch" => CloudWatchLogs => dbcrust_driver_cloudwatch::CloudWatchLogsClient;
+    "duckdb" => DuckDB => dbcrust_driver_duckdb::DuckDbClient;
 }
 
 /// The engines whose connector is part of this build, in `DatabaseType` order.
@@ -117,6 +123,10 @@ mod tests {
             "redshift",
             "libsql",
             "influxdb",
+            "s3",
+            "dynamodb",
+            "cloudwatch",
+            "duckdb",
             "files"
         );
         features
@@ -131,12 +141,16 @@ mod tests {
         assert_eq!(required_feature(&DatabaseType::Redshift), "redshift");
         assert_eq!(required_feature(&DatabaseType::LibSql), "libsql");
         assert_eq!(required_feature(&DatabaseType::InfluxDB), "influxdb");
-        for engine in [
-            DatabaseType::Parquet,
-            DatabaseType::CSV,
-            DatabaseType::JSON,
-            DatabaseType::DuckDB,
-        ] {
+        assert_eq!(required_feature(&DatabaseType::S3), "s3");
+        assert_eq!(required_feature(&DatabaseType::DynamoDB), "dynamodb");
+        assert_eq!(
+            required_feature(&DatabaseType::CloudWatchLogs),
+            "cloudwatch"
+        );
+        // DuckDB has its own connector: the DataFusion file engine no longer
+        // answers for it
+        assert_eq!(required_feature(&DatabaseType::DuckDB), "duckdb");
+        for engine in [DatabaseType::Parquet, DatabaseType::CSV, DatabaseType::JSON] {
             assert_eq!(required_feature(&engine), "files");
         }
     }
@@ -156,6 +170,10 @@ mod tests {
             "redshift",
             "libsql",
             "influxdb",
+            "s3",
+            "dynamodb",
+            "cloudwatch",
+            "duckdb",
             "files",
         ];
         for engine in DatabaseType::supported_types() {
@@ -203,7 +221,18 @@ mod tests {
     ))]
     #[test]
     fn a_full_build_has_every_engine() {
-        assert_eq!(compiled_engines(), DatabaseType::supported_types());
+        // The AWS connectors and DuckDB are opt-in: not part of the default
+        // feature set
+        let expected: Vec<DatabaseType> = DatabaseType::supported_types()
+            .into_iter()
+            .filter(|engine| cfg!(feature = "s3") || *engine != DatabaseType::S3)
+            .filter(|engine| cfg!(feature = "dynamodb") || *engine != DatabaseType::DynamoDB)
+            .filter(|engine| {
+                cfg!(feature = "cloudwatch") || *engine != DatabaseType::CloudWatchLogs
+            })
+            .filter(|engine| cfg!(feature = "duckdb") || *engine != DatabaseType::DuckDB)
+            .collect();
+        assert_eq!(compiled_engines(), expected);
     }
 
     #[cfg(not(feature = "mongodb"))]
@@ -230,6 +259,52 @@ mod tests {
             error.to_string(),
             "MongoDB support is not compiled into this build (enable the `mongodb` cargo feature, or install a full build)"
         );
+    }
+
+    /// Without the feature a `duckdb://` connection says so; it is not handed
+    /// to the DataFusion file engine, which cannot read a DuckDB database.
+    #[cfg(not(feature = "duckdb"))]
+    #[tokio::test]
+    async fn duckdb_without_its_feature_is_connector_not_built() {
+        let info = ConnectionInfo {
+            database_type: DatabaseType::DuckDB,
+            file_path: Some(":memory:".to_string()),
+            ..Default::default()
+        };
+        let Err(error) = create_database_client(info).await else {
+            panic!("DuckDB must not connect in a build without the feature");
+        };
+        assert!(
+            matches!(
+                error,
+                DatabaseError::ConnectorNotBuilt {
+                    engine: DatabaseType::DuckDB,
+                    feature: "duckdb"
+                }
+            ),
+            "{error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            "DuckDB support is not compiled into this build (enable the `duckdb` cargo feature, or install a full build)"
+        );
+        assert!(!is_compiled(&DatabaseType::DuckDB));
+    }
+
+    #[cfg(feature = "duckdb")]
+    #[tokio::test]
+    async fn the_factory_builds_a_duckdb_client() {
+        let info = ConnectionInfo {
+            database_type: DatabaseType::DuckDB,
+            file_path: Some(":memory:".to_string()),
+            ..Default::default()
+        };
+        let client = create_database_client(info).await.expect("duckdb client");
+        assert_eq!(
+            client.get_connection_info().database_type,
+            DatabaseType::DuckDB
+        );
+        assert_eq!(client.get_current_database(), "memory");
     }
 
     #[cfg(feature = "sqlite")]

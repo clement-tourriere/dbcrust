@@ -426,10 +426,17 @@ impl DbToolExecutor {
 
     /// The agent's pre-flight check of one statement: `Some(rejection)` when it
     /// may modify data or has side effects. InfluxDB is not SQL (Flux programs
-    /// start with `from(`), so it is judged by its own lexer-based guard alone.
+    /// start with `from(`), and neither are S3 or DynamoDB commands: each is
+    /// judged by its own guard alone.
     fn guard_statement(&self, sql: &str) -> Option<ToolOutcome> {
         let db_type = self.db.lock().unwrap().get_database_type();
-        if db_type == DatabaseType::InfluxDB {
+        if matches!(
+            db_type,
+            DatabaseType::InfluxDB
+                | DatabaseType::S3
+                | DatabaseType::DynamoDB
+                | DatabaseType::CloudWatchLogs
+        ) {
             return dbcrust_core::safety::check_read_only(sql, &db_type)
                 .err()
                 .map(|violation| rejected_outcome(&format!("{}.", violation.reason)));
@@ -438,6 +445,13 @@ impl DbToolExecutor {
             return Some(rejected_outcome(
                 "It appears to modify data or is multi-statement.",
             ));
+        }
+        // DuckDB reads files, URLs and the environment from plain SELECTs
+        // (`read_csv('/etc/passwd')`): its own default-deny check as well
+        if db_type == DatabaseType::DuckDB {
+            if let Err(violation) = dbcrust_core::safety::check_read_only(sql, &db_type) {
+                return Some(rejected_outcome(&format!("{}.", violation.reason)));
+            }
         }
         side_effect_guard(sql)
             .map(|reason| rejected_outcome(&format!("It {reason}, which has side effects.")))
@@ -451,17 +465,32 @@ impl DbToolExecutor {
     #[allow(clippy::await_holding_lock)]
     async fn run_readonly(&self, sql: &str) -> ToolOutcome {
         let db_type = self.db.lock().unwrap().get_database_type();
-        let capped_sql = if matches!(db_type, DatabaseType::SqlServer | DatabaseType::InfluxDB) {
+        let capped_sql = if matches!(
+            db_type,
+            DatabaseType::SqlServer
+                | DatabaseType::InfluxDB
+                | DatabaseType::S3
+                | DatabaseType::DynamoDB
+                | DatabaseType::CloudWatchLogs
+        ) {
             // T-SQL: the shared textual guard cannot see `SELECT 1 EXEC …` (no
             // `;` needed), so SQL Server gets its lexer-based check, and no
             // `LIMIT` wrapper (T-SQL has none; the driver caps the rows it reads).
             // InfluxDB speaks InfluxQL, Flux or v3 SQL: its own lexer-based
-            // check, and no wrapper either (a Flux program cannot be wrapped)
+            // check, and no wrapper either (a Flux program cannot be wrapped).
+            // S3, DynamoDB and CloudWatch Logs input is read-only by construction
+            // and bounded by the driver (a PartiQL SELECT or an Insights query
+            // cannot be wrapped in a LIMIT either)
             if let Err(violation) = dbcrust_core::safety::check_read_only(sql, &db_type) {
                 return rejected_outcome(&format!("{}.", violation.reason));
             }
             sql.trim().trim_end_matches(';').trim().to_string()
         } else {
+            if db_type == DatabaseType::DuckDB {
+                if let Err(violation) = dbcrust_core::safety::check_read_only(sql, &db_type) {
+                    return rejected_outcome(&format!("{}.", violation.reason));
+                }
+            }
             cap_query(sql, self.max_rows)
         };
         let result = {

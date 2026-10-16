@@ -402,6 +402,7 @@ pub fn supports_insert(db_type: &DatabaseType) -> bool {
             | DatabaseType::MySQL
             | DatabaseType::SQLite
             | DatabaseType::LibSql
+            | DatabaseType::DuckDB
             | DatabaseType::ClickHouse
     )
 }
@@ -1717,6 +1718,7 @@ mod tests {
             sql,
             "INSERT INTO orders (\n    id,\n    customer_id,\n    status,\n    shipped_at\n)\nVALUES (\n    0, -- id: INTEGER, not null\n    0, -- customer_id: INTEGER, not null\n    NULL, -- status: TEXT, not null, default 'pending'\n    NULL  -- shipped_at: TEXT\n);"
         );
+        assert!(insert_template_sql(&DatabaseType::DuckDB, &entry, &details.columns).is_some());
         assert!(insert_template_sql(&DatabaseType::MongoDB, &entry, &details.columns).is_none());
         assert!(insert_template_sql(&DatabaseType::Parquet, &entry, &details.columns).is_none());
         assert!(insert_template_sql(&DatabaseType::SQLite, &entry, &[]).is_none());

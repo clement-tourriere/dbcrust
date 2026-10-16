@@ -149,6 +149,9 @@ fn path_candidates(url_prefix: &str, typed: &str) -> Vec<Candidate<'static>> {
                 return Some(Candidate::new(format!("{url_prefix}{dir}{name}/")));
             }
             let (database_type, _) = crate::cli_core::CliCore::detect_file_database_type(name)?;
+            if !crate::drivers::is_compiled(&database_type) {
+                return None;
+            }
             Some(Candidate::described(
                 format!("{url_prefix}{dir}{name}"),
                 database_type.to_string(),

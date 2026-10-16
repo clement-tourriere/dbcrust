@@ -210,6 +210,37 @@ fn get_dialect_notes(db_type: &DatabaseType) -> String {
 - The "tables" in the schema are measurements; columns are time, tag keys and field keys"#
             .to_string(),
 
+        DatabaseType::S3 => r#"S3 COMMAND NOTES:
+- This is NOT SQL: write exactly one command per request. The commands only read:
+  - ls [PREFIX] [-r] [-n N]: list the objects and "directories" under a prefix (-r: everything below it)
+  - head KEY: an object's size, type, etag, storage class and metadata
+  - get KEY [bytes=A-B | --bytes N]: the first bytes of an object (capped; text is shown as lines, binary as a hex dump)
+  - buckets: list the account's buckets; cd PREFIX / pwd: change or show the current prefix
+- Keys are exact strings: copy them from an `ls` result; quote keys with spaces: head "my file.txt"
+- Listing is billed per 1000 keys and reading per byte: narrow with a prefix, prefer head to get, and read a few KB first
+- There is no search, filter or SQL: list a prefix, then read the objects that matter
+- The "tables" in the schema are the prefixes ("directories") and objects at the current prefix"#
+            .to_string(),
+
+        DatabaseType::DynamoDB => r#"DYNAMODB NOTES:
+- Write exactly one statement per request: a PartiQL SELECT, or one command. Nothing writes.
+- PartiQL: SELECT * FROM "Table" WHERE pk = 'a' (names double-quoted, strings single-quoted; no joins, no GROUP BY, no ORDER BY outside a key condition)
+- A SELECT without a condition on the partition key is a full scan, billed per item read: always put the partition key in the WHERE, and prefer `query`
+- Commands: tables | describe TABLE | get TABLE pk=VALUE [sk=VALUE] | query TABLE pk=VALUE [sk=VALUE | sk^=PREFIX] [--index I] [--limit N] [--desc] | scan TABLE --limit N
+- Key values are text; the client converts them to the key attribute's type
+- Attributes are per item, not per table: the "columns" are the key attributes, other attributes appear as they are found
+- Lists, maps and sets come back as JSON text"#
+            .to_string(),
+
+        DatabaseType::CloudWatchLogs => r#"CLOUDWATCH LOGS NOTES:
+- This is NOT SQL: write exactly one Logs Insights query, or one command. Nothing writes.
+- Query: fields @timestamp, @message | filter @message like /ERROR/ | sort @timestamp desc | limit 50 (commands: fields, filter, stats, parse, sort, limit, display, dedup, pattern, diff)
+- Every query runs over a time window (default: the last hour). Set it for one query with a prefix: `since 30m <query>` or `between 2026-10-16 08:00 and 2026-10-16 09:00 <query>`
+- Insights is billed per GB scanned: keep windows short, put `filter` early, and select the log group with `use /aws/lambda/orders` or `--group` before the query
+- Commands: groups [prefix] | streams GROUP | tail GROUP --since 5m --filter PATTERN | use GROUP[,GROUP]
+- Results are rows of the fields the query outputs (`@ptr` is hidden); statistics show what was scanned"#
+            .to_string(),
+
         DatabaseType::Redis => r#"REDIS COMMAND NOTES:
 - This is NOT SQL: write exactly one redis-cli command line, e.g. GET user:1, HGETALL user:1, LRANGE queue 0 99
 - Quote values with spaces using double quotes: SET "a b" "c d"
@@ -221,7 +252,17 @@ fn get_dialect_notes(db_type: &DatabaseType) -> String {
 - Redis has no joins, aggregates or filters: fetch keys, then read them"#
             .to_string(),
 
-        // DataFusion file formats (Parquet, CSV, JSON, DuckDB)
+        DatabaseType::DuckDB => r#"DUCKDB DIALECT NOTES:
+- PostgreSQL-flavoured analytical SQL; use double quotes for identifiers, single quotes for strings
+- FROM-first queries work: FROM t SELECT a, b; SELECT * EXCLUDE (c) FROM t; GROUP BY ALL; ORDER BY ALL
+- Types: LIST (col[1], list_contains, unnest), STRUCT (col.field), MAP, ENUM, DECIMAL, HUGEINT, INTERVAL
+- Dates: date_trunc(), date_diff(), strftime(), strptime(), epoch(); string concatenation: ||
+- Catalog: duckdb_tables(), duckdb_columns(), duckdb_schemas(), information_schema.tables; DESCRIBE t, SUMMARIZE t
+- Files are read in place only with read_csv()/read_parquet()/read_json(): they are refused in read-only mode
+- Never use ATTACH, INSTALL, LOAD, COPY ... TO, EXPORT DATABASE, SET or PRAGMA writes: they are refused"#
+            .to_string(),
+
+        // DataFusion file formats (Parquet, CSV, JSON)
         _ => r#"DATAFUSION SQL NOTES:
 - Standard SQL dialect (PostgreSQL-compatible)
 - Aggregate: COUNT, SUM, AVG, MIN, MAX, STDDEV, VAR, MEDIAN

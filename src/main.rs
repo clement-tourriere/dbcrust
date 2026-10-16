@@ -23,8 +23,18 @@ fn init_tracing() -> Result<(), Box<dyn StdError>> {
         LogLevel::Error => "error",
     };
 
+    // The AWS SDK crates (opt-in `aws`/`s3` features) narrate every credential
+    // resolution at INFO; that is debug material, so at the default level they
+    // only speak up for warnings (debug and trace still show everything)
+    let filter = match config.logging.level {
+        LogLevel::Info => {
+            "info,aws_config=warn,aws_runtime=warn,aws_smithy_runtime=warn".to_string()
+        }
+        _ => level_filter.to_string(),
+    };
+
     // Create the base registry
-    let registry = tracing_subscriber::registry().with(EnvFilter::new(level_filter));
+    let registry = tracing_subscriber::registry().with(EnvFilter::new(filter));
 
     // Build and initialize subscriber based on output preferences
     match (config.logging.console_output, config.logging.file_output) {

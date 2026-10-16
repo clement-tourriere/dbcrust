@@ -312,9 +312,113 @@ dbcrust 'influxdb2s://:MY_TOKEN@localhost/telemetry?org=acme&language=influxql&v
 
 See the [InfluxDB guide](/user-guide/influxdb/) for details.
 
+**Amazon S3, Cloudflare R2, MinIO** *(opt-in build: `--features aws`, Rust ≥ 1.94.1)*
+
+**Schemes:** `s3://[KEY:SECRET@]bucket[/prefix]`, `r2://[KEY:SECRET@]account_id/bucket[/prefix]`, `minio://[KEY:SECRET@]host[:9000]/bucket[/prefix]`
+
+```bash
+# AWS: credentials from the environment, a profile (SSO, role, keys) or the instance
+dbcrust 's3://my-bucket/logs/?region=eu-west-1'
+dbcrust 's3://my-bucket?region=eu-west-1&profile=prod-ro' -c 'ls'
+
+# Static keys (the secret key is the password: stored, bound to the endpoint, redacted)
+dbcrust 's3://AKIA…:SECRET@my-bucket?region=eu-west-1'
+
+# S3-compatible stores
+dbcrust 'r2://KEY:SECRET@0123456789abcdef/media'
+dbcrust 'minio://minioadmin:minioadmin@localhost:9000/data?tls=false'
+dbcrust 's3://test:test@bucket?endpoint=http://localhost:4566&region=us-east-1'
+```
+
+**Features:**
+- Seven typed commands, read-only by construction: `ls`, `head`, `get` (always a bounded `Range`, hard byte cap), `buckets`, `cd`, `pwd`, `help`
+- Region: `?region=`, else an explicit `?profile=`'s, else the environment; `?endpoint=` and path-style addressing for non-AWS stores
+- Credentials: `ACCESS:SECRET@`, an explicit `?profile=` (SSO, roles, `credential_process`), `?anonymous=true`, or the AWS default chain
+- TLS is rustls on ring only (no aws-lc, no OpenSSL); `?ca_cert=` trusts a private CA
+- `\l` buckets, `\dt` prefixes and objects at the current prefix, `\d KEY` metadata
+- `--read-only` accepts every S3 command and refuses anything else; IAM is the server-side limit. The credential broker does not enrol S3 yet
+
+See the [S3 guide](/user-guide/s3/) for details.
+
+**Amazon DynamoDB** *(opt-in build: `--features aws` or `dynamodb`, Rust ≥ 1.94.1)*
+
+**Schemes:** `dynamodb://[KEY:SECRET@][region][/table]`, `dynamodb+http://host[:port][/table]` (plain HTTP, DynamoDB Local), `ddb://` (alias)
+
+```bash
+# AWS: credentials from the environment, a profile (SSO, role, keys) or the instance
+dbcrust dynamodb://eu-west-1 -c 'tables'
+dbcrust 'dynamodb://eu-west-1/Orders?profile=prod-ro' -c 'query customer=acme --desc --limit 20'
+dbcrust 'dynamodb://eu-west-1?profile=prod-ro' -c "SELECT * FROM \"Orders\" WHERE customer = 'acme'"
+
+# Static keys (the secret key is the password: stored, bound to the endpoint and region, redacted)
+dbcrust 'dynamodb://AKIA…:SECRET@eu-west-1/Orders'
+
+# DynamoDB Local, LocalStack, a VPC endpoint
+dbcrust 'dynamodb+http://local:local@localhost:8000?region=us-east-1'
+dbcrust 'dynamodb://us-east-1?endpoint=http://localhost:4566'
+```
+
+**Features:**
+- PartiQL `SELECT` and five typed commands: `tables`, `describe`, `scan`, `get`, `query`; **no writes**, even without `--read-only`
+- Every read is bounded (a `Limit` never above the rows still wanted, a page budget) and the consumed capacity units are reported; a `scan` always warns
+- Key values are converted to the key attribute's type from `DescribeTable` and checked before any read
+- Items become rows: the union of attribute names (keys first), exact numbers, JSON for maps, lists and sets
+- Credentials, region, `?endpoint=`, `?profile=`, `?role_arn=`, `?ca_cert=` as for S3; TLS is rustls on ring only
+- `\l`/`\dt` tables, `\d` keys and indexes. The credential broker does not enrol DynamoDB yet
+
+See the [DynamoDB guide](/user-guide/dynamodb/) for details.
+
+**Amazon CloudWatch Logs** *(opt-in build: `--features aws` or `cloudwatch`, Rust ≥ 1.94.1)*
+
+**Schemes:** `cloudwatch://[KEY:SECRET@][region][/log-group-or-prefix]`, `cloudwatch+http://host[:port]`, `cwlogs://` (alias)
+
+```bash
+dbcrust cloudwatch://eu-west-1 -c 'groups /aws/lambda/'
+dbcrust 'cloudwatch://eu-west-1/aws/lambda/orders?profile=prod-ro' \
+  -c 'since 30m fields @timestamp, @message | filter @message like /ERROR/ | sort @timestamp desc | limit 50'
+dbcrust 'cloudwatch://eu-west-1?groups=/aws/lambda/a,/aws/lambda/b&since=15m&max_scan_gb=2'
+```
+
+**Features:**
+- Logs Insights queries over a **mandatory time window** (`since 30m`, `between 2026-10-16 08:00 and now`; default the last hour, `?max_window=` caps it) on up to 50 log groups (`use`, `--group`, the URL path or `?groups=`)
+- `StopQuery` on Ctrl-C, on timeout, on a `?max_scan_gb=` budget and on any failing poll; records matched, records scanned and bytes scanned are reported after each query
+- `groups`, `streams`, `tail` (FilterLogEvents, oldest first, bounded); no write API is reachable
+- Credentials and region as for S3 and DynamoDB; TLS is rustls on ring only
+- `\l`/`\dt` log groups, `\d` group details and recent streams. The credential broker does not enrol CloudWatch Logs yet
+
+See the [CloudWatch Logs guide](/user-guide/cloudwatch-logs/) for details.
+
+**DuckDB** (opt-in build: `cargo install --path . --locked --features duckdb`)
+
+**Schemes:** `duckdb://` (also `./file.duckdb` and `file.ddb`)
+
+```bash
+# A database file (created if it does not exist)
+dbcrust duckdb:///data/warehouse.duckdb
+
+# In memory: query Parquet/CSV/JSON in place
+dbcrust 'duckdb://:memory:' -c "SELECT * FROM 'events.parquet' LIMIT 10"
+
+# Read-only: the engine itself refuses writes, COPY TO, ATTACH, INSTALL and file functions
+dbcrust duckdb:///data/warehouse.duckdb --read-only -c 'SELECT count(*) FROM orders'
+
+# A DuckLake catalog (downloads the `ducklake` extension once; never without install_extensions=true)
+dbcrust 'duckdb://:memory:?ducklake=sqlite:/srv/lake/meta.sqlite&data_path=/srv/lake/data/&install_extensions=true'
+```
+
+**Features:**
+- The embedded engine on its own thread; Ctrl-C and the query timeout use DuckDB's `interrupt` and keep the session
+- Options: `access_mode=read_only`, `memory_limit`, `threads`, `max_rows` (100 000), `extensions`, `install_extensions`, `ducklake`/`data_path`/`alias`, `allowed_directories` (read-only mode)
+- `\l` lists the attached databases, `\c name` is `USE name`, `\dt` / `\d` read DuckDB's catalog; `EXPLAIN` is the text plan
+- Nested types print as JSON, `DECIMAL`/`HUGEINT` keep every digit
+- `--read-only` and the agent broker (local files only) are enforced by DuckDB: `access_mode=READ_ONLY`, external access off, configuration locked
+- Without the `duckdb` feature the URL answers "DuckDB support is not compiled into this build"; it is no longer served by the Parquet/CSV/JSON engine
+
+See the [DuckDB & DuckLake guide](/user-guide/duckdb/) for details.
+
 ### File Format Schemes
 
-DBCrust can query file formats directly using Apache DataFusion, a powerful SQL query engine that operates on Parquet, CSV, and JSON files. You can either use the explicit scheme or pass a local path with a known extension:
+DBCrust can query file formats directly using Apache DataFusion, a powerful SQL query engine that operates on Parquet, CSV, and JSON files (a DuckDB build reads them natively too, through `duckdb://`). You can either use the explicit scheme or pass a local path with a known extension:
 
 ```bash
 dbc sales.parquet

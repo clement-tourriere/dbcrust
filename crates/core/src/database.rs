@@ -153,10 +153,21 @@ pub enum DatabaseType {
     /// InfluxDB time-series servers: v1 (InfluxQL), v2 (Flux) and v3 (SQL)
     /// over HTTP, selected by the URL scheme or `?version=`.
     InfluxDB,
+    /// Amazon S3 and S3-compatible stores (Cloudflare R2, MinIO…): not SQL,
+    /// queries are the typed read-only commands of [`crate::s3_command`].
+    S3,
+    /// Amazon DynamoDB (and DynamoDB Local): PartiQL `SELECT` plus the typed
+    /// read commands of [`crate::dynamodb_command`].
+    DynamoDB,
+    /// Amazon CloudWatch Logs: Logs Insights queries over a time window plus
+    /// the typed read commands of [`crate::cloudwatch_command`].
+    CloudWatchLogs,
     // File formats (via DataFusion)
     Parquet,
     CSV,
     JSON,
+    /// DuckDB database files and `:memory:` (the embedded DuckDB engine, cargo
+    /// feature `duckdb`; opt-in, it compiles a C++ engine).
     DuckDB,
 }
 
@@ -167,6 +178,16 @@ impl fmt::Display for DatabaseType {
 }
 
 impl DatabaseType {
+    /// The AWS-SDK connectors: no host unless a custom endpoint is given, no
+    /// port, credentials that are often ambient (profile, SSO, role), and a
+    /// secret binding that includes the region and the transport.
+    pub fn is_aws(&self) -> bool {
+        matches!(
+            self,
+            DatabaseType::S3 | DatabaseType::DynamoDB | DatabaseType::CloudWatchLogs
+        )
+    }
+
     pub fn supported_types() -> Vec<Self> {
         use strum::IntoEnumIterator;
 
@@ -234,6 +255,7 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::Redshift => Some(5439),      // PostgreSQL protocol
             DatabaseType::LibSql => Some(443),         // Hrana over HTTPS (plain: 8080)
             DatabaseType::InfluxDB => Some(8086),      // HTTP API (v3 Core: 8181)
+            DatabaseType::S3 | DatabaseType::DynamoDB | DatabaseType::CloudWatchLogs => None, // AWS endpoint, or the one named by ?endpoint=
             DatabaseType::Parquet
             | DatabaseType::CSV
             | DatabaseType::JSON
@@ -255,6 +277,9 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::Redshift => "Redshift",
             DatabaseType::LibSql => "libSQL",
             DatabaseType::InfluxDB => "InfluxDB",
+            DatabaseType::S3 => "Amazon S3",
+            DatabaseType::DynamoDB => "Amazon DynamoDB",
+            DatabaseType::CloudWatchLogs => "Amazon CloudWatch Logs",
             DatabaseType::Parquet => "Parquet",
             DatabaseType::CSV => "CSV",
             DatabaseType::JSON => "JSON",
@@ -280,6 +305,7 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::JSON
             | DatabaseType::DuckDB => false, // File-based, no network connection
             DatabaseType::LibSql => false, // HTTP(S) to a public edge or a local sqld
+            DatabaseType::S3 | DatabaseType::DynamoDB | DatabaseType::CloudWatchLogs => false, // the SDK talks HTTPS to the endpoint itself
         }
     }
 
@@ -297,6 +323,9 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::Redshift => &["redshift", "redshift+tls"],
             DatabaseType::LibSql => &["libsql", "libsql+http", "turso"],
             DatabaseType::InfluxDB => &INFLUXDB_SCHEMES,
+            DatabaseType::S3 => &S3_SCHEMES,
+            DatabaseType::DynamoDB => &DYNAMODB_SCHEMES,
+            DatabaseType::CloudWatchLogs => &CLOUDWATCH_SCHEMES,
             DatabaseType::Parquet => &["parquet"],
             DatabaseType::CSV => &["csv"],
             DatabaseType::JSON => &["json", "ndjson"],
@@ -321,6 +350,9 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::SqlServer
             | DatabaseType::Redshift
             | DatabaseType::LibSql
+            | DatabaseType::S3
+            | DatabaseType::DynamoDB
+            | DatabaseType::CloudWatchLogs
             | DatabaseType::InfluxDB => false,
         }
     }
@@ -333,8 +365,8 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::Elasticsearch
             | DatabaseType::Parquet
             | DatabaseType::CSV
-            | DatabaseType::JSON
-            | DatabaseType::DuckDB => true, // DataFusion supports EXPLAIN
+            | DatabaseType::JSON => true, // DataFusion supports EXPLAIN
+            DatabaseType::DuckDB => true, // EXPLAIN (FORMAT JSON)
             DatabaseType::MySQL
             | DatabaseType::SQLite
             | DatabaseType::WhiteDragon
@@ -342,6 +374,9 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::SqlServer // SHOWPLAN_XML only
             | DatabaseType::Redshift // text plan only
             | DatabaseType::LibSql // EXPLAIN QUERY PLAN rows
+            | DatabaseType::S3 // no query planner
+            | DatabaseType::DynamoDB // PartiQL has no EXPLAIN
+            | DatabaseType::CloudWatchLogs // Logs Insights has no query plan
             | DatabaseType::InfluxDB => false, // v3 EXPLAIN text only
         }
     }
@@ -363,6 +398,9 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::DuckDB
             | DatabaseType::WhiteDragon
             | DatabaseType::Redis
+            | DatabaseType::S3 // ambient credentials (profile, SSO, role) or public buckets
+            | DatabaseType::DynamoDB // ambient credentials (profile, SSO, role)
+            | DatabaseType::CloudWatchLogs // ambient credentials (profile, SSO, role)
             | DatabaseType::InfluxDB => false, // Optional (v1 user/password, v2/v3 token)
         }
     }
@@ -381,6 +419,9 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::Redshift => "redshift",
             DatabaseType::LibSql => "libsql",
             DatabaseType::InfluxDB => "influxdb",
+            DatabaseType::S3 => "s3",
+            DatabaseType::DynamoDB => "dynamodb",
+            DatabaseType::CloudWatchLogs => "cloudwatch",
             DatabaseType::Parquet => "parquet",
             DatabaseType::CSV => "csv",
             DatabaseType::JSON => "json",
@@ -578,6 +619,44 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::WhiteDragon => &["COUNT", "YEAR", "MONTH", "DAY"],
             // Redis has commands, not SQL functions (the driver lists them)
             DatabaseType::Redis => &[],
+            // S3 has commands, not SQL functions
+            DatabaseType::S3 => &[],
+            // PartiQL's functions (the driver lists them with its commands)
+            DatabaseType::DynamoDB => &[
+                "begins_with",
+                "contains",
+                "attribute_type",
+                "size",
+                "MISSING",
+            ],
+            // Logs Insights commands and functions (the driver lists the
+            // commands of this client with them)
+            DatabaseType::CloudWatchLogs => &[
+                "fields",
+                "filter",
+                "stats",
+                "sort",
+                "limit",
+                "parse",
+                "display",
+                "dedup",
+                "pattern",
+                "diff",
+                "unnest",
+                "count",
+                "count_distinct",
+                "sum",
+                "avg",
+                "min",
+                "max",
+                "pct",
+                "bin",
+                "strlen",
+                "concat",
+                "ispresent",
+                "isempty",
+                "datefloor",
+            ],
             // InfluxQL aggregates and selectors (Flux has its own, see the
             // driver's completion words)
             DatabaseType::InfluxDB => &[
@@ -685,11 +764,9 @@ impl DatabaseTypeExt for DatabaseType {
                 "LAG",
                 "LEAD",
             ],
+            DatabaseType::DuckDB => DUCKDB_FUNCTIONS,
             // DataFusion SQL functions (for file formats)
-            DatabaseType::Parquet
-            | DatabaseType::CSV
-            | DatabaseType::JSON
-            | DatabaseType::DuckDB => &[
+            DatabaseType::Parquet | DatabaseType::CSV | DatabaseType::JSON => &[
                 // Aggregate functions
                 "COUNT",
                 "SUM",
@@ -801,8 +878,8 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::Elasticsearch
             | DatabaseType::Parquet
             | DatabaseType::CSV
-            | DatabaseType::JSON
-            | DatabaseType::DuckDB => true, // DataFusion supports timestamp functions
+            | DatabaseType::JSON => true, // DataFusion supports timestamp functions
+            DatabaseType::DuckDB => false, // epoch_ms()/to_timestamp() instead
             DatabaseType::PostgreSQL
             | DatabaseType::SQLite
             | DatabaseType::WhiteDragon
@@ -810,6 +887,9 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::SqlServer
             | DatabaseType::Redshift
             | DatabaseType::LibSql
+            | DatabaseType::S3
+            | DatabaseType::DynamoDB
+            | DatabaseType::CloudWatchLogs
             | DatabaseType::InfluxDB => false,
         }
     }
@@ -831,6 +911,8 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::Redshift => &[],  // a managed service, never a container
             DatabaseType::LibSql => &[],    // no user: the credential is a token
             DatabaseType::InfluxDB => &["INFLUXDB_ADMIN_USER", "DOCKER_INFLUXDB_INIT_USERNAME"],
+            DatabaseType::S3 => &["MINIO_ROOT_USER", "MINIO_ACCESS_KEY"],
+            DatabaseType::DynamoDB | DatabaseType::CloudWatchLogs => &[],
         }
     }
 
@@ -856,6 +938,8 @@ impl DatabaseTypeExt for DatabaseType {
                 "INFLUXDB_ADMIN_PASSWORD",
             ],
             DatabaseType::WhiteDragon | DatabaseType::Redshift | DatabaseType::LibSql => &[],
+            DatabaseType::S3 => &["MINIO_ROOT_PASSWORD", "MINIO_SECRET_KEY"],
+            DatabaseType::DynamoDB | DatabaseType::CloudWatchLogs => &[],
         }
     }
 
@@ -875,7 +959,10 @@ impl DatabaseTypeExt for DatabaseType {
             | DatabaseType::Redis
             | DatabaseType::SqlServer
             | DatabaseType::Redshift
-            | DatabaseType::LibSql => &[],
+            | DatabaseType::LibSql
+            | DatabaseType::S3
+            | DatabaseType::DynamoDB
+            | DatabaseType::CloudWatchLogs => &[],
             DatabaseType::InfluxDB => &["INFLUXDB_DB", "DOCKER_INFLUXDB_INIT_BUCKET"],
         }
     }
@@ -895,7 +982,10 @@ impl DatabaseTypeExt for DatabaseType {
             DatabaseType::WhiteDragon | DatabaseType::Redis | DatabaseType::InfluxDB => "",
             DatabaseType::SqlServer => "sa",
             DatabaseType::Redshift => "awsuser", // the console's default admin user
-            DatabaseType::LibSql => "",
+            DatabaseType::LibSql
+            | DatabaseType::S3
+            | DatabaseType::DynamoDB
+            | DatabaseType::CloudWatchLogs => "",
         }
     }
 }
@@ -918,6 +1008,9 @@ impl DatabaseType {
             "redshift" | "redshift+tls" => Ok(DatabaseType::Redshift),
             "libsql" | "libsql+http" | "turso" => Ok(DatabaseType::LibSql),
             scheme if INFLUXDB_SCHEMES.contains(&scheme) => Ok(DatabaseType::InfluxDB),
+            scheme if S3_SCHEMES.contains(&scheme) => Ok(DatabaseType::S3),
+            scheme if DYNAMODB_SCHEMES.contains(&scheme) => Ok(DatabaseType::DynamoDB),
+            scheme if CLOUDWATCH_SCHEMES.contains(&scheme) => Ok(DatabaseType::CloudWatchLogs),
             "parquet" => Ok(DatabaseType::Parquet),
             "csv" => Ok(DatabaseType::CSV),
             "json" | "ndjson" => Ok(DatabaseType::JSON),
@@ -926,6 +1019,569 @@ impl DatabaseType {
             scheme => Err(DatabaseError::UnsupportedScheme(scheme.to_string())),
         }
     }
+}
+
+/// URL schemes of the S3 connector. `s3` reaches AWS, or any S3-compatible
+/// endpoint through `?endpoint=`; `r2` (Cloudflare R2) and `minio` (a MinIO
+/// server) are conveniences that build that endpoint.
+pub const S3_SCHEMES: [&str; 3] = ["s3", "r2", "minio"];
+/// MinIO's default API port.
+pub const MINIO_DEFAULT_PORT: u16 = 9000;
+
+/// Query-string values: everything but unreserved characters and the few
+/// reserved ones that read better as they are (`https://host:9000/a/b`).
+const S3_QUERY_VALUE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~')
+    .remove(b':')
+    .remove(b'/');
+/// Object-key prefixes in the path: `/` stays, the rest of the reserved set is encoded.
+const S3_PATH_SEGMENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'_')
+    .remove(b'.')
+    .remove(b'~')
+    .remove(b'/');
+
+/// Remove (case-insensitively) the first of `names` found in `options`.
+fn take_option(options: &mut HashMap<String, String>, names: &[&str]) -> Option<String> {
+    let key = options
+        .keys()
+        .find(|key| names.iter().any(|name| key.eq_ignore_ascii_case(name)))
+        .cloned()?;
+    options.remove(&key)
+}
+
+fn parse_bool_option(name: &str, value: &str) -> Result<bool, DatabaseError> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        other => Err(DatabaseError::InvalidUrl(format!(
+            "unknown {name} value '{other}' (use true or false)"
+        ))),
+    }
+}
+
+/// `https://host[:port]`, `http://host[:port]` or a bare `host[:port]` (TLS),
+/// as (host, port, tls). A path, credentials or a query are refused.
+fn parse_s3_endpoint(value: &str) -> Result<(String, Option<u16>, bool), DatabaseError> {
+    let value = value.trim();
+    let with_scheme = if value.contains("://") {
+        value.to_string()
+    } else {
+        format!("https://{value}")
+    };
+    let invalid = || {
+        DatabaseError::InvalidUrl(format!(
+            "'{}' is not a valid S3 endpoint (use https://host[:port] or http://host[:port])",
+            crate::password_sanitizer::redact_text(value)
+        ))
+    };
+    let url = Url::parse(&with_scheme).map_err(|_| invalid())?;
+    let tls = match url.scheme() {
+        "https" => true,
+        "http" => false,
+        _ => return Err(invalid()),
+    };
+    let host = url
+        .host_str()
+        .filter(|host| !host.is_empty())
+        .ok_or_else(invalid)?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid());
+    }
+    Ok((host.to_string(), url.port(), tls))
+}
+
+/// A bucket name that cannot be a path segment or smuggle a request.
+fn valid_s3_bucket(bucket: &str) -> bool {
+    !bucket.is_empty()
+        && bucket.len() <= 255
+        && !bucket.chars().any(|c| {
+            c.is_whitespace() || c.is_control() || matches!(c, '/' | '\\' | '?' | '#' | '@')
+        })
+}
+
+/// S3 specifics of a parsed URL (`s3://`, `r2://`, `minio://`). The bucket sits
+/// where a host usually is, the key prefix in the path, and the custom endpoint
+/// becomes the connection's host/port/TLS, so everything that keeps those
+/// (sessions, the secret-store binding, redaction) works unchanged:
+///
+/// - `s3://[ACCESS:SECRET@]bucket[/prefix][?region=..&endpoint=..&profile=..]`
+/// - `r2://[ACCESS:SECRET@]account/bucket[/prefix]` (endpoint
+///   `https://<account>.r2.cloudflarestorage.com`, region `auto`)
+/// - `minio://[ACCESS:SECRET@]host[:9000]/bucket[/prefix]` (path style,
+///   region `us-east-1`, TLS unless `?tls=false`)
+///
+/// `ConnectionInfo`: `database` = bucket (None for account-level commands),
+/// `file_path` = key prefix, `host`/`port`/`use_tls` = custom endpoint (host
+/// None = AWS), `username`/`password` = access key id / secret access key.
+/// The `tls` option records the transport so a stored secret is never offered
+/// to a plain-HTTP endpoint.
+fn parse_s3_url(url: &Url, mut info: ConnectionInfo) -> Result<ConnectionInfo, DatabaseError> {
+    let decode = |text: &str| {
+        percent_encoding::percent_decode_str(text)
+            .decode_utf8_lossy()
+            .into_owned()
+    };
+    info.username = (!url.username().is_empty()).then(|| decode(url.username()));
+    info.password = url.password().map(decode);
+    for (key, value) in url.query_pairs() {
+        info.options.insert(key.to_string(), value.to_string());
+    }
+    let scheme = url.scheme();
+    let host_part = url.host_str().map(decode).unwrap_or_default();
+    let path = decode(url.path().trim_start_matches('/'));
+    let endpoint_option = take_option(&mut info.options, &["endpoint", "endpoint_url"]);
+    let tls_option = take_option(&mut info.options, &["tls", "ssl"])
+        .map(|value| parse_bool_option("tls", &value))
+        .transpose()?;
+
+    // (bucket, prefix, endpoint (host, port, tls))
+    let (bucket, prefix, endpoint): (String, String, Option<(String, Option<u16>, bool)>) =
+        match scheme {
+            "r2" => {
+                if endpoint_option.is_some() {
+                    return Err(DatabaseError::InvalidUrl(
+                        "r2:// builds its own endpoint: use s3://bucket?endpoint=… for another one"
+                            .to_string(),
+                    ));
+                }
+                if tls_option == Some(false) {
+                    return Err(DatabaseError::InvalidUrl(
+                        "Cloudflare R2 only speaks HTTPS".to_string(),
+                    ));
+                }
+                if host_part.is_empty() {
+                    return Err(DatabaseError::InvalidUrl(
+                        "an R2 URL needs the account id: r2://ACCOUNT_ID/bucket".to_string(),
+                    ));
+                }
+                let jurisdiction = take_option(&mut info.options, &["jurisdiction"])
+                    .map(|value| value.trim().to_ascii_lowercase());
+                let jurisdiction = match jurisdiction.as_deref() {
+                    None | Some("") | Some("default") => String::new(),
+                    Some(j @ ("eu" | "fedramp")) => format!("{j}."),
+                    Some(other) => {
+                        return Err(DatabaseError::InvalidUrl(format!(
+                            "unknown R2 jurisdiction '{other}' (eu or fedramp)"
+                        )));
+                    }
+                };
+                let (bucket, prefix) = path.split_once('/').unwrap_or((path.as_str(), ""));
+                info.options
+                    .entry("region".to_string())
+                    .or_insert_with(|| "auto".to_string());
+                (
+                    bucket.to_string(),
+                    prefix.to_string(),
+                    Some((
+                        format!("{host_part}.{jurisdiction}r2.cloudflarestorage.com"),
+                        None,
+                        true,
+                    )),
+                )
+            }
+            "minio" => {
+                if endpoint_option.is_some() {
+                    return Err(DatabaseError::InvalidUrl(
+                        "minio:// is the endpoint already: use s3://bucket?endpoint=… for another one"
+                            .to_string(),
+                    ));
+                }
+                if host_part.is_empty() {
+                    return Err(DatabaseError::InvalidUrl(
+                        "a MinIO URL needs the server: minio://host:9000/bucket".to_string(),
+                    ));
+                }
+                let (bucket, prefix) = path.split_once('/').unwrap_or((path.as_str(), ""));
+                info.options
+                    .entry("region".to_string())
+                    .or_insert_with(|| "us-east-1".to_string());
+                (
+                    bucket.to_string(),
+                    prefix.to_string(),
+                    Some((
+                        host_part.clone(),
+                        Some(url.port().unwrap_or(MINIO_DEFAULT_PORT)),
+                        tls_option.unwrap_or(true),
+                    )),
+                )
+            }
+            _ => {
+                let endpoint = endpoint_option
+                    .as_deref()
+                    .map(parse_s3_endpoint)
+                    .transpose()?;
+                if let (Some((_, _, tls)), Some(wanted)) = (&endpoint, tls_option) {
+                    if *tls != wanted {
+                        return Err(DatabaseError::InvalidUrl(
+                            "tls= contradicts the scheme of the endpoint".to_string(),
+                        ));
+                    }
+                }
+                if endpoint.is_none() && tls_option == Some(false) {
+                    return Err(DatabaseError::InvalidUrl(
+                        "AWS S3 only speaks HTTPS; tls=false needs an ?endpoint=http://…"
+                            .to_string(),
+                    ));
+                }
+                (host_part.clone(), path.clone(), endpoint)
+            }
+        };
+
+    if !bucket.is_empty() {
+        if !valid_s3_bucket(&bucket) {
+            return Err(DatabaseError::InvalidUrl(format!(
+                "'{bucket}' is not a valid bucket name"
+            )));
+        }
+        info.database = Some(bucket);
+    }
+    info.file_path = (!prefix.is_empty()).then_some(prefix);
+    match endpoint {
+        Some((host, port, tls)) => {
+            info.host = Some(host);
+            info.port = port;
+            info.use_tls = tls;
+        }
+        None => info.use_tls = true,
+    }
+    info.options
+        .insert("tls".to_string(), info.use_tls.to_string());
+    Ok(info)
+}
+
+/// The in-memory DuckDB database spelled as a path.
+pub const DUCKDB_MEMORY_PATH: &str = ":memory:";
+
+/// `duckdb://:memory:` is not a URL the `url` crate accepts (`:memory:` would
+/// be the port); it is the same URL with the path spelled out.
+pub fn escape_duckdb_memory_authority(url: &str) -> std::borrow::Cow<'_, str> {
+    const PREFIX: &str = "duckdb://:memory:";
+    match url.get(..PREFIX.len()) {
+        Some(head) if head.eq_ignore_ascii_case(PREFIX) => {
+            std::borrow::Cow::Owned(format!("duckdb:///:memory:{}", &url[PREFIX.len()..]))
+        }
+        _ => std::borrow::Cow::Borrowed(url),
+    }
+}
+
+/// DuckDB functions offered for completion before the catalog is read (the
+/// driver completes from `duckdb_functions()` once connected).
+const DUCKDB_FUNCTIONS: &[&str] = &[
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "ANY_VALUE",
+    "ARG_MAX",
+    "ARG_MIN",
+    "BOOL_AND",
+    "BOOL_OR",
+    "FIRST",
+    "LAST",
+    "LIST",
+    "ARRAY_AGG",
+    "STRING_AGG",
+    "MEDIAN",
+    "MODE",
+    "QUANTILE_CONT",
+    "QUANTILE_DISC",
+    "STDDEV",
+    "VARIANCE",
+    "HISTOGRAM",
+    "APPROX_COUNT_DISTINCT",
+    "ABS",
+    "CEIL",
+    "FLOOR",
+    "ROUND",
+    "SQRT",
+    "POW",
+    "LN",
+    "LOG",
+    "RANDOM",
+    "COALESCE",
+    "NULLIF",
+    "IFNULL",
+    "CAST",
+    "TRY_CAST",
+    "LENGTH",
+    "LOWER",
+    "UPPER",
+    "TRIM",
+    "SUBSTRING",
+    "REPLACE",
+    "CONCAT",
+    "CONCAT_WS",
+    "SPLIT_PART",
+    "STRING_SPLIT",
+    "REGEXP_MATCHES",
+    "REGEXP_REPLACE",
+    "REGEXP_EXTRACT",
+    "LIST_VALUE",
+    "LIST_AGGREGATE",
+    "LIST_FILTER",
+    "LIST_TRANSFORM",
+    "LIST_SORT",
+    "LIST_CONTAINS",
+    "UNNEST",
+    "GENERATE_SERIES",
+    "RANGE",
+    "STRUCT_PACK",
+    "STRUCT_EXTRACT",
+    "MAP",
+    "MAP_KEYS",
+    "MAP_VALUES",
+    "JSON_EXTRACT",
+    "JSON_EXTRACT_STRING",
+    "TO_JSON",
+    "NOW",
+    "CURRENT_DATE",
+    "DATE_TRUNC",
+    "DATE_PART",
+    "DATE_DIFF",
+    "DATE_ADD",
+    "STRFTIME",
+    "STRPTIME",
+    "EPOCH",
+    "EPOCH_MS",
+    "READ_CSV",
+    "READ_PARQUET",
+    "READ_JSON",
+    "GLOB",
+];
+
+/// URL schemes of the DynamoDB connector: `dynamodb` (AWS, or any endpoint over
+/// HTTPS), `dynamodb+http` (a plain-HTTP endpoint such as DynamoDB Local) and
+/// the short alias `ddb`.
+pub const DYNAMODB_SCHEMES: [&str; 3] = ["dynamodb", "dynamodb+http", "ddb"];
+
+/// URL schemes of the CloudWatch Logs connector: `cloudwatch` (AWS, or any
+/// endpoint over HTTPS), `cloudwatch+http` (a plain-HTTP endpoint) and the
+/// short alias `cwlogs`.
+pub const CLOUDWATCH_SCHEMES: [&str; 3] = ["cloudwatch", "cloudwatch+http", "cwlogs"];
+
+/// `eu-west-1`, `us-gov-west-1`, `ap-southeast-2`: lowercase words joined by
+/// dashes and ending in a number. What tells a region from an endpoint host in
+/// a regional AWS URL (`dynamodb://eu-west-1/Orders` against
+/// `dynamodb://localhost:8000`).
+pub fn looks_like_aws_region(text: &str) -> bool {
+    let parts: Vec<&str> = text.split('-').collect();
+    (3..=5).contains(&parts.len())
+        && parts[..parts.len() - 1]
+            .iter()
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase()))
+        && parts
+            .last()
+            .is_some_and(|last| !last.is_empty() && last.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// The host a regional AWS URL uses when it has credentials but neither a
+/// region nor an endpoint host (`dynamodb://KEY:SECRET@_?region=local`): the
+/// `url` crate refuses an empty host next to credentials. The parser reads it
+/// as "no host".
+const AWS_NO_HOST: &str = "_";
+
+/// `dynamodb://KEY:SECRET@?endpoint=…` has credentials and an empty host, which
+/// the `url` crate rejects: spell the placeholder host out.
+pub fn escape_aws_empty_authority(url: &str) -> std::borrow::Cow<'_, str> {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    if !DYNAMODB_SCHEMES
+        .iter()
+        .chain(CLOUDWATCH_SCHEMES.iter())
+        .any(|known| known.eq_ignore_ascii_case(scheme))
+    {
+        return std::borrow::Cow::Borrowed(url);
+    }
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if authority.ends_with('@') {
+        std::borrow::Cow::Owned(format!(
+            "{scheme}://{authority}{AWS_NO_HOST}{}",
+            &rest[authority_end..]
+        ))
+    } else {
+        std::borrow::Cow::Borrowed(url)
+    }
+}
+
+/// DynamoDB table names: 3 to 255 characters of `[A-Za-z0-9_.-]`.
+fn valid_dynamodb_table(name: &str) -> bool {
+    (3..=255).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// The URL grammar of the regional AWS services (DynamoDB, CloudWatch Logs):
+///
+/// - `scheme://[ACCESS:SECRET@][region][/path][?region=..&endpoint=..&profile=..]`
+/// - `scheme://[ACCESS:SECRET@]host[:port][/path]`: a host that is not a region
+///   is a custom endpoint over HTTPS (VPC endpoint, LocalStack…)
+/// - `scheme+http://host[:port][/path]`: a custom endpoint over plain HTTP
+///   (DynamoDB Local)
+///
+/// `ConnectionInfo`: `host`/`port`/`use_tls` = the custom endpoint (no host =
+/// AWS), `username`/`password` = access key id / secret access key, option
+/// `region`, `database` = what `path` makes of the URL path (a table, a
+/// log-group prefix), and the `tls` option records the transport so a stored
+/// secret is never offered to a plain-HTTP endpoint. `plain_scheme` is the
+/// `+http` spelling.
+fn parse_aws_regional_url(
+    url: &Url,
+    mut info: ConnectionInfo,
+    plain_scheme: &str,
+    path: impl Fn(&str) -> Result<Option<String>, String>,
+) -> Result<ConnectionInfo, DatabaseError> {
+    let decode = |text: &str| {
+        percent_encoding::percent_decode_str(text)
+            .decode_utf8_lossy()
+            .into_owned()
+    };
+    info.username = (!url.username().is_empty()).then(|| decode(url.username()));
+    info.password = url.password().map(decode);
+    for (key, value) in url.query_pairs() {
+        info.options.insert(key.to_string(), value.to_string());
+    }
+    let host_part = url
+        .host_str()
+        .map(decode)
+        .filter(|host| host != AWS_NO_HOST)
+        .unwrap_or_default();
+    let endpoint_option = take_option(&mut info.options, &["endpoint", "endpoint_url"]);
+    let tls_option = take_option(&mut info.options, &["tls", "ssl"])
+        .map(|value| parse_bool_option("tls", &value))
+        .transpose()?;
+    let plain = url.scheme() == plain_scheme;
+    if plain && tls_option == Some(true) {
+        return Err(DatabaseError::InvalidUrl(format!(
+            "{plain_scheme}:// is plain HTTP: tls=true contradicts it"
+        )));
+    }
+
+    let mut endpoint: Option<(String, Option<u16>, bool)> = None;
+    if host_part.is_empty() {
+        if plain {
+            return Err(DatabaseError::InvalidUrl(format!(
+                "{plain_scheme}:// needs the endpoint: {plain_scheme}://localhost:8000"
+            )));
+        }
+    } else if looks_like_aws_region(&host_part) {
+        if plain {
+            return Err(DatabaseError::InvalidUrl(format!(
+                "{plain_scheme}:// is for a plain-HTTP endpoint, not a region: \
+                 use ?endpoint=http://host:port"
+            )));
+        }
+        if url.port().is_some() {
+            return Err(DatabaseError::InvalidUrl(format!(
+                "'{host_part}' is a region and has no port"
+            )));
+        }
+        if let Some(existing) = info.options.get("region") {
+            if *existing != host_part {
+                return Err(DatabaseError::InvalidUrl(format!(
+                    "the URL names region {host_part} but ?region={existing} says otherwise"
+                )));
+            }
+        }
+        info.options.insert("region".to_string(), host_part);
+    } else {
+        if endpoint_option.is_some() {
+            return Err(DatabaseError::InvalidUrl(
+                "the endpoint is given twice (the host and ?endpoint=)".to_string(),
+            ));
+        }
+        endpoint = Some((host_part, url.port(), !plain && tls_option != Some(false)));
+    }
+    if let Some(option) = endpoint_option.as_deref() {
+        endpoint = Some(parse_s3_endpoint(option)?);
+    }
+    if let (Some((_, _, tls)), Some(wanted)) = (&endpoint, tls_option) {
+        if *tls != wanted {
+            return Err(DatabaseError::InvalidUrl(
+                "tls= contradicts the scheme of the endpoint".to_string(),
+            ));
+        }
+    }
+    if endpoint.is_none() && tls_option == Some(false) {
+        return Err(DatabaseError::InvalidUrl(
+            "AWS only speaks HTTPS; tls=false needs an ?endpoint=http://…".to_string(),
+        ));
+    }
+
+    info.database = path(&decode(url.path().strip_prefix('/').unwrap_or_default()))
+        .map_err(DatabaseError::InvalidUrl)?;
+    match endpoint {
+        Some((host, port, tls)) => {
+            info.host = Some(host);
+            info.port = port;
+            info.use_tls = tls;
+        }
+        None => info.use_tls = true,
+    }
+    info.options
+        .insert("tls".to_string(), info.use_tls.to_string());
+    Ok(info)
+}
+
+/// Log-group names: 1 to 512 characters of `[A-Za-z0-9_.\-/#]`.
+fn valid_log_group(name: &str) -> bool {
+    (1..=512).contains(&name.len())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '/' | '#'))
+}
+
+/// CloudWatch Logs specifics of a parsed URL: the path is the log group, or a
+/// prefix that selects several. AWS-managed groups start with `/aws/`, so the
+/// URL `cloudwatch://eu-west-1/aws/lambda/` is understood as `/aws/lambda/`
+/// (and `cloudwatch://eu-west-1//my-app` is the group `/my-app`).
+fn parse_cloudwatch_url(url: &Url, info: ConnectionInfo) -> Result<ConnectionInfo, DatabaseError> {
+    parse_aws_regional_url(url, info, "cloudwatch+http", |path| {
+        if path.is_empty() {
+            return Ok(None);
+        }
+        let group = if path.starts_with("aws/") {
+            format!("/{path}")
+        } else {
+            path.to_string()
+        };
+        if valid_log_group(&group) {
+            Ok(Some(group))
+        } else {
+            Err(format!(
+                "'{group}' is not a log group name or prefix (letters, digits and _ . - / #)"
+            ))
+        }
+    })
+}
+
+/// DynamoDB specifics of a parsed URL: the path is the default table.
+fn parse_dynamodb_url(url: &Url, info: ConnectionInfo) -> Result<ConnectionInfo, DatabaseError> {
+    parse_aws_regional_url(url, info, "dynamodb+http", |path| {
+        let table = path.trim_end_matches('/');
+        if table.is_empty() {
+            Ok(None)
+        } else if valid_dynamodb_table(table) {
+            Ok(Some(table.to_string()))
+        } else {
+            Err(format!(
+                "'{table}' is not a DynamoDB table name (3-255 letters, digits, _ - .)"
+            ))
+        }
+    })
 }
 
 /// Every URL scheme that opens an InfluxDB connection. The scheme selects the
@@ -1285,11 +1941,12 @@ pub enum DatabaseError {
         feature: String,
     },
 
-    /// An error from a driver's own SDK (sqlx, DataFusion, …), boxed.
+    /// An error from a driver's own SDK (sqlx, DataFusion, DuckDB…), boxed.
     ///
     /// The message prefix and redaction are the ones the SDK-specific variants
     /// used to have: sqlx-backed engines render `SQLx error: …` with secrets
-    /// redacted, the DataFusion-backed file engines `DataFusion error: …`.
+    /// redacted, the DataFusion-backed file engines `DataFusion error: …`,
+    /// DuckDB `DuckDB error: …`.
     #[error("{}", driver_error_text(.engine, .source.as_ref()))]
     Driver {
         engine: DatabaseType,
@@ -1324,9 +1981,13 @@ impl DatabaseError {
 /// The user-visible text of [`DatabaseError::Driver`].
 fn driver_error_text(engine: &DatabaseType, source: &(dyn std::error::Error + 'static)) -> String {
     match engine {
-        DatabaseType::Parquet | DatabaseType::CSV | DatabaseType::JSON | DatabaseType::DuckDB => {
+        DatabaseType::Parquet | DatabaseType::CSV | DatabaseType::JSON => {
             format!("DataFusion error: {source}")
         }
+        DatabaseType::DuckDB => format!(
+            "DuckDB error: {}",
+            crate::password_sanitizer::redact_text(&source.to_string())
+        ),
         _ => format!(
             "SQLx error: {}",
             crate::password_sanitizer::redact_text(&source.to_string())
@@ -1759,6 +2420,8 @@ impl ConnectionInfo {
         );
 
         let url_str = escape_sqlserver_instance_backslash(url_str);
+        let url_str = escape_duckdb_memory_authority(url_str.as_ref());
+        let url_str = escape_aws_empty_authority(url_str.as_ref());
         let url_str = url_str.as_ref();
         let url = Url::parse(url_str)
             .map_err(|e| DatabaseError::InvalidUrl(format!("Failed to parse URL: {e}")))?;
@@ -1785,6 +2448,19 @@ impl ConnectionInfo {
                 ));
             }
             return Ok(connection_info);
+        }
+
+        // S3: the bucket is the URL's host, the key prefix its path
+        if database_type == DatabaseType::S3 {
+            return parse_s3_url(&url, connection_info);
+        }
+        // DynamoDB: the host is a region or an endpoint, the path the table
+        if database_type == DatabaseType::DynamoDB {
+            return parse_dynamodb_url(&url, connection_info);
+        }
+        // CloudWatch Logs: the same, the path a log group or a prefix of them
+        if database_type == DatabaseType::CloudWatchLogs {
+            return parse_cloudwatch_url(&url, connection_info);
         }
 
         // Parse database-specific connection details
@@ -1846,6 +2522,15 @@ impl ConnectionInfo {
             let file_path = percent_encoding::percent_decode_str(&file_path)
                 .decode_utf8_lossy()
                 .into_owned();
+
+            // `duckdb://:memory:` and `duckdb://` are the in-memory database
+            let file_path = if database_type == DatabaseType::DuckDB
+                && (file_path.is_empty() || file_path == "/:memory:")
+            {
+                DUCKDB_MEMORY_PATH.to_string()
+            } else {
+                file_path
+            };
 
             connection_info.file_path = Some(file_path);
         } else {
@@ -2116,6 +2801,160 @@ impl ConnectionInfo {
         url
     }
 
+    /// `to_url` for the regional AWS services (DynamoDB, CloudWatch Logs):
+    /// `scheme://[access-key-id@][region][/path]` and the custom endpoint with
+    /// its transport plus the non-secret options as the query. Never the secret.
+    fn aws_regional_url(&self, scheme: &str) -> String {
+        let mut url = format!("{scheme}://");
+        if let Some(username) = &self.username {
+            url.push_str(
+                &percent_encoding::utf8_percent_encode(
+                    username,
+                    percent_encoding::NON_ALPHANUMERIC,
+                )
+                .to_string(),
+            );
+            url.push('@');
+        }
+        let region = self
+            .options
+            .iter()
+            .find(|(key, _)| key.eq_ignore_ascii_case("region"))
+            .map(|(_, value)| value.as_str());
+        // Only a region-shaped one can stand in the host position; any other
+        // (`local`, `auto`) stays a query parameter
+        let region_in_host = region.filter(|region| looks_like_aws_region(region));
+        match region_in_host {
+            Some(region) => url.push_str(region),
+            None if self.username.is_some() => url.push_str(AWS_NO_HOST),
+            None => {}
+        }
+        if let Some(database) = &self.database {
+            // `/aws/lambda/x` is written `aws/lambda/x` (the parser puts the
+            // slash back); any other name keeps its own leading slash
+            let shown = database
+                .strip_prefix('/')
+                .filter(|rest| rest.starts_with("aws/"))
+                .unwrap_or(database);
+            url.push('/');
+            url.push_str(
+                &percent_encoding::utf8_percent_encode(shown, S3_PATH_SEGMENT).to_string(),
+            );
+        }
+        let mut query: Vec<String> = Vec::new();
+        if let Some(host) = &self.host {
+            let scheme = if self.use_tls { "https" } else { "http" };
+            let host = if host.contains(':') && !host.starts_with('[') {
+                format!("[{host}]")
+            } else {
+                host.clone()
+            };
+            let endpoint = match self.port {
+                Some(port) => format!("{scheme}://{host}:{port}"),
+                None => format!("{scheme}://{host}"),
+            };
+            query.push(format!(
+                "endpoint={}",
+                percent_encoding::utf8_percent_encode(&endpoint, S3_QUERY_VALUE)
+            ));
+        }
+        let mut options: Vec<(&String, &String)> = self
+            .options
+            .iter()
+            .filter(|(key, value)| {
+                let in_host =
+                    key.eq_ignore_ascii_case("region") && region_in_host == Some(value.as_str());
+                let hidden = key.eq_ignore_ascii_case("tls")
+                    || key.eq_ignore_ascii_case("endpoint")
+                    || crate::password_sanitizer::is_secret_key(key);
+                !(in_host || hidden)
+            })
+            .collect();
+        options.sort();
+        for (key, value) in options {
+            query.push(format!(
+                "{key}={}",
+                percent_encoding::utf8_percent_encode(value, S3_QUERY_VALUE)
+            ));
+        }
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(&query.join("&"));
+        }
+        if let Some(container) = &self.docker_container {
+            url.push_str(&format!(" # Docker: {container}"));
+        }
+        url
+    }
+
+    /// `to_url` for S3, always in the canonical `s3://` spelling (the `r2://`
+    /// and `minio://` conveniences expand to their endpoint): the access key id
+    /// (never the secret), the bucket and prefix, the custom endpoint with its
+    /// transport, and the non-secret options (`region`, `profile`, …).
+    fn s3_url(&self) -> String {
+        let mut url = String::from("s3://");
+        if let Some(username) = &self.username {
+            url.push_str(
+                &percent_encoding::utf8_percent_encode(
+                    username,
+                    percent_encoding::NON_ALPHANUMERIC,
+                )
+                .to_string(),
+            );
+            url.push('@');
+        }
+        if let Some(bucket) = &self.database {
+            url.push_str(bucket);
+        }
+        if let Some(prefix) = &self.file_path {
+            url.push('/');
+            url.push_str(
+                &percent_encoding::utf8_percent_encode(prefix, S3_PATH_SEGMENT).to_string(),
+            );
+        }
+        let mut query: Vec<String> = Vec::new();
+        if let Some(host) = &self.host {
+            let scheme = if self.use_tls { "https" } else { "http" };
+            let host = if host.contains(':') && !host.starts_with('[') {
+                format!("[{host}]")
+            } else {
+                host.clone()
+            };
+            let endpoint = match self.port {
+                Some(port) => format!("{scheme}://{host}:{port}"),
+                None => format!("{scheme}://{host}"),
+            };
+            query.push(format!(
+                "endpoint={}",
+                percent_encoding::utf8_percent_encode(&endpoint, S3_QUERY_VALUE)
+            ));
+        }
+        let mut options: Vec<(&String, &String)> = self
+            .options
+            .iter()
+            .filter(|(key, _)| {
+                !key.eq_ignore_ascii_case("tls")
+                    && !key.eq_ignore_ascii_case("endpoint")
+                    && !crate::password_sanitizer::is_secret_key(key)
+            })
+            .collect();
+        options.sort();
+        for (key, value) in options {
+            query.push(format!(
+                "{key}={}",
+                percent_encoding::utf8_percent_encode(value, S3_QUERY_VALUE)
+            ));
+        }
+        if !query.is_empty() {
+            url.push('?');
+            url.push_str(&query.join("&"));
+        }
+        if let Some(container) = &self.docker_container {
+            url.push_str(&format!(" # Docker: {container}"));
+        }
+        url
+    }
+
     /// `to_url` for InfluxDB: the scheme names the API generation and TLS, the
     /// path the bucket/database; `org`, a non-default language and a disabled
     /// certificate check stay visible. Neither the password nor the token
@@ -2235,6 +3074,15 @@ impl ConnectionInfo {
         }
         if self.database_type == DatabaseType::InfluxDB {
             return self.influxdb_url();
+        }
+        if self.database_type == DatabaseType::S3 {
+            return self.s3_url();
+        }
+        if self.database_type == DatabaseType::DynamoDB {
+            return self.aws_regional_url("dynamodb");
+        }
+        if self.database_type == DatabaseType::CloudWatchLogs {
+            return self.aws_regional_url("cloudwatch");
         }
         if self.database_type.is_file_based() {
             if let Some(ref file_path) = self.file_path {
@@ -3284,6 +4132,670 @@ mod tests {
     }
 
     #[rstest]
+    // s3://: the bucket is the host, the prefix the path; no endpoint = AWS
+    #[case("s3://my-bucket", Some("my-bucket"), None, None, None, None, true)]
+    #[case("s3://my-bucket/", Some("my-bucket"), None, None, None, None, true)]
+    #[case(
+        "s3://my-bucket/logs/2026/",
+        Some("my-bucket"),
+        Some("logs/2026/"),
+        None,
+        None,
+        None,
+        true
+    )]
+    #[case("s3://", None, None, None, None, None, true)]
+    #[case("s3://?region=eu-west-1", None, None, None, None, None, true)]
+    #[case(
+        "s3://b/a%20b/c?endpoint=https://s3.example.com",
+        Some("b"),
+        Some("a b/c"),
+        Some("s3.example.com"),
+        None,
+        None,
+        true
+    )]
+    #[case(
+        "s3://b?endpoint=http://localhost:9000",
+        Some("b"),
+        None,
+        Some("localhost"),
+        Some(9000),
+        None,
+        false
+    )]
+    #[case(
+        "s3://b?endpoint=minio.internal:9000",
+        Some("b"),
+        None,
+        Some("minio.internal"),
+        Some(9000),
+        None,
+        true
+    )]
+    #[case(
+        "s3://b?endpoint=http://[::1]:9000&tls=false",
+        Some("b"),
+        None,
+        Some("[::1]"),
+        Some(9000),
+        None,
+        false
+    )]
+    // minio://: server + bucket in the path, path style, TLS unless tls=false
+    #[case(
+        "minio://minio.local:9001/data/raw/",
+        Some("data"),
+        Some("raw/"),
+        Some("minio.local"),
+        Some(9001),
+        Some("us-east-1"),
+        true
+    )]
+    #[case(
+        "minio://localhost/data?tls=false",
+        Some("data"),
+        None,
+        Some("localhost"),
+        Some(9000),
+        Some("us-east-1"),
+        false
+    )]
+    // r2://: the account builds the endpoint, region auto
+    #[case(
+        "r2://abc123/media/img/",
+        Some("media"),
+        Some("img/"),
+        Some("abc123.r2.cloudflarestorage.com"),
+        None,
+        Some("auto"),
+        true
+    )]
+    #[case(
+        "r2://abc123/media?jurisdiction=eu",
+        Some("media"),
+        None,
+        Some("abc123.eu.r2.cloudflarestorage.com"),
+        None,
+        Some("auto"),
+        true
+    )]
+    fn test_s3_url_parsing(
+        #[case] url: &str,
+        #[case] bucket: Option<&str>,
+        #[case] prefix: Option<&str>,
+        #[case] host: Option<&str>,
+        #[case] port: Option<u16>,
+        #[case] region: Option<&str>,
+        #[case] use_tls: bool,
+    ) {
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.database_type, DatabaseType::S3, "{url}");
+        assert_eq!(info.database.as_deref(), bucket, "{url}");
+        assert_eq!(info.file_path.as_deref(), prefix, "{url}");
+        assert_eq!(info.host.as_deref(), host, "{url}");
+        assert_eq!(info.port, port, "{url}");
+        assert_eq!(info.use_tls, use_tls, "{url}");
+        assert_eq!(
+            info.options.get("tls").map(String::as_str),
+            Some(if use_tls { "true" } else { "false" })
+        );
+        if let Some(region) = region {
+            assert_eq!(info.options.get("region").map(String::as_str), Some(region));
+        }
+        // the endpoint is the connection's host, never an option
+        assert!(!info.options.contains_key("endpoint"), "{url}");
+    }
+
+    #[rstest]
+    #[case("s3://AKIAEXAMPLE:wJalr%2FXUtn@b/p", "AKIAEXAMPLE", "wJalr/XUtn")]
+    #[case("r2://AKID:sec%40ret@acc/bkt", "AKID", "sec@ret")]
+    #[case("minio://root:minio-pass@h:9000/b", "root", "minio-pass")]
+    fn test_s3_credentials_land_in_the_user_and_password_slots(
+        #[case] url: &str,
+        #[case] user: &str,
+        #[case] secret: &str,
+    ) {
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.username.as_deref(), Some(user));
+        assert_eq!(info.password.as_deref(), Some(secret));
+        assert!(!format!("{info:?}").contains(secret), "{info:?}");
+        assert!(!info.to_url().contains(secret), "{}", info.to_url());
+        let sanitized = crate::password_sanitizer::sanitize_connection_url(url);
+        assert!(!sanitized.contains(secret), "{sanitized}");
+    }
+
+    #[test]
+    fn test_s3_session_token_option_is_a_secret() {
+        let url =
+            "s3://AKIAEXAMPLE:topsecret@b?session_token=FwoGZXIvYXdzSESSIONCANARY&region=eu-west-1";
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert!(!format!("{info:?}").contains("SESSIONCANARY"), "{info:?}");
+        assert!(
+            !info.to_url().contains("SESSIONCANARY"),
+            "{}",
+            info.to_url()
+        );
+        assert!(!crate::password_sanitizer::sanitize_connection_url(url).contains("SESSIONCANARY"));
+        assert!(info.to_url().contains("region=eu-west-1"));
+    }
+
+    #[rstest]
+    #[case("s3://b?endpoint=ftp://h")]
+    #[case("s3://b?endpoint=https://h/path")]
+    #[case("s3://b?endpoint=https://u:p@h")]
+    #[case("s3://b?endpoint=")]
+    #[case("s3://b?tls=false")]
+    #[case("s3://b?endpoint=http://h&tls=true")]
+    #[case("s3://b?tls=maybe")]
+    #[case("r2:///bucket")]
+    #[case("r2://acc/b?tls=false")]
+    #[case("r2://acc/b?endpoint=https://h")]
+    #[case("r2://acc/b?jurisdiction=mars")]
+    #[case("minio:///bucket")]
+    #[case("minio://h/b?endpoint=https://x")]
+    fn test_s3_invalid_urls_are_rejected(#[case] url: &str) {
+        let err = ConnectionInfo::parse_url(url).unwrap_err();
+        assert!(matches!(err, DatabaseError::InvalidUrl(_)), "{url}: {err}");
+    }
+
+    #[rstest]
+    #[case("s3://b", "s3://b")]
+    #[case("s3://b/logs/2026/", "s3://b/logs/2026/")]
+    #[case("s3://AKIA:secret@b?region=eu-west-1", "s3://AKIA@b?region=eu-west-1")]
+    #[case("s3://b/a%20b", "s3://b/a%20b")]
+    #[case(
+        "minio://localhost:9000/data/raw?tls=false",
+        "s3://data/raw?endpoint=http://localhost:9000&region=us-east-1"
+    )]
+    #[case(
+        "r2://abc/media",
+        "s3://media?endpoint=https://abc.r2.cloudflarestorage.com&region=auto"
+    )]
+    #[case(
+        "s3://b?endpoint=https://s3.example.com:8443&path_style=true&profile=prod-ro&anonymous=false",
+        "s3://b?endpoint=https://s3.example.com:8443&anonymous=false&path_style=true&profile=prod-ro"
+    )]
+    fn test_s3_to_url_is_canonical_and_round_trips_without_the_secret(
+        #[case] url: &str,
+        #[case] expected: &str,
+    ) {
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.to_url(), expected);
+        let again = ConnectionInfo::parse_url(&info.to_url()).unwrap();
+        assert_eq!(again.to_url(), expected);
+        assert_eq!(again.host, info.host);
+        assert_eq!(again.port, info.port);
+        assert_eq!(again.use_tls, info.use_tls);
+        assert_eq!(again.database, info.database);
+        assert_eq!(again.file_path, info.file_path);
+        assert_eq!(again.options, info.options);
+    }
+
+    #[test]
+    fn test_s3_database_type_metadata() {
+        assert_eq!(DatabaseType::S3.display_name(), "Amazon S3");
+        assert_eq!(DatabaseType::S3.url_scheme(), "s3");
+        assert_eq!(DatabaseType::S3.default_port(), None);
+        assert!(!DatabaseType::S3.is_file_based());
+        assert!(!DatabaseType::S3.supports_ssh_tunnel());
+        assert!(!DatabaseType::S3.requires_authentication());
+        assert_eq!(DatabaseType::S3.url_schemes(), ["s3", "r2", "minio"]);
+        for scheme in DatabaseType::S3.url_schemes() {
+            assert_eq!(DatabaseType::from_scheme(scheme).unwrap(), DatabaseType::S3);
+        }
+        assert!(DatabaseType::supported_types().contains(&DatabaseType::S3));
+    }
+
+    #[rstest]
+    // dynamodb://: a region-shaped host is the region, the path the default table
+    #[case("dynamodb://eu-west-1", None, None, None, Some("eu-west-1"), true)]
+    #[case("dynamodb://eu-west-1/", None, None, None, Some("eu-west-1"), true)]
+    #[case(
+        "dynamodb://eu-west-1/Orders",
+        Some("Orders"),
+        None,
+        None,
+        Some("eu-west-1"),
+        true
+    )]
+    #[case(
+        "dynamodb://us-gov-west-1/my.table-1",
+        Some("my.table-1"),
+        None,
+        None,
+        Some("us-gov-west-1"),
+        true
+    )]
+    #[case(
+        "ddb://ap-southeast-2/T_1",
+        Some("T_1"),
+        None,
+        None,
+        Some("ap-southeast-2"),
+        true
+    )]
+    #[case("dynamodb://", None, None, None, None, true)]
+    #[case(
+        "dynamodb://?region=eu-west-3&profile=ro",
+        None,
+        None,
+        None,
+        Some("eu-west-3"),
+        true
+    )]
+    #[case(
+        "dynamodb:///Orders?region=eu-west-3",
+        Some("Orders"),
+        None,
+        None,
+        Some("eu-west-3"),
+        true
+    )]
+    // any other host is a custom endpoint (HTTPS), dynamodb+http a plain one
+    #[case(
+        "dynamodb://vpce.example.com:8443/Orders",
+        Some("Orders"),
+        Some("vpce.example.com"),
+        Some(8443),
+        None,
+        true
+    )]
+    #[case(
+        "dynamodb+http://localhost:8000",
+        None,
+        Some("localhost"),
+        Some(8000),
+        None,
+        false
+    )]
+    #[case(
+        "dynamodb+http://localhost:8000/Orders?region=local",
+        Some("Orders"),
+        Some("localhost"),
+        Some(8000),
+        Some("local"),
+        false
+    )]
+    #[case(
+        "dynamodb://us-east-1?endpoint=http://localhost:8000",
+        None,
+        Some("localhost"),
+        Some(8000),
+        Some("us-east-1"),
+        false
+    )]
+    #[case(
+        "dynamodb://localhost:8000?tls=false",
+        None,
+        Some("localhost"),
+        Some(8000),
+        None,
+        false
+    )]
+    #[case(
+        "dynamodb://eu-west-1/Orders?endpoint=https://dynamodb.internal",
+        Some("Orders"),
+        Some("dynamodb.internal"),
+        None,
+        Some("eu-west-1"),
+        true
+    )]
+    fn test_dynamodb_url_parsing(
+        #[case] url: &str,
+        #[case] table: Option<&str>,
+        #[case] host: Option<&str>,
+        #[case] port: Option<u16>,
+        #[case] region: Option<&str>,
+        #[case] use_tls: bool,
+    ) {
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.database_type, DatabaseType::DynamoDB, "{url}");
+        assert_eq!(info.database.as_deref(), table, "{url}");
+        assert_eq!(info.host.as_deref(), host, "{url}");
+        assert_eq!(info.port, port, "{url}");
+        assert_eq!(info.use_tls, use_tls, "{url}");
+        assert_eq!(
+            info.options.get("region").map(String::as_str),
+            region,
+            "{url}"
+        );
+        assert_eq!(
+            info.options.get("tls").map(String::as_str),
+            Some(if use_tls { "true" } else { "false" })
+        );
+        assert!(!info.options.contains_key("endpoint"), "{url}");
+        assert_eq!(info.file_path, None);
+    }
+
+    #[rstest]
+    #[case(
+        "dynamodb://AKIAEXAMPLE:wJalr%2FXUtn@eu-west-1/Orders",
+        "AKIAEXAMPLE",
+        "wJalr/XUtn"
+    )]
+    #[case("ddb://AKID:sec%40ret@us-east-1", "AKID", "sec@ret")]
+    #[case(
+        "dynamodb+http://local:pass-word@localhost:8000/Orders",
+        "local",
+        "pass-word"
+    )]
+    fn test_dynamodb_credentials_land_in_the_user_and_password_slots(
+        #[case] url: &str,
+        #[case] user: &str,
+        #[case] secret: &str,
+    ) {
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.username.as_deref(), Some(user));
+        assert_eq!(info.password.as_deref(), Some(secret));
+        assert!(!format!("{info:?}").contains(secret), "{info:?}");
+        assert!(!info.to_url().contains(secret), "{}", info.to_url());
+        let sanitized = crate::password_sanitizer::sanitize_connection_url(url);
+        assert!(!sanitized.contains(secret), "{sanitized}");
+    }
+
+    #[test]
+    fn test_dynamodb_session_token_option_is_a_secret() {
+        let url = "dynamodb://AKIAEXAMPLE:topsecret@eu-west-1/Orders?session_token=FwoGZXIvYXdzSESSIONCANARY";
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert!(!format!("{info:?}").contains("SESSIONCANARY"), "{info:?}");
+        assert!(
+            !info.to_url().contains("SESSIONCANARY"),
+            "{}",
+            info.to_url()
+        );
+        assert!(!crate::password_sanitizer::sanitize_connection_url(url).contains("SESSIONCANARY"));
+    }
+
+    #[rstest]
+    #[case("dynamodb://eu-west-1:8000")]
+    #[case("dynamodb://eu-west-1?region=us-east-1")]
+    #[case("dynamodb://host.example/Tbl1?endpoint=https://other")]
+    #[case("dynamodb://eu-west-1?tls=false")]
+    #[case("dynamodb://eu-west-1?endpoint=http://h&tls=true")]
+    #[case("dynamodb://eu-west-1?endpoint=ftp://h")]
+    #[case("dynamodb://eu-west-1?endpoint=https://h/path")]
+    #[case("dynamodb://eu-west-1?tls=maybe")]
+    #[case("dynamodb://eu-west-1/ab")]
+    #[case("dynamodb://eu-west-1/has%20space")]
+    #[case("dynamodb://eu-west-1/a/b")]
+    #[case("dynamodb+http://")]
+    #[case("dynamodb+http://eu-west-1/Orders")]
+    #[case("dynamodb+http://localhost:8000?tls=true")]
+    #[case("dynamodb://localhost:8000?tls=true&endpoint=http://x")]
+    fn test_dynamodb_invalid_urls_are_rejected(#[case] url: &str) {
+        let err = ConnectionInfo::parse_url(url).unwrap_err();
+        assert!(matches!(err, DatabaseError::InvalidUrl(_)), "{url}: {err}");
+    }
+
+    #[rstest]
+    #[case("dynamodb://eu-west-1", "dynamodb://eu-west-1")]
+    #[case("ddb://eu-west-1/Orders", "dynamodb://eu-west-1/Orders")]
+    #[case(
+        "dynamodb://AKIA:secret@eu-west-1/Orders?profile=x",
+        "dynamodb://AKIA@eu-west-1/Orders?profile=x"
+    )]
+    #[case(
+        "dynamodb+http://localhost:8000/Tbl1?region=us-east-1",
+        "dynamodb://us-east-1/Tbl1?endpoint=http://localhost:8000"
+    )]
+    #[case(
+        "dynamodb+http://localhost:8000?region=local",
+        "dynamodb://?endpoint=http://localhost:8000&region=local"
+    )]
+    #[case(
+        "dynamodb://vpce.example.com:8443/Tbl1?region=eu-west-1",
+        "dynamodb://eu-west-1/Tbl1?endpoint=https://vpce.example.com:8443"
+    )]
+    #[case(
+        "dynamodb://?region=eu-west-3&profile=ro&role_arn=arn:aws:iam::1:role/r",
+        "dynamodb://eu-west-3?profile=ro&role_arn=arn:aws:iam::1:role/r"
+    )]
+    fn test_dynamodb_to_url_is_canonical_and_round_trips_without_the_secret(
+        #[case] url: &str,
+        #[case] expected: &str,
+    ) {
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.to_url(), expected);
+        let again = ConnectionInfo::parse_url(&info.to_url()).unwrap();
+        assert_eq!(again.to_url(), expected);
+        assert_eq!(again.host, info.host);
+        assert_eq!(again.port, info.port);
+        assert_eq!(again.use_tls, info.use_tls);
+        assert_eq!(again.database, info.database);
+        assert_eq!(again.username, info.username);
+        assert_eq!(again.options, info.options);
+    }
+
+    #[test]
+    fn test_dynamodb_access_key_without_a_region_round_trips() {
+        // static keys with the region left to the environment or the endpoint
+        for url in [
+            "dynamodb://AKIAEXAMPLE:secret@?endpoint=http://localhost:8000",
+            "dynamodb+http://AKIAEXAMPLE:secret@localhost:8000/Orders",
+        ] {
+            let info = ConnectionInfo::parse_url(url).unwrap();
+            assert_eq!(info.username.as_deref(), Some("AKIAEXAMPLE"), "{url}");
+            let rendered = info.to_url();
+            assert!(!rendered.contains("secret"), "{rendered}");
+            let again = ConnectionInfo::parse_url(&rendered)
+                .unwrap_or_else(|e| panic!("{rendered} does not parse back: {e}"));
+            assert_eq!(again.username, info.username, "{rendered}");
+            assert_eq!(again.host, info.host, "{rendered}");
+            assert_eq!(again.port, info.port, "{rendered}");
+            assert_eq!(again.use_tls, info.use_tls, "{rendered}");
+            assert_eq!(again.database, info.database, "{rendered}");
+        }
+    }
+
+    #[rstest]
+    #[case("cloudwatch://eu-west-1", None, None, None, Some("eu-west-1"), true)]
+    #[case("cloudwatch://eu-west-1/", None, None, None, Some("eu-west-1"), true)]
+    // AWS-managed groups start with /aws/: the slash is optional in the URL
+    #[case(
+        "cloudwatch://eu-west-1/aws/lambda/orders",
+        Some("/aws/lambda/orders"),
+        None,
+        None,
+        Some("eu-west-1"),
+        true
+    )]
+    #[case(
+        "cloudwatch://eu-west-1//aws/lambda/",
+        Some("/aws/lambda/"),
+        None,
+        None,
+        Some("eu-west-1"),
+        true
+    )]
+    #[case(
+        "cwlogs://us-east-1/my-app",
+        Some("my-app"),
+        None,
+        None,
+        Some("us-east-1"),
+        true
+    )]
+    #[case(
+        "cloudwatch://us-east-1//my-app",
+        Some("/my-app"),
+        None,
+        None,
+        Some("us-east-1"),
+        true
+    )]
+    #[case(
+        "cloudwatch://?region=eu-west-3&profile=ro",
+        None,
+        None,
+        None,
+        Some("eu-west-3"),
+        true
+    )]
+    #[case(
+        "cloudwatch+http://localhost:4566/aws/x?region=us-east-1",
+        Some("/aws/x"),
+        Some("localhost"),
+        Some(4566),
+        Some("us-east-1"),
+        false
+    )]
+    #[case(
+        "cloudwatch://logs.internal:8443",
+        None,
+        Some("logs.internal"),
+        Some(8443),
+        None,
+        true
+    )]
+    fn test_cloudwatch_url_parsing(
+        #[case] url: &str,
+        #[case] group: Option<&str>,
+        #[case] host: Option<&str>,
+        #[case] port: Option<u16>,
+        #[case] region: Option<&str>,
+        #[case] use_tls: bool,
+    ) {
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.database_type, DatabaseType::CloudWatchLogs, "{url}");
+        assert_eq!(info.database.as_deref(), group, "{url}");
+        assert_eq!(info.host.as_deref(), host, "{url}");
+        assert_eq!(info.port, port, "{url}");
+        assert_eq!(info.use_tls, use_tls, "{url}");
+        assert_eq!(
+            info.options.get("region").map(String::as_str),
+            region,
+            "{url}"
+        );
+        assert!(!info.options.contains_key("endpoint"), "{url}");
+    }
+
+    #[rstest]
+    #[case("cloudwatch://eu-west-1/has%20space")]
+    #[case("cloudwatch://eu-west-1/a%3Fb")]
+    #[case("cloudwatch://eu-west-1:443")]
+    #[case("cloudwatch://eu-west-1?tls=false")]
+    #[case("cloudwatch+http://eu-west-1/x")]
+    #[case("cloudwatch+http://")]
+    fn test_cloudwatch_invalid_urls_are_rejected(#[case] url: &str) {
+        let err = ConnectionInfo::parse_url(url).unwrap_err();
+        assert!(matches!(err, DatabaseError::InvalidUrl(_)), "{url}: {err}");
+    }
+
+    #[rstest]
+    #[case("cloudwatch://eu-west-1", "cloudwatch://eu-west-1")]
+    #[case(
+        "cwlogs://eu-west-1/aws/lambda/orders",
+        "cloudwatch://eu-west-1/aws/lambda/orders"
+    )]
+    #[case("cloudwatch://eu-west-1//my-app", "cloudwatch://eu-west-1//my-app")]
+    #[case(
+        "cloudwatch://AKIA:secret@eu-west-1/aws/x?since=30m",
+        "cloudwatch://AKIA@eu-west-1/aws/x?since=30m"
+    )]
+    #[case(
+        "cloudwatch+http://localhost:4566?region=us-east-1",
+        "cloudwatch://us-east-1?endpoint=http://localhost:4566"
+    )]
+    fn test_cloudwatch_to_url_is_canonical_and_round_trips_without_the_secret(
+        #[case] url: &str,
+        #[case] expected: &str,
+    ) {
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.to_url(), expected);
+        assert!(!info.to_url().contains("secret"));
+        let again = ConnectionInfo::parse_url(&info.to_url()).unwrap();
+        assert_eq!(again.to_url(), expected);
+        assert_eq!(again.host, info.host);
+        assert_eq!(again.port, info.port);
+        assert_eq!(again.use_tls, info.use_tls);
+        assert_eq!(again.database, info.database);
+        assert_eq!(again.username, info.username);
+        assert_eq!(again.options, info.options);
+    }
+
+    #[test]
+    fn test_cloudwatch_credentials_land_in_the_user_and_password_slots() {
+        let url =
+            "cloudwatch://AKIAEXAMPLE:wJalr%2FXUtn@eu-west-1/aws/x?session_token=SESSIONCANARY";
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.username.as_deref(), Some("AKIAEXAMPLE"));
+        assert_eq!(info.password.as_deref(), Some("wJalr/XUtn"));
+        let shown = format!("{info:?} {}", info.to_url());
+        assert!(
+            !shown.contains("wJalr") && !shown.contains("SESSIONCANARY"),
+            "{shown}"
+        );
+        // credentials with no region and no host
+        let bare = ConnectionInfo::parse_url(
+            "cloudwatch://AKIA:secret@?region=local&endpoint=http://h:4566",
+        )
+        .unwrap();
+        let again = ConnectionInfo::parse_url(&bare.to_url()).unwrap();
+        assert_eq!(again.username.as_deref(), Some("AKIA"));
+        assert_eq!(again.host.as_deref(), Some("h"));
+    }
+
+    #[test]
+    fn test_cloudwatch_database_type_metadata() {
+        assert_eq!(
+            DatabaseType::CloudWatchLogs.display_name(),
+            "Amazon CloudWatch Logs"
+        );
+        assert_eq!(DatabaseType::CloudWatchLogs.url_scheme(), "cloudwatch");
+        assert_eq!(DatabaseType::CloudWatchLogs.default_port(), None);
+        assert!(!DatabaseType::CloudWatchLogs.is_file_based());
+        assert!(!DatabaseType::CloudWatchLogs.requires_authentication());
+        assert!(DatabaseType::CloudWatchLogs.is_aws());
+        assert_eq!(
+            DatabaseType::CloudWatchLogs.url_schemes(),
+            ["cloudwatch", "cloudwatch+http", "cwlogs"]
+        );
+        for scheme in DatabaseType::CloudWatchLogs.url_schemes() {
+            assert_eq!(
+                DatabaseType::from_scheme(scheme).unwrap(),
+                DatabaseType::CloudWatchLogs
+            );
+        }
+    }
+
+    #[test]
+    fn test_dynamodb_database_type_metadata() {
+        assert_eq!(DatabaseType::DynamoDB.display_name(), "Amazon DynamoDB");
+        assert_eq!(DatabaseType::DynamoDB.url_scheme(), "dynamodb");
+        assert_eq!(DatabaseType::DynamoDB.default_port(), None);
+        assert!(!DatabaseType::DynamoDB.is_file_based());
+        assert!(!DatabaseType::DynamoDB.supports_ssh_tunnel());
+        assert!(!DatabaseType::DynamoDB.requires_authentication());
+        assert_eq!(
+            DatabaseType::DynamoDB.url_schemes(),
+            ["dynamodb", "dynamodb+http", "ddb"]
+        );
+        for scheme in DatabaseType::DynamoDB.url_schemes() {
+            assert_eq!(
+                DatabaseType::from_scheme(scheme).unwrap(),
+                DatabaseType::DynamoDB
+            );
+        }
+        assert!(DatabaseType::supported_types().contains(&DatabaseType::DynamoDB));
+    }
+
+    #[rstest]
+    #[case("eu-west-1", true)]
+    #[case("us-gov-west-1", true)]
+    #[case("ap-southeast-12", true)]
+    #[case("localhost", false)]
+    #[case("local", false)]
+    #[case("us-east", false)]
+    #[case("US-EAST-1", false)]
+    #[case("eu-west-x", false)]
+    #[case("a-b-c-d-e-1", false)]
+    #[case("vpce-123-abc.example.com", false)]
+    fn test_looks_like_aws_region(#[case] text: &str, #[case] expected: bool) {
+        assert_eq!(looks_like_aws_region(text), expected, "{text}");
+    }
+
+    #[rstest]
     #[case(None, SqlServerEncryption::Required)]
     #[case(Some("TRUE"), SqlServerEncryption::Required)]
     #[case(Some("required"), SqlServerEncryption::Required)]
@@ -3481,6 +4993,97 @@ mod tests {
             INFLUXDB_SCHEMES.len()
         );
         assert!(DatabaseType::supported_types().contains(&DatabaseType::InfluxDB));
+    }
+
+    #[rstest]
+    #[case::absolute("duckdb:///tmp/warehouse.duckdb", "/tmp/warehouse.duckdb")]
+    #[case::memory("duckdb://:memory:", ":memory:")]
+    #[case::memory_upper("DUCKDB://:MEMORY:", ":memory:")]
+    #[case::memory_without_authority("duckdb://", ":memory:")]
+    #[case::memory_as_path("duckdb:///:memory:", ":memory:")]
+    #[case::spaces("duckdb:///tmp/my%20data.ddb", "/tmp/my data.ddb")]
+    fn test_duckdb_url_parsing(#[case] url: &str, #[case] file_path: &str) {
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.database_type, DatabaseType::DuckDB);
+        assert_eq!(info.file_path.as_deref(), Some(file_path));
+        assert!(info.host.is_none() && info.password.is_none());
+    }
+
+    #[test]
+    fn test_duckdb_url_options_and_memory_with_options() {
+        let info = ConnectionInfo::parse_url(
+            "duckdb:///tmp/x.duckdb?access_mode=read_only&threads=2&memory_limit=1GB",
+        )
+        .unwrap();
+        assert_eq!(
+            info.options.get("access_mode").map(String::as_str),
+            Some("read_only")
+        );
+        assert_eq!(info.options.get("threads").map(String::as_str), Some("2"));
+        assert_eq!(
+            info.options.get("memory_limit").map(String::as_str),
+            Some("1GB")
+        );
+        // the DuckLake form: an in-memory session with a catalog attached
+        let lake = ConnectionInfo::parse_url(
+            "duckdb://:memory:?ducklake=sqlite:/srv/lake/meta.sqlite&data_path=/srv/lake/data/",
+        )
+        .unwrap();
+        assert_eq!(lake.file_path.as_deref(), Some(":memory:"));
+        assert_eq!(
+            lake.options.get("ducklake").map(String::as_str),
+            Some("sqlite:/srv/lake/meta.sqlite")
+        );
+        assert_eq!(
+            lake.options.get("data_path").map(String::as_str),
+            Some("/srv/lake/data/")
+        );
+    }
+
+    #[rstest]
+    #[case("duckdb:///tmp/warehouse.duckdb")]
+    #[case("duckdb://:memory:")]
+    fn test_duckdb_to_url_round_trips(#[case] url: &str) {
+        let info = ConnectionInfo::parse_url(url).unwrap();
+        assert_eq!(info.to_url(), url);
+        let again = ConnectionInfo::parse_url(&info.to_url()).unwrap();
+        assert_eq!(again.file_path, info.file_path);
+    }
+
+    #[test]
+    fn test_duckdb_engine_facts() {
+        let engine = DatabaseType::DuckDB;
+        assert!(engine.is_file_based());
+        assert!(!engine.supports_ssh_tunnel());
+        assert!(!engine.requires_authentication());
+        assert_eq!(engine.default_port(), None);
+        assert_eq!(engine.url_scheme(), "duckdb");
+        assert_eq!(engine.display_name(), "DuckDB");
+        assert!(engine.sql_functions().contains(&"READ_PARQUET"));
+        assert_eq!(DatabaseType::from_scheme("duckdb").unwrap(), engine);
+        assert_eq!(
+            metadata_table_parts_probe("main.people"),
+            (Some("main".into()), "people".into())
+        );
+    }
+
+    fn metadata_table_parts_probe(name: &str) -> (Option<String>, String) {
+        crate::model::metadata_table_parts(name, &DatabaseType::DuckDB)
+    }
+
+    #[test]
+    fn test_duckdb_errors_say_duckdb_and_redact_secrets() {
+        let error = DatabaseError::driver(
+            DatabaseType::DuckDB,
+            std::io::Error::other("catalog postgres://user:hunter2@db/x unreachable"),
+        );
+        let text = error.to_string();
+        assert!(text.starts_with("DuckDB error: "), "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
+        // the file engines keep their DataFusion prefix
+        let files =
+            DatabaseError::driver(DatabaseType::Parquet, std::io::Error::other("bad footer"));
+        assert_eq!(files.to_string(), "DataFusion error: bad footer");
     }
 
     #[test]

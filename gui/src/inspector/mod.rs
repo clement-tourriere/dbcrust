@@ -62,7 +62,12 @@ impl Section {
     fn available(db_type: &DatabaseType) -> Vec<Section> {
         match db_type {
             DatabaseType::MongoDB => vec![Section::Columns, Section::Indexes, Section::Data],
-            DatabaseType::Elasticsearch | DatabaseType::Redis | DatabaseType::InfluxDB => {
+            DatabaseType::Elasticsearch
+            | DatabaseType::Redis
+            | DatabaseType::InfluxDB
+            | DatabaseType::S3
+            | DatabaseType::DynamoDB
+            | DatabaseType::CloudWatchLogs => {
                 vec![Section::Columns, Section::Data]
             }
             DatabaseType::Parquet

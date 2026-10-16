@@ -371,10 +371,9 @@ impl SqlCompleter {
     ) -> String {
         let split_dotted = match database_type {
             DatabaseType::MongoDB | DatabaseType::Elasticsearch => true,
-            DatabaseType::Parquet
-            | DatabaseType::CSV
-            | DatabaseType::JSON
-            | DatabaseType::DuckDB => dotted_is_nested_path,
+            DatabaseType::Parquet | DatabaseType::CSV | DatabaseType::JSON => dotted_is_nested_path,
+            // A DuckDB column called `a.b` is that name; struct fields are
+            // reached by the user typing `col.field`
             _ => false,
         };
         if split_dotted && name.contains('.') {
@@ -692,6 +691,239 @@ impl SqlCompleter {
                 style: Some(Style::new().fg(Color::Cyan)),
                 ..Default::default()
             })
+            .collect()
+    }
+
+    /// S3 input is a command line: the first word is a command, the others
+    /// are mostly keys and prefixes (from the listing at the current prefix).
+    fn complete_s3_command_line(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        let word_start = line[..pos]
+            .rfind(char::is_whitespace)
+            .map_or(0, |index| index + 1);
+        let current = &line[word_start..pos];
+        let span = Span {
+            start: word_start,
+            end: pos,
+        };
+        if line[..word_start].trim().is_empty() {
+            let lower = current.to_ascii_lowercase();
+            return crate::s3_command::verbs()
+                .filter(|verb| verb.name().starts_with(&lower))
+                .map(|verb| Suggestion {
+                    value: verb.name().to_string(),
+                    description: Some(verb.description().to_string()),
+                    span,
+                    append_whitespace: true,
+                    extra: None,
+                    style: Some(Style::new().fg(Color::Blue)),
+                    ..Default::default()
+                })
+                .collect();
+        }
+        // Keys are case-sensitive; a typed opening quote is not part of the key
+        let prefix = current.trim_start_matches(['\'', '"']);
+        self.get_tables(None)
+            .into_iter()
+            .filter(|table| table.name.starts_with(prefix))
+            .take(50)
+            .map(|table| {
+                let is_prefix = table.name.ends_with('/');
+                Suggestion {
+                    value: crate::s3_command::quote_argument(&table.name),
+                    description: Some(
+                        if is_prefix { "S3 prefix" } else { "S3 object" }.to_string(),
+                    ),
+                    span,
+                    // a prefix is usually continued, an object ends the word
+                    append_whitespace: !is_prefix,
+                    extra: None,
+                    style: Some(Style::new().fg(Color::Cyan)),
+                    ..Default::default()
+                }
+            })
+            .collect()
+    }
+
+    /// DynamoDB input is a command line (`scan Orders --limit 5`) or a PartiQL
+    /// `SELECT`. The first word completes to a command (or SELECT); after a
+    /// command the words are table names, `--flags` and key attributes. `None`
+    /// leaves a PartiQL statement to the SQL completion.
+    fn complete_dynamodb_command_line(
+        &mut self,
+        line: &str,
+        pos: usize,
+    ) -> Option<Vec<Suggestion>> {
+        let word_start = line[..pos]
+            .rfind(char::is_whitespace)
+            .map_or(0, |index| index + 1);
+        let current = &line[word_start..pos];
+        let span = Span {
+            start: word_start,
+            end: pos,
+        };
+        let first_word = line.split_whitespace().next().unwrap_or_default();
+        let verb = first_word.parse::<crate::dynamodb_command::Verb>().ok();
+        if line[..word_start].trim().is_empty() {
+            let lower = current.to_ascii_lowercase();
+            let mut suggestions: Vec<Suggestion> = crate::dynamodb_command::verbs()
+                .filter(|verb| verb.name().starts_with(&lower))
+                .map(|verb| Suggestion {
+                    value: verb.name().to_string(),
+                    description: Some(verb.description().to_string()),
+                    span,
+                    append_whitespace: true,
+                    extra: None,
+                    style: Some(Style::new().fg(Color::Blue)),
+                    ..Default::default()
+                })
+                .collect();
+            if "select".starts_with(&lower) {
+                suggestions.push(Suggestion {
+                    value: "SELECT".to_string(),
+                    description: Some("PartiQL read".to_string()),
+                    span,
+                    append_whitespace: true,
+                    extra: None,
+                    style: Some(Style::new().fg(Color::Blue)),
+                    ..Default::default()
+                });
+            }
+            return Some(suggestions);
+        }
+        // Past the first word: only a command is completed here
+        verb?;
+        if current.starts_with('-') {
+            return Some(
+                ["--limit", "--index", "--desc"]
+                    .iter()
+                    .filter(|flag| flag.starts_with(current))
+                    .map(|flag| Suggestion {
+                        value: flag.to_string(),
+                        description: None,
+                        span,
+                        append_whitespace: true,
+                        extra: None,
+                        style: Some(Style::new().fg(Color::Yellow)),
+                        ..Default::default()
+                    })
+                    .collect(),
+            );
+        }
+        let prefix = current.trim_start_matches(['\'', '"']);
+        Some(
+            self.get_tables(None)
+                .into_iter()
+                .filter(|table| table.name.starts_with(prefix))
+                .take(50)
+                .map(|table| Suggestion {
+                    value: crate::s3_command::quote_argument(&table.name),
+                    description: Some("DynamoDB table".to_string()),
+                    span,
+                    append_whitespace: true,
+                    extra: None,
+                    style: Some(Style::new().fg(Color::Cyan)),
+                    ..Default::default()
+                })
+                .collect(),
+        )
+    }
+
+    /// CloudWatch Logs input is a command line (`tail /app --since 5m`) or a Logs
+    /// Insights query, optionally prefixed by `since` / `between` / `--group`.
+    /// The first word completes to a command, a prefix keyword or an Insights
+    /// command; after a command the words are log groups and flags; inside a
+    /// query the Insights words and `@fields` complete.
+    fn complete_cloudwatch_command_line(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        let word_start = line[..pos]
+            .rfind(|c: char| c.is_whitespace() || c == '|' || c == ',')
+            .map_or(0, |index| index + 1);
+        let current = &line[word_start..pos];
+        let span = Span {
+            start: word_start,
+            end: pos,
+        };
+        let suggest = |value: &str, description: Option<&str>, color: Color| Suggestion {
+            value: value.to_string(),
+            description: description.map(str::to_string),
+            span,
+            append_whitespace: true,
+            extra: None,
+            style: Some(Style::new().fg(color)),
+            ..Default::default()
+        };
+        let first_word = line.split_whitespace().next().unwrap_or_default();
+        let verb = first_word.parse::<crate::cloudwatch_command::Verb>().ok();
+        let lower = current.to_ascii_lowercase();
+        if line[..word_start].trim().is_empty() {
+            let mut suggestions: Vec<Suggestion> = crate::cloudwatch_command::verbs()
+                .filter(|verb| verb.name().starts_with(&lower))
+                .map(|verb| suggest(verb.name(), Some(verb.description()), Color::Blue))
+                .collect();
+            for word in ["since", "between", "--group"] {
+                if word.starts_with(&lower) {
+                    suggestions.push(suggest(word, Some("query window / groups"), Color::Yellow));
+                }
+            }
+            suggestions.extend(
+                crate::cloudwatch_command::INSIGHTS_COMMANDS
+                    .iter()
+                    .filter(|word| word.to_ascii_lowercase().starts_with(&lower))
+                    .map(|word| suggest(word, Some("Logs Insights"), Color::Blue)),
+            );
+            return suggestions;
+        }
+        if let Some(verb) = verb {
+            if verb == crate::cloudwatch_command::Verb::Help {
+                return Vec::new();
+            }
+            if current.starts_with('-') {
+                return ["--limit", "--since", "--filter"]
+                    .iter()
+                    .filter(|flag| flag.starts_with(current))
+                    .map(|flag| suggest(flag, None, Color::Yellow))
+                    .collect();
+            }
+            return self
+                .get_tables(None)
+                .into_iter()
+                .filter(|table| table.name.starts_with(current))
+                .take(50)
+                .map(|table| suggest(&table.name, Some("log group"), Color::Cyan))
+                .collect();
+        }
+        // inside a query
+        if current.starts_with('@') {
+            return [
+                "@timestamp",
+                "@message",
+                "@logStream",
+                "@log",
+                "@ingestionTime",
+            ]
+            .iter()
+            .filter(|field| field.starts_with(current))
+            .map(|field| suggest(field, Some("field"), Color::Cyan))
+            .collect();
+        }
+        if current.starts_with('-') {
+            return ["--group"]
+                .iter()
+                .filter(|flag| flag.starts_with(current))
+                .map(|flag| suggest(flag, None, Color::Yellow))
+                .collect();
+        }
+        let mut words: Vec<&str> = crate::cloudwatch_command::INSIGHTS_COMMANDS.to_vec();
+        words.extend(
+            crate::database::DatabaseTypeExt::sql_functions(&DatabaseType::CloudWatchLogs)
+                .iter()
+                .copied(),
+        );
+        words.sort_unstable();
+        words.dedup();
+        words
+            .into_iter()
+            .filter(|word| !lower.is_empty() && word.to_ascii_lowercase().starts_with(&lower))
+            .map(|word| suggest(word, Some("Logs Insights"), Color::Blue))
             .collect()
     }
 
@@ -2208,6 +2440,9 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::Redshift => "[redshift]",
                                     crate::database::DatabaseType::LibSql => "[libsql]",
                                     crate::database::DatabaseType::InfluxDB => "[influxdb]",
+                                    crate::database::DatabaseType::S3 => "[s3]",
+                                    crate::database::DatabaseType::DynamoDB => "[dynamodb]",
+                                    crate::database::DatabaseType::CloudWatchLogs => "[cloudwatch]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
@@ -2287,6 +2522,9 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::Redshift => "[redshift]",
                                     crate::database::DatabaseType::LibSql => "[libsql]",
                                     crate::database::DatabaseType::InfluxDB => "[influxdb]",
+                                    crate::database::DatabaseType::S3 => "[s3]",
+                                    crate::database::DatabaseType::DynamoDB => "[dynamodb]",
+                                    crate::database::DatabaseType::CloudWatchLogs => "[cloudwatch]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
@@ -2351,6 +2589,19 @@ impl SqlCompleter {
 
         if self.get_database_type() == DatabaseType::Redis {
             return self.complete_redis_command_line(line, pos);
+        }
+        if self.get_database_type() == DatabaseType::S3 {
+            return self.complete_s3_command_line(line, pos);
+        }
+        if self.get_database_type() == DatabaseType::CloudWatchLogs {
+            return self.complete_cloudwatch_command_line(line, pos);
+        }
+        if self.get_database_type() == DatabaseType::DynamoDB {
+            // A command line is completed here; a PartiQL SELECT falls through
+            // to the SQL completion below
+            if let Some(suggestions) = self.complete_dynamodb_command_line(line, pos) {
+                return suggestions;
+            }
         }
 
         let is_white_dragon = self.get_database_type() == DatabaseType::WhiteDragon;

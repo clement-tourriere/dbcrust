@@ -813,10 +813,13 @@ impl Database {
             let connection_info = database_client.get_connection_info();
 
             if connection_info.database_type.is_file_based() {
-                // SQLite doesn't have users concept
+                // File-based engines have no users concept
                 Ok(vec![
                     vec!["Note".to_string()],
-                    vec!["SQLite is file-based and doesn't have user accounts".to_string()],
+                    vec![format!(
+                        "{} is file-based and doesn't have user accounts",
+                        connection_info.database_type
+                    )],
                     vec!["Access control is handled at the file system level".to_string()],
                 ])
             } else {
@@ -865,7 +868,21 @@ impl Database {
 
             let connection_info = database_client.get_connection_info();
 
-            if connection_info.database_type.is_file_based() {
+            if connection_info.database_type == crate::database::DatabaseType::DuckDB {
+                let query = r#"
+                    SELECT
+                        index_name AS "Index Name",
+                        table_name AS "Table",
+                        CASE WHEN is_unique THEN 'UNIQUE' ELSE 'NON-UNIQUE' END AS "Type"
+                    FROM duckdb_indexes()
+                    WHERE database_name = current_database()
+                    ORDER BY table_name, index_name
+                "#;
+                return self
+                    .execute_query(query)
+                    .await
+                    .map_err(|e| format!("Error listing DuckDB indexes: {e}").into());
+            } else if connection_info.database_type.is_file_based() {
                 let query = r#"
                     SELECT
                         name as 'Index Name',
@@ -1460,7 +1477,13 @@ impl Database {
                         | crate::database::DatabaseType::Redshift
                 ) {
                     metadata_table_parts(&table_reference, &conn_info.database_type)
-                } else if conn_info.database_type == crate::database::DatabaseType::Redis {
+                } else if matches!(
+                    conn_info.database_type,
+                    crate::database::DatabaseType::Redis
+                        | crate::database::DatabaseType::S3
+                        | crate::database::DatabaseType::DynamoDB
+                        | crate::database::DatabaseType::CloudWatchLogs
+                ) {
                     // A key name is not an identifier: keep quotes and brackets
                     (None, table_reference.clone())
                 } else {
@@ -1482,7 +1505,10 @@ impl Database {
                     kind.clone()
                 } else if conn_info.database_type == crate::database::DatabaseType::MongoDB {
                     "collection".to_string()
-                } else if conn_info.database_type == crate::database::DatabaseType::Redis {
+                } else if matches!(
+                    conn_info.database_type,
+                    crate::database::DatabaseType::Redis | crate::database::DatabaseType::S3
+                ) {
                     "key".to_string()
                 } else {
                     "table".to_string()
@@ -1926,13 +1952,7 @@ impl Database {
     }
 
     pub fn maybe_add_limit(&self, query: &str) -> String {
-        if self.get_database_type() == crate::database::DatabaseType::SqlServer {
-            return add_default_top(query, self.default_limit);
-        }
-        if self.get_database_type() == crate::database::DatabaseType::InfluxDB {
-            return add_default_limit_influxql(query, self.default_limit);
-        }
-        add_default_limit(query, self.default_limit)
+        add_engine_default_limit(&self.get_database_type(), query, self.default_limit)
     }
 
     pub fn is_autocomplete(&self) -> bool {
@@ -2544,6 +2564,25 @@ fn leading_sql_keyword(query: &str) -> Option<String> {
     }
 }
 
+/// The auto-LIMIT of an engine's dialect.
+fn add_engine_default_limit(
+    db_type: &crate::database::DatabaseType,
+    query: &str,
+    default_limit: usize,
+) -> String {
+    match db_type {
+        crate::database::DatabaseType::SqlServer => add_default_top(query, default_limit),
+        crate::database::DatabaseType::InfluxDB => add_default_limit_influxql(query, default_limit),
+        // PartiQL for DynamoDB has no LIMIT clause (the service rejects it): the
+        // driver bounds every read itself (`max_rows`, `max_pages`)
+        crate::database::DatabaseType::DynamoDB => query.to_string(),
+        // Logs Insights queries are not SQL: they carry their own `limit` command
+        // and the driver passes `max_rows` as the query's result limit
+        crate::database::DatabaseType::CloudWatchLogs => query.to_string(),
+        _ => add_default_limit(query, default_limit),
+    }
+}
+
 /// Append `LIMIT n` only to statements whose leading keyword is SELECT.
 /// Anything that merely *contains* a SELECT (INSERT … SELECT, CREATE TABLE AS,
 /// DELETE/UPDATE with subqueries) must stay untouched: a trailing LIMIT there
@@ -2877,6 +2916,25 @@ mod tests {
         #[case] expected: &str,
     ) {
         assert_eq!(add_default_limit_influxql(query, 100), expected);
+    }
+
+    #[test]
+    fn test_dynamodb_partiql_gets_no_auto_limit() {
+        use crate::database::DatabaseType;
+        let sql = "SELECT * FROM \"Orders\" WHERE customer = 'a'";
+        assert_eq!(
+            add_engine_default_limit(&DatabaseType::DynamoDB, sql, 100),
+            sql
+        );
+        let insights = "fields @message | limit 5";
+        assert_eq!(
+            add_engine_default_limit(&DatabaseType::CloudWatchLogs, insights, 100),
+            insights
+        );
+        assert_eq!(
+            add_engine_default_limit(&DatabaseType::PostgreSQL, "SELECT 1", 100),
+            "SELECT 1 LIMIT 100"
+        );
     }
 
     #[rstest]

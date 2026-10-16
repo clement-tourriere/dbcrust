@@ -31,7 +31,11 @@ dbcrust-driver-mssql = { workspace = true, optional = true }
 dbcrust-driver-redshift = { workspace = true, optional = true }
 dbcrust-driver-libsql = { workspace = true, optional = true }
 dbcrust-driver-influxdb = { workspace = true, optional = true }
+dbcrust-driver-s3 = { workspace = true, optional = true }
+dbcrust-driver-dynamodb = { workspace = true, optional = true }
+dbcrust-driver-cloudwatch = { workspace = true, optional = true }
 dbcrust-driver-files = { workspace = true, optional = true }
+dbcrust-driver-duckdb = { workspace = true, optional = true }
 
 [features]
 # Standalone (`cargo test -p dbcrust-drivers`) the registry has every engine.
@@ -64,8 +68,17 @@ mssql = ["dep:dbcrust-driver-mssql"]
 redshift = ["dep:dbcrust-driver-redshift"]
 libsql = ["dep:dbcrust-driver-libsql"]
 influxdb = ["dep:dbcrust-driver-influxdb"]
-# DataFusion: Parquet, CSV, JSON and DuckDB files
+# Amazon S3 / R2 / MinIO: opt-in (AWS SDK, Rust >= 1.94.1), not in the default set
+s3 = ["dep:dbcrust-driver-s3"]
+# Amazon DynamoDB: opt-in as well (the same AWS SDK, Rust >= 1.94.1)
+dynamodb = ["dep:dbcrust-driver-dynamodb"]
+# Amazon CloudWatch Logs: opt-in as well (the same AWS SDK, Rust >= 1.94.1)
+cloudwatch = ["dep:dbcrust-driver-cloudwatch"]
+# DataFusion: Parquet, CSV and JSON files
 files = ["dep:dbcrust-driver-files"]
+# DuckDB: an embedded C++ engine (long cold build, +20 MB), so it is not in
+# `default` either: `cargo test -p dbcrust-drivers --features duckdb`
+duckdb = ["dep:dbcrust-driver-duckdb"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

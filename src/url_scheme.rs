@@ -59,6 +59,9 @@ impl ParsedUrl {
                 | UrlScheme::Redshift
                 | UrlScheme::LibSql
                 | UrlScheme::InfluxDb
+                | UrlScheme::S3
+                | UrlScheme::DynamoDb
+                | UrlScheme::CloudWatch
         )
     }
 
@@ -97,6 +100,12 @@ pub enum UrlScheme {
     LibSql,
     #[strum(serialize = "influxdb")]
     InfluxDb,
+    #[strum(serialize = "s3")]
+    S3,
+    #[strum(serialize = "dynamodb")]
+    DynamoDb,
+    #[strum(serialize = "cloudwatch")]
+    CloudWatch,
     #[strum(serialize = "parquet")]
     Parquet,
     #[strum(serialize = "csv")]
@@ -134,6 +143,9 @@ impl UrlScheme {
             Self::Redshift => DatabaseType::Redshift,
             Self::LibSql => DatabaseType::LibSql,
             Self::InfluxDb => DatabaseType::InfluxDB,
+            Self::S3 => DatabaseType::S3,
+            Self::DynamoDb => DatabaseType::DynamoDB,
+            Self::CloudWatch => DatabaseType::CloudWatchLogs,
             Self::Parquet => DatabaseType::Parquet,
             Self::Csv => DatabaseType::CSV,
             Self::Json => DatabaseType::JSON,
@@ -187,10 +199,21 @@ impl UrlScheme {
             Self::InfluxDb => {
                 "InfluxDB v1 (InfluxQL); influxdb2:// is v2 (Flux), influxdb3:// v3 (SQL), a trailing s is TLS"
             }
+            Self::S3 => {
+                "Amazon S3 and compatible stores (r2:// Cloudflare R2, minio:// MinIO; opt-in `s3` build)"
+            }
+            Self::DynamoDb => {
+                "Amazon DynamoDB (PartiQL SELECT and read commands; dynamodb+http:// for DynamoDB Local; opt-in `dynamodb` build)"
+            }
+            Self::CloudWatch => {
+                "Amazon CloudWatch Logs (Logs Insights over a time window; opt-in `cloudwatch` build)"
+            }
             Self::Parquet => "Parquet file or glob (DataFusion)",
             Self::Csv => "CSV/TSV file or glob (DataFusion)",
             Self::Json => "JSON/NDJSON file or glob (DataFusion)",
-            Self::DuckDB => "DuckDB database file",
+            Self::DuckDB => {
+                "DuckDB database file or :memory: (embedded engine; DuckLake with ?ducklake=)"
+            }
             Self::Docker => "Docker container database",
             Self::File => "Interactive local file picker",
             Self::Session => "Saved session connection",
@@ -248,6 +271,12 @@ impl UrlScheme {
         // `host\instance` (SQL Server) is not a valid URL host as typed
         let normalized_url =
             crate::database::escape_sqlserver_instance_backslash(&normalized_url).into_owned();
+        // `duckdb://:memory:` has no port: its path is `:memory:`
+        let normalized_url =
+            crate::database::escape_duckdb_memory_authority(&normalized_url).into_owned();
+        // `dynamodb://KEY:SECRET@?region=…`: credentials with no host
+        let normalized_url =
+            crate::database::escape_aws_empty_authority(&normalized_url).into_owned();
         let parsed_url = Url::parse(&normalized_url)?;
         Ok(ParsedUrl::new(scheme, normalized_url, Some(parsed_url)))
     }
@@ -267,6 +296,9 @@ impl UrlScheme {
             "redshift" | "redshift+tls" => Ok(Self::Redshift),
             "libsql" | "libsql+http" | "turso" => Ok(Self::LibSql),
             scheme if crate::database::INFLUXDB_SCHEMES.contains(&scheme) => Ok(Self::InfluxDb),
+            scheme if crate::database::S3_SCHEMES.contains(&scheme) => Ok(Self::S3),
+            scheme if crate::database::DYNAMODB_SCHEMES.contains(&scheme) => Ok(Self::DynamoDb),
+            scheme if crate::database::CLOUDWATCH_SCHEMES.contains(&scheme) => Ok(Self::CloudWatch),
             "parquet" => Ok(Self::Parquet),
             "csv" => Ok(Self::Csv),
             "json" | "ndjson" => Ok(Self::Json),
@@ -300,6 +332,9 @@ impl UrlScheme {
             Self::Redshift => Some("Redshift"),
             Self::LibSql => Some("libSQL"),
             Self::InfluxDb => Some("InfluxDB"),
+            Self::S3 => Some("Amazon S3"),
+            Self::DynamoDb => Some("Amazon DynamoDB"),
+            Self::CloudWatch => Some("Amazon CloudWatch Logs"),
             Self::Parquet => Some("Parquet"),
             Self::Csv => Some("CSV"),
             Self::Json => Some("JSON"),
@@ -324,6 +359,9 @@ impl UrlScheme {
             "redshift" | "aws redshift" => vec![Self::Redshift],
             "libsql" | "turso" | "sqld" => vec![Self::LibSql],
             "influxdb" | "influx" => vec![Self::InfluxDb],
+            "s3" | "amazon s3" | "r2" | "minio" => vec![Self::S3],
+            "dynamodb" | "ddb" | "amazon dynamodb" => vec![Self::DynamoDb],
+            "cloudwatch" | "cwlogs" | "cloudwatch logs" | "logs" => vec![Self::CloudWatch],
             _ => UrlScheme::iter().collect(),
         }
     }
@@ -563,7 +601,7 @@ mod tests {
     #[test]
     fn test_url_scheme_iteration() {
         let schemes: Vec<_> = UrlScheme::iter().collect();
-        assert_eq!(schemes.len(), 21); // All schemes
+        assert_eq!(schemes.len(), 24); // All schemes
 
         // Verify all schemes have proper string representation
         for scheme in schemes {
@@ -774,6 +812,61 @@ mod tests {
             UrlScheme::for_database_type("influx"),
             vec![UrlScheme::InfluxDb]
         );
+        // S3 and its endpoint conveniences
+        for url in [
+            "s3://my-bucket/prefix/",
+            "s3://AKIA:secret@my-bucket?region=eu-west-1",
+            "r2://account/bucket",
+            "minio://localhost:9000/bucket?tls=false",
+        ] {
+            let parsed = UrlScheme::parse_url(url).unwrap();
+            assert_eq!(parsed.scheme, UrlScheme::S3, "{url}");
+            assert!(parsed.is_database_scheme());
+        }
+        assert_eq!(UrlScheme::S3.url_prefix(), "s3://");
+        assert_eq!(UrlScheme::S3.to_database_type(), Some("Amazon S3"));
+        assert_eq!(UrlScheme::for_database_type("minio"), vec![UrlScheme::S3]);
+        // DynamoDB: a region, an endpoint, plain HTTP, credentials with no host
+        for url in [
+            "dynamodb://eu-west-1/Orders",
+            "ddb://us-east-1",
+            "dynamodb+http://localhost:8000?region=local",
+            "dynamodb://vpce.example.com:8443/Orders",
+            "dynamodb://AKIA:secret@?region=eu-west-1",
+        ] {
+            let parsed = UrlScheme::parse_url(url).unwrap();
+            assert_eq!(parsed.scheme, UrlScheme::DynamoDb, "{url}");
+            assert!(parsed.is_database_scheme());
+        }
+        assert_eq!(UrlScheme::DynamoDb.url_prefix(), "dynamodb://");
+        assert_eq!(
+            UrlScheme::DynamoDb.to_database_type(),
+            Some("Amazon DynamoDB")
+        );
+        assert_eq!(
+            UrlScheme::for_database_type("ddb"),
+            vec![UrlScheme::DynamoDb]
+        );
+        // CloudWatch Logs
+        for url in [
+            "cloudwatch://eu-west-1/aws/lambda/orders",
+            "cwlogs://us-east-1",
+            "cloudwatch+http://localhost:4566?region=us-east-1",
+            "cloudwatch://AKIA:secret@?region=eu-west-1",
+        ] {
+            let parsed = UrlScheme::parse_url(url).unwrap();
+            assert_eq!(parsed.scheme, UrlScheme::CloudWatch, "{url}");
+            assert!(parsed.is_database_scheme());
+        }
+        assert_eq!(UrlScheme::CloudWatch.url_prefix(), "cloudwatch://");
+        assert_eq!(
+            UrlScheme::CloudWatch.to_database_type(),
+            Some("Amazon CloudWatch Logs")
+        );
+        assert_eq!(
+            UrlScheme::for_database_type("cwlogs"),
+            vec![UrlScheme::CloudWatch]
+        );
 
         // Test unsupported scheme
         let result = UrlScheme::parse_url("unsupported://test");
@@ -855,6 +948,21 @@ mod tests {
             UrlScheme::Postgres.is_available(),
             cfg!(feature = "postgres")
         );
+        // DuckDB is the opt-in engine: offered only by a build that contains it,
+        // and its URLs still parse everywhere so the connect error can say why
+        assert_eq!(UrlScheme::DuckDB.is_available(), cfg!(feature = "duckdb"));
+        // so are the AWS connectors
+        assert_eq!(UrlScheme::S3.is_available(), cfg!(feature = "s3"));
+        assert_eq!(
+            UrlScheme::DynamoDb.is_available(),
+            cfg!(feature = "dynamodb")
+        );
+        assert_eq!(
+            UrlScheme::CloudWatch.is_available(),
+            cfg!(feature = "cloudwatch")
+        );
+        assert!(UrlScheme::parse_url("duckdb:///tmp/x.duckdb").is_ok());
+        assert!(UrlScheme::parse_url("duckdb://:memory:").is_ok());
         // Not engines: always there
         for scheme in [UrlScheme::Session, UrlScheme::Recent, UrlScheme::Vault] {
             assert!(scheme.is_available(), "{scheme}");

@@ -1,0 +1,87 @@
+name: DuckDB
+
+# The DuckDB connector (`duckdb` feature) compiles the engine's C++
+# amalgamation, so even `cargo check` runs a multi-minute build script. It is
+# opt-in for users and opt-in here: this workflow runs by hand, weekly (an
+# engine bump lands as a Cargo.lock change), and on pull requests / pushes that
+# touch the connector or what it depends on. The per-pull-request feature
+# matrix in ci.yml leaves it out on purpose.
+#
+# 32-bit and musl/cross builds are not part of it: DuckDB is not built there
+# (the 32-bit Python check in ci.yml uses the default features, which exclude it).
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - "crates/driver-duckdb/**"
+      - "crates/core/src/safety.rs"
+      - "crates/core/src/database.rs"
+      - "crates/drivers/**"
+      - "crates/broker/**"
+      - "third_party/zip-stub/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/duckdb.yml"
+  pull_request:
+    paths:
+      - "crates/driver-duckdb/**"
+      - "crates/core/src/safety.rs"
+      - "crates/core/src/database.rs"
+      - "crates/drivers/**"
+      - "crates/broker/**"
+      - "third_party/zip-stub/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/duckdb.yml"
+
+concurrency:
+  group: duckdb-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  duckdb:
+    name: Rust · DuckDB connector (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Set up Mr Boxington
+        uses: jdx/mr-boxington-action@adc5c234c02592f7edd008bf81d5bc0e9584dc03 # v1.2.0
+        with:
+          version: "1.4.1"
+      - name: clippy (driver, registry, broker)
+        run: |
+          mbx clippy --locked -p dbcrust-driver-duckdb --all-targets -- -D warnings
+          mbx clippy --locked -p dbcrust-broker --features duckdb --all-targets -- -D warnings
+      - name: driver tests (real in-process engine, no network)
+        run: mbx test --locked -p dbcrust-driver-duckdb
+      - name: broker tests with DuckDB aliases
+        run: mbx test --locked -p dbcrust-broker --features duckdb
+      - name: the CLI with the connector (standard preset + duckdb)
+        env:
+          PYO3_NO_PYTHON: "1"
+        run: |
+          mbx clippy --locked -p dbcrust --no-default-features --features standard,duckdb --all-targets -- -D warnings
+          mbx test --locked -p dbcrust --no-default-features --features standard,duckdb
+      - name: still one TLS stack
+        run: |
+          for crate in aws-lc-rs aws-lc-sys openssl native-tls; do
+            if cargo tree --locked --workspace --target all -i "$crate" > /dev/null 2>&1; then
+              echo "::error::$crate is in the dependency tree"
+              exit 1
+            fi
+          done

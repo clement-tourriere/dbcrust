@@ -1683,11 +1683,13 @@ fn sections_model(raw: &ExplainRaw) -> Option<PlanModel> {
     let data = raw.rows.get(1..)?;
     let datafusion = matches!(
         raw.db_type,
-        DatabaseType::Parquet | DatabaseType::CSV | DatabaseType::JSON | DatabaseType::DuckDB
+        DatabaseType::Parquet | DatabaseType::CSV | DatabaseType::JSON
     );
-    let titled = header
-        .first()
-        .is_some_and(|name| name.trim().eq_ignore_ascii_case("plan_type"));
+    // DataFusion answers `(plan_type, plan)`, DuckDB `(explain_key, explain_value)`
+    let titled = header.first().is_some_and(|name| {
+        let name = name.trim();
+        name.eq_ignore_ascii_case("plan_type") || name.eq_ignore_ascii_case("explain_key")
+    });
     if header.len() != 2 || data.is_empty() || !(datafusion || titled) {
         return None;
     }
@@ -2283,6 +2285,24 @@ mod tests {
         assert_eq!(sections[0].title, "logical_plan");
         assert!(sections[1].text.contains("ParquetExec"));
         assert!(model.raw.contains("physical_plan\nProjectionExec"));
+    }
+
+    #[test]
+    fn duckdb_plans_are_sections() {
+        let model = PlanModel::from_raw(&raw(
+            DatabaseType::DuckDB,
+            &[
+                &["explain_key", "explain_value"],
+                &["physical_plan", "┌──────┐\n│ SEQ_SCAN │\n└──────┘\n"],
+            ],
+            false,
+        ));
+        let PlanBody::Sections(sections) = &model.body else {
+            panic!("expected sections, got {:?}", model.body);
+        };
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].title, "physical_plan");
+        assert!(sections[0].text.contains("SEQ_SCAN"));
     }
 
     #[test]

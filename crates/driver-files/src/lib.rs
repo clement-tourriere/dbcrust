@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 use tracing::debug;
 
 /// DataFusion errors as a [`DatabaseError`] (`DataFusion error: …`). The file
-/// engines (Parquet, CSV, JSON, DuckDB) share this client, so the variant only
-/// selects the DataFusion error text.
+/// engines (Parquet, CSV, JSON) share this client, so the variant only selects
+/// the DataFusion error text.
 fn db_err(error: datafusion::error::DataFusionError) -> DatabaseError {
     DatabaseError::driver(DatabaseType::Parquet, error)
 }

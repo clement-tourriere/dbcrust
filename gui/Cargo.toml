@@ -27,6 +27,8 @@ required-features = ["screenshots"]
 default = []
 # Headless renderer + capture used by `mise run gui:screenshots`
 screenshots = ["gpui-kit/test-support", "dep:tempfile", "dep:chrono"]
+# The opt-in DuckDB engine in the connection form (a C++ build, +20 MB)
+duckdb = ["dbcrust-gui-core/duckdb"]
 
 [dependencies]
 dbcrust-gui-core = { path = "core" }

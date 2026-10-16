@@ -47,9 +47,10 @@ pub mod vault_client; // Add backslash commands module
 // `dbcrust::format::…` and friends keep resolving for the rest of this crate,
 // the GUI and the PyO3 bindings.
 pub use dbcrust_core::{
-    ai_config, complex_display, ddl, docker_target, explain_plan, format, geojson_display,
-    json_display, model, options, output_format, password_sanitizer, performance_analyzer,
-    redis_command, regex_operators, safety, sql_parser, tls, vector_display,
+    ai_config, cloudwatch_command, complex_display, ddl, docker_target, dynamodb_command,
+    explain_plan, format, geojson_display, json_display, model, options, output_format,
+    password_sanitizer, performance_analyzer, redis_command, regex_operators, s3_command, safety,
+    sql_parser, tls, vector_display,
 };
 
 // The AI assistant and Docker discovery/routing/relay moved to their own

@@ -1,0 +1,31 @@
+[package]
+name = "dbcrust-driver-cloudwatch"
+version.workspace = true
+edition.workspace = true
+# See `dbcrust-aws`: the AWS SDK crates need Rust 1.94.1
+rust-version = "1.94.1"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust Amazon CloudWatch Logs driver (Logs Insights queries and read-only log commands over the AWS SDK)"
+
+# Layer 1 of the crate split: depends on `dbcrust-core`, the shared AWS
+# foundation and this engine's SDK only (never the root crate, secrets, Docker,
+# AI or another driver); the registry `dbcrust-drivers` links it into a build.
+[dependencies]
+dbcrust-core = { workspace = true }
+dbcrust-aws = { workspace = true, features = ["sso", "credentials-process"] }
+async-trait = { workspace = true }
+aws-sdk-cloudwatchlogs = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "net"] }
+rstest = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

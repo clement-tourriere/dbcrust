@@ -39,7 +39,11 @@ pub fn check_read_only(query: &str, db_type: &DatabaseType) -> Result<(), ReadOn
         DatabaseType::SqlServer => check_sql_server(query),
         DatabaseType::Redshift => check_redshift(query),
         DatabaseType::LibSql => check_libsql(query),
+        DatabaseType::DuckDB => check_duckdb(query),
         DatabaseType::InfluxDB => influxdb::check_influxdb(query),
+        DatabaseType::S3 => check_s3(query),
+        DatabaseType::DynamoDB => check_dynamodb(query),
+        DatabaseType::CloudWatchLogs => check_cloudwatch(query),
         _ => check_sql(query),
     };
     verdict.map_err(|reason| ReadOnlyViolation { reason })
@@ -53,6 +57,43 @@ pub fn check_influxdb_read_only(
     language: InfluxLanguage,
 ) -> Result<(), ReadOnlyViolation> {
     influxdb::check_influxdb_as(query, language).map_err(|reason| ReadOnlyViolation { reason })
+}
+
+/// The S3 command language is read-only by construction: `S3Command` has no
+/// variant that writes (no put/delete/copy/multipart/ACL/presign), so a line is
+/// accepted exactly when it parses and anything else is refused. The IAM policy
+/// of the credentials stays the server-side limit; this guard only keeps the
+/// client from offering a write.
+fn check_s3(query: &str) -> Result<(), String> {
+    crate::s3_command::parse(query)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// DynamoDB input is read-only by construction: a typed command (none writes)
+/// or one PartiQL `SELECT`. `crate::dynamodb_command::parse` is the single
+/// judge: it lexes through comments, quoted identifiers and string literals, so
+/// `INSERT`/`UPDATE`/`DELETE`/`EXISTS`, a second statement after a `;` and a
+/// write hidden behind a comment are all refused, and the driver executes
+/// exactly what this accepts. The IAM policy of the credentials stays the
+/// server-side limit.
+fn check_dynamodb(query: &str) -> Result<(), String> {
+    crate::dynamodb_command::parse(query)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
+/// CloudWatch Logs input is read-only by construction: a typed command (none
+/// writes) or a Logs Insights query, whose language has no write verb; the one
+/// side effect of a query is the billable work of `StartQuery`, which the
+/// driver bounds (a mandatory time window, a result limit) and stops on Ctrl-C.
+/// `crate::cloudwatch_command::parse` is the single judge and the driver runs
+/// exactly what it accepts, so `PutLogEvents`, `DeleteLogGroup`, retention and
+/// export calls are unreachable.
+fn check_cloudwatch(query: &str) -> Result<(), String> {
+    crate::cloudwatch_command::parse(query)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 /// True when nothing follows the first `;` — i.e. the string is a single
@@ -440,6 +481,287 @@ fn check_sql_server(query: &str) -> Result<(), String> {
                 "{name} reaches outside the database and is not allowed"
             ));
         }
+    }
+    Ok(())
+}
+
+// ----- DuckDB ---------------------------------------------------------------
+//
+// A DuckDB connection opened for `--read-only` or the broker is read-only at
+// the engine (`access_mode=READ_ONLY`, external access off, configuration
+// locked), so nothing below is what stops a write there. The textual check
+// gives a clear message before the statement is sent, covers the in-memory
+// database (which cannot be opened read-only) and is what an AI agent's tool
+// loop calls. Default-deny: a statement passes only when it starts with a
+// reading verb and none of the file, network and environment functions or
+// replacement scans (`FROM 'x.csv'`) appear.
+
+/// Statement verbs that only read.
+const DUCKDB_READ_VERBS: &[&str] = &[
+    "SELECT",
+    "VALUES",
+    "FROM",
+    "SUMMARIZE",
+    "DESCRIBE",
+    "DESC",
+    "SHOW",
+    "PIVOT",
+    "UNPIVOT",
+];
+
+/// `PRAGMA name` / `PRAGMA name(arg)` forms that only read.
+const DUCKDB_READ_PRAGMAS: &[&str] = &[
+    "database_size",
+    "database_list",
+    "table_info",
+    "show_tables",
+    "show_tables_expanded",
+    "storage_info",
+    "table_storage_info",
+    "version",
+    "platform",
+    "functions",
+    "collations",
+];
+
+/// Functions that read files, URLs, other databases or the environment, run
+/// SQL from a string, or reveal secrets. Lowercase; a trailing `*` is a prefix.
+const DUCKDB_DENIED_FUNCTIONS: &[&str] = &[
+    "read_*",
+    "glob",
+    "parquet_*",
+    "sniff_csv",
+    "sqlite_*",
+    "postgres_*",
+    "mysql_*",
+    "iceberg_*",
+    "delta_*",
+    "excel_*",
+    "st_read*",
+    "http_*",
+    "getenv",
+    "duckdb_secrets",
+    "which_secret",
+    "query",
+    "query_table",
+    "load_aws_credentials",
+    "install_extension",
+    "load_extension",
+    "force_checkpoint",
+    "checkpoint",
+];
+
+/// File extensions DuckDB opens by itself when they name a "table".
+const DUCKDB_DATA_EXTENSIONS: &[&str] = &[
+    ".csv", ".tsv", ".parquet", ".json", ".jsonl", ".ndjson", ".gz", ".zst", ".xlsx", ".db",
+    ".duckdb", ".sqlite", ".arrow",
+];
+
+/// The text of a quoted token, quotes removed.
+fn quoted_text<'a>(sql: &'a str, token: &Token) -> &'a str {
+    let text = &sql[token.start..token.end];
+    match text.chars().next() {
+        Some('\'' | '"') if text.len() >= 2 => &text[1..text.len() - 1],
+        _ => text,
+    }
+}
+
+fn duckdb_path_like(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("://")
+        || lower.starts_with('/')
+        || lower.starts_with("~/")
+        || lower.starts_with("./")
+        || lower.starts_with("../")
+        || lower.contains('\\')
+        || DUCKDB_DATA_EXTENSIONS
+            .iter()
+            .any(|ext| lower.ends_with(ext))
+}
+
+/// What DuckDB reads when a string or a quoted name stands where a table is
+/// expected (a "replacement scan"): `FROM 'x.csv'`, `JOIN "/etc/data.parquet"`,
+/// `FROM a, 'b.csv'`.
+fn duckdb_replacement_scan(sql: &str, tokens: &[Token]) -> Option<String> {
+    for (i, token) in tokens.iter().enumerate() {
+        if token.kind != Tok::Quoted {
+            continue;
+        }
+        let text = &sql[token.start..token.end];
+        let single = text.starts_with('\'');
+        let after_from = i
+            .checked_sub(1)
+            .and_then(|p| tokens.get(p))
+            .is_some_and(|prev| prev.is_word("FROM") || prev.is_word("JOIN"));
+        let after_comma = i
+            .checked_sub(1)
+            .and_then(|p| tokens.get(p))
+            .is_some_and(|prev| prev.is_punct(','));
+        let inner = quoted_text(sql, token);
+        // A string in table position is always a file; a quoted name only when
+        // it looks like a path (a table may be called "my table")
+        if (after_from && (single || duckdb_path_like(inner)))
+            || (after_comma && duckdb_path_like(inner))
+        {
+            return Some(inner.to_string());
+        }
+    }
+    None
+}
+
+/// A denied DuckDB function called anywhere in `tokens`.
+fn duckdb_denied_call(sql: &str, tokens: &[Token]) -> Option<String> {
+    for (i, token) in tokens.iter().enumerate() {
+        if !tokens.get(i + 1).is_some_and(|next| next.is_punct('(')) {
+            continue;
+        }
+        let name = match &token.kind {
+            Tok::Word(word) => word.to_ascii_lowercase(),
+            Tok::Quoted if sql[token.start..token.end].starts_with('"') => {
+                quoted_text(sql, token).to_ascii_lowercase()
+            }
+            _ => continue,
+        };
+        if matches_denylist(&name, DUCKDB_DENIED_FUNCTIONS) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// `PRAGMA [schema.]name[(args)]` with a read-only name and no assignment.
+fn duckdb_pragma_allowed(tokens: &[Token]) -> Result<(), String> {
+    let mut i = 0usize;
+    let mut name = tokens
+        .get(i)
+        .and_then(Token::word)
+        .map(str::to_ascii_lowercase);
+    if tokens.get(i + 1).is_some_and(|t| t.is_punct('.')) {
+        i += 2;
+        name = tokens
+            .get(i)
+            .and_then(Token::word)
+            .map(str::to_ascii_lowercase);
+    }
+    let Some(name) = name else {
+        return Err("PRAGMA statement not recognised".to_string());
+    };
+    if tokens.get(i + 1).is_some_and(|t| t.is_punct('=')) {
+        return Err("PRAGMA assignments modify configuration".to_string());
+    }
+    if DUCKDB_READ_PRAGMAS.contains(&name.as_str()) {
+        Ok(())
+    } else {
+        Err(format!("PRAGMA {name} is not on the read-only allowlist"))
+    }
+}
+
+/// One DuckDB statement (no `;`), default-deny.
+fn check_duckdb_statement(sql: &str, statement: &[Token]) -> Result<(), String> {
+    let mut body = statement;
+    while body.first().is_some_and(|t| t.is_punct('(')) {
+        body = &body[1..];
+    }
+    let Some(verb) = body.first().and_then(Token::word) else {
+        return Err("only read-only statements are allowed on DuckDB".to_string());
+    };
+    match verb {
+        v if DUCKDB_READ_VERBS.contains(&v) => {}
+        "WITH" => {
+            // The main statement follows the CTE list at the same depth
+            let depth = body[0].depth;
+            let main = body[1..]
+                .iter()
+                .filter(|t| t.depth == depth)
+                .filter_map(Token::word)
+                .find(|w| {
+                    DUCKDB_READ_VERBS.contains(w)
+                        || DML_VERBS.contains(w)
+                        || matches!(*w, "CREATE" | "COPY" | "EXPORT" | "DROP")
+                });
+            match main {
+                Some(w) if DUCKDB_READ_VERBS.contains(&w) => {}
+                Some(w) => return Err(format!("WITH … {w} is not a read-only DuckDB statement")),
+                None => return Err("WITH must be followed by a SELECT".to_string()),
+            }
+        }
+        "EXPLAIN" => {
+            let mut i = 1usize;
+            loop {
+                match body.get(i) {
+                    Some(t) if matches!(t.word(), Some("ANALYZE" | "ANALYSE" | "VERBOSE")) => {
+                        i += 1;
+                    }
+                    // `EXPLAIN (FORMAT JSON) SELECT …`: skip the option list
+                    Some(t)
+                        if t.is_punct('(')
+                            && !body
+                                .get(i + 1)
+                                .and_then(Token::word)
+                                .is_some_and(|w| DUCKDB_READ_VERBS.contains(&w) || w == "WITH") =>
+                    {
+                        let mut j = i + 1;
+                        while j < body.len() && !(body[j].is_punct(')') && body[j].depth == t.depth)
+                        {
+                            j += 1;
+                        }
+                        i = j + 1;
+                    }
+                    _ => break,
+                }
+            }
+            let inner = &body[i.min(body.len())..];
+            if inner.is_empty() {
+                return Err("EXPLAIN without a statement".to_string());
+            }
+            check_duckdb_statement(sql, inner)?;
+        }
+        "PRAGMA" => duckdb_pragma_allowed(&body[1..])?,
+        // Switching the current database changes nothing stored
+        "USE" => {}
+        other => return Err(format!("{other} is not a read-only DuckDB statement")),
+    }
+
+    if let Some(name) = duckdb_denied_call(sql, statement) {
+        return Err(format!(
+            "function {name}() reads files, other databases or the environment and is not allowed"
+        ));
+    }
+    if let Some(path) = duckdb_replacement_scan(sql, statement) {
+        return Err(format!(
+            "reading the file '{path}' by name is not allowed in read-only mode"
+        ));
+    }
+    for (i, token) in statement.iter().enumerate() {
+        let Some(word) = token.word() else { continue };
+        if matches!(word, "ATTACH" | "DETACH" | "INSTALL") {
+            return Err(format!("{word} is not allowed in read-only mode"));
+        }
+        // Writable subquery / CTE: a DML verb opening a parenthesised group
+        let prev = i.checked_sub(1).and_then(|p| statement.get(p));
+        let next = statement.get(i + 1);
+        if DML_VERBS.contains(&word)
+            && prev.is_some_and(|p| p.is_punct('('))
+            && !next.is_some_and(|n| n.is_punct('('))
+        {
+            return Err(format!("{word} inside a query is not allowed"));
+        }
+    }
+    Ok(())
+}
+
+/// DuckDB: every statement of the string must be a read.
+fn check_duckdb(query: &str) -> Result<(), String> {
+    let tokens = lex(query, Dialect::DuckDb).map_err(|refusal| refusal.reason)?;
+    let mut statements = tokens
+        .split(|t| t.is_punct(';'))
+        .filter(|statement| !statement.is_empty())
+        .peekable();
+    if statements.peek().is_none() {
+        return Err("the statement is empty".to_string());
+    }
+    for statement in statements {
+        check_duckdb_statement(query, statement)?;
     }
     Ok(())
 }
@@ -912,6 +1234,9 @@ enum Dialect {
     /// backslash escapes. Only the textual `--read-only` guard lexes with it
     /// (the broker refuses SQL Server).
     SqlServer,
+    /// DuckDB: PostgreSQL quoting (nested block comments, `E'…'`, dollar
+    /// quotes) without backticks.
+    DuckDb,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1042,7 +1367,10 @@ fn lex(sql: &str, dialect: Dialect) -> Result<Vec<Token>, Refusal> {
                     "version-conditional comments (/*! ... */) are executed by MySQL and are not allowed",
                 ));
             }
-            let nests = matches!(dialect, Dialect::Postgres | Dialect::SqlServer);
+            let nests = matches!(
+                dialect,
+                Dialect::Postgres | Dialect::DuckDb | Dialect::SqlServer
+            );
             let mut level = 1usize;
             i += 2;
             loop {
@@ -1068,7 +1396,7 @@ fn lex(sql: &str, dialect: Dialect) -> Result<Vec<Token>, Refusal> {
         match c {
             '\'' => {
                 // E'...' in PostgreSQL uses backslash escapes
-                let e_string = dialect == Dialect::Postgres
+                let e_string = matches!(dialect, Dialect::Postgres | Dialect::DuckDb)
                     && tokens
                         .last()
                         .is_some_and(|t| t.is_word("E") && t.end == start);
@@ -1093,7 +1421,11 @@ fn lex(sql: &str, dialect: Dialect) -> Result<Vec<Token>, Refusal> {
                 });
                 i = end;
             }
-            '`' if !matches!(dialect, Dialect::Postgres | Dialect::SqlServer) => {
+            '`' if !matches!(
+                dialect,
+                Dialect::Postgres | Dialect::DuckDb | Dialect::SqlServer
+            ) =>
+            {
                 let end = scan_quoted(&chars, i + 1, '`', true, false)
                     .ok_or_else(|| malformed("unterminated quoted identifier"))?;
                 tokens.push(Token {
@@ -1139,7 +1471,7 @@ fn lex(sql: &str, dialect: Dialect) -> Result<Vec<Token>, Refusal> {
                 });
                 i = j + 1;
             }
-            '$' if dialect == Dialect::Postgres
+            '$' if matches!(dialect, Dialect::Postgres | Dialect::DuckDb)
                 && !at(i + 1).is_some_and(|n| n.is_ascii_digit()) =>
             {
                 // Dollar quoting: $tag$ ... $tag$ (tag may be empty)
@@ -1520,6 +1852,7 @@ fn dialect_for(engine: &DatabaseType) -> Result<Dialect, Refusal> {
         DatabaseType::MySQL => Ok(Dialect::MySql),
         DatabaseType::SQLite => Ok(Dialect::Sqlite),
         DatabaseType::ClickHouse => Ok(Dialect::ClickHouse),
+        DatabaseType::DuckDB => Ok(Dialect::DuckDb),
         other => Err(Refusal::new(
             RefusalKind::Ddl,
             format!("{other} is not supported by the broker"),
@@ -1560,6 +1893,22 @@ pub fn classify_for_broker(sql: &str, engine: &DatabaseType) -> Result<BrokerSta
     }
 
     let (class, is_select) = classify_body(body, dialect)?;
+    if dialect == Dialect::DuckDb {
+        // Quoted function names (`"read_csv"(…)`) and files named where a
+        // table belongs: the word-level checks of `classify_body` miss both
+        if let Some(name) = duckdb_denied_call(sql, body) {
+            return Err(Refusal::new(
+                RefusalKind::Ddl,
+                format!("function {name}() reaches outside the database and is not allowed"),
+            ));
+        }
+        if duckdb_replacement_scan(sql, body).is_some() {
+            return Err(Refusal::new(
+                RefusalKind::Ddl,
+                "reading a file by name (FROM 'file.csv') is not allowed through the broker",
+            ));
+        }
+    }
     let base = body[0].start;
     let end = body[body.len() - 1].end;
     let verb = body
@@ -1652,6 +2001,14 @@ fn classify_body(tokens: &[Token], dialect: Dialect) -> Result<(StatementClass, 
         "SHOW" | "DESCRIBE" | "DESC" if dialect != Dialect::Sqlite => {
             class = StatementClass::Read;
         }
+        // DuckDB's FROM-first query and its table-shaped utility statements
+        "FROM" if dialect == Dialect::DuckDb => {
+            class = StatementClass::Read;
+            is_select = true;
+        }
+        "SUMMARIZE" | "PIVOT" | "UNPIVOT" if dialect == Dialect::DuckDb => {
+            class = StatementClass::Read;
+        }
         "EXISTS" if dialect == Dialect::ClickHouse => {
             class = StatementClass::Read;
         }
@@ -1660,6 +2017,11 @@ fn classify_body(tokens: &[Token], dialect: Dialect) -> Result<(StatementClass, 
         }
         "PRAGMA" if dialect == Dialect::Sqlite => {
             classify_pragma(&tokens[first + 1..])?;
+            class = StatementClass::Read;
+        }
+        "PRAGMA" if dialect == Dialect::DuckDb => {
+            duckdb_pragma_allowed(&tokens[first + 1..])
+                .map_err(|reason| Refusal::new(RefusalKind::Ddl, reason))?;
             class = StatementClass::Read;
         }
         v if DML_VERBS.contains(&v) => {
@@ -1694,6 +2056,7 @@ fn classify_body(tokens: &[Token], dialect: Dialect) -> Result<(StatementClass, 
             if matches_denylist(&name, ALWAYS_DENIED_FUNCTIONS)
                 || (dialect == Dialect::ClickHouse
                     && matches_denylist(&name, CLICKHOUSE_DENIED_FUNCTIONS))
+                || (dialect == Dialect::DuckDb && matches_denylist(&name, DUCKDB_DENIED_FUNCTIONS))
             {
                 return Err(Refusal::new(
                     RefusalKind::Ddl,
@@ -2123,6 +2486,107 @@ mod tests {
         assert!(err.reason.contains("OBJECT FOO"), "{err}");
     }
 
+    #[rstest]
+    #[case::ls("ls", true)]
+    #[case::ls_prefix("ls logs/2026/ -r -n 10", true)]
+    #[case::head("head a.txt", true)]
+    #[case::get("get a.txt bytes=0-99", true)]
+    #[case::buckets("buckets", true)]
+    #[case::cd("cd ..", true)]
+    #[case::help("help", true)]
+    #[case::put("put a.txt", false)]
+    #[case::rm("rm a.txt", false)]
+    #[case::cp("cp a b", false)]
+    #[case::presign("presign a.txt", false)]
+    #[case::sql("SELECT * FROM t", false)]
+    #[case::drop_table("DROP TABLE t", false)]
+    #[case::empty("", false)]
+    #[case::unbalanced("get 'a", false)]
+    fn test_check_read_only_s3(#[case] query: &str, #[case] allowed: bool) {
+        assert_eq!(
+            check_read_only(query, &DatabaseType::S3).is_ok(),
+            allowed,
+            "{query}"
+        );
+    }
+
+    #[test]
+    fn test_s3_refusal_says_the_client_only_reads() {
+        let err = check_read_only("rm a.txt", &DatabaseType::S3).unwrap_err();
+        assert!(is_read_only_violation_message(&err.to_string()));
+        assert!(err.reason.contains("only reads"), "{err}");
+    }
+
+    #[rstest]
+    #[case::tables("tables", true)]
+    #[case::describe("describe Orders", true)]
+    #[case::scan("scan Orders --limit 10", true)]
+    #[case::get("get Orders id=1 sk=2", true)]
+    #[case::query("query Orders id=1 --index by_date", true)]
+    #[case::help("help", true)]
+    #[case::select("SELECT * FROM \"Orders\" WHERE id = '1'", true)]
+    #[case::select_lower_semicolon("select * from \"Orders\";", true)]
+    #[case::select_comment("-- note\nSELECT * FROM \"Orders\"", true)]
+    #[case::select_keyword_in_literal("SELECT * FROM \"Orders\" WHERE n = 'DELETE; DROP'", true)]
+    #[case::select_keyword_in_identifier("SELECT * FROM \"DELETE\"", true)]
+    #[case::insert("INSERT INTO \"Orders\" VALUE {'id': '1'}", false)]
+    #[case::update("UPDATE \"Orders\" SET a = 1 WHERE id = '1'", false)]
+    #[case::delete("DELETE FROM \"Orders\" WHERE id = '1'", false)]
+    #[case::exists("EXISTS(SELECT * FROM \"Orders\" WHERE id = '1')", false)]
+    #[case::select_then_delete("SELECT * FROM \"A\"; DELETE FROM \"A\" WHERE id = '1'", false)]
+    #[case::comment_hides_write("/* SELECT */ DELETE FROM \"A\" WHERE id = '1'", false)]
+    #[case::put("put Orders id=1", false)]
+    #[case::sql_drop("DROP TABLE Orders", false)]
+    #[case::empty("", false)]
+    #[case::unterminated("SELECT * FROM \"A", false)]
+    fn test_check_read_only_dynamodb(#[case] query: &str, #[case] allowed: bool) {
+        assert_eq!(
+            check_read_only(query, &DatabaseType::DynamoDB).is_ok(),
+            allowed,
+            "{query}"
+        );
+    }
+
+    #[test]
+    fn test_dynamodb_refusal_says_the_client_only_reads() {
+        let err = check_read_only("DELETE FROM \"Orders\"", &DatabaseType::DynamoDB).unwrap_err();
+        assert!(is_read_only_violation_message(&err.to_string()));
+        assert!(err.reason.contains("only reads"), "{err}");
+    }
+
+    #[rstest]
+    #[case::groups("groups /aws/lambda/", true)]
+    #[case::streams("streams /aws/lambda/a -n 5", true)]
+    #[case::tail("tail /app --since 5m --filter ERROR", true)]
+    #[case::use_groups("use /a,/b", true)]
+    #[case::help("help", true)]
+    #[case::fields("fields @timestamp, @message | sort @timestamp desc | limit 20", true)]
+    #[case::stats("stats count(*) by bin(5m)", true)]
+    #[case::since("since 30m filter @message like /error/", true)]
+    #[case::between("between 2026-10-16 08:00 and now fields @message", true)]
+    #[case::group_flag("--group /a fields @message", true)]
+    #[case::put("put /app hello", false)]
+    #[case::delete("delete /app", false)]
+    #[case::create("create log group x", false)]
+    #[case::retention("retention /app 7", false)]
+    #[case::sql("DROP TABLE x", false)]
+    #[case::window_only("since 5m", false)]
+    #[case::empty("", false)]
+    fn test_check_read_only_cloudwatch(#[case] query: &str, #[case] allowed: bool) {
+        assert_eq!(
+            check_read_only(query, &DatabaseType::CloudWatchLogs).is_ok(),
+            allowed,
+            "{query}"
+        );
+    }
+
+    #[test]
+    fn test_cloudwatch_refusal_says_the_client_only_reads() {
+        let err = check_read_only("delete /app", &DatabaseType::CloudWatchLogs).unwrap_err();
+        assert!(is_read_only_violation_message(&err.to_string()));
+        assert!(err.reason.contains("only reads"), "{err}");
+    }
+
     #[test]
     fn test_violation_marker() {
         let err = check_read_only("DROP TABLE t", &DatabaseType::PostgreSQL).unwrap_err();
@@ -2138,6 +2602,7 @@ mod tests {
             "mysql" => DatabaseType::MySQL,
             "sqlite" => DatabaseType::SQLite,
             "clickhouse" => DatabaseType::ClickHouse,
+            "duckdb" => DatabaseType::DuckDB,
             other => panic!("unknown engine {other}"),
         }
     }
@@ -2668,6 +3133,132 @@ mod tests {
             "{query:?}: {:?}",
             check_read_only(query, &DatabaseType::LibSql)
         );
+    }
+
+    #[rstest]
+    #[case::select("SELECT * FROM users LIMIT 5", true)]
+    #[case::from_first("FROM users SELECT name", true)]
+    #[case::from_only("FROM users", true)]
+    #[case::with_cte("WITH t AS (SELECT 1) SELECT * FROM t", true)]
+    #[case::values("VALUES (1)", true)]
+    #[case::describe("DESCRIBE users", true)]
+    #[case::show_tables("SHOW TABLES", true)]
+    #[case::summarize("SUMMARIZE users", true)]
+    #[case::pivot("PIVOT users ON year USING sum(n)", true)]
+    #[case::explain("EXPLAIN SELECT * FROM users", true)]
+    #[case::explain_options("EXPLAIN (FORMAT JSON) SELECT * FROM users", true)]
+    #[case::explain_analyze("EXPLAIN ANALYZE SELECT * FROM users", true)]
+    #[case::pragma_table_info("PRAGMA table_info('users')", true)]
+    #[case::pragma_database_size("PRAGMA database_size", true)]
+    #[case::pragma_show_tables("PRAGMA show_tables", true)]
+    #[case::use_catalog("USE other", true)]
+    #[case::two_reads("SELECT 1; SELECT 2", true)]
+    #[case::trailing_semicolon("SELECT 1;", true)]
+    #[case::information_schema("SELECT * FROM information_schema.tables", true)]
+    #[case::duckdb_tables("SELECT * FROM duckdb_tables()", true)]
+    #[case::json_extract_is_pure("SELECT json_extract(j, '$.a') FROM t", true)]
+    #[case::column_named_like_a_verb("SELECT \"update\", \"copy\" FROM t", true)]
+    #[case::quoted_table_name("SELECT * FROM \"my table\"", true)]
+    #[case::dollar_quoted_text("SELECT $$; DROP TABLE t$$", true)]
+    #[case::insert("INSERT INTO t VALUES (1)", false)]
+    #[case::update("UPDATE t SET a = 1", false)]
+    #[case::delete("DELETE FROM t", false)]
+    #[case::create_table("CREATE TABLE t(i INT)", false)]
+    #[case::create_as("CREATE TABLE t AS SELECT 1", false)]
+    #[case::drop("DROP TABLE t", false)]
+    #[case::alter("ALTER TABLE t ADD COLUMN x INT", false)]
+    #[case::truncate("TRUNCATE t", false)]
+    #[case::copy_to("COPY t TO '/tmp/x.csv'", false)]
+    #[case::copy_query_to("COPY (SELECT 1) TO '/tmp/x.parquet' (FORMAT parquet)", false)]
+    #[case::copy_from("COPY t FROM '/tmp/x.csv'", false)]
+    #[case::export("EXPORT DATABASE '/tmp/x'", false)]
+    #[case::import("IMPORT DATABASE '/tmp/x'", false)]
+    #[case::attach("ATTACH '/tmp/x.duckdb' AS x", false)]
+    #[case::attach_ducklake("ATTACH 'ducklake:meta.db' AS lake", false)]
+    #[case::detach("DETACH x", false)]
+    #[case::install("INSTALL httpfs", false)]
+    #[case::force_install("FORCE INSTALL httpfs", false)]
+    #[case::load("LOAD httpfs", false)]
+    #[case::set("SET threads = 2", false)]
+    #[case::set_external("SET enable_external_access = true", false)]
+    #[case::reset("RESET threads", false)]
+    #[case::pragma_assignment("PRAGMA threads = 1", false)]
+    #[case::pragma_unknown("PRAGMA enable_profiling", false)]
+    #[case::call("CALL duckdb_secrets()", false)]
+    #[case::checkpoint("CHECKPOINT", false)]
+    #[case::vacuum("VACUUM", false)]
+    #[case::create_secret("CREATE SECRET s (TYPE s3, KEY_ID 'a')", false)]
+    #[case::begin("BEGIN", false)]
+    #[case::explain_delete("EXPLAIN ANALYZE DELETE FROM t", false)]
+    #[case::explain_copy("EXPLAIN COPY t TO '/tmp/x.csv'", false)]
+    #[case::cte_insert("WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x", false)]
+    #[case::cte_in_parens_insert(
+        "WITH x AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM x",
+        false
+    )]
+    #[case::stacked("SELECT 1; DROP TABLE t", false)]
+    #[case::stacked_copy("SELECT 1; COPY t TO '/tmp/x.csv'", false)]
+    #[case::read_csv("SELECT * FROM read_csv('/etc/passwd')", false)]
+    #[case::read_csv_auto("SELECT * FROM read_csv_auto('x.csv')", false)]
+    #[case::read_parquet("SELECT * FROM read_parquet('x.parquet')", false)]
+    #[case::read_json("SELECT * FROM read_json('x.json')", false)]
+    #[case::read_blob("SELECT * FROM read_blob('x.bin')", false)]
+    #[case::glob("SELECT * FROM glob('*')", false)]
+    #[case::parquet_scan("SELECT * FROM parquet_scan('x.parquet')", false)]
+    #[case::getenv("SELECT getenv('AWS_SECRET_ACCESS_KEY')", false)]
+    #[case::secrets("SELECT * FROM duckdb_secrets()", false)]
+    #[case::query_function("SELECT * FROM query('SELECT 1')", false)]
+    #[case::sqlite_scan("SELECT * FROM sqlite_scan('x.db', 't')", false)]
+    #[case::mixed_case_function("SELECT * FROM Read_Csv('x.csv')", false)]
+    #[case::quoted_function("SELECT * FROM \"read_csv\"('x.csv')", false)]
+    #[case::function_in_cte("WITH x AS (SELECT * FROM read_csv('x.csv')) SELECT * FROM x", false)]
+    #[case::string_as_table("SELECT * FROM 'data.csv'", false)]
+    #[case::string_as_table_parquet("SELECT * FROM '/data/x.parquet'", false)]
+    #[case::string_as_join("SELECT * FROM t JOIN 'x.csv' USING (id)", false)]
+    #[case::quoted_path_as_table("SELECT * FROM \"/data/x.parquet\"", false)]
+    #[case::url_as_table("SELECT * FROM 'https://example.com/x.parquet'", false)]
+    #[case::empty("", false)]
+    #[case::only_semicolon(";", false)]
+    #[case::unterminated("SELECT 'abc", false)]
+    #[case::unbalanced("SELECT (1", false)]
+    fn test_check_read_only_duckdb(#[case] query: &str, #[case] allowed: bool) {
+        assert_eq!(
+            check_read_only(query, &DatabaseType::DuckDB).is_ok(),
+            allowed,
+            "{query:?}: {:?}",
+            check_read_only(query, &DatabaseType::DuckDB)
+        );
+    }
+
+    #[test]
+    fn test_duckdb_refusals_name_the_problem_without_the_query() {
+        let reason = check_read_only(
+            "SELECT * FROM read_csv('/etc/topsecret-canary')",
+            &DatabaseType::DuckDB,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(reason.contains("read_csv"), "{reason}");
+        assert!(!reason.contains("canary"), "{reason}");
+        let reason = check_read_only("COPY t TO '/tmp/x'", &DatabaseType::DuckDB)
+            .unwrap_err()
+            .to_string();
+        assert!(reason.contains("COPY"), "{reason}");
+    }
+
+    #[test]
+    fn test_duckdb_row_limits_use_from_first_and_wrap_correctly() {
+        let limited = classify_for_broker("FROM people", &DatabaseType::DuckDB)
+            .unwrap()
+            .with_row_limit(11);
+        assert_eq!(limited, "FROM people\nLIMIT 11");
+        let limited = classify_for_broker("SELECT * FROM people LIMIT 500", &DatabaseType::DuckDB)
+            .unwrap()
+            .with_row_limit(11);
+        assert_eq!(limited, "SELECT * FROM people LIMIT 11");
+        let describe = classify_for_broker("DESCRIBE people", &DatabaseType::DuckDB).unwrap();
+        assert!(!describe.is_select);
+        assert_eq!(describe.with_row_limit(11), "DESCRIBE people");
     }
 
     #[test]

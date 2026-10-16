@@ -21,6 +21,11 @@ thiserror = { workspace = true, features = ["std"] }
 tracing = { workspace = true, features = ["std", "attributes"] }
 chrono = { workspace = true }
 
+[features]
+default = []
+# The opt-in DuckDB engine (a C++ build, +20 MB): `cargo build -p dbcrust-gui --features duckdb`
+duckdb = ["dbcrust/duckdb"]
+
 [dev-dependencies]
 # Enables the secrets crate's `test-mode` switch for this crate's tests: the
 # `cfg!(test)` heuristic is only true inside the crate that owns the code, so

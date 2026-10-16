@@ -183,6 +183,14 @@ impl SqlParserFactory {
             }
             // libSQL is SQLite
             DatabaseType::LibSql => Box::new(crate::sql_parser_sqlite::SQLiteParser::new()),
+            // S3 has commands, not SQL: nothing to parse
+            DatabaseType::S3 => Box::new(GenericSqlParser::new()),
+            // PartiQL is SQL-like: the PostgreSQL parser covers SELECT … FROM "t"
+            DatabaseType::DynamoDB => {
+                Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
+            }
+            // Logs Insights is a pipe language, not SQL: nothing to parse
+            DatabaseType::CloudWatchLogs => Box::new(GenericSqlParser::new()),
             // InfluxQL and v3 SQL are SQL-like (Flux is not, and completes
             // function names only)
             DatabaseType::InfluxDB => {
@@ -486,6 +494,14 @@ pub mod parsing_utils {
             DatabaseType::Redshift => ch.is_alphanumeric() || matches!(ch, '_' | '$' | '#'),
             // Measurements such as `net.bytes_recv`, Flux `schema.measurements`
             DatabaseType::InfluxDB => ch.is_alphanumeric() || matches!(ch, '_' | '.'),
+            // Keys such as `logs/2026-10/app.log.gz`
+            DatabaseType::S3 => ch.is_alphanumeric() || matches!(ch, '_' | '.' | '-' | '/'),
+            // Table names such as `orders-v2.prod`
+            DatabaseType::DynamoDB => ch.is_alphanumeric() || matches!(ch, '_' | '.' | '-'),
+            // Log groups such as `/aws/lambda/orders-api`, Insights fields `@message`
+            DatabaseType::CloudWatchLogs => {
+                ch.is_alphanumeric() || matches!(ch, '_' | '.' | '-' | '/' | '@' | '#')
+            }
             DatabaseType::Parquet
             | DatabaseType::CSV
             | DatabaseType::JSON
@@ -604,6 +620,9 @@ pub mod parsing_utils {
             DatabaseType::SqlServer => '"',
             DatabaseType::Redshift => '"',
             DatabaseType::InfluxDB => '"', // InfluxQL and SQL quote identifiers with "
+            DatabaseType::S3 => '\'',      // keys are quoted like shell words
+            DatabaseType::DynamoDB => '"', // PartiQL quotes names with "
+            DatabaseType::CloudWatchLogs => '\'', // names are quoted like shell words
             DatabaseType::Parquet
             | DatabaseType::CSV
             | DatabaseType::JSON

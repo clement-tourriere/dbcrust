@@ -19,6 +19,9 @@ const ROOT_EXAMPLES: &str = "Examples:
   dbcrust mssql://sa:pass@localhost:1433/master   # SQL Server / Azure SQL (TLS on by default)
   dbcrust redshift://awsuser:pass@cluster.abc.eu-west-1.redshift.amazonaws.com:5439/dev   # Amazon Redshift (TLS required)
   dbcrust 'libsql://my-db-org.turso.io?authToken=...'   # Turso / libSQL over HTTPS (libsql+http://localhost:8080 for a local sqld)
+  dbcrust 's3://my-bucket/logs/?region=eu-west-1'   # Amazon S3 (opt-in build: --features s3); r2:// R2, minio:// MinIO
+  dbcrust dynamodb://eu-west-1/Orders              # Amazon DynamoDB (opt-in build: --features dynamodb); dynamodb+http://localhost:8000 = DynamoDB Local
+  dbcrust cloudwatch://eu-west-1/aws/lambda/orders # Amazon CloudWatch Logs (opt-in build: --features cloudwatch): Logs Insights over a time window
   dbcrust influxdb://localhost:8086/telemetry     # InfluxDB v1 (InfluxQL); influxdb2:// Flux, influxdb3:// SQL
   dbcrust 'parquet:///data/*.parquet'
   dbcrust file://                   # pick a compatible file from the current directory
@@ -75,6 +78,9 @@ pub struct Args {
     ///   SQL Server: mssql://user:pass@localhost:1433/mydb | mssql://user:pass@host%5CINSTANCE/mydb
     ///   Redshift:   redshift://user:pass@cluster.example.redshift.amazonaws.com:5439/dev
     ///   libSQL:     libsql://my-db-org.turso.io?authToken=TOKEN | libsql+http://localhost:8080
+    ///   S3:         s3://bucket/prefix?region=eu-west-1 | s3://KEY:SECRET@bucket?endpoint=https://host:9000 | r2://account/bucket | minio://host:9000/bucket (opt-in build)
+    ///   DynamoDB:   dynamodb://eu-west-1/Orders?profile=prod | dynamodb://KEY:SECRET@eu-west-1 | dynamodb+http://localhost:8000?region=local (opt-in build)
+    ///   CloudWatch: cloudwatch://eu-west-1/aws/lambda/orders?profile=prod&since=1h | cloudwatch://eu-west-1?groups=/a,/b (opt-in build)
     ///   InfluxDB:   influxdb://user:pass@localhost:8086/mydb | influxdb2://:TOKEN@host:8086/bucket?org=acme | influxdb3://:TOKEN@host/mydb (trailing s = TLS)
     ///   Docker:     docker://container_name/mydb
     ///   Files:      ./data.csv | parquet:///data/*.parquet | csv:///logs/*.csv | file://

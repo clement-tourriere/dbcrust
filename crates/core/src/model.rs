@@ -36,6 +36,7 @@ pub fn metadata_table_parts(
             | DatabaseType::SqlServer
             | DatabaseType::Redshift
             | DatabaseType::LibSql
+            | DatabaseType::DuckDB
     );
     if !supports_schemas {
         return (None, unquote_metadata_identifier(table_name));

@@ -1123,6 +1123,16 @@ pub struct FormDefaults {
     pub path_hint: &'static str,
 }
 
+/// The engines the connect form offers: those whose connector is part of this
+/// build. The desktop app is built with `bundled`, so the opt-in AWS connectors
+/// (S3, DynamoDB…) are left out of the form; they are browsed from the CLI.
+pub fn connectable_engines() -> Vec<DatabaseType> {
+    DatabaseType::supported_types()
+        .into_iter()
+        .filter(dbcrust::drivers::is_compiled)
+        .collect()
+}
+
 pub fn form_defaults(engine: &DatabaseType) -> FormDefaults {
     let file = engine.is_file_based();
     FormDefaults {
@@ -1147,6 +1157,11 @@ pub fn form_defaults(engine: &DatabaseType) -> FormDefaults {
             DatabaseType::InfluxDB => Some(
                 "The database (v1, v3) or bucket (v2) to open. The password field is the API token for v2 and v3.",
             ),
+            DatabaseType::S3 => Some("The bucket to open. Empty lists the account’s buckets."),
+            DatabaseType::DynamoDB => Some("The table to open. Empty lists the account’s tables."),
+            DatabaseType::CloudWatchLogs => {
+                Some("A log group, or a prefix selecting several. Empty lists the log groups.")
+            }
             _ => Some("Optional. The database to open first."),
         },
         path_hint: match engine {
@@ -1182,6 +1197,9 @@ pub fn engine_aliases(engine: &DatabaseType) -> &'static str {
         DatabaseType::Redshift => "aws amazon warehouse spectrum serverless",
         DatabaseType::LibSql => "turso sqld hrana edge sqlite remote",
         DatabaseType::InfluxDB => "influx tsdb timeseries time series flux influxql telegraf",
+        DatabaseType::S3 => "aws amazon bucket object storage r2 cloudflare minio",
+        DatabaseType::DynamoDB => "aws amazon nosql key value partiql ddb",
+        DatabaseType::CloudWatchLogs => "aws amazon logs insights cloudwatch cwlogs observability",
         DatabaseType::Parquet => "pq columnar file",
         DatabaseType::CSV => "tsv file",
         DatabaseType::JSON => "jsonl ndjson file",
@@ -1271,15 +1289,32 @@ mod tests {
     use dbcrust::database::ConnectionInfo;
     use rstest::rstest;
 
-    /// The connect form lists every `DatabaseType`; the desktop app depends on
-    /// `dbcrust` with the `bundled` preset so that each of them can connect.
+    /// The connect form lists the engines compiled into the build, and the
+    /// desktop app depends on `dbcrust` with the `bundled` preset: so every
+    /// engine of that preset can connect, and only the opt-in connectors (the
+    /// AWS ones, and DuckDB unless built with `--features duckdb`) are left out.
     #[test]
-    fn the_desktop_build_compiles_every_engine() {
+    fn the_desktop_build_compiles_every_engine_it_offers() {
+        let offered = connectable_engines();
         for engine in DatabaseType::supported_types() {
-            assert!(
-                dbcrust::drivers::is_compiled(&engine),
-                "{engine} is offered by the connect form but not compiled in"
+            let compiled = dbcrust::drivers::is_compiled(&engine);
+            assert_eq!(offered.contains(&engine), compiled, "{engine}");
+            let opt_in = matches!(
+                engine,
+                DatabaseType::S3
+                    | DatabaseType::DynamoDB
+                    | DatabaseType::CloudWatchLogs
+                    | DatabaseType::DuckDB
             );
+            if !opt_in {
+                assert!(
+                    compiled,
+                    "{engine} is part of `bundled` but not compiled in"
+                );
+            }
+            if engine == DatabaseType::DuckDB {
+                assert_eq!(compiled, cfg!(feature = "duckdb"));
+            }
         }
     }
 

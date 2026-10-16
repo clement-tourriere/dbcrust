@@ -151,7 +151,7 @@ fn file_stamp(path: &Path) -> Option<(SystemTime, u64)> {
 pub fn engine_is_supported(engine: &str) -> bool {
     matches!(
         dbcrust_secrets::normalize_engine(engine).as_str(),
-        "postgresql" | "mysql" | "sqlite" | "clickhouse"
+        "postgresql" | "mysql" | "sqlite" | "clickhouse" | "duckdb"
     )
 }
 

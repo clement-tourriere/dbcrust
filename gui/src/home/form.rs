@@ -145,7 +145,7 @@ impl SearchableListItem for EngineItem {
 type EngineList = SearchableVec<SearchableGroup<EngineItem>>;
 
 fn engine_list() -> EngineList {
-    let (files, servers): (Vec<_>, Vec<_>) = DatabaseType::supported_types()
+    let (files, servers): (Vec<_>, Vec<_>) = urls::connectable_engines()
         .into_iter()
         .partition(|db| db.is_file_based());
     let group = |title: &'static str, engines: Vec<DatabaseType>| {
@@ -156,7 +156,7 @@ fn engine_list() -> EngineList {
 
 /// Where the engine sits in the grouped list (for the initial selection).
 fn engine_index(engine: &DatabaseType) -> IndexPath {
-    let (files, servers): (Vec<_>, Vec<_>) = DatabaseType::supported_types()
+    let (files, servers): (Vec<_>, Vec<_>) = urls::connectable_engines()
         .into_iter()
         .partition(|db| db.is_file_based());
     match servers.iter().position(|db| db == engine) {
@@ -1980,16 +1980,21 @@ mod tests {
                 seen.push(item.engine.clone());
             }
         }
-        assert_eq!(seen.len(), DatabaseType::supported_types().len());
-        for engine in DatabaseType::supported_types() {
+        assert_eq!(seen.len(), urls::connectable_engines().len());
+        for engine in urls::connectable_engines() {
             assert_eq!(seen.iter().filter(|seen| **seen == engine).count(), 1);
         }
+        // DuckDB is the opt-in engine: listed when, and only when, it is built in
+        assert_eq!(
+            seen.contains(&DatabaseType::DuckDB),
+            cfg!(feature = "duckdb")
+        );
     }
 
     #[test]
     fn engine_indexes_point_at_their_engine() {
         let list = engine_list();
-        for engine in DatabaseType::supported_types() {
+        for engine in urls::connectable_engines() {
             let ix = engine_index(&engine);
             let item = SearchableListDelegate::item(&list, ix).expect("item");
             assert_eq!(item.engine, engine);

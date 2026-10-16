@@ -43,6 +43,9 @@ libc = { workspace = true }
 default = []
 # `broker::testkit` for other crates' tests. Dev-dependency only.
 test-support = ["dep:sqlx", "dep:tempfile"]
+# DuckDB files are served only by a build that has the (opt-in, C++) DuckDB
+# connector; `cargo test -p dbcrust-broker --features duckdb` runs those tests
+duckdb = ["dbcrust-drivers/duckdb"]
 
 [dev-dependencies]
 # The unit tests enroll and run against the engines the broker supports; the

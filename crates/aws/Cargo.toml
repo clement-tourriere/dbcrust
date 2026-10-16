@@ -1,0 +1,53 @@
+[package]
+name = "dbcrust-aws"
+version.workspace = true
+edition.workspace = true
+# The AWS SDK crates declare Rust 1.94.1 (the rest of the workspace keeps 1.91):
+# enabling `aws`/`s3` on the root needs that toolchain, a default build does not
+# compile this crate at all
+rust-version = "1.94.1"
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust shared AWS foundation: credentials, region, endpoint and the rustls-on-ring HTTP client for the AWS connectors"
+
+# Shared by the AWS connectors (`dbcrust-driver-s3` now; DynamoDB and CloudWatch
+# later). Not a driver. Depends on `dbcrust-core` and the SDK base only.
+#
+# TLS is rustls on ring and nothing else: every AWS crate is built with
+# `default-features = false` (the SDK defaults pull aws-lc-rs) and the HTTP
+# client is built here from `aws-smithy-http-client`'s `rustls-ring` feature and
+# injected into the SDK configuration (see `http`). `cargo tree -i aws-lc-rs`
+# must stay empty for every feature combination.
+[dependencies]
+dbcrust-core = { workspace = true }
+aws-config = { workspace = true }
+aws-smithy-http-client = { workspace = true }
+# Already in the tree through aws-config; named here for `Region`, `SdkConfig`
+# and the credential provider types
+aws-credential-types = { version = "1.3.0", default-features = false }
+aws-runtime = { version = "1.9.2", default-features = false }
+aws-types = { version = "1.5.0", default-features = false }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+# `ConfigLoader::env` / `fs`: tests inject an environment and config files, so
+# nothing reads the real ~/.aws or the process environment
+aws-config = { workspace = true, features = ["test-util"] }
+rstest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[features]
+default = []
+# SSO / IAM Identity Center profiles (aws-sdk-sso + aws-sdk-ssooidc)
+sso = ["aws-config/sso"]
+# `credential_process` in ~/.aws/config (tokio/process). It runs a command named
+# by a config file: the credential broker build must leave it off.
+credentials-process = ["aws-config/credentials-process"]
+
+[lints]
+workspace = true

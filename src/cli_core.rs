@@ -916,8 +916,14 @@ impl CliCore {
             Err(e) => {
                 let error_msg = e.to_string().to_lowercase();
 
+                // AWS connectors (S3, DynamoDB) with ambient credentials (profile,
+                // SSO, role, environment) have no password to look up or to
+                // prompt for: their error is final
+                let ambient_s3 = ConnectionInfo::parse_url(original_url)
+                    .is_ok_and(|info| info.database_type.is_aws() && info.username.is_none());
+
                 // Check if this is an authentication error
-                if !Self::is_authentication_error(&error_msg) {
+                if ambient_s3 || !Self::is_authentication_error(&error_msg) {
                     // Not an auth error, return the original error
                     eprintln!("Failed to connect to database: {}", redact_error(&e));
                     eprintln!(
@@ -966,9 +972,18 @@ impl CliCore {
                         .to_string(),
                 ));
             }
+            crate::database::DatabaseType::S3
+            | crate::database::DatabaseType::DynamoDB
+            | crate::database::DatabaseType::CloudWatchLogs => {}
         }
 
-        let host = connection_info.host.as_deref().unwrap_or("localhost");
+        // The AWS connectors have no host unless a custom endpoint is given:
+        // the binding of their secret uses an empty host and port 0 then
+        let aws = database_type.is_aws();
+        let host = connection_info
+            .host
+            .as_deref()
+            .unwrap_or(if aws { "" } else { "localhost" });
         let port = connection_info.port.unwrap_or(match database_type {
             crate::database::DatabaseType::PostgreSQL => 5432,
             crate::database::DatabaseType::MySQL => 3306,
@@ -980,6 +995,9 @@ impl CliCore {
             crate::database::DatabaseType::LibSql => 443,
             // v3's 8181 is made explicit when the URL is parsed
             crate::database::DatabaseType::InfluxDB => 8086,
+            crate::database::DatabaseType::S3
+            | crate::database::DatabaseType::DynamoDB
+            | crate::database::DatabaseType::CloudWatchLogs => 0,
             _ => 8123,
         });
         let database_name = connection_info.database.as_deref().unwrap_or("");
@@ -1197,13 +1215,21 @@ impl CliCore {
             || logical_name.ends_with(".db3")
         {
             Some((DatabaseType::SQLite, vec![]))
+        } else if logical_name.ends_with(".duckdb") || logical_name.ends_with(".ddb") {
+            // Always inferred: a build without the connector then answers
+            // "DuckDB support is not compiled in" instead of guessing PostgreSQL
+            Some((DatabaseType::DuckDB, vec![]))
         } else {
             None
         }
     }
 
     fn supported_file_extensions() -> &'static str {
-        "*.parquet, *.parq, *.csv, *.tsv, *.json, *.jsonl, *.ndjson, *.sqlite, *.sqlite3, *.db"
+        if cfg!(feature = "duckdb") {
+            "*.parquet, *.parq, *.csv, *.tsv, *.json, *.jsonl, *.ndjson, *.sqlite, *.sqlite3, *.db, *.duckdb, *.ddb"
+        } else {
+            "*.parquet, *.parq, *.csv, *.tsv, *.json, *.jsonl, *.ndjson, *.sqlite, *.sqlite3, *.db"
+        }
     }
 
     fn query_has_parameter(query: Option<&str>, key: &str) -> bool {
@@ -1367,7 +1393,10 @@ impl CliCore {
             }
 
             let path_text = path.to_string_lossy();
-            if let Some((database_type, _)) = Self::detect_file_database_type(&path_text) {
+            if let Some((database_type, _)) = Self::detect_file_database_type(&path_text)
+                // A file this build cannot open is not "compatible"
+                .filter(|(database_type, _)| crate::drivers::is_compiled(database_type))
+            {
                 let file_name = path
                     .file_name()
                     .and_then(|name| name.to_str())
@@ -1688,6 +1717,15 @@ impl CliCore {
         let statements = if database_type == Some(crate::database::DatabaseType::Redis) {
             // Not SQL: one command per line, whatever the quoting
             crate::redis_command::split_script(sql)
+        } else if database_type == Some(crate::database::DatabaseType::S3) {
+            // Not SQL either: one command per line (a key may contain `;`)
+            crate::s3_command::split_script(sql)
+        } else if database_type == Some(crate::database::DatabaseType::DynamoDB) {
+            // One command per line, or a PartiQL SELECT up to its `;`
+            crate::dynamodb_command::split_script(sql)
+        } else if database_type == Some(crate::database::DatabaseType::CloudWatchLogs) {
+            // One command per line, or a Logs Insights query up to its `;` or a blank line
+            crate::cloudwatch_command::split_script(sql)
         } else if splittable {
             crate::sql_buffer::split_statements(sql)
         } else {
@@ -2391,6 +2429,15 @@ impl CliCore {
         let statements = if database_type == Some(crate::database::DatabaseType::Redis) {
             // Not SQL: one command per line, whatever the quoting
             crate::redis_command::split_script(sql)
+        } else if database_type == Some(crate::database::DatabaseType::S3) {
+            // Not SQL either: one command per line (a key may contain `;`)
+            crate::s3_command::split_script(sql)
+        } else if database_type == Some(crate::database::DatabaseType::DynamoDB) {
+            // One command per line, or a PartiQL SELECT up to its `;`
+            crate::dynamodb_command::split_script(sql)
+        } else if database_type == Some(crate::database::DatabaseType::CloudWatchLogs) {
+            // One command per line, or a Logs Insights query up to its `;` or a blank line
+            crate::cloudwatch_command::split_script(sql)
         } else if splittable {
             crate::sql_buffer::split_statements(sql)
         } else {
@@ -3107,6 +3154,45 @@ mod tests {
         assert_eq!(
             CliCore::normalize_connection_target("app.sqlite"),
             format!("sqlite://{}/app.sqlite", cwd.to_string_lossy())
+        );
+        // Inferred in every build, so one without DuckDB says so rather than
+        // sending the path to PostgreSQL
+        assert_eq!(
+            CliCore::normalize_connection_target("warehouse.duckdb"),
+            format!("duckdb://{}/warehouse.duckdb", cwd.to_string_lossy())
+        );
+        assert_eq!(
+            CliCore::normalize_connection_target("warehouse.ddb"),
+            format!("duckdb://{}/warehouse.ddb", cwd.to_string_lossy())
+        );
+    }
+
+    #[test]
+    fn test_file_picker_lists_duckdb_files_only_when_the_connector_is_compiled() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.duckdb", "b.ddb", "c.csv", "d.txt"] {
+            std::fs::write(dir.path().join(name), b"").unwrap();
+        }
+        let listed: Vec<String> = CliCore::compatible_files_in_directory(dir.path())
+            .unwrap()
+            .into_iter()
+            .map(|(display, _)| display)
+            .collect();
+        let duckdb = cfg!(feature = "duckdb");
+        assert_eq!(
+            listed.iter().any(|f| f == "a.duckdb (DuckDB)"),
+            duckdb,
+            "{listed:?}"
+        );
+        assert_eq!(
+            listed.iter().any(|f| f == "b.ddb (DuckDB)"),
+            duckdb,
+            "{listed:?}"
+        );
+        assert!(!listed.iter().any(|f| f.starts_with("d.txt")));
+        assert_eq!(
+            CliCore::supported_file_extensions().contains("*.duckdb"),
+            duckdb
         );
     }
 
