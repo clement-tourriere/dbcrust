@@ -123,6 +123,50 @@ pub fn validate_enrollment_url(url: &str) -> Result<EnrollTarget, BrokerError> {
     }
     let db_type = DatabaseType::from_scheme(&scheme)
         .map_err(|_| BrokerError::UnsupportedEngine(format!("unknown URL scheme {scheme}://")))?;
+    if db_type == DatabaseType::Redis {
+        // Agent access needs a Redis command classifier of the broker's own
+        // (default-deny, lexer-based, subcommand-aware) before it can be bound
+        return Err(BrokerError::UnsupportedEngine(
+            "Redis enrollment for agents is not supported yet".to_string(),
+        ));
+    }
+    if db_type == DatabaseType::SqlServer {
+        // SQL Server has no session-level read-only: until enrollment can probe
+        // the login's permissions, only the login itself limits an agent
+        return Err(BrokerError::UnsupportedEngine(
+            "SQL Server enrollment for agents is not supported yet: use a read-only login and wait for the read-only probe"
+                .to_string(),
+        ));
+    }
+    if db_type == DatabaseType::Redshift {
+        // `BEGIN READ ONLY` is a transaction mode the client sets per statement
+        // and there is no session-level default; nothing a connection can
+        // prove about the user's privileges either. Until a read-only probe
+        // exists, the user's grants are the only server-side limit
+        return Err(BrokerError::UnsupportedEngine(
+            "Redshift enrollment for agents is not supported yet: the server has no session-level read-only mode to enforce"
+                .to_string(),
+        ));
+    }
+    if db_type == DatabaseType::LibSql {
+        // A read-only token is the only server-side limit, and a client cannot
+        // prove what a token allows without writing: until a read-only probe
+        // exists, an agent gets no libSQL alias
+        return Err(BrokerError::UnsupportedEngine(
+            "libSQL enrollment for agents is not supported yet: a read-only token is the only server-enforced limit and cannot be proven from the client"
+                .to_string(),
+        ));
+    }
+    if db_type == DatabaseType::InfluxDB {
+        // The broker's classifier and row-limit wrapper are SQL-only, and what
+        // an InfluxDB credential may do cannot be proven from the client: v1
+        // does not enforce read-only for GET (it only warns), v2/v3 depend on
+        // the token's scope
+        return Err(BrokerError::UnsupportedEngine(
+            "InfluxDB enrollment for agents is not supported yet: use a read-only API token or a v1 user limited to reads"
+                .to_string(),
+        ));
+    }
     if !matches!(
         db_type,
         DatabaseType::PostgreSQL
@@ -756,11 +800,84 @@ pub(crate) mod tests {
     #[case("csv:///tmp/x.csv")]
     #[case("duckdb:///tmp/x.duckdb")]
     #[case("redis://alice@r")]
+    #[case("rediss://alice@r:6380/1")]
+    #[case("valkey://alice@r")]
+    #[case("redis+unix:///run/redis.sock")]
+    #[case("mssql://sa@db.example/Sales")]
+    #[case("sqlserver://sa@db.example:1433/Sales?encrypt=true")]
+    #[case("mssql+tls://sa@db.example")]
+    #[case("redshift://awsuser@c.abc.eu-west-1.redshift.amazonaws.com:5439/dev")]
+    #[case("redshift+tls://awsuser@c.example/dev")]
+    #[case("libsql://my-db-org.turso.io")]
+    #[case("turso://my-db-org.turso.io?authToken=x")]
+    #[case("libsql+http://localhost:8080")]
+    #[case("influxdb://alice@db.example/telemetry")]
+    #[case("influxdb2s://db.example/bucket?org=acme")]
+    #[case("influxdb3://db.example/mydb")]
     fn unsupported_engines_are_rejected_as_such(#[case] u: &str) {
         assert!(
             matches!(url(u), Err(BrokerError::UnsupportedEngine(_))),
             "{u}: {:?}",
             url(u)
+        );
+    }
+
+    #[test]
+    fn sql_server_enrollment_points_at_a_read_only_login() {
+        let err = url("mssql://alice@db.example/Sales").unwrap_err();
+        assert!(
+            matches!(&err, BrokerError::UnsupportedEngine(message)
+                if message == "SQL Server enrollment for agents is not supported yet: use a read-only login and wait for the read-only probe"),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with("unsupported_engine: SQL Server enrollment")
+        );
+    }
+
+    #[test]
+    fn redshift_enrollment_explains_the_missing_read_only_mode() {
+        let err = url("redshift://alice@c.example:5439/dev").unwrap_err();
+        assert!(
+            matches!(&err, BrokerError::UnsupportedEngine(message)
+                if message.starts_with("Redshift enrollment for agents is not supported yet")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn libsql_enrollment_explains_the_unprovable_token_scope() {
+        let err = url("libsql://my-db-org.turso.io").unwrap_err();
+        assert!(
+            matches!(&err, BrokerError::UnsupportedEngine(message)
+                if message.starts_with("libSQL enrollment for agents is not supported yet")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn influxdb_enrollment_points_at_a_read_only_credential() {
+        let err = url("influxdb2://db.example/b?org=acme&token=canary-token-1").unwrap_err();
+        assert!(
+            matches!(&err, BrokerError::UnsupportedEngine(message)
+                if message.starts_with("InfluxDB enrollment for agents is not supported yet")),
+            "{err:?}"
+        );
+        assert!(!err.to_string().contains("canary-token-1"));
+    }
+
+    #[test]
+    fn redis_enrollment_says_it_is_not_supported_yet() {
+        let err = url("redis://alice@r").unwrap_err();
+        assert!(
+            matches!(&err, BrokerError::UnsupportedEngine(message)
+                if message == "Redis enrollment for agents is not supported yet"),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string()
+                .starts_with("unsupported_engine: Redis enrollment")
         );
     }
 

@@ -169,6 +169,25 @@ impl SqlParserFactory {
                 Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
             }
             DatabaseType::WhiteDragon => Box::new(WhiteDragonSqlParser::new()),
+            // Redis commands are not SQL; the generic parser is only asked for
+            // word boundaries (key names contain `:` `.` `-`)
+            DatabaseType::Redis => Box::new(GenericSqlParser::new()),
+            // T-SQL: the PostgreSQL parser covers the SELECT/WITH/JOIN grammar
+            // completion needs
+            DatabaseType::SqlServer => {
+                Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
+            }
+            // Redshift SQL is a PostgreSQL 8-era dialect
+            DatabaseType::Redshift => {
+                Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
+            }
+            // libSQL is SQLite
+            DatabaseType::LibSql => Box::new(crate::sql_parser_sqlite::SQLiteParser::new()),
+            // InfluxQL and v3 SQL are SQL-like (Flux is not, and completes
+            // function names only)
+            DatabaseType::InfluxDB => {
+                Box::new(crate::sql_parser_postgresql::PostgreSQLParser::new())
+            }
             // File formats via DataFusion - use PostgreSQL parser (DataFusion SQL is similar to PostgreSQL)
             DatabaseType::Parquet
             | DatabaseType::CSV
@@ -456,11 +475,17 @@ pub mod parsing_utils {
         match database_type {
             DatabaseType::PostgreSQL => ch.is_alphanumeric() || ch == '_' || ch == '$',
             DatabaseType::MySQL => ch.is_alphanumeric() || ch == '_' || ch == '$',
-            DatabaseType::SQLite => ch.is_alphanumeric() || ch == '_',
+            DatabaseType::SQLite | DatabaseType::LibSql => ch.is_alphanumeric() || ch == '_',
             DatabaseType::ClickHouse => ch.is_alphanumeric() || ch == '_',
             DatabaseType::MongoDB => ch.is_alphanumeric() || ch == '_', // MongoDB collection/field names
             DatabaseType::Elasticsearch => ch.is_alphanumeric() || ch == '_' || ch == '.', // Elasticsearch field names can contain dots
             DatabaseType::WhiteDragon => ch.is_alphanumeric() || ch == '_' || ch == '.',
+            // Key names such as `user:42:sessions` or `cache.v1-a`
+            DatabaseType::Redis => ch.is_alphanumeric() || matches!(ch, '_' | ':' | '.' | '-'),
+            DatabaseType::SqlServer => ch.is_alphanumeric() || matches!(ch, '_' | '@' | '#' | '$'),
+            DatabaseType::Redshift => ch.is_alphanumeric() || matches!(ch, '_' | '$' | '#'),
+            // Measurements such as `net.bytes_recv`, Flux `schema.measurements`
+            DatabaseType::InfluxDB => ch.is_alphanumeric() || matches!(ch, '_' | '.'),
             DatabaseType::Parquet
             | DatabaseType::CSV
             | DatabaseType::JSON
@@ -568,11 +593,17 @@ pub mod parsing_utils {
         match database_type {
             DatabaseType::PostgreSQL => '"',
             DatabaseType::MySQL => '`',
-            DatabaseType::SQLite => '"',
+            DatabaseType::SQLite | DatabaseType::LibSql => '"',
             DatabaseType::ClickHouse => '`', // ClickHouse uses backticks like MySQL
             DatabaseType::MongoDB => '"',    // MongoDB uses double quotes for field names
             DatabaseType::Elasticsearch => '"', // Elasticsearch uses double quotes for field names
             DatabaseType::WhiteDragon => '"',
+            DatabaseType::Redis => '"', // redis-cli quoting
+            // T-SQL accepts "ident" while QUOTED_IDENTIFIER is ON (the default
+            // of every driver); `]` stays valid inside it, unlike in [ident]
+            DatabaseType::SqlServer => '"',
+            DatabaseType::Redshift => '"',
+            DatabaseType::InfluxDB => '"', // InfluxQL and SQL quote identifiers with "
             DatabaseType::Parquet
             | DatabaseType::CSV
             | DatabaseType::JSON
@@ -659,6 +690,26 @@ mod tests {
         assert_eq!(
             quote_identifier("order-items", DatabaseType::MySQL),
             "`order-items`"
+        );
+    }
+
+    #[test]
+    fn test_sql_server_identifiers_quote_with_double_quotes() {
+        use parsing_utils::*;
+
+        assert_eq!(
+            SqlParserFactory::create_parser(DatabaseType::SqlServer).database_type(),
+            DatabaseType::PostgreSQL
+        );
+        assert_eq!(get_quote_char(DatabaseType::SqlServer), '"');
+        assert!(is_identifier_char('@', DatabaseType::SqlServer));
+        assert!(is_identifier_char('#', DatabaseType::SqlServer));
+        assert!(!needs_quoting("OrderItems", DatabaseType::SqlServer));
+        assert!(needs_quoting("Order Items", DatabaseType::SqlServer));
+        assert!(needs_quoting("select", DatabaseType::SqlServer));
+        assert_eq!(
+            quote_identifier("Order Items", DatabaseType::SqlServer),
+            "\"Order Items\""
         );
     }
 

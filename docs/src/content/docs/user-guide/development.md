@@ -97,6 +97,11 @@ The root crate (`dbcrust`) is split into Cargo features so a build only contains
 | `clickhouse` | ClickHouse | `clickhouse` (pinned `=0.15.1`) |
 | `elasticsearch` | Elasticsearch | `elasticsearch` SDK |
 | `white-dragon` | White Dragon search SQL over HTTP | reqwest only |
+| `redis` | Redis / Valkey (`redis://`, `rediss://`) — **in `bundled`, not in `standard`** | `redis` (tokio + rustls/ring) |
+| `mssql` | SQL Server / Azure SQL (`mssql://`, `sqlserver://`) — **in `bundled`, not in `standard`** | vendored `tiberius` 0.13.0 (`third_party/tiberius`: rustls on ring only, see below) |
+| `redshift` | Amazon Redshift (`redshift://`) — **in `bundled`, not in `standard`** | `sqlx` PostgreSQL protocol (no extra crate) |
+| `libsql` | libSQL / Turso over HTTP (`libsql://`, `turso://`, `libsql+http://`) — **in `bundled`, not in `standard`** | `reqwest` only (hand-written Hrana client) |
+| `influxdb` | InfluxDB v1/v2/v3 (`influxdb://`, `influxdb2://`, `influxdb3://`) — **in `bundled`, not in `standard`** | reqwest (rustls/ring) and `csv-core`, both already in the tree |
 | `files` | Parquet, CSV, JSON and DuckDB files | Apache DataFusion / Arrow / Parquet |
 | `docker` | `docker://` URLs, `\docker`, container completion | bollard |
 | `ai` | `??`, `???`, `\ai`, the Python AI functions | genai, reqwest 0.13 |
@@ -128,9 +133,14 @@ Cost of each feature, as unique crates added to the normal dependency tree (`car
 | `mongodb` | +53 | | `explain-tui` | +22 |
 | `mysql` | +46 | | `clickhouse` | +16 |
 | `postgres` | +35 | | `elasticsearch` | +15 |
-| `sqlite` | +21 | | `docker`, `clipboard` | +7 each |
+| `sqlite` | +21 | | `redis` | +12 |
+| `docker`, `clipboard` | +7 each | | `mssql` | +17 |
 
-`standard` is 272 crates against 467 for `bundled`; the dev-profile binary drops from about 327 MB (201 MB stripped) to 77 MB (49 MB stripped). DataFusion is by far the heaviest piece, which is why `files` is the first thing to drop.
+`standard` is 272 crates against 487 for `bundled` (`redshift` and `libsql` add no crate: they share `sqlx` with `postgres` and `reqwest` with the HTTP engines, see below); the dev-profile binary drops from about 327 MB (201 MB stripped) to 77 MB (49 MB stripped). DataFusion is by far the heaviest piece, which is why `files` is the first thing to drop.
+
+`mssql` adds 7 crates to the lockfile (`tiberius`, `tiberius-macros`, `asynchronous-codec`, `connection-string`, `futures-timer`, `pretty-hex`, `secrecy`), roughly +1.2 MB of stripped release binary, and no C build: upstream `tiberius` 0.13.0 hard-codes the `aws-lc-rs` TLS provider (a cmake/C compile) and 0.12.3 sits on a rustls with three open RustSec advisories, so DBCrust vendors 0.13.0 with a four-line patch that selects `ring` like the rest of the tree. `third_party/tiberius/DBCRUST_PATCH.md` records the original archive checksum, the exact diff, how to re-vendor on a release and the text of the upstream proposal; `cargo tree --locked -i aws-lc-rs` must keep reporting nothing.
+
+`influxdb` adds no registry crate to the lockfile: the HTTP client is hand-written on the `reqwest` 0.12 the other HTTP drivers use, and the Flux CSV is read with `csv-core`, already locked through DataFusion's `csv`. The `influxdb` crate was rejected because it wraps reqwest 0.13 with the aws-lc provider and speaks neither Flux nor v3. Its cost in the normal dependency tree is 2 crates (the driver and `csv-core`).
 
 A disabled engine is still a `DatabaseType`: config files, sessions and `recent.toml` written by a full build keep parsing. Connecting to it fails with a message that names the feature, e.g. *"MongoDB support is not compiled into this build (enable the `mongodb` cargo feature, or install a full build)"*; `dbcrust-drivers` exposes `is_compiled`, `compiled_engines` and `required_feature` for code that has to adapt. URL-scheme completion only offers the schemes the build can serve, and the credential broker refuses to enrol an engine the build does not contain (`unsupported_engine`, same hint).
 

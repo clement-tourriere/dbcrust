@@ -652,6 +652,35 @@ impl DockerClient {
                 && (image_lower.contains(":") || image_lower.contains("/")))
         {
             Some(DatabaseType::Elasticsearch)
+        } else if (image_lower.contains("redis")
+            || image_lower.contains("valkey")
+            || image_lower.contains("keydb")
+            || image_lower.contains("dragonfly"))
+            // Tools around Redis are not servers: the web UIs, exporters and
+            // Sentinel (a different protocol surface on another port)
+            && !["insight", "commander", "exporter", "sentinel", "stack-server-gui"]
+                .iter()
+                .any(|tool| image_lower.contains(tool))
+        {
+            Some(DatabaseType::Redis)
+        } else if image_lower.contains("influxdb")
+            // Telegraf, Chronograf, Kapacitor, exporters and the CLI are
+            // clients of an InfluxDB, not servers
+            && !["telegraf", "chronograf", "kapacitor", "exporter", "grafana", "-cli", "relay", "proxy", "backup"]
+                .iter()
+                .any(|tool| image_lower.contains(tool))
+        {
+            Some(DatabaseType::InfluxDB)
+        } else if (image_lower.contains("mssql")
+            || image_lower.contains("azure-sql-edge")
+            || image_lower.contains("sql-server"))
+            // The command-line tools, exporters and agents are clients of a
+            // SQL Server, not servers
+            && !["tools", "exporter", "scripter", "ssis", "ssrs", "agent", "client"]
+                .iter()
+                .any(|tool| image_lower.contains(tool))
+        {
+            Some(DatabaseType::SqlServer)
         } else {
             None
         }
@@ -1120,6 +1149,92 @@ mod tests {
             DockerClient::detect_database_type_from_image("bitnami/elasticsearch:latest"),
             Some(DatabaseType::Elasticsearch)
         );
+        for image in [
+            "redis:7",
+            "redis:7-alpine",
+            "library/redis:latest",
+            "bitnami/redis:7.2",
+            "redis/redis-stack-server:latest",
+            "valkey/valkey:8",
+            "eqalpha/keydb:latest",
+            "docker.dragonflydb.io/dragonflydb/dragonfly",
+        ] {
+            assert_eq!(
+                DockerClient::detect_database_type_from_image(image),
+                Some(DatabaseType::Redis),
+                "{image}"
+            );
+        }
+        for image in [
+            "mcr.microsoft.com/mssql/server:2022-latest",
+            "mcr.microsoft.com/mssql/rhel/server:2019-latest",
+            "mcr.microsoft.com/azure-sql-edge",
+            "mcr.microsoft.com/mssql/server",
+            "mssql-server-linux:latest",
+            "bitnami/mssql-server:2022",
+        ] {
+            assert_eq!(
+                DockerClient::detect_database_type_from_image(image),
+                Some(DatabaseType::SqlServer),
+                "{image}"
+            );
+        }
+        // SQL Server's tools and exporters are not servers
+        for image in [
+            "mcr.microsoft.com/mssql-tools",
+            "mcr.microsoft.com/mssql/server-exporter",
+            "awaragi/prometheus-mssql-exporter",
+            "mcr.microsoft.com/mssql/ssis",
+        ] {
+            assert_eq!(
+                DockerClient::detect_database_type_from_image(image),
+                None,
+                "{image}"
+            );
+        }
+        for image in [
+            "influxdb",
+            "influxdb:1.8",
+            "influxdb:2.7-alpine",
+            "library/influxdb:latest",
+            "bitnami/influxdb:2",
+            "quay.io/influxdb/influxdb3-core:latest",
+            "influxdb:3-core",
+        ] {
+            assert_eq!(
+                DockerClient::detect_database_type_from_image(image),
+                Some(DatabaseType::InfluxDB),
+                "{image}"
+            );
+        }
+        // The tools around InfluxDB are not InfluxDB servers
+        for image in [
+            "telegraf:latest",
+            "chronograf",
+            "kapacitor:1.7",
+            "influxdb-exporter:latest",
+            "prom/influxdb-exporter",
+            "influxdata/influxdb-relay",
+        ] {
+            assert_eq!(
+                DockerClient::detect_database_type_from_image(image),
+                None,
+                "{image}"
+            );
+        }
+        // The tools around Redis are not Redis servers
+        for image in [
+            "redis/redisinsight:latest",
+            "rediscommander/redis-commander",
+            "oliver006/redis_exporter",
+            "bitnami/redis-sentinel:7.2",
+        ] {
+            assert_eq!(
+                DockerClient::detect_database_type_from_image(image),
+                None,
+                "{image}"
+            );
+        }
         // Test Kibana containers are NOT detected as Elasticsearch
         assert_eq!(
             DockerClient::detect_database_type_from_image("elastic/kibana:8.15.0"),

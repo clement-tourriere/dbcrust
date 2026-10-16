@@ -65,7 +65,7 @@ depends = ["fmt", "lint", "test", "py:lint", "py:test"]
 description = "Type-check the root crate for the zero-engine build, the standard preset and each feature alone (CI's feature matrix)"
 run = '''
 set -e
-for features in "" standard standard,python postgres mysql sqlite mongodb clickhouse elasticsearch white-dragon files docker ai explain-tui clipboard; do
+for features in "" standard standard,python postgres mysql sqlite mongodb clickhouse elasticsearch white-dragon redis mssql redshift libsql influxdb files docker ai explain-tui clipboard; do
   echo "== --no-default-features --features '$features'"
   PYO3_NO_PYTHON=1 cargo check --locked -p dbcrust --no-default-features --features "$features"
 done

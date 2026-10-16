@@ -127,6 +127,16 @@ fn get_dialect_notes(db_type: &DatabaseType) -> String {
 - Use PRAGMA for database info"#
             .to_string(),
 
+        DatabaseType::LibSql => r#"LIBSQL / TURSO (SQLITE) DIALECT NOTES:
+- A remote SQLite-compatible server: TEXT, INTEGER, REAL, BLOB; use double quotes for identifiers
+- String concatenation: || operator; date functions: date(), time(), datetime(), strftime()
+- No native BOOLEAN: use 0/1; LIMIT/OFFSET supported; CTEs with WITH supported
+- No RIGHT/FULL OUTER JOIN on older servers; no REGEXP function unless the server defines one
+- Catalog: sqlite_schema, pragma_table_info('t'), pragma_index_list('t'), pragma_foreign_key_list('t')
+- Each statement is a network round trip and Turso bills rows read: always LIMIT, select only the columns needed
+- Never use ATTACH, VACUUM, load_extension() or PRAGMA writes: they are refused"#
+            .to_string(),
+
         DatabaseType::ClickHouse => r#"CLICKHOUSE DIALECT NOTES:
 - Use double quotes or backticks for identifiers
 - Strongly typed system with many numeric types
@@ -157,6 +167,58 @@ fn get_dialect_notes(db_type: &DatabaseType) -> String {
 - DESCRIBE for index mapping
 - SHOW TABLES for index listing
 - Limited JOIN support"#
+            .to_string(),
+
+        DatabaseType::Redshift => r#"AMAZON REDSHIFT DIALECT NOTES:
+- Based on PostgreSQL 8.0.2 with columnar/MPP extensions: LIMIT n [OFFSET m] works; no ILIKE-only tricks needed (ILIKE exists)
+- Identifiers fold to lower case; quote with "double quotes"; schema-qualify as schema.table
+- String concatenation: || or CONCAT(a, b) (two arguments only)
+- Date functions: GETDATE(), SYSDATE, DATEADD(day, 1, ts), DATEDIFF(day, a, b), DATE_TRUNC('month', ts), TO_CHAR(ts, 'YYYY-MM-DD')
+- Aggregate strings with LISTAGG(col, ',') WITHIN GROUP (ORDER BY col); no STRING_AGG, ARRAY_AGG or array types
+- Semi-structured data is the SUPER type: navigate with dot/bracket notation (col.a[0].b), unnest with FROM t AS x, x.arr AS e AT idx; JSON text functions: JSON_EXTRACT_PATH_TEXT(), JSON_PARSE()
+- Window functions and CTEs (WITH) are supported; no LATERAL, no generate_series on tables
+- Catalog: SVV_TABLES, SVV_COLUMNS, SVV_TABLE_INFO (size, rows, diststyle), PG_TABLE_DEF (search_path schemas only); not information_schema alone
+- Never use COPY, UNLOAD, CREATE EXTERNAL, CALL, VACUUM, GRANT: they are refused
+- Plans: EXPLAIN gives a text plan (no JSON, no ANALYZE)"#
+            .to_string(),
+
+        DatabaseType::SqlServer => r#"T-SQL (SQL SERVER) DIALECT NOTES:
+- There is no LIMIT: use SELECT TOP (n) ... or ORDER BY ... OFFSET m ROWS FETCH NEXT n ROWS ONLY (needs ORDER BY)
+- Quote identifiers with [brackets] (or "double quotes"); schema-qualify as [dbo].[Orders]
+- String concatenation: + or CONCAT(); strings are single-quoted, N'...' for Unicode
+- Date functions: GETDATE(), SYSDATETIME(), DATEADD(), DATEDIFF(), FORMAT(), EOMONTH()
+- Use CAST/CONVERT/TRY_CAST for conversion; ISNULL() or COALESCE() for NULLs
+- Aggregate strings with STRING_AGG(); split with STRING_SPLIT()
+- JSON: JSON_VALUE(), JSON_QUERY(), OPENJSON(); FOR JSON PATH to produce it
+- A statement ends without ';' being required, but send exactly one statement
+- Window functions and CTEs (WITH) are supported; a CTE must be followed by a SELECT
+- Never use EXEC, sp_*/xp_* procedures, SELECT ... INTO, OPENROWSET/OPENQUERY: they are refused
+- Catalog: sys.tables, sys.columns, INFORMATION_SCHEMA.COLUMNS; there is no EXPLAIN keyword in T-SQL (the explain tool uses SHOWPLAN)"#
+            .to_string(),
+
+        DatabaseType::InfluxDB => r#"INFLUXDB QUERY NOTES (the language depends on the server generation):
+- v1 (InfluxQL, SQL-like): SELECT mean("usage") FROM "cpu" WHERE time > now() - 1h GROUP BY time(5m), "host"
+  - Quote identifiers with "double quotes", strings with 'single quotes'; durations: 5m, 1h, 7d
+  - Measurements are tables, tags and fields are columns; tags only filter and group, fields hold the values
+  - Always bound the time range and add LIMIT; LIMIT applies per series when GROUP BY tags
+  - SHOW MEASUREMENTS / SHOW TAG KEYS FROM "m" / SHOW FIELD KEYS FROM "m" / SHOW TAG VALUES FROM "m" WITH KEY = "host"
+  - SELECT ... INTO writes data: never use it
+- v2 (Flux, NOT SQL): from(bucket: "b") |> range(start: -1h) |> filter(fn: (r) => r._measurement == "cpu" and r._field == "usage") |> limit(n: 100)
+  - Every query needs from(bucket:) and a range(); data is long-format (_time, _value, _field, _measurement, tags)
+  - Aggregate with |> aggregateWindow(every: 5m, fn: mean); never use to(), http, sql, secrets or other imports that write or reach outside
+- v3 (SQL): SELECT * FROM cpu WHERE time >= now() - interval '1 hour' LIMIT 100; DATE_BIN(INTERVAL '5 minutes', time) buckets time
+- The "tables" in the schema are measurements; columns are time, tag keys and field keys"#
+            .to_string(),
+
+        DatabaseType::Redis => r#"REDIS COMMAND NOTES:
+- This is NOT SQL: write exactly one redis-cli command line, e.g. GET user:1, HGETALL user:1, LRANGE queue 0 99
+- Quote values with spaces using double quotes: SET "a b" "c d"
+- Read commands only: GET, MGET, HGETALL, HGET, LRANGE, SMEMBERS, ZRANGE k 0 -1 WITHSCORES, XRANGE, TYPE, TTL, SCAN, INFO
+- Never use KEYS: list keys with SCAN 0 MATCH pattern* COUNT 100 (the reply gives the next cursor; 0 means done)
+- Bound large collections: LRANGE k 0 99, ZRANGE k 0 99, HSCAN k 0 COUNT 100
+- TYPE tells the data type of a key; pick the command family from it
+- The "tables" in the schema are key names and "columns" are sampled hash fields or members
+- Redis has no joins, aggregates or filters: fetch keys, then read them"#
             .to_string(),
 
         // DataFusion file formats (Parquet, CSV, JSON, DuckDB)

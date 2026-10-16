@@ -76,6 +76,11 @@ connectors! {
     "postgres" => PostgreSQL => dbcrust_driver_postgres::PostgreSQLClient;
     "sqlite" => SQLite => dbcrust_driver_sqlite::SqliteClient;
     "white-dragon" => WhiteDragon => dbcrust_driver_white_dragon::WhiteDragonClient;
+    "redis" => Redis => dbcrust_driver_redis::RedisClient;
+    "mssql" => SqlServer => dbcrust_driver_mssql::MssqlClient;
+    "redshift" => Redshift => dbcrust_driver_redshift::RedshiftClient;
+    "libsql" => LibSql => dbcrust_driver_libsql::LibSqlClient;
+    "influxdb" => InfluxDB => dbcrust_driver_influxdb::InfluxClient;
 }
 
 /// The engines whose connector is part of this build, in `DatabaseType` order.
@@ -107,6 +112,11 @@ mod tests {
             "clickhouse",
             "elasticsearch",
             "white-dragon",
+            "redis",
+            "mssql",
+            "redshift",
+            "libsql",
+            "influxdb",
             "files"
         );
         features
@@ -116,6 +126,11 @@ mod tests {
     fn engines_name_the_feature_that_provides_them() {
         assert_eq!(required_feature(&DatabaseType::PostgreSQL), "postgres");
         assert_eq!(required_feature(&DatabaseType::WhiteDragon), "white-dragon");
+        assert_eq!(required_feature(&DatabaseType::Redis), "redis");
+        assert_eq!(required_feature(&DatabaseType::SqlServer), "mssql");
+        assert_eq!(required_feature(&DatabaseType::Redshift), "redshift");
+        assert_eq!(required_feature(&DatabaseType::LibSql), "libsql");
+        assert_eq!(required_feature(&DatabaseType::InfluxDB), "influxdb");
         for engine in [
             DatabaseType::Parquet,
             DatabaseType::CSV,
@@ -136,6 +151,11 @@ mod tests {
             "clickhouse",
             "elasticsearch",
             "white-dragon",
+            "redis",
+            "mssql",
+            "redshift",
+            "libsql",
+            "influxdb",
             "files",
         ];
         for engine in DatabaseType::supported_types() {
@@ -174,6 +194,11 @@ mod tests {
         feature = "clickhouse",
         feature = "elasticsearch",
         feature = "white-dragon",
+        feature = "redis",
+        feature = "mssql",
+        feature = "redshift",
+        feature = "libsql",
+        feature = "influxdb",
         feature = "files"
     ))]
     #[test]

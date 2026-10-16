@@ -154,7 +154,28 @@ fn legacy_database_type(database_type: &DatabaseType) -> Option<crate::dbcrust_p
         | DatabaseType::CSV
         | DatabaseType::JSON
         | DatabaseType::DuckDB
-        | DatabaseType::WhiteDragon => None,
+        | DatabaseType::WhiteDragon
+        // Redis, SQL Server, Redshift, libSQL and InfluxDB have no legacy `.dbcrust` entries:
+        // their secrets live in the store only, bound through `binding_engine`
+        | DatabaseType::Redis
+        | DatabaseType::SqlServer
+        | DatabaseType::Redshift
+        | DatabaseType::LibSql
+        | DatabaseType::InfluxDB => None,
+    }
+}
+
+/// The engine name a stored secret is bound to (`TargetBinding.engine`):
+/// the legacy file's name where one exists, so existing records keep
+/// matching, and the engine's own name for engines that never had one.
+fn binding_engine(database_type: &DatabaseType) -> Option<&'static str> {
+    match database_type {
+        DatabaseType::Redis => Some("redis"),
+        DatabaseType::SqlServer => Some("mssql"),
+        DatabaseType::Redshift => Some("redshift"),
+        DatabaseType::LibSql => Some("libsql"),
+        DatabaseType::InfluxDB => Some("influxdb"),
+        other => legacy_database_type(other).map(|legacy| legacy.as_str()),
     }
 }
 
@@ -168,7 +189,7 @@ pub(crate) fn connection_binding(
     user: &str,
     tls_mode: Option<&str>,
 ) -> Option<crate::secrets::TargetBinding> {
-    let engine = legacy_database_type(database_type)?.as_str();
+    let engine = binding_engine(database_type)?;
     Some(crate::secrets::TargetBinding::new(
         engine,
         host,
@@ -180,7 +201,47 @@ pub(crate) fn connection_binding(
 }
 
 /// TLS mode named by connection options (`sslmode`, `ssl`, `tls`, `secure`).
+///
+/// SQL Server (`encrypt`, always present once a URL is parsed) also puts into
+/// the mode what decides *which* server answers and how far it is trusted: a
+/// named instance and the opt-out of certificate verification. A stored
+/// password is therefore never handed to another instance of the same host,
+/// nor to a connection that stopped verifying the certificate. InfluxDB does
+/// the same with its API generation, TLS, certificate opt-out and `org`.
 pub(crate) fn tls_mode_from_options(options: &HashMap<String, String>) -> Option<String> {
+    let find = |key: &str| {
+        options
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty())
+    };
+    if let Some(encrypt) = find("encrypt") {
+        let mut mode = encrypt;
+        if crate::database::sqlserver_trusts_any_certificate(options) {
+            mode.push_str("+trust-cert");
+        }
+        if let Some(instance) = find("instance") {
+            mode.push_str(&format!("@{instance}"));
+        }
+        return Some(mode);
+    }
+    // InfluxDB (`version` is always present once a URL is parsed): the API
+    // generation, the transport, the certificate opt-out and the organization
+    // decide *which* server and tenant a stored token is handed to
+    if let Some(version) = find("version").filter(|v| matches!(v.as_str(), "1" | "2" | "3")) {
+        let mut mode = format!("v{version}");
+        if find("tls").is_some_and(|tls| matches!(tls.as_str(), "true" | "1" | "yes" | "on")) {
+            mode.push_str("+tls");
+        }
+        if crate::database::influxdb_skips_certificate_verification(options) {
+            mode.push_str("+insecure");
+        }
+        if let Some(org) = find("org") {
+            mode.push_str(&format!("@{org}"));
+        }
+        return Some(mode);
+    }
     ["sslmode", "ssl", "tls", "secure"].iter().find_map(|key| {
         options
             .iter()
@@ -716,6 +777,37 @@ impl SavedSession {
             return Ok(append_connection_options(&url, &self.options));
         }
 
+        // A Redis server on a unix socket: the socket path is the target and
+        // the credentials ride in the query (`user`, `pass`)
+        if self.database_type == DatabaseType::Redis {
+            if let Some(socket) = &self.file_path {
+                let mut url = Url::parse("redis+unix:///")
+                    .map_err(|e| format!("Failed to build session URL: {e}"))?;
+                url.set_path(socket);
+                {
+                    let mut query = url.query_pairs_mut();
+                    if !self.dbname.is_empty() {
+                        query.append_pair("db", &self.dbname);
+                    }
+                    if !self.user.is_empty() {
+                        query.append_pair("user", &self.user);
+                    }
+                    let password = lookup_connection_password(
+                        &self.database_type,
+                        &self.host,
+                        self.port,
+                        &self.dbname,
+                        &self.user,
+                        tls_mode_from_options(&self.options).as_deref(),
+                    );
+                    if let Some(password) = password {
+                        query.append_pair("pass", &password);
+                    }
+                }
+                return Ok(url.to_string());
+            }
+        }
+
         let url_scheme = self.database_type.url_scheme();
         let credentials = lookup_connection_credentials(
             &self.database_type,
@@ -740,7 +832,15 @@ impl SavedSession {
             }
         }
 
-        let mut parsed_url = Url::parse(&format!("{url_scheme}://{}:{}/", self.host, self.port))
+        // A named SQL Server instance is found through SQL Browser: no port
+        let authority = if self.database_type == DatabaseType::SqlServer
+            && self.options.contains_key("instance")
+        {
+            self.host.clone()
+        } else {
+            format!("{}:{}", self.host, self.port)
+        };
+        let mut parsed_url = Url::parse(&format!("{url_scheme}://{authority}/"))
             .map_err(|e| format!("Failed to build session URL: {e}"))?;
         if !self.user.is_empty() {
             parsed_url
@@ -2930,7 +3030,10 @@ impl Config {
                     .as_ref()
                     .unwrap_or(&"localhost".to_string())
                     .clone(),
-                connection_info.port.unwrap_or(5432),
+                connection_info
+                    .port
+                    .or_else(|| connection_info.default_port())
+                    .unwrap_or(5432),
                 connection_info
                     .username
                     .as_ref()
@@ -4020,6 +4123,640 @@ mod tests {
         assert_eq!(session.database_type, DatabaseType::PostgreSQL);
         assert_eq!(session.file_path, None);
         assert_eq!(session.options.len(), 0);
+    }
+
+    #[rstest]
+    fn redis_sessions_keep_tls_database_and_the_stored_password() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            // rediss:// carries its TLS in the scheme: the session must too
+            let connection_info =
+                ConnectionInfo::parse_url("rediss://app@cache.example/2").unwrap();
+            assert!(connection_info.use_tls);
+            config
+                .save_session_from_connection_info("cache", &connection_info)
+                .unwrap();
+
+            let session = config.get_session("cache").unwrap();
+            assert_eq!(session.host, "cache.example");
+            assert_eq!(session.port, 6379, "the default port, not PostgreSQL's");
+            assert_eq!(session.user, "app");
+            assert_eq!(session.dbname, "2");
+            assert_eq!(session.database_type, DatabaseType::Redis);
+            let tls_mode = tls_mode_from_options(&session.options);
+            assert_eq!(tls_mode.as_deref(), Some("true"));
+
+            // The password (saved once, e.g. by the connect prompt) lives in the
+            // store under the target binding and comes back with the session
+            save_connection_password(
+                &DatabaseType::Redis,
+                "cache.example",
+                6379,
+                "2",
+                "app",
+                tls_mode.as_deref(),
+                "redis-secret",
+            )
+            .unwrap();
+            let url = session.reconstruct_connection_url().unwrap();
+            assert!(
+                url.starts_with("redis://app:redis-secret@cache.example:6379/2"),
+                "{url}"
+            );
+            let reparsed = ConnectionInfo::parse_url(&url).unwrap();
+            assert!(reparsed.use_tls, "{url}");
+            assert_eq!(reparsed.password.as_deref(), Some("redis-secret"));
+            assert_eq!(reparsed.database.as_deref(), Some("2"));
+
+            // the session file itself never holds the password
+            assert!(!format!("{session:?}").contains("redis-secret"));
+            assert!(!session.options.values().any(|v| v == "redis-secret"));
+        });
+    }
+
+    #[rstest]
+    fn redis_password_is_not_given_to_another_target_or_tls_mode() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            save_connection_password(
+                &DatabaseType::Redis,
+                "cache.example",
+                6379,
+                "0",
+                "app",
+                Some("true"),
+                "plain-secret",
+            )
+            .unwrap();
+            // other database, other host, other user, other TLS mode: no password
+            for (host, db, user, tls) in [
+                ("cache.example", "1", "app", Some("true")),
+                ("evil.example", "0", "app", Some("true")),
+                ("cache.example", "0", "other", Some("true")),
+                ("cache.example", "0", "app", Some("false")),
+            ] {
+                assert_eq!(
+                    lookup_connection_password(&DatabaseType::Redis, host, 6379, db, user, tls),
+                    None,
+                    "{host}/{db}/{user}/{tls:?}"
+                );
+            }
+            assert_eq!(
+                lookup_connection_password(
+                    &DatabaseType::Redis,
+                    "cache.example",
+                    6379,
+                    "0",
+                    "app",
+                    Some("true")
+                )
+                .as_deref(),
+                Some("plain-secret")
+            );
+        });
+    }
+
+    #[rstest]
+    fn sql_server_sessions_keep_the_security_posture_and_the_stored_password() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            let connection_info = ConnectionInfo::parse_url(
+                "mssql://app@srv%5CSQLEXPRESS/Sales?trustServerCertificate=true",
+            )
+            .unwrap();
+            config
+                .save_session_from_connection_info("erp", &connection_info)
+                .unwrap();
+
+            let session = config.get_session("erp").unwrap();
+            assert_eq!(session.host, "srv");
+            assert_eq!(session.port, 1433, "the default port, not PostgreSQL's");
+            assert_eq!(session.user, "app");
+            assert_eq!(session.dbname, "Sales");
+            assert_eq!(session.database_type, DatabaseType::SqlServer);
+            // encryption, the instance and the certificate opt-out all survive
+            assert_eq!(
+                session.options.get("instance").map(String::as_str),
+                Some("SQLEXPRESS")
+            );
+            assert_eq!(
+                session.options.get("encrypt").map(String::as_str),
+                Some("true")
+            );
+            let tls_mode = tls_mode_from_options(&session.options);
+            assert_eq!(tls_mode.as_deref(), Some("true+trust-cert@sqlexpress"));
+
+            // The password lives in the store under the target binding and
+            // comes back with the session, on the instance's own URL (no port)
+            save_connection_password(
+                &DatabaseType::SqlServer,
+                "srv",
+                1433,
+                "Sales",
+                "app",
+                tls_mode.as_deref(),
+                "mssql-secret",
+            )
+            .unwrap();
+            let url = session.reconstruct_connection_url().unwrap();
+            assert!(
+                url.starts_with("mssql://app:mssql-secret@srv/Sales?"),
+                "{url}"
+            );
+            let reparsed = ConnectionInfo::parse_url(&url).unwrap();
+            assert_eq!(reparsed.password.as_deref(), Some("mssql-secret"));
+            assert_eq!(reparsed.host.as_deref(), Some("srv"));
+            assert_eq!(reparsed.port, None);
+            assert_eq!(
+                reparsed.options.get("instance").map(String::as_str),
+                Some("SQLEXPRESS")
+            );
+            assert!(crate::database::sqlserver_trusts_any_certificate(
+                &reparsed.options
+            ));
+            assert!(reparsed.use_tls);
+
+            // the session file itself never holds the password
+            assert!(!format!("{session:?}").contains("mssql-secret"));
+            assert!(!session.options.values().any(|v| v == "mssql-secret"));
+        });
+    }
+
+    #[rstest]
+    fn sql_server_password_is_not_given_to_another_instance_or_a_weaker_connection() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mode = |url: &str| {
+                tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
+            };
+            let verified = mode("mssql://app@db.example/Sales");
+            let lookup = |host: &str, db: &str, user: &str, mode: &str| {
+                lookup_connection_password(
+                    &DatabaseType::SqlServer,
+                    host,
+                    1433,
+                    db,
+                    user,
+                    Some(mode),
+                )
+            };
+            save_connection_password(
+                &DatabaseType::SqlServer,
+                "db.example",
+                1433,
+                "Sales",
+                "app",
+                Some(&verified),
+                "plain-secret",
+            )
+            .unwrap();
+            assert_eq!(
+                lookup("db.example", "Sales", "app", &verified).as_deref(),
+                Some("plain-secret")
+            );
+            // other database, host, login: no password
+            assert_eq!(lookup("db.example", "Other", "app", &verified), None);
+            assert_eq!(lookup("evil.example", "Sales", "app", &verified), None);
+            assert_eq!(lookup("db.example", "Sales", "sa", &verified), None);
+            // a connection that stopped verifying the certificate, stopped
+            // encrypting, or reaches another instance of the host
+            for url in [
+                "mssql://app@db.example/Sales?trustServerCertificate=true",
+                "mssql://app@db.example/Sales?encrypt=false",
+                "mssql://app@db.example/Sales?encrypt=strict",
+                "mssql://app@db.example%5CDEV/Sales",
+            ] {
+                assert_eq!(
+                    lookup("db.example", "Sales", "app", &mode(url)),
+                    None,
+                    "{url}"
+                );
+            }
+        });
+    }
+
+    #[rstest]
+    fn sql_server_sessions_without_an_instance_keep_their_port_and_plaintext_choice() {
+        let mut config = get_test_config();
+        let connection_info =
+            ConnectionInfo::parse_url("mssql://sa@db.example:14330/master?encrypt=false").unwrap();
+        config
+            .save_session_from_connection_info("plain", &connection_info)
+            .unwrap();
+        let session = config.get_session("plain").unwrap();
+        assert_eq!(session.port, 14330);
+        let url = session.reconstruct_connection_url().unwrap();
+        assert!(
+            url.starts_with("mssql://sa@db.example:14330/master"),
+            "{url}"
+        );
+        let again = ConnectionInfo::parse_url(&url).unwrap();
+        assert!(!again.use_tls);
+        assert_eq!(again.port, Some(14330));
+    }
+
+    #[rstest]
+    fn redshift_sessions_keep_tls_and_the_stored_password() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            let connection_info = ConnectionInfo::parse_url(
+                "redshift://awsuser@c.abc.eu-west-1.redshift.amazonaws.com/dev?sslmode=verify-full",
+            )
+            .unwrap();
+            config
+                .save_session_from_connection_info("warehouse", &connection_info)
+                .unwrap();
+
+            let session = config.get_session("warehouse").unwrap();
+            assert_eq!(session.port, 5439, "the Redshift port, not PostgreSQL's");
+            assert_eq!(session.user, "awsuser");
+            assert_eq!(session.dbname, "dev");
+            assert_eq!(session.database_type, DatabaseType::Redshift);
+            assert_eq!(
+                tls_mode_from_options(&session.options).as_deref(),
+                Some("verify-full")
+            );
+
+            save_connection_password(
+                &DatabaseType::Redshift,
+                "c.abc.eu-west-1.redshift.amazonaws.com",
+                5439,
+                "dev",
+                "awsuser",
+                Some("verify-full"),
+                "rs-secret",
+            )
+            .unwrap();
+            let url = session.reconstruct_connection_url().unwrap();
+            assert!(
+                url.starts_with(
+                    "redshift://awsuser:rs-secret@c.abc.eu-west-1.redshift.amazonaws.com:5439/dev"
+                ),
+                "{url}"
+            );
+            let reparsed = ConnectionInfo::parse_url(&url).unwrap();
+            assert_eq!(reparsed.password.as_deref(), Some("rs-secret"));
+            assert_eq!(
+                reparsed.options.get("sslmode").map(String::as_str),
+                Some("verify-full")
+            );
+            assert!(reparsed.use_tls);
+
+            // the session file itself never holds the password
+            assert!(!format!("{session:?}").contains("rs-secret"));
+            assert!(!session.options.values().any(|v| v == "rs-secret"));
+        });
+    }
+
+    #[rstest]
+    fn redshift_password_is_not_given_to_a_weaker_connection_or_another_target() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mode = |url: &str| {
+                tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
+            };
+            // no sslmode in the URL means `require`, recorded explicitly
+            let required = mode("redshift://awsuser@c.example/dev");
+            assert_eq!(required, "require");
+            let lookup = |host: &str, port: u16, db: &str, user: &str, mode: &str| {
+                lookup_connection_password(
+                    &DatabaseType::Redshift,
+                    host,
+                    port,
+                    db,
+                    user,
+                    Some(mode),
+                )
+            };
+            save_connection_password(
+                &DatabaseType::Redshift,
+                "c.example",
+                5439,
+                "dev",
+                "awsuser",
+                Some(&required),
+                "rs-secret",
+            )
+            .unwrap();
+            assert_eq!(
+                lookup("c.example", 5439, "dev", "awsuser", &required).as_deref(),
+                Some("rs-secret")
+            );
+            assert_eq!(
+                lookup("c.example", 5439, "other", "awsuser", &required),
+                None
+            );
+            assert_eq!(
+                lookup("evil.example", 5439, "dev", "awsuser", &required),
+                None
+            );
+            assert_eq!(lookup("c.example", 5439, "dev", "admin", &required), None);
+            // a connection that stopped requiring TLS
+            for url in [
+                "redshift://awsuser@c.example/dev?sslmode=disable",
+                "redshift://awsuser@c.example/dev?sslmode=prefer",
+            ] {
+                assert_eq!(
+                    lookup("c.example", 5439, "dev", "awsuser", &mode(url)),
+                    None,
+                    "{url}"
+                );
+            }
+            // and the same name under PostgreSQL is a different target
+            assert_eq!(
+                lookup_connection_password(
+                    &DatabaseType::PostgreSQL,
+                    "c.example",
+                    5439,
+                    "dev",
+                    "awsuser",
+                    Some(&required)
+                ),
+                None
+            );
+        });
+    }
+
+    #[rstest]
+    fn libsql_sessions_keep_the_transport_and_the_token_stays_in_the_store() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            // The token typed into the URL: it is the connection's password
+            let connection_info = ConnectionInfo::parse_url(
+                "libsql://db-org.turso.io/tenant1?authToken=JWT-canary-123",
+            )
+            .unwrap();
+            assert_eq!(connection_info.password.as_deref(), Some("JWT-canary-123"));
+            config
+                .save_session_from_connection_info("edge", &connection_info)
+                .unwrap();
+
+            let session = config.get_session("edge").unwrap();
+            assert_eq!(session.host, "db-org.turso.io");
+            assert_eq!(session.port, 443);
+            assert_eq!(session.dbname, "tenant1");
+            assert_eq!(session.database_type, DatabaseType::LibSql);
+            assert_eq!(
+                tls_mode_from_options(&session.options).as_deref(),
+                Some("true")
+            );
+            // neither the session file nor its options ever hold the token
+            assert!(!format!("{session:?}").contains("JWT-canary-123"));
+            assert!(!session.options.values().any(|v| v.contains("JWT-canary")));
+            assert!(
+                !session
+                    .options
+                    .keys()
+                    .any(|k| k.to_lowercase().contains("token"))
+            );
+
+            save_connection_password(
+                &DatabaseType::LibSql,
+                "db-org.turso.io",
+                443,
+                "tenant1",
+                "",
+                Some("true"),
+                "JWT-canary-123",
+            )
+            .unwrap();
+            let url = session.reconstruct_connection_url().unwrap();
+            let reparsed = ConnectionInfo::parse_url(&url).unwrap();
+            assert_eq!(
+                reparsed.password.as_deref(),
+                Some("JWT-canary-123"),
+                "{url}"
+            );
+            assert_eq!(reparsed.host.as_deref(), Some("db-org.turso.io"));
+            assert_eq!(reparsed.database.as_deref(), Some("tenant1"));
+            assert!(reparsed.use_tls);
+        });
+    }
+
+    #[rstest]
+    fn libsql_token_is_not_given_to_a_plain_connection_or_another_target() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mode = |url: &str| {
+                tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
+            };
+            let tls = mode("libsql://db-org.turso.io");
+            assert_eq!(tls, "true");
+            save_connection_password(
+                &DatabaseType::LibSql,
+                "db-org.turso.io",
+                443,
+                "",
+                "",
+                Some(&tls),
+                "JWT-canary-123",
+            )
+            .unwrap();
+            let lookup = |host: &str, port: u16, ns: &str, mode: &str| {
+                lookup_connection_password(&DatabaseType::LibSql, host, port, ns, "", Some(mode))
+            };
+            assert_eq!(
+                lookup("db-org.turso.io", 443, "", &tls).as_deref(),
+                Some("JWT-canary-123")
+            );
+            // another host, another namespace
+            assert_eq!(lookup("evil.example", 443, "", &tls), None);
+            assert_eq!(lookup("db-org.turso.io", 443, "tenant2", &tls), None);
+            // the same host over plain HTTP never gets the token
+            let plain = mode("libsql+http://db-org.turso.io?tls=false");
+            assert_eq!(plain, "false");
+            assert_eq!(lookup("db-org.turso.io", 443, "", &plain), None);
+        });
+    }
+
+    #[rstest]
+    fn redis_unix_socket_sessions_keep_the_socket() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            let info =
+                ConnectionInfo::parse_url("redis+unix:///run/redis.sock?db=3&user=app").unwrap();
+            config
+                .save_session_from_connection_info("sock", &info)
+                .unwrap();
+            let session = config.get_session("sock").unwrap();
+            assert_eq!(session.file_path.as_deref(), Some("/run/redis.sock"));
+            let url = session.reconstruct_connection_url().unwrap();
+            let again = ConnectionInfo::parse_url(&url).unwrap();
+            assert_eq!(again.file_path.as_deref(), Some("/run/redis.sock"));
+            assert_eq!(again.database.as_deref(), Some("3"));
+            assert_eq!(again.username.as_deref(), Some("app"));
+        });
+    }
+
+    #[rstest]
+    fn influxdb_sessions_keep_generation_tls_org_and_the_stored_token() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mut config = get_test_config();
+            // The token typed in the URL never reaches the session file
+            let connection_info = ConnectionInfo::parse_url(
+                "influxdb2s://db.example:8087/telemetry?org=acme&token=tok-canary-1",
+            )
+            .unwrap();
+            assert_eq!(connection_info.password.as_deref(), Some("tok-canary-1"));
+            config
+                .save_session_from_connection_info("metrics", &connection_info)
+                .unwrap();
+
+            let session = config.get_session("metrics").unwrap();
+            assert_eq!(session.host, "db.example");
+            assert_eq!(session.port, 8087);
+            assert_eq!(session.user, "");
+            assert_eq!(session.dbname, "telemetry");
+            assert_eq!(session.database_type, DatabaseType::InfluxDB);
+            assert_eq!(
+                session.options.get("version").map(String::as_str),
+                Some("2")
+            );
+            assert_eq!(session.options.get("org").map(String::as_str), Some("acme"));
+            let tls_mode = tls_mode_from_options(&session.options);
+            assert_eq!(tls_mode.as_deref(), Some("v2+tls@acme"));
+            assert!(!format!("{session:?}").contains("tok-canary-1"));
+            assert!(!session.options.values().any(|v| v == "tok-canary-1"));
+
+            // The token (saved once, e.g. after the first successful connect)
+            // lives in the store under the target binding and comes back
+            save_connection_password(
+                &DatabaseType::InfluxDB,
+                "db.example",
+                8087,
+                "telemetry",
+                "",
+                tls_mode.as_deref(),
+                "tok-canary-1",
+            )
+            .unwrap();
+            let url = session.reconstruct_connection_url().unwrap();
+            let reparsed = ConnectionInfo::parse_url(&url).unwrap();
+            assert_eq!(reparsed.database_type, DatabaseType::InfluxDB);
+            assert_eq!(reparsed.password.as_deref(), Some("tok-canary-1"), "{url}");
+            assert_eq!(reparsed.port, Some(8087));
+            assert_eq!(reparsed.database.as_deref(), Some("telemetry"));
+            assert!(reparsed.use_tls, "TLS survives the session: {url}");
+            assert_eq!(crate::database::influxdb_version(&reparsed.options), 2);
+            assert_eq!(
+                reparsed.options.get("org").map(String::as_str),
+                Some("acme")
+            );
+        });
+    }
+
+    #[rstest]
+    fn influxdb_token_is_not_given_to_another_target_generation_org_or_weaker_tls() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            let mode = |url: &str| {
+                tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
+            };
+            let secure = mode("influxdb2s://db.example/telemetry?org=acme");
+            let lookup = |host: &str, db: &str, mode: &str| {
+                lookup_connection_password(&DatabaseType::InfluxDB, host, 8086, db, "", Some(mode))
+            };
+            save_connection_password(
+                &DatabaseType::InfluxDB,
+                "db.example",
+                8086,
+                "telemetry",
+                "",
+                Some(&secure),
+                "tok-canary-2",
+            )
+            .unwrap();
+            assert_eq!(
+                lookup("db.example", "telemetry", &secure).as_deref(),
+                Some("tok-canary-2")
+            );
+            assert_eq!(lookup("evil.example", "telemetry", &secure), None);
+            assert_eq!(lookup("db.example", "other", &secure), None);
+            // another organization, another generation, plain HTTP, or a
+            // connection that stopped verifying the certificate
+            for url in [
+                "influxdb2s://db.example/telemetry?org=other",
+                "influxdb3s://db.example:8086/telemetry",
+                "influxdbs://db.example/telemetry",
+                "influxdb2://db.example/telemetry?org=acme",
+                "influxdb2s://db.example/telemetry?org=acme&verify_certs=false",
+            ] {
+                assert_eq!(lookup("db.example", "telemetry", &mode(url)), None, "{url}");
+            }
+        });
+    }
+
+    #[test]
+    fn influxdb_recent_connections_never_persist_the_token() {
+        let mut config = get_test_config();
+        for url in [
+            "influxdb2://:tok-canary-3@h:8086/b?org=o",
+            "influxdb2://h:8086/b?org=o&token=tok-canary-3",
+            "influxdb://alice:tok-canary-3@h/db",
+        ] {
+            let info = ConnectionInfo::parse_url(url).unwrap();
+            // what the CLI records: the credential-free rendering, and the
+            // raw URL if it ever gets that far
+            for recorded in [info.to_url(), url.to_string()] {
+                config
+                    .add_recent_connection_auto_display(recorded, DatabaseType::InfluxDB, true)
+                    .unwrap();
+            }
+        }
+        let dump = format!("{:?}", config.recent_connections_storage.connections);
+        assert!(!dump.contains("tok-canary-3"), "{dump}");
+        let on_disk = toml::to_string(&config.recent_connections_storage).unwrap();
+        assert!(!on_disk.contains("tok-canary-3"), "{on_disk}");
     }
 
     #[rstest]
@@ -5946,6 +6683,10 @@ mod tests {
             ("ClickHouse", DatabaseType::ClickHouse),
             ("Elasticsearch", DatabaseType::Elasticsearch),
             ("WhiteDragon", DatabaseType::WhiteDragon),
+            ("Redis", DatabaseType::Redis),
+            ("SqlServer", DatabaseType::SqlServer),
+            ("Redshift", DatabaseType::Redshift),
+            ("LibSql", DatabaseType::LibSql),
             ("Parquet", DatabaseType::Parquet),
             ("DuckDB", DatabaseType::DuckDB),
         ] {

@@ -21,6 +21,7 @@ pub mod options; // Connection-option keys DBCrust interprets (vault, password c
 pub mod output_format; // `-o/--format` output format enum
 pub mod password_sanitizer; // Secret redaction for URLs, options and error text
 pub mod performance_analyzer; // Performance analysis for EXPLAIN queries
+pub mod redis_command; // `redis-cli` style command-line tokenizer (shared by the Redis driver and the safety guard)
 pub mod regex_operators; // Cross-backend translation of PG-style regex operators (~, ~*, !~, !~*)
 pub mod safety; // Read-only statement classification (--read-only + AI agent guard)
 pub mod sql_buffer; // Statement splitting / completeness lexer (the REPL validator is in root)

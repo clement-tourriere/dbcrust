@@ -59,6 +59,11 @@ jobs:
           - { name: clickhouse, features: "clickhouse" }
           - { name: elasticsearch, features: "elasticsearch" }
           - { name: white-dragon, features: "white-dragon" }
+          - { name: redis, features: "redis" }
+          - { name: mssql, features: "mssql" }
+          - { name: redshift, features: "redshift" }
+          - { name: libsql, features: "libsql" }
+          - { name: influxdb, features: "influxdb" }
           - { name: files, features: "files" }
           - { name: docker, features: "docker" }
           - { name: ai, features: "ai" }
@@ -95,10 +100,20 @@ jobs:
         run: |
           cargo tree --locked -p dbcrust --no-default-features --features standard -e normal --prefix none \
             | awk '{print $1}' | sort -u > standard-crates.txt
-          if grep -xE '(mongodb|bson|clickhouse|elasticsearch|datafusion(-.*)?|arrow(-.*)?|parquet|bollard|genai|ratatui|arboard|dbcrust-(ai|docker|driver-(mongodb|clickhouse|elasticsearch|white-dragon|files)))' standard-crates.txt; then
+          if grep -xE '(mongodb|bson|clickhouse|elasticsearch|datafusion(-.*)?|arrow(-.*)?|parquet|bollard|genai|ratatui|arboard|redis|tiberius|dbcrust-(ai|docker|driver-(mongodb|clickhouse|elasticsearch|white-dragon|redis|mssql|redshift|libsql|influxdb|files)))' standard-crates.txt; then
             echo "::error::the standard preset pulls in a crate that belongs to an opt-in feature"
             exit 1
           fi
+      - name: one TLS stack (rustls on ring) across the workspace
+        # The vendored tiberius (third_party/tiberius) exists to keep aws-lc-rs
+        # out; OpenSSL and native-tls were never meant to be here either
+        run: |
+          for crate in aws-lc-rs aws-lc-sys openssl native-tls; do
+            if cargo tree --locked --workspace --target all -i "$crate" > /dev/null 2>&1; then
+              echo "::error::$crate is in the dependency tree"
+              exit 1
+            fi
+          done
       - name: clippy
         run: mbx clippy --locked -p dbcrust --no-default-features --features standard --all-targets -- -D warnings
       - name: tests

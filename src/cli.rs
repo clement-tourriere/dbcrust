@@ -15,6 +15,11 @@ const ROOT_EXAMPLES: &str = "Examples:
   dbcrust ./data.csv                # infer CSV from extension
   dbcrust sqlite:///path/to/file.db
   dbcrust white-dragon://localhost:7700
+  dbcrust redis://localhost:6379/0  # commands as you type them in redis-cli
+  dbcrust mssql://sa:pass@localhost:1433/master   # SQL Server / Azure SQL (TLS on by default)
+  dbcrust redshift://awsuser:pass@cluster.abc.eu-west-1.redshift.amazonaws.com:5439/dev   # Amazon Redshift (TLS required)
+  dbcrust 'libsql://my-db-org.turso.io?authToken=...'   # Turso / libSQL over HTTPS (libsql+http://localhost:8080 for a local sqld)
+  dbcrust influxdb://localhost:8086/telemetry     # InfluxDB v1 (InfluxQL); influxdb2:// Flux, influxdb3:// SQL
   dbcrust 'parquet:///data/*.parquet'
   dbcrust file://                   # pick a compatible file from the current directory
   dbcrust config                    # interactive configuration menu (no connection)
@@ -66,6 +71,11 @@ pub struct Args {
     ///   SQLite:     sqlite:///path/to/database.db or ./database.sqlite
     ///   ClickHouse: clickhouse://user:pass@localhost:8123/mydb
     ///   White Dragon: white-dragon://localhost:7700
+    ///   Redis:      redis://localhost:6379/0 | rediss://user:pass@host/0 (TLS)
+    ///   SQL Server: mssql://user:pass@localhost:1433/mydb | mssql://user:pass@host%5CINSTANCE/mydb
+    ///   Redshift:   redshift://user:pass@cluster.example.redshift.amazonaws.com:5439/dev
+    ///   libSQL:     libsql://my-db-org.turso.io?authToken=TOKEN | libsql+http://localhost:8080
+    ///   InfluxDB:   influxdb://user:pass@localhost:8086/mydb | influxdb2://:TOKEN@host:8086/bucket?org=acme | influxdb3://:TOKEN@host/mydb (trailing s = TLS)
     ///   Docker:     docker://container_name/mydb
     ///   Files:      ./data.csv | parquet:///data/*.parquet | csv:///logs/*.csv | file://
     ///   Session:    session://saved_session_name

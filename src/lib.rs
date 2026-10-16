@@ -49,7 +49,7 @@ pub mod vault_client; // Add backslash commands module
 pub use dbcrust_core::{
     ai_config, complex_display, ddl, docker_target, explain_plan, format, geojson_display,
     json_display, model, options, output_format, password_sanitizer, performance_analyzer,
-    regex_operators, safety, sql_parser, tls, vector_display,
+    redis_command, regex_operators, safety, sql_parser, tls, vector_display,
 };
 
 // The AI assistant and Docker discovery/routing/relay moved to their own

@@ -50,9 +50,11 @@ pub enum Dialect {
 impl Dialect {
     pub fn of(db_type: Option<&DatabaseType>) -> Self {
         match db_type {
-            Some(DatabaseType::PostgreSQL | DatabaseType::DuckDB) => Dialect::PostgreSql,
+            Some(DatabaseType::PostgreSQL | DatabaseType::DuckDB | DatabaseType::Redshift) => {
+                Dialect::PostgreSql
+            }
             Some(DatabaseType::MySQL) => Dialect::MySql,
-            Some(DatabaseType::SQLite) => Dialect::Sqlite,
+            Some(DatabaseType::SQLite | DatabaseType::LibSql) => Dialect::Sqlite,
             _ => Dialect::Generic,
         }
     }

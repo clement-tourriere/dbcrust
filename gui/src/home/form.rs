@@ -1535,7 +1535,7 @@ impl ConnectionForm {
                             .child(Input::new(&self.user)),
                     )
                     .child(
-                        field().label("Password").col_span(3).child(
+                        field().label(urls::secret_label(db)).col_span(3).child(
                             Input::new(&self.password)
                                 .mask_toggle()
                                 .content_type(InputContentType::Password),

@@ -84,18 +84,22 @@ pub fn parse_database_list(rows: Vec<Vec<String>>) -> Vec<String> {
 /// with the engine's quote character, doubling embedded quotes.
 pub fn quote_identifier(db_type: &DatabaseType, identifier: &str) -> String {
     let backtick = matches!(db_type, DatabaseType::MySQL | DatabaseType::ClickHouse);
+    let brackets = matches!(db_type, DatabaseType::SqlServer);
     let bare = !identifier.is_empty()
         && !is_reserved_word(identifier)
         && identifier.chars().enumerate().all(|(i, c)| {
             let first_ok = c == '_' || c.is_ascii_alphabetic();
             let rest_ok = first_ok || c.is_ascii_digit() || c == '$';
-            let case_ok = !matches!(db_type, DatabaseType::PostgreSQL) || !c.is_ascii_uppercase();
+            let case_ok = !matches!(db_type, DatabaseType::PostgreSQL | DatabaseType::Redshift)
+                || !c.is_ascii_uppercase();
             (if i == 0 { first_ok } else { rest_ok }) && case_ok
         });
     if bare {
         identifier.to_string()
     } else if backtick {
         format!("`{}`", identifier.replace('`', "``"))
+    } else if brackets {
+        format!("[{}]", identifier.replace(']', "]]"))
     } else {
         format!("\"{}\"", identifier.replace('"', "\"\""))
     }
@@ -116,9 +120,13 @@ pub fn table_reference(db_type: &DatabaseType, entry: &TableEntry) -> String {
 /// The schema objects live in when none is given.
 pub fn is_default_schema(db_type: &DatabaseType, schema: &str) -> bool {
     match db_type {
-        DatabaseType::PostgreSQL => schema == "public",
-        DatabaseType::SQLite | DatabaseType::DuckDB => schema == "main",
+        DatabaseType::PostgreSQL | DatabaseType::Redshift => schema == "public",
+        DatabaseType::SQLite | DatabaseType::DuckDB | DatabaseType::LibSql => schema == "main",
+        DatabaseType::SqlServer => schema == "dbo",
         DatabaseType::MongoDB | DatabaseType::Elasticsearch => true,
+        // A measurement belongs to the connected database; `"db"."x"` would
+        // name a retention policy in InfluxQL
+        DatabaseType::InfluxDB => true,
         _ => false,
     }
 }
@@ -198,11 +206,21 @@ pub fn is_system_object(db_type: &DatabaseType, entry: &TableEntry) -> bool {
                 || schema.starts_with("information_schema")
                 || name.starts_with("pg_")
         }
+        DatabaseType::Redshift => {
+            schema == "pg_catalog"
+                || schema == "pg_internal"
+                || schema.starts_with("information_schema")
+                || name.starts_with("pg_")
+                || name.starts_with("stl_")
+                || name.starts_with("stv_")
+                || name.starts_with("svv_")
+                || name.starts_with("svl_")
+        }
         DatabaseType::MySQL => matches!(
             schema.as_str(),
             "information_schema" | "performance_schema" | "mysql" | "sys"
         ),
-        DatabaseType::SQLite => name.starts_with("sqlite_"),
+        DatabaseType::SQLite | DatabaseType::LibSql => name.starts_with("sqlite_"),
         DatabaseType::ClickHouse => schema == "system" || schema == "information_schema",
         DatabaseType::MongoDB => name.starts_with("system."),
         DatabaseType::Elasticsearch => name.starts_with('.'),
@@ -238,10 +256,53 @@ pub fn describe_name(db_type: &DatabaseType, entry: &TableEntry) -> String {
     }
 }
 
-/// `SELECT * FROM <table> LIMIT n;` (MongoDB: `db.<collection>.find({})`).
+/// A Redis key as one `redis-cli` argument: double-quoted, `\` and `"` escaped.
+fn redis_key(name: &str) -> String {
+    format!("\"{}\"", name.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+/// The read command that previews a Redis key of the entry's type (the
+/// explorer's "kind" is the key's `TYPE`), bounded to `limit` elements.
+fn redis_preview(entry: &TableEntry, limit: usize) -> String {
+    let key = redis_key(&entry.name);
+    let last = limit.saturating_sub(1);
+    match entry.kind.label() {
+        "string" => format!("GET {key}"),
+        "hash" => format!("HSCAN {key} 0 COUNT {limit}"),
+        "list" => format!("LRANGE {key} 0 {last}"),
+        "set" => format!("SSCAN {key} 0 COUNT {limit}"),
+        "zset" => format!("ZRANGE {key} 0 {last} WITHSCORES"),
+        "stream" => format!("XRANGE {key} - + COUNT {limit}"),
+        _ => format!("TYPE {key}"),
+    }
+}
+
+/// The command that sizes a Redis key of the entry's type.
+fn redis_size(entry: &TableEntry) -> String {
+    let key = redis_key(&entry.name);
+    let command = match entry.kind.label() {
+        "string" => "STRLEN",
+        "hash" => "HLEN",
+        "list" => "LLEN",
+        "set" => "SCARD",
+        "zset" => "ZCARD",
+        "stream" => "XLEN",
+        _ => "TTL",
+    };
+    format!("{command} {key}")
+}
+
+/// `SELECT * FROM <table> LIMIT n;` (SQL Server: `SELECT TOP (n) * FROM …`;
+/// MongoDB: `db.<collection>.find({})`; Redis: the read command for the key's
+/// type).
 pub fn select_star_sql(db_type: &DatabaseType, entry: &TableEntry, limit: usize) -> String {
     match db_type {
         DatabaseType::MongoDB => format!("db.{}.find({{}})", entry.name),
+        DatabaseType::Redis => redis_preview(entry, limit),
+        DatabaseType::SqlServer => format!(
+            "SELECT TOP ({limit}) * FROM {};",
+            table_reference(db_type, entry)
+        ),
         _ => format!(
             "SELECT * FROM {} LIMIT {limit};",
             table_reference(db_type, entry)
@@ -256,7 +317,7 @@ pub fn select_columns_sql(
     columns: &[String],
     limit: usize,
 ) -> String {
-    if columns.is_empty() || matches!(db_type, DatabaseType::MongoDB) {
+    if columns.is_empty() || matches!(db_type, DatabaseType::MongoDB | DatabaseType::Redis) {
         return select_star_sql(db_type, entry, limit);
     }
     let list = columns
@@ -264,6 +325,12 @@ pub fn select_columns_sql(
         .map(|column| format!("    {}", quote_identifier(db_type, column)))
         .collect::<Vec<_>>()
         .join(",\n");
+    if matches!(db_type, DatabaseType::SqlServer) {
+        return format!(
+            "SELECT TOP ({limit})\n{list}\nFROM {};",
+            table_reference(db_type, entry)
+        );
+    }
     format!(
         "SELECT\n{list}\nFROM {}\nLIMIT {limit};",
         table_reference(db_type, entry)
@@ -276,6 +343,7 @@ pub fn count_sql(db_type: &DatabaseType, entry: &TableEntry) -> String {
         DatabaseType::MongoDB => {
             format!("db.{}.aggregate([{{\"$count\": \"count\"}}])", entry.name)
         }
+        DatabaseType::Redis => redis_size(entry),
         _ => format!("SELECT COUNT(*) FROM {};", table_reference(db_type, entry)),
     }
 }
@@ -330,8 +398,10 @@ pub fn supports_insert(db_type: &DatabaseType) -> bool {
     matches!(
         db_type,
         DatabaseType::PostgreSQL
+            | DatabaseType::Redshift
             | DatabaseType::MySQL
             | DatabaseType::SQLite
+            | DatabaseType::LibSql
             | DatabaseType::ClickHouse
     )
 }
@@ -910,9 +980,15 @@ pub fn view_queries(db_type: &DatabaseType) -> Vec<(TableKind, &'static str)> {
             "SELECT table_schema, table_name FROM information_schema.views \
              WHERE table_schema = DATABASE()",
         )],
-        DatabaseType::SQLite => vec![(
+        DatabaseType::SQLite | DatabaseType::LibSql => vec![(
             TableKind::View,
             "SELECT 'main', name FROM sqlite_master WHERE type = 'view'",
+        )],
+        // Late-binding views are in pg_views too
+        DatabaseType::Redshift => vec![(
+            TableKind::View,
+            "SELECT schemaname, viewname FROM pg_views \
+             WHERE schemaname NOT IN ('pg_catalog', 'information_schema', 'pg_internal')",
         )],
         DatabaseType::ClickHouse => vec![
             (
@@ -1123,7 +1199,7 @@ pub fn describe_counts(db_type: &DatabaseType, details: &TableDetails) -> String
 /// Whether the engine reports incoming foreign keys. (SQLite, MySQL and
 /// ClickHouse describe only the outgoing ones.)
 pub fn reports_references(db_type: &DatabaseType) -> bool {
-    matches!(db_type, DatabaseType::PostgreSQL)
+    matches!(db_type, DatabaseType::PostgreSQL | DatabaseType::Redshift)
 }
 
 /// The tables of one schema snapshot by name, to resolve many foreign key
@@ -1548,6 +1624,73 @@ mod tests {
         let entry = table(schema, name, TableKind::Table);
         assert_eq!(select_star_sql(&db_type, &entry, PREVIEW_ROWS), select);
         assert_eq!(count_sql(&db_type, &entry), count);
+    }
+
+    #[rstest::rstest]
+    #[case("string", "GET \"k\"", "STRLEN \"k\"")]
+    #[case("hash", "HSCAN \"k\" 0 COUNT 100", "HLEN \"k\"")]
+    #[case("list", "LRANGE \"k\" 0 99", "LLEN \"k\"")]
+    #[case("set", "SSCAN \"k\" 0 COUNT 100", "SCARD \"k\"")]
+    #[case("zset", "ZRANGE \"k\" 0 99 WITHSCORES", "ZCARD \"k\"")]
+    #[case("stream", "XRANGE \"k\" - + COUNT 100", "XLEN \"k\"")]
+    #[case("ReJSON-RL", "TYPE \"k\"", "TTL \"k\"")]
+    fn redis_keys_preview_with_the_command_of_their_type(
+        #[case] kind: &str,
+        #[case] select: &str,
+        #[case] count: &str,
+    ) {
+        let entry = table(None, "k", TableKind::from_label(kind));
+        assert_eq!(
+            select_star_sql(&DatabaseType::Redis, &entry, PREVIEW_ROWS),
+            select
+        );
+        assert_eq!(count_sql(&DatabaseType::Redis, &entry), count);
+    }
+
+    #[test]
+    fn redis_key_names_are_quoted_for_the_command_line() {
+        let entry = table(None, "a \"b\" \\c", TableKind::from_label("string"));
+        assert_eq!(
+            select_star_sql(&DatabaseType::Redis, &entry, PREVIEW_ROWS),
+            "GET \"a \\\"b\\\" \\\\c\""
+        );
+        // The explorer's column picker has nothing to pick: it previews the key
+        assert_eq!(
+            select_columns_sql(&DatabaseType::Redis, &entry, &["x".to_string()], 5),
+            "GET \"a \\\"b\\\" \\\\c\""
+        );
+    }
+
+    #[test]
+    fn sql_server_previews_use_top_and_brackets() {
+        let sql_server = DatabaseType::SqlServer;
+        let entry = |schema: &str, name: &str| TableEntry {
+            schema: Some(schema.into()),
+            name: name.into(),
+            kind: TableKind::Table,
+            owner: None,
+        };
+        assert_eq!(
+            select_star_sql(&sql_server, &entry("dbo", "Orders"), 100),
+            "SELECT TOP (100) * FROM Orders;"
+        );
+        assert_eq!(
+            select_star_sql(&sql_server, &entry("Sales", "Order Items"), 100),
+            "SELECT TOP (100) * FROM Sales.[Order Items];"
+        );
+        assert_eq!(
+            select_columns_sql(
+                &sql_server,
+                &entry("dbo", "T"),
+                &["id".to_string(), "a]b".to_string()],
+                5
+            ),
+            "SELECT TOP (5)\n    id,\n    [a]]b]\nFROM T;"
+        );
+        assert_eq!(
+            count_sql(&sql_server, &entry("Sales", "Orders")),
+            "SELECT COUNT(*) FROM Sales.Orders;"
+        );
     }
 
     #[test]

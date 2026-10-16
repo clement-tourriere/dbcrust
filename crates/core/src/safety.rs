@@ -7,7 +7,9 @@
 //! (`PRAGMA query_only` on SQLite, `default_transaction_read_only` on
 //! PostgreSQL) backs this guard where the driver supports it.
 
-use crate::database::DatabaseType;
+use crate::database::{DatabaseType, InfluxLanguage};
+
+mod influxdb;
 
 /// Marker carried by every [`ReadOnlyViolation`] message. One-shot exit-code
 /// mapping string-matches on it because violations cross `Box<dyn Error>`
@@ -33,9 +35,24 @@ pub fn check_read_only(query: &str, db_type: &DatabaseType) -> Result<(), ReadOn
         DatabaseType::MongoDB => check_mongodb(query),
         DatabaseType::Elasticsearch => check_elasticsearch(query),
         DatabaseType::WhiteDragon => check_white_dragon(query),
+        DatabaseType::Redis => check_redis(query),
+        DatabaseType::SqlServer => check_sql_server(query),
+        DatabaseType::Redshift => check_redshift(query),
+        DatabaseType::LibSql => check_libsql(query),
+        DatabaseType::InfluxDB => influxdb::check_influxdb(query),
         _ => check_sql(query),
     };
     verdict.map_err(|reason| ReadOnlyViolation { reason })
+}
+
+/// Reject `query` unless it is a read-only InfluxDB query in `language`
+/// (InfluxQL, Flux or v3 SQL). [`check_read_only`] guesses the language;
+/// drivers and the CLI that know the connection's language use this one.
+pub fn check_influxdb_read_only(
+    query: &str,
+    language: InfluxLanguage,
+) -> Result<(), ReadOnlyViolation> {
+    influxdb::check_influxdb_as(query, language).map_err(|reason| ReadOnlyViolation { reason })
 }
 
 /// True when nothing follows the first `;` — i.e. the string is a single
@@ -67,6 +84,362 @@ fn check_sql(query: &str) -> Result<(), String> {
     }
     if let Some(reason) = side_effect_guard(trimmed) {
         return Err(format!("statement {reason}"));
+    }
+    Ok(())
+}
+
+/// Redshift: the PostgreSQL-style textual guard plus the Redshift statements
+/// that write outside the cluster (`UNLOAD`/`COPY` to and from S3, stored
+/// procedures, datashares). Those are refused by the "starts with SELECT/WITH/
+/// EXPLAIN/SHOW" rule already, so the extra check only has to look inside
+/// `EXPLAIN`, the one prefix that wraps another statement. A SELECT can still
+/// call a Lambda UDF or read whatever the user can; use a read-only user
+/// (`GRANT SELECT` only) for a hard limit.
+fn check_redshift(query: &str) -> Result<(), String> {
+    let upper = query.trim().to_uppercase();
+    if upper.starts_with("PRAGMA") {
+        return Err("PRAGMA is not a Redshift statement".to_string());
+    }
+    check_sql(query)?;
+    if upper.starts_with("EXPLAIN") {
+        const WRAPPED: [&str; 7] = [
+            "UNLOAD", "COPY", "CALL", "VACUUM", "ANALYZE", "CANCEL", "ABORT",
+        ];
+        if let Some(word) = upper
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .find(|token| WRAPPED.contains(token))
+        {
+            return Err(format!("EXPLAIN of {word} is not allowed"));
+        }
+    }
+    Ok(())
+}
+
+/// `PRAGMA`s a remote libSQL connection may run: introspection only. The
+/// local SQLite rule (any `PRAGMA name` without `=`) lets calls such as
+/// `PRAGMA wal_checkpoint` or `PRAGMA incremental_vacuum(10)` through, and on a
+/// shared server they are not ours to run.
+const LIBSQL_READ_PRAGMAS: &[&str] = &[
+    "TABLE_INFO",
+    "TABLE_XINFO",
+    "TABLE_LIST",
+    "INDEX_LIST",
+    "INDEX_INFO",
+    "INDEX_XINFO",
+    "FOREIGN_KEY_LIST",
+    "FOREIGN_KEY_CHECK",
+    "DATABASE_LIST",
+    "COLLATION_LIST",
+    "FUNCTION_LIST",
+    "MODULE_LIST",
+    "PRAGMA_LIST",
+    "COMPILE_OPTIONS",
+    "ENCODING",
+    "PAGE_COUNT",
+    "PAGE_SIZE",
+    "USER_VERSION",
+    "SCHEMA_VERSION",
+    "FOREIGN_KEYS",
+    "JOURNAL_MODE",
+    "QUERY_ONLY",
+];
+
+/// libSQL / Turso (Hrana over HTTP, SQLite dialect): the SQLite textual guard
+/// with a stricter `PRAGMA` rule, and the SQLite statements that reach outside
+/// the database file refused wherever they appear (`SELECT load_extension()`,
+/// `EXPLAIN VACUUM INTO`, `ATTACH`/`DETACH`). The driver additionally asks the
+/// server whether the statement is read-only (`describe.is_readonly`, SQLite's
+/// own `sqlite3_stmt_readonly`) before running it. A read-only *token* is the
+/// only hard limit.
+fn check_libsql(query: &str) -> Result<(), String> {
+    let trimmed = query.trim();
+    let upper = trimmed.to_uppercase();
+    if let Some(pragma) = upper.strip_prefix("PRAGMA") {
+        if !is_single_statement(&upper) {
+            return Err("multi-statement PRAGMA batches are not allowed".to_string());
+        }
+        if trimmed.contains('=') {
+            return Err("PRAGMA assignments modify database state".to_string());
+        }
+        let name = pragma
+            .trim_start()
+            .split(|c: char| c == '(' || c == ';' || c.is_whitespace())
+            .next()
+            .unwrap_or_default()
+            .rsplit('.')
+            .next()
+            .unwrap_or_default()
+            .to_string();
+        return if LIBSQL_READ_PRAGMAS.contains(&name.as_str()) {
+            Ok(())
+        } else {
+            Err(format!(
+                "PRAGMA {} is not on the read-only allowlist",
+                name.to_lowercase()
+            ))
+        };
+    }
+    check_sql(query)?;
+    if let Some(word) = upper
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .find(|token| matches!(*token, "LOAD_EXTENSION" | "ATTACH" | "DETACH" | "VACUUM"))
+    {
+        return Err(format!("statement uses {word}"));
+    }
+    Ok(())
+}
+
+/// T-SQL statement keywords that start something other than a query. They
+/// are refused wherever they appear (reserved words cannot be unquoted
+/// identifiers, so a legitimate query never contains them): this is what
+/// keeps `SELECT 1 DROP TABLE t` (no `;` needed in T-SQL) and the bodies of
+/// subqueries honest, on top of the "starts with SELECT/WITH" rule.
+const TSQL_DENIED_WORDS: &[&str] = &[
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "MERGE",
+    "TRUNCATE",
+    "CREATE",
+    "ALTER",
+    "DROP",
+    "GRANT",
+    "DENY",
+    "REVOKE",
+    "EXEC",
+    "EXECUTE",
+    "DBCC",
+    "BACKUP",
+    "RESTORE",
+    "DUMP",
+    "LOAD",
+    "BULK",
+    "WAITFOR",
+    "SHUTDOWN",
+    "KILL",
+    "RECONFIGURE",
+    "CHECKPOINT",
+    "USE",
+    "SET",
+    "SETUSER",
+    "REVERT",
+    "DECLARE",
+    "BEGIN",
+    "COMMIT",
+    "ROLLBACK",
+    "SAVE",
+    "IF",
+    "WHILE",
+    "BREAK",
+    "CONTINUE",
+    "GOTO",
+    "RETURN",
+    "PRINT",
+    "RAISERROR",
+    "THROW",
+    "OPEN",
+    "CLOSE",
+    "DEALLOCATE",
+    "READTEXT",
+    "WRITETEXT",
+    "UPDATETEXT",
+    "RECEIVE",
+    // `SELECT … INTO` creates a table; the other INTOs belong to INSERT
+    "INTO",
+    // Locking hints that take update/exclusive locks
+    "UPDLOCK",
+    "XLOCK",
+    "TABLOCKX",
+];
+
+/// Names refused as exact matches (functions and rowsets that reach outside
+/// the database: linked servers, files, other servers' data).
+const TSQL_DENIED_NAMES: &[&str] = &[
+    "OPENROWSET",
+    "OPENQUERY",
+    "OPENDATASOURCE",
+    "OPENXML",
+    "FN_GET_AUDIT_FILE",
+    "FN_DUMP_DBLOG",
+];
+
+/// Name prefixes refused: system and extended procedures (`xp_cmdshell`,
+/// `sp_configure`, `sp_executesql`…), trace and extended-event file readers.
+const TSQL_DENIED_NAME_PREFIXES: &[&str] = &["SP_", "XP_", "FN_TRACE_", "FN_XE_"];
+
+/// Word pairs that are only a problem together (the first word alone is an
+/// ordinary identifier or part of an ordinary query).
+const TSQL_DENIED_PAIRS: &[(&str, &str)] = &[
+    ("NEXT", "VALUE"), // NEXT VALUE FOR seq advances a sequence
+    ("END", "CONVERSATION"),
+    ("GET", "CONVERSATION"),
+    ("MOVE", "CONVERSATION"),
+    ("SEND", "ON"),
+    ("ADD", "SIGNATURE"),
+    ("ENABLE", "TRIGGER"),
+    ("DISABLE", "TRIGGER"),
+];
+
+/// The text of a `[bracketed]` or `"quoted"` identifier token, unescaped and
+/// uppercased; `None` for string literals and other tokens.
+fn tsql_quoted_identifier(sql: &str, token: &Token) -> Option<String> {
+    if token.kind != Tok::Quoted {
+        return None;
+    }
+    let text = &sql[token.start..token.end];
+    let (open, close) = match text.chars().next()? {
+        '[' => ('[', ']'),
+        '"' => ('"', '"'),
+        _ => return None,
+    };
+    let inner = text.strip_prefix(open)?.strip_suffix(close)?;
+    let doubled = format!("{close}{close}");
+    Some(inner.replace(&doubled, &close.to_string()).to_uppercase())
+}
+
+fn tsql_name_denied(name: &str) -> bool {
+    TSQL_DENIED_NAMES.contains(&name)
+        || TSQL_DENIED_NAME_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+}
+
+/// Whether `token` is the first thing on its line and the rest of the line is
+/// at most a repeat count — the `GO` batch separator that sqlcmd/SSMS split on.
+fn is_go_batch_separator(sql: &str, token: &Token) -> bool {
+    if !token.is_word("GO") {
+        return false;
+    }
+    let line_start = sql[..token.start].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = sql[token.end..]
+        .find('\n')
+        .map_or(sql.len(), |i| token.end + i);
+    sql[line_start..token.start].trim().is_empty()
+        && sql[token.end..line_end]
+            .trim()
+            .chars()
+            .all(|c| c.is_ascii_digit())
+}
+
+/// T-SQL (SQL Server / Azure SQL): default-deny. A statement is accepted only
+/// when it starts with `SELECT`/`WITH … SELECT` (an optional leading `EXPLAIN`
+/// is the driver's showplan shorthand) and contains none of the statement
+/// keywords, extended procedures, linked-server and file rowsets listed above.
+/// Best effort like the other textual guards: a SELECT can still call a CLR or
+/// scalar function with side effects, and can read whatever the login can —
+/// use a read-only login (`db_datareader` + `DENY` writes) for a hard limit.
+fn check_sql_server(query: &str) -> Result<(), String> {
+    let tokens = lex(query, Dialect::SqlServer).map_err(|refusal| refusal.reason)?;
+
+    // Statements: split on top-level `;`, empty ones (`;WITH …`, `…;;`) ignored
+    let mut statements = tokens
+        .split(|t| t.is_punct(';'))
+        .filter(|statement| !statement.is_empty());
+    let Some(statement) = statements.next() else {
+        return Err("the statement is empty".to_string());
+    };
+    if statements.next().is_some() {
+        return Err("multi-statement batches are not allowed".to_string());
+    }
+
+    if tokens.iter().any(|t| is_go_batch_separator(query, t)) {
+        return Err("the GO batch separator is not part of T-SQL and is not allowed".to_string());
+    }
+
+    // The statement verb: leading parentheses (`(SELECT 1) UNION …`), then
+    // an optional EXPLAIN, then SELECT or WITH
+    let mut body = statement;
+    while body.first().is_some_and(|t| t.is_punct('(')) {
+        body = &body[1..];
+    }
+    if body.first().is_some_and(|t| t.is_word("EXPLAIN")) {
+        body = &body[1..];
+        while body.first().is_some_and(|t| t.is_punct('(')) {
+            body = &body[1..];
+        }
+    }
+    match body.first().and_then(Token::word) {
+        Some("SELECT") => {}
+        Some("WITH") => {
+            // The main statement follows the CTE list at the same depth
+            let depth = body[0].depth;
+            let main = body[1..]
+                .iter()
+                .find(|t| t.depth == depth && t.is_word("SELECT"));
+            if main.is_none() {
+                return Err("WITH must be followed by a SELECT".to_string());
+            }
+        }
+        _ => {
+            return Err(
+                "only SELECT (or WITH … SELECT) statements are allowed on SQL Server".to_string(),
+            );
+        }
+    }
+
+    // Four-part names (`linked.db.schema.table`) run on another server. A
+    // name part directly followed by a dot continues the chain; anything else
+    // starts a new one (so `a.b JOIN c.d JOIN e.f` is three short chains)
+    #[derive(PartialEq)]
+    enum Last {
+        Nothing,
+        Name,
+        Dot,
+    }
+    let (mut last, mut dots) = (Last::Nothing, 0usize);
+    for token in statement {
+        match &token.kind {
+            Tok::Punct('.') => {
+                dots = if last == Last::Nothing { 1 } else { dots + 1 };
+                last = Last::Dot;
+                if dots >= 3 {
+                    return Err(
+                        "four-part names (linked servers) are not allowed on SQL Server"
+                            .to_string(),
+                    );
+                }
+            }
+            Tok::Word(_) | Tok::Quoted => {
+                if last != Last::Dot {
+                    dots = 0;
+                }
+                last = Last::Name;
+            }
+            _ => (last, dots) = (Last::Nothing, 0),
+        }
+    }
+
+    for (i, token) in statement.iter().enumerate() {
+        let next = statement.get(i + 1).and_then(Token::word);
+        if let Some(word) = token.word() {
+            // `MERGE JOIN` / `MERGE UNION` are join hints, not the statement
+            let merge_hint = word == "MERGE" && matches!(next, Some("JOIN" | "UNION"));
+            if TSQL_DENIED_WORDS.contains(&word) && !merge_hint {
+                return Err(format!(
+                    "{word} is not allowed on SQL Server in read-only mode"
+                ));
+            }
+            if tsql_name_denied(word) {
+                return Err(format!(
+                    "{word} reaches outside the database and is not allowed"
+                ));
+            }
+            if TSQL_DENIED_PAIRS
+                .iter()
+                .any(|(first, second)| word == *first && next == Some(*second))
+            {
+                return Err(format!(
+                    "{word} {} is not allowed on SQL Server in read-only mode",
+                    next.unwrap_or_default()
+                ));
+            }
+        } else if let Some(name) = tsql_quoted_identifier(query, token)
+            && tsql_name_denied(&name)
+        {
+            return Err(format!(
+                "{name} reaches outside the database and is not allowed"
+            ));
+        }
     }
     Ok(())
 }
@@ -140,6 +513,231 @@ fn check_white_dragon(query: &str) -> Result<(), String> {
         Err("an empty White Dragon search is not valid".to_string())
     } else {
         Ok(())
+    }
+}
+
+/// Redis commands that read and have no side effect on the dataset, matched on
+/// the upper-cased command name. Everything else — every write, every admin
+/// command, anything new or module-provided — is refused (default-deny).
+const REDIS_READ_COMMANDS: &[&str] = &[
+    // strings / generic
+    "GET",
+    "MGET",
+    "STRLEN",
+    "GETRANGE",
+    "SUBSTR",
+    "LCS",
+    "EXISTS",
+    "TYPE",
+    "TTL",
+    "PTTL",
+    "EXPIRETIME",
+    "PEXPIRETIME",
+    "DUMP",
+    "RANDOMKEY",
+    "DBSIZE",
+    "SCAN",
+    "SORT_RO",
+    // bitmaps / hyperloglog / geo (the read forms; GEORADIUS, GEOSEARCHSTORE and
+    // PFADD/PFMERGE write)
+    "BITCOUNT",
+    "BITPOS",
+    "GETBIT",
+    "BITFIELD_RO",
+    "PFCOUNT",
+    "GEOPOS",
+    "GEODIST",
+    "GEOHASH",
+    "GEOSEARCH",
+    "GEORADIUS_RO",
+    "GEORADIUSBYMEMBER_RO",
+    // hashes
+    "HGET",
+    "HMGET",
+    "HGETALL",
+    "HKEYS",
+    "HVALS",
+    "HLEN",
+    "HEXISTS",
+    "HSTRLEN",
+    "HRANDFIELD",
+    "HSCAN",
+    // lists
+    "LRANGE",
+    "LLEN",
+    "LINDEX",
+    "LPOS",
+    // sets
+    "SMEMBERS",
+    "SCARD",
+    "SISMEMBER",
+    "SMISMEMBER",
+    "SRANDMEMBER",
+    "SINTER",
+    "SUNION",
+    "SDIFF",
+    "SINTERCARD",
+    "SSCAN",
+    // sorted sets (the STORE variants are separate, refused commands)
+    "ZRANGE",
+    "ZRANGEBYSCORE",
+    "ZRANGEBYLEX",
+    "ZREVRANGE",
+    "ZREVRANGEBYSCORE",
+    "ZREVRANGEBYLEX",
+    "ZCARD",
+    "ZCOUNT",
+    "ZLEXCOUNT",
+    "ZSCORE",
+    "ZMSCORE",
+    "ZRANK",
+    "ZREVRANK",
+    "ZRANDMEMBER",
+    "ZINTER",
+    "ZUNION",
+    "ZDIFF",
+    "ZSCAN",
+    // streams (consumer-group commands mutate state and are refused)
+    "XRANGE",
+    "XREVRANGE",
+    "XLEN",
+    "XPENDING",
+    // server
+    "PING",
+    "ECHO",
+    "TIME",
+    "INFO",
+    "LASTSAVE",
+    "ROLE",
+];
+
+/// Commands refused with a specific reason (they would be refused by default
+/// anyway; the reason tells the user what to use instead).
+const REDIS_DENIED_COMMANDS: &[(&str, &str)] = &[
+    ("FLUSHALL", "wipes every database"),
+    ("FLUSHDB", "wipes the whole database"),
+    ("CONFIG", "reads or changes server configuration"),
+    ("DEBUG", "is a server debugging command"),
+    ("SHUTDOWN", "stops the server"),
+    ("MODULE", "loads or lists server modules"),
+    ("SCRIPT", "manages server-side scripts"),
+    ("EVAL", "runs arbitrary server-side Lua"),
+    ("EVALSHA", "runs arbitrary server-side Lua"),
+    ("EVAL_RO", "runs arbitrary server-side Lua"),
+    ("EVALSHA_RO", "runs arbitrary server-side Lua"),
+    ("FCALL", "runs arbitrary server-side functions"),
+    ("FCALL_RO", "runs arbitrary server-side functions"),
+    ("FUNCTION", "manages server-side functions"),
+    ("KEYS", "blocks the server on a large keyspace; use SCAN"),
+    ("MONITOR", "streams every command of every client"),
+    ("SUBSCRIBE", "blocks the connection waiting for messages"),
+    ("PSUBSCRIBE", "blocks the connection waiting for messages"),
+    ("SSUBSCRIBE", "blocks the connection waiting for messages"),
+    ("PUBLISH", "sends a message to subscribers"),
+    ("SYNC", "starts a replication stream"),
+    ("PSYNC", "starts a replication stream"),
+    ("BLPOP", "blocks and removes an element"),
+    ("BRPOP", "blocks and removes an element"),
+    ("BLMOVE", "blocks and moves an element"),
+    ("BRPOPLPUSH", "blocks and moves an element"),
+    ("BLMPOP", "blocks and removes elements"),
+    ("BZPOPMIN", "blocks and removes a member"),
+    ("BZPOPMAX", "blocks and removes a member"),
+    ("BZMPOP", "blocks and removes members"),
+    ("XREADGROUP", "changes consumer-group state"),
+    ("WAIT", "blocks until replicas acknowledge"),
+    ("WAITAOF", "blocks until the AOF is synced"),
+    ("SORT", "can STORE its result; use SORT_RO"),
+    ("ACL", "reads or changes users and permissions"),
+    ("AUTH", "changes the connection's identity"),
+    ("HELLO", "changes the connection's protocol or identity"),
+    (
+        "SELECT",
+        "changes the connection's database; connect with the /N URL path or \\c N",
+    ),
+    ("MULTI", "opens a transaction"),
+    ("EXEC", "runs a transaction"),
+    ("DISCARD", "ends a transaction"),
+    ("WATCH", "watches keys for a transaction"),
+    ("SLOWLOG", "exposes other clients' commands"),
+];
+
+/// Redis is a command language, not SQL: allowlist the commands that cannot
+/// change the dataset or the server, and refuse everything else — including
+/// commands this list has never heard of (new write verbs and module commands
+/// must never pass by default). `KEYS` is refused for load, not safety: it
+/// blocks the whole server on a large keyspace.
+///
+/// Like the other textual guards this is best-effort. For hard enforcement
+/// connect as an ACL user that has only read commands (see the Redis
+/// reference).
+fn check_redis(query: &str) -> Result<(), String> {
+    use crate::redis_command::{command_name, split_command_line, subcommand_name};
+
+    let args = split_command_line(query).map_err(|error| error.to_string())?;
+    let command = command_name(&args);
+    let sub = subcommand_name(&args);
+    let has_arg = |wanted: &str| {
+        args.iter()
+            .skip(1)
+            .any(|arg| String::from_utf8_lossy(arg).eq_ignore_ascii_case(wanted))
+    };
+
+    if let Some((_, reason)) = REDIS_DENIED_COMMANDS
+        .iter()
+        .find(|(denied, _)| *denied == command)
+    {
+        return Err(format!("Redis command {command} {reason}"));
+    }
+    if REDIS_READ_COMMANDS.contains(&command.as_str()) {
+        return Ok(());
+    }
+
+    // Commands whose safety is decided by the subcommand or a flag
+    let sub = sub.as_deref();
+    let allowed = match command.as_str() {
+        "XREAD" => {
+            if has_arg("BLOCK") {
+                return Err("Redis command XREAD BLOCK blocks the connection".to_string());
+            }
+            true
+        }
+        "OBJECT" => matches!(
+            sub,
+            Some("ENCODING" | "IDLETIME" | "REFCOUNT" | "FREQ" | "HELP")
+        ),
+        "MEMORY" => matches!(sub, Some("USAGE" | "STATS" | "DOCTOR" | "HELP")),
+        "XINFO" => matches!(sub, Some("STREAM" | "GROUPS" | "CONSUMERS" | "HELP")),
+        "CLIENT" => matches!(sub, Some("INFO" | "GETNAME" | "ID")),
+        "COMMAND" => matches!(
+            sub,
+            None | Some(
+                "COUNT" | "DOCS" | "INFO" | "LIST" | "GETKEYS" | "GETKEYSANDFLAGS" | "HELP"
+            )
+        ),
+        "PUBSUB" => matches!(
+            sub,
+            Some("CHANNELS" | "NUMSUB" | "NUMPAT" | "SHARDCHANNELS" | "SHARDNUMSUB")
+        ),
+        _ => false,
+    };
+    if allowed {
+        return Ok(());
+    }
+    match sub {
+        Some(sub)
+            if matches!(
+                command.as_str(),
+                "OBJECT" | "MEMORY" | "XINFO" | "CLIENT" | "COMMAND" | "PUBSUB"
+            ) =>
+        {
+            Err(format!(
+                "Redis command {command} {sub} is not on the read-only allowlist"
+            ))
+        }
+        _ => Err(format!(
+            "Redis command {command} is not on the read-only allowlist"
+        )),
     }
 }
 
@@ -310,6 +908,10 @@ enum Dialect {
     MySql,
     Sqlite,
     ClickHouse,
+    /// T-SQL: `[bracketed]` identifiers, nested block comments, no
+    /// backslash escapes. Only the textual `--read-only` guard lexes with it
+    /// (the broker refuses SQL Server).
+    SqlServer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -440,7 +1042,7 @@ fn lex(sql: &str, dialect: Dialect) -> Result<Vec<Token>, Refusal> {
                     "version-conditional comments (/*! ... */) are executed by MySQL and are not allowed",
                 ));
             }
-            let nests = dialect == Dialect::Postgres;
+            let nests = matches!(dialect, Dialect::Postgres | Dialect::SqlServer);
             let mut level = 1usize;
             i += 2;
             loop {
@@ -491,7 +1093,7 @@ fn lex(sql: &str, dialect: Dialect) -> Result<Vec<Token>, Refusal> {
                 });
                 i = end;
             }
-            '`' if dialect != Dialect::Postgres => {
+            '`' if !matches!(dialect, Dialect::Postgres | Dialect::SqlServer) => {
                 let end = scan_quoted(&chars, i + 1, '`', true, false)
                     .ok_or_else(|| malformed("unterminated quoted identifier"))?;
                 tokens.push(Token {
@@ -501,6 +1103,25 @@ fn lex(sql: &str, dialect: Dialect) -> Result<Vec<Token>, Refusal> {
                     depth,
                 });
                 i = end;
+            }
+            '[' if dialect == Dialect::SqlServer => {
+                // [identifier]: `]]` is an escaped closing bracket
+                let mut j = i + 1;
+                loop {
+                    match (at(j), at(j + 1)) {
+                        (None, _) => return Err(malformed("unterminated bracket identifier")),
+                        (Some(']'), Some(']')) => j += 2,
+                        (Some(']'), _) => break,
+                        _ => j += 1,
+                    }
+                }
+                tokens.push(Token {
+                    kind: Tok::Quoted,
+                    start,
+                    end: pos(j + 1),
+                    depth,
+                });
+                i = j + 1;
             }
             '[' if dialect == Dialect::Sqlite => {
                 let mut j = i + 1;
@@ -1388,6 +2009,120 @@ mod tests {
         );
     }
 
+    #[rstest]
+    // reads
+    #[case::get("GET user:1", true)]
+    #[case::lowercase("get user:1", true)]
+    #[case::quoted_key("GET \"user 1\"", true)]
+    #[case::terminated("GET user:1;", true)]
+    #[case::mget("MGET a b c", true)]
+    #[case::strlen("STRLEN k", true)]
+    #[case::exists("EXISTS a b", true)]
+    #[case::type_("TYPE k", true)]
+    #[case::ttl("TTL k", true)]
+    #[case::pttl("PTTL k", true)]
+    #[case::scan("SCAN 0 MATCH user:* COUNT 100", true)]
+    #[case::hscan("HSCAN h 0", true)]
+    #[case::sscan("SSCAN s 0", true)]
+    #[case::zscan("ZSCAN z 0", true)]
+    #[case::hgetall("HGETALL h", true)]
+    #[case::hget("HGET h f", true)]
+    #[case::hlen("HLEN h", true)]
+    #[case::lrange("LRANGE l 0 10", true)]
+    #[case::llen("LLEN l", true)]
+    #[case::smembers("SMEMBERS s", true)]
+    #[case::scard("SCARD s", true)]
+    #[case::zrange("ZRANGE z 0 -1 WITHSCORES", true)]
+    #[case::zrangebyscore("ZRANGEBYSCORE z 0 10", true)]
+    #[case::zscore("ZSCORE z m", true)]
+    #[case::xrange("XRANGE st - + COUNT 10", true)]
+    #[case::xlen("XLEN st", true)]
+    #[case::xread("XREAD COUNT 5 STREAMS st 0", true)]
+    #[case::xinfo_stream("XINFO STREAM st", true)]
+    #[case::info("INFO", true)]
+    #[case::info_section("INFO keyspace", true)]
+    #[case::dbsize("DBSIZE", true)]
+    #[case::ping("PING", true)]
+    #[case::memory_usage("MEMORY USAGE k", true)]
+    #[case::object_encoding("OBJECT ENCODING k", true)]
+    #[case::client_info("CLIENT INFO", true)]
+    #[case::command_count("COMMAND COUNT", true)]
+    #[case::sort_ro("SORT_RO l ALPHA", true)]
+    #[case::geosearch("GEOSEARCH g FROMLONLAT 0 0 BYRADIUS 5 km", true)]
+    // writes and admin: default-deny
+    #[case::set("SET k v", false)]
+    #[case::del("DEL k", false)]
+    #[case::expire("EXPIRE k 10", false)]
+    #[case::incr("INCR n", false)]
+    #[case::hset("HSET h f v", false)]
+    #[case::lpush("LPUSH l v", false)]
+    #[case::sadd("SADD s m", false)]
+    #[case::zadd("ZADD z 1 m", false)]
+    #[case::xadd("XADD st * f v", false)]
+    #[case::rename("RENAME a b", false)]
+    #[case::getdel("GETDEL k", false)]
+    #[case::sort("SORT l STORE out", false)]
+    #[case::zunionstore("ZUNIONSTORE out 1 z", false)]
+    #[case::georadius("GEORADIUS g 0 0 5 km STORE out", false)]
+    #[case::pfadd("PFADD h a", false)]
+    #[case::unknown("MYNEWCOMMAND k", false)]
+    #[case::module_command("JSON.SET k $ 1", false)]
+    #[case::object_other("OBJECT FOO k", false)]
+    #[case::memory_purge("MEMORY PURGE", false)]
+    #[case::client_kill("CLIENT KILL ID 3", false)]
+    #[case::client_bare("CLIENT", false)]
+    #[case::command_other("COMMAND FOO", false)]
+    #[case::xinfo_other("XINFO SOMETHING st", false)]
+    // always refused
+    #[case::flushall("FLUSHALL", false)]
+    #[case::flushall_lower("flushall async", false)]
+    #[case::flushdb("FLUSHDB", false)]
+    #[case::config_get("CONFIG GET maxmemory", false)]
+    #[case::config_set("CONFIG SET maxmemory 0", false)]
+    #[case::debug("DEBUG SLEEP 0", false)]
+    #[case::shutdown("SHUTDOWN NOSAVE", false)]
+    #[case::module("MODULE LOAD /x.so", false)]
+    #[case::script("SCRIPT FLUSH", false)]
+    #[case::eval("EVAL \"return 1\" 0", false)]
+    #[case::evalsha("EVALSHA abc 0", false)]
+    #[case::fcall("FCALL f 0", false)]
+    #[case::keys("KEYS *", false)]
+    #[case::monitor("MONITOR", false)]
+    #[case::subscribe("SUBSCRIBE ch", false)]
+    #[case::blpop("BLPOP l 0", false)]
+    #[case::brpop("BRPOP l 0", false)]
+    #[case::xread_block("XREAD BLOCK 0 STREAMS st $", false)]
+    #[case::xread_block_lower("xread block 100 streams st $", false)]
+    #[case::xreadgroup("XREADGROUP GROUP g c STREAMS st >", false)]
+    #[case::acl("ACL LIST", false)]
+    #[case::select("SELECT 1", false)]
+    #[case::multi("MULTI", false)]
+    #[case::slowlog("SLOWLOG GET", false)]
+    // malformed lines never pass
+    #[case::empty("", false)]
+    #[case::unbalanced("GET \"k", false)]
+    #[case::sql_looking("SELECT * FROM t", false)]
+    fn test_check_read_only_redis(#[case] query: &str, #[case] allowed: bool) {
+        assert_eq!(
+            check_read_only(query, &DatabaseType::Redis).is_ok(),
+            allowed,
+            "{query}"
+        );
+    }
+
+    #[test]
+    fn test_redis_refusal_names_the_command_and_the_alternative() {
+        let err = check_read_only("KEYS *", &DatabaseType::Redis).unwrap_err();
+        assert!(
+            err.reason.contains("KEYS") && err.reason.contains("SCAN"),
+            "{err}"
+        );
+        let err = check_read_only("FOO", &DatabaseType::Redis).unwrap_err();
+        assert!(err.reason.contains("allowlist"), "{err}");
+        let err = check_read_only("OBJECT FOO k", &DatabaseType::Redis).unwrap_err();
+        assert!(err.reason.contains("OBJECT FOO"), "{err}");
+    }
+
     #[test]
     fn test_violation_marker() {
         let err = check_read_only("DROP TABLE t", &DatabaseType::PostgreSQL).unwrap_err();
@@ -1720,5 +2455,236 @@ mod tests {
     fn broker_row_limit_rewrites(#[case] sql: &str, #[case] rows: u32, #[case] expected: &str) {
         let statement = classify_for_broker(sql, &DatabaseType::PostgreSQL).unwrap();
         assert_eq!(statement.with_row_limit(rows), expected);
+    }
+
+    // ---- T-SQL (SQL Server) ------------------------------------------------
+
+    #[rstest]
+    // plain reads
+    #[case::select("SELECT * FROM dbo.Orders", true)]
+    #[case::select_semicolon("SELECT TOP (10) * FROM [dbo].[Orders];", true)]
+    #[case::leading_semicolon(";WITH c AS (SELECT 1 AS n) SELECT n FROM c", true)]
+    #[case::cte("WITH c AS (SELECT 1 AS n) SELECT n FROM c", true)]
+    #[case::recursive_cte(
+        "WITH r AS (SELECT 1 AS n UNION ALL SELECT n + 1 FROM r WHERE n < 5) SELECT * FROM r OPTION (MAXRECURSION 10)",
+        true
+    )]
+    #[case::xmlnamespaces("WITH XMLNAMESPACES ('u' AS x) SELECT 1 AS a FOR XML PATH", true)]
+    #[case::parenthesised("(SELECT 1) UNION (SELECT 2)", true)]
+    #[case::offset_fetch(
+        "SELECT * FROM t ORDER BY id OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY",
+        true
+    )]
+    #[case::case_end("SELECT CASE WHEN a = 1 THEN 'x' ELSE 'y' END FROM t", true)]
+    #[case::for_json("SELECT a, b FROM t FOR JSON PATH, ROOT('rows')", true)]
+    #[case::table_hint("SELECT * FROM t WITH (NOLOCK) WHERE id = 1", true)]
+    #[case::merge_join_hint("SELECT * FROM a INNER MERGE JOIN b ON a.id = b.id", true)]
+    #[case::merge_query_hint("SELECT * FROM a JOIN b ON a.id = b.id OPTION (MERGE JOIN)", true)]
+    #[case::three_part_name("SELECT * FROM Sales.dbo.Orders", true)]
+    #[case::empty_schema("SELECT * FROM Sales..Orders", true)]
+    #[case::many_short_chains("SELECT * FROM a.b JOIN c.d ON 1 = 1 JOIN e.f ON 1 = 1", true)]
+    #[case::string_with_keywords("SELECT 'DROP TABLE t; EXEC xp_cmdshell' AS s", true)]
+    #[case::unicode_string("SELECT N'it''s; DELETE FROM t' AS s", true)]
+    #[case::comment_with_keywords("SELECT 1 /* DROP TABLE t */ -- EXEC sp_who\n", true)]
+    #[case::nested_comment("SELECT 1 /* a /* DROP TABLE t */ still a comment */", true)]
+    #[case::bracketed_keyword_identifiers(
+        "SELECT [update], [delete], [Drop Table] FROM [exec]",
+        true
+    )]
+    #[case::quoted_identifier("SELECT \"insert\" FROM \"t\"", true)]
+    #[case::bracket_with_escaped_bracket("SELECT [a]]b] FROM t", true)]
+    #[case::variables("SELECT @@VERSION, @@SPID", true)]
+    #[case::functions("SELECT GETDATE(), NEWID(), DB_NAME(), SUSER_SNAME()", true)]
+    #[case::sys_views("SELECT name FROM sys.objects WHERE type = 'U'", true)]
+    #[case::explain_shorthand("EXPLAIN SELECT * FROM t", true)]
+    // writes and DDL
+    #[case::insert("INSERT INTO t VALUES (1)", false)]
+    #[case::update("UPDATE t SET a = 1", false)]
+    #[case::delete("DELETE FROM t", false)]
+    #[case::merge("MERGE t USING s ON t.id = s.id WHEN MATCHED THEN DELETE;", false)]
+    #[case::truncate("TRUNCATE TABLE t", false)]
+    #[case::drop_table("DROP TABLE t", false)]
+    #[case::create("CREATE TABLE t (a int)", false)]
+    #[case::alter("ALTER TABLE t ADD b int", false)]
+    #[case::grant("GRANT SELECT ON t TO u", false)]
+    #[case::deny("DENY SELECT ON t TO u", false)]
+    #[case::writable_cte("WITH d AS (SELECT 1 AS a) DELETE FROM t", false)]
+    #[case::cte_without_select("WITH d AS (SELECT 1 AS a) INSERT INTO t SELECT a FROM d", false)]
+    #[case::select_into("SELECT * INTO copy FROM t", false)]
+    #[case::select_into_temp("SELECT * INTO #copy FROM t", false)]
+    #[case::second_statement_after_semicolon("SELECT 1; DROP TABLE t", false)]
+    #[case::second_statement_without_semicolon("SELECT 1 DROP TABLE t", false)]
+    #[case::two_selects("SELECT 1; SELECT 2", false)]
+    #[case::declare("DECLARE @x int = 1 SELECT @x", false)]
+    #[case::set_option("SET NOCOUNT OFF", false)]
+    #[case::use_db("USE master", false)]
+    #[case::begin_tran("BEGIN TRAN", false)]
+    #[case::if_statement("IF 1 = 1 SELECT 1", false)]
+    #[case::while_loop("SELECT 1 WHILE 1 = 1 SELECT 2", false)]
+    // procedures
+    #[case::exec("EXEC sp_who", false)]
+    #[case::execute("EXECUTE ('SELECT 1')", false)]
+    #[case::exec_after_select("SELECT 1 EXEC xp_cmdshell 'dir'", false)]
+    #[case::exec_lowercase("select 1 exec sp_configure", false)]
+    #[case::sp_reference("SELECT * FROM OPENQUERY(srv, 'x')", false)]
+    #[case::xp_function("SELECT master.dbo.xp_cmdshell('dir')", false)]
+    #[case::sp_prefix_function("SELECT sys.sp_executesql", false)]
+    #[case::bracketed_xp("SELECT * FROM master.dbo.[xp_dirtree]", false)]
+    #[case::quoted_openrowset("SELECT * FROM \"OPENROWSET\"('x')", false)]
+    #[case::openrowset("SELECT * FROM OPENROWSET('SQLNCLI', 'Server=x;', 'SELECT 1')", false)]
+    #[case::openrowset_bulk("SELECT * FROM OPENROWSET(BULK 'C:\\f.txt', SINGLE_CLOB) AS f", false)]
+    #[case::opendatasource("SELECT * FROM OPENDATASOURCE('x', 'y').db.dbo.t", false)]
+    #[case::openxml("SELECT * FROM OPENXML(@h, '/r')", false)]
+    #[case::bulk_insert("BULK INSERT t FROM 'C:\\f.csv'", false)]
+    #[case::audit_file_reader("SELECT * FROM sys.fn_get_audit_file('x', NULL, NULL)", false)]
+    #[case::trace_reader("SELECT * FROM fn_trace_gettable('x', 1)", false)]
+    #[case::xe_file_reader(
+        "SELECT * FROM sys.fn_xe_file_target_read_file('x', NULL, NULL, NULL)",
+        false
+    )]
+    #[case::next_value_for("SELECT NEXT VALUE FOR dbo.seq", false)]
+    #[case::update_lock("SELECT * FROM t WITH (UPDLOCK)", false)]
+    #[case::exclusive_lock("SELECT * FROM t WITH (XLOCK, ROWLOCK)", false)]
+    // admin / session / files
+    #[case::waitfor("WAITFOR DELAY '00:00:10'", false)]
+    #[case::waitfor_after_select("SELECT 1 WAITFOR DELAY '00:00:10'", false)]
+    #[case::shutdown("SHUTDOWN", false)]
+    #[case::dbcc("DBCC CHECKDB", false)]
+    #[case::backup("BACKUP DATABASE d TO DISK = 'x'", false)]
+    #[case::restore("RESTORE DATABASE d FROM DISK = 'x'", false)]
+    #[case::kill("KILL 52", false)]
+    #[case::reconfigure("RECONFIGURE", false)]
+    #[case::checkpoint("CHECKPOINT", false)]
+    #[case::enable_trigger("ENABLE TRIGGER ALL ON t", false)]
+    #[case::receive("RECEIVE TOP (1) * FROM q", false)]
+    #[case::end_conversation("SELECT 1 END CONVERSATION @h", false)]
+    #[case::execute_as("EXECUTE AS USER = 'x'", false)]
+    #[case::linked_server("SELECT * FROM srv.db.dbo.t", false)]
+    #[case::linked_server_empty_parts("SELECT * FROM srv...t", false)]
+    #[case::linked_server_bracketed("SELECT * FROM [srv].[db].[dbo].[t]", false)]
+    #[case::go_separator("SELECT 1\nGO\nSELECT 2", false)]
+    #[case::go_with_count("SELECT 1\n  go 5\n", false)]
+    #[case::go_after_select_on_same_line_is_an_alias("SELECT 1 go", true)]
+    // lexical problems never pass
+    #[case::empty("", false)]
+    #[case::only_semicolons(" ; ; ", false)]
+    #[case::only_comment("-- nothing", false)]
+    #[case::unterminated_string("SELECT 'abc", false)]
+    #[case::unterminated_bracket("SELECT [abc", false)]
+    #[case::unterminated_comment("SELECT 1 /* never closed", false)]
+    #[case::unbalanced_paren("SELECT (1", false)]
+    #[case::nul_byte("SELECT 1\0 DROP TABLE t", false)]
+    #[case::not_a_query("hello world", false)]
+    fn test_check_read_only_sql_server(#[case] query: &str, #[case] allowed: bool) {
+        assert_eq!(
+            check_read_only(query, &DatabaseType::SqlServer).is_ok(),
+            allowed,
+            "{query:?}: {:?}",
+            check_read_only(query, &DatabaseType::SqlServer)
+        );
+    }
+
+    #[test]
+    fn test_sql_server_refusals_name_the_problem_without_the_query() {
+        let err = check_read_only(
+            "SELECT 1 EXEC xp_cmdshell 'whoami /all'",
+            &DatabaseType::SqlServer,
+        )
+        .unwrap_err();
+        assert!(err.to_string().starts_with(READ_ONLY_VIOLATION_MARKER));
+        assert!(err.reason.contains("EXEC"), "{err}");
+        assert!(!err.to_string().contains("whoami"), "{err}");
+    }
+
+    #[rstest]
+    #[case::select("SELECT * FROM sales.orders LIMIT 10", true)]
+    #[case::with_cte("WITH t AS (SELECT 1) SELECT * FROM t", true)]
+    #[case::show("SHOW search_path", true)]
+    #[case::explain("EXPLAIN SELECT * FROM sales.orders", true)]
+    #[case::system_view("SELECT * FROM svv_table_info", true)]
+    #[case::trailing_semicolon("SELECT 1;", true)]
+    #[case::unload("UNLOAD ('SELECT * FROM t') TO 's3://b/p' IAM_ROLE 'arn'", false)]
+    #[case::copy("COPY t FROM 's3://b/p' IAM_ROLE 'arn'", false)]
+    #[case::call("CALL refresh_all()", false)]
+    #[case::vacuum("VACUUM FULL t", false)]
+    #[case::analyze("ANALYZE t", false)]
+    #[case::create_external("CREATE EXTERNAL SCHEMA s FROM DATA CATALOG DATABASE 'd'", false)]
+    #[case::grant("GRANT SELECT ON t TO u", false)]
+    #[case::alter_datashare("ALTER DATASHARE ds ADD SCHEMA s", false)]
+    #[case::cancel("CANCEL 1234", false)]
+    #[case::abort("ABORT", false)]
+    #[case::set_auth("SET SESSION AUTHORIZATION 'admin'", false)]
+    #[case::prepare("PREPARE p AS SELECT 1", false)]
+    #[case::execute("EXECUTE p", false)]
+    #[case::begin("BEGIN", false)]
+    #[case::delete("DELETE FROM t", false)]
+    #[case::select_into("SELECT * INTO new_t FROM t", false)]
+    #[case::cte_insert("WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x", false)]
+    #[case::stacked("SELECT 1; DROP TABLE t", false)]
+    #[case::terminate("SELECT pg_terminate_backend(123)", false)]
+    #[case::cancel_backend("SELECT pg_cancel_backend(123)", false)]
+    #[case::explain_unload("EXPLAIN UNLOAD ('SELECT 1') TO 's3://b/p'", false)]
+    #[case::explain_call("explain call p()", false)]
+    #[case::pragma("PRAGMA table_info(t)", false)]
+    fn test_check_read_only_redshift(#[case] query: &str, #[case] allowed: bool) {
+        assert_eq!(
+            check_read_only(query, &DatabaseType::Redshift).is_ok(),
+            allowed,
+            "{query:?}: {:?}",
+            check_read_only(query, &DatabaseType::Redshift)
+        );
+    }
+
+    #[rstest]
+    #[case::select("SELECT * FROM users LIMIT 5", true)]
+    #[case::with_cte("WITH t AS (SELECT 1) SELECT * FROM t", true)]
+    #[case::explain("EXPLAIN QUERY PLAN SELECT * FROM users", true)]
+    #[case::catalog("SELECT name FROM sqlite_schema WHERE type = 'table'", true)]
+    #[case::table_valued_pragma("SELECT * FROM pragma_table_info('users')", true)]
+    #[case::pragma_table_info("PRAGMA table_info(users)", true)]
+    #[case::pragma_schema_qualified("PRAGMA main.index_list('users')", true)]
+    #[case::pragma_lowercase("pragma foreign_key_list(users)", true)]
+    #[case::pragma_read("PRAGMA user_version", true)]
+    #[case::pragma_assignment("PRAGMA user_version = 7", false)]
+    #[case::pragma_checkpoint("PRAGMA wal_checkpoint(TRUNCATE)", false)]
+    #[case::pragma_vacuum("PRAGMA incremental_vacuum(10)", false)]
+    #[case::pragma_optimize("PRAGMA optimize", false)]
+    #[case::pragma_batch("PRAGMA table_info(t); DROP TABLE t", false)]
+    #[case::insert("INSERT INTO t VALUES (1)", false)]
+    #[case::delete("DELETE FROM t", false)]
+    #[case::drop("DROP TABLE t", false)]
+    #[case::replace_into("REPLACE INTO t VALUES (1)", false)]
+    #[case::attach("ATTACH DATABASE 'x.db' AS x", false)]
+    #[case::vacuum_into("VACUUM INTO 'copy.db'", false)]
+    #[case::explain_vacuum("EXPLAIN VACUUM INTO 'copy.db'", false)]
+    #[case::load_extension("SELECT load_extension('/tmp/evil.so')", false)]
+    #[case::stacked("SELECT 1; DROP TABLE t", false)]
+    #[case::cte_insert("WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x", false)]
+    #[case::select_into("SELECT * INTO new_t FROM t", false)]
+    fn test_check_read_only_libsql(#[case] query: &str, #[case] allowed: bool) {
+        assert_eq!(
+            check_read_only(query, &DatabaseType::LibSql).is_ok(),
+            allowed,
+            "{query:?}: {:?}",
+            check_read_only(query, &DatabaseType::LibSql)
+        );
+    }
+
+    #[test]
+    fn test_libsql_is_not_accepted_by_the_broker() {
+        // Enrollment is refused before classification; the classifier agrees
+        assert!(classify_for_broker("SELECT 1", &DatabaseType::LibSql).is_err());
+    }
+
+    #[test]
+    fn test_redshift_is_not_accepted_by_the_broker() {
+        // Enrollment is refused before classification; the classifier agrees
+        assert!(classify_for_broker("SELECT 1", &DatabaseType::Redshift).is_err());
+    }
+
+    #[test]
+    fn test_sql_server_is_not_accepted_by_the_broker_yet() {
+        // Enrollment is refused before classification; the classifier agrees
+        assert!(classify_for_broker("SELECT 1", &DatabaseType::SqlServer).is_err());
     }
 }

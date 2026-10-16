@@ -29,7 +29,7 @@ This is the recommended way to give an agent access to anything that matters. Di
 | **Audit** | `audit.jsonl`: one line per decision. Hashes and lengths of statements, never SQL text, parameters or results. |
 | **Thin client** | `dbcrust-agent`: an MCP server (`dbcrust-agent mcp`) and a one-shot CLI. It links no keystore, no database drivers and no config storage, and the wire protocol has no field that could carry a credential. |
 
-What the broker accepts for enrollment today: PostgreSQL, MySQL/MariaDB, SQLite and ClickHouse. Other engines are refused with `unsupported_engine`.
+What the broker accepts for enrollment today: PostgreSQL, MySQL/MariaDB, SQLite and ClickHouse. Other engines are refused with `unsupported_engine` (Redis says *"Redis enrollment for agents is not supported yet"*: it needs a command classifier of the broker's own first; SQL Server says *"SQL Server enrollment for agents is not supported yet: use a read-only login and wait for the read-only probe"*: it has no session-level read-only mode, so enrollment must first prove the login cannot write; Redshift says *"Redshift enrollment for agents is not supported yet: the server has no session-level read-only mode to enforce"*: `BEGIN READ ONLY` is per transaction and cannot be proven from the outside, so only the user's grants limit an agent; libSQL says *"libSQL enrollment for agents is not supported yet: a read-only token is the only server-enforced limit and cannot be proven from the client"*; InfluxDB says *"InfluxDB enrollment for agents is not supported yet: use a read-only API token or a v1 user limited to reads"*: the broker's classifier and row-limit wrapper are SQL-only, and a v2/v3 token's scope cannot be proven read-only from the client).
 
 ## Choosing a mode
 

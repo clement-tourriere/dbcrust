@@ -132,6 +132,11 @@ bundled = [
     "clickhouse",
     "elasticsearch",
     "white-dragon",
+    "redis",
+    "mssql",
+    "redshift",
+    "libsql",
+    "influxdb",
     "files",
     "docker",
     "ai",
@@ -147,6 +152,11 @@ mongodb = ["dbcrust-drivers/mongodb"]
 clickhouse = ["dbcrust-drivers/clickhouse"]
 elasticsearch = ["dbcrust-drivers/elasticsearch"]
 white-dragon = ["dbcrust-drivers/white-dragon"]
+redis = ["dbcrust-drivers/redis"]
+mssql = ["dbcrust-drivers/mssql"]
+redshift = ["dbcrust-drivers/redshift"]
+libsql = ["dbcrust-drivers/libsql"]
+influxdb = ["dbcrust-drivers/influxdb"]
 # DataFusion: Parquet, CSV, JSON and DuckDB files (the heaviest connector)
 files = ["dbcrust-drivers/files"]
 # Add-ons
@@ -225,6 +235,9 @@ resolver = "3"
 # only build the CLI and the agent client. Use `mise run gui:*` or
 # `-p dbcrust-gui[-core]` for the GUI.
 members = ["crates/*", "gui", "gui/core"]
+# Vendored upstream crates are path dependencies, not workspace members: they
+# keep their own manifest and are exempt from the workspace lints
+exclude = ["third_party/tiberius"]
 # `dbcrust-agent` is the credential-free thin client shipped next to the CLI;
 # the library crates are listed so `cargo test`/`clippy` at the root cover them
 default-members = [
@@ -243,6 +256,11 @@ default-members = [
     "crates/driver-clickhouse",
     "crates/driver-elasticsearch",
     "crates/driver-white-dragon",
+    "crates/driver-redis",
+    "crates/driver-mssql",
+    "crates/driver-redshift",
+    "crates/driver-libsql",
+    "crates/driver-influxdb",
     "crates/driver-files",
 ]
 
@@ -304,6 +322,11 @@ dbcrust-driver-mongodb = { path = "crates/driver-mongodb" }
 dbcrust-driver-clickhouse = { path = "crates/driver-clickhouse" }
 dbcrust-driver-elasticsearch = { path = "crates/driver-elasticsearch" }
 dbcrust-driver-white-dragon = { path = "crates/driver-white-dragon" }
+dbcrust-driver-redis = { path = "crates/driver-redis" }
+dbcrust-driver-mssql = { path = "crates/driver-mssql" }
+dbcrust-driver-redshift = { path = "crates/driver-redshift" }
+dbcrust-driver-libsql = { path = "crates/driver-libsql" }
+dbcrust-driver-influxdb = { path = "crates/driver-influxdb" }
 dbcrust-driver-files = { path = "crates/driver-files" }
 
 # Driver SDKs shared between the root crate (until its drivers move) and the
@@ -319,6 +342,19 @@ elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features 
 # Use rustls-tls-ring to avoid aws-lc-rs cross-compilation issues on ARM64 Linux.
 # 0.15.2's Native reader uses `const ...: usize = 1 << 32`, breaking i686.
 # Keep this exact pin until an upstream fix passes our 32-bit Python check.
+# Redis: rustls with no bundled provider (DBCrust installs ring at startup, so
+# neither aws-lc-rs nor OpenSSL is pulled in); tokio runtime; `ConnectionManager`
+# for reconnects. Exact pin: reviewed 1.7.1 (see the dependency policy).
+redis = { version = "=1.7.1", default-features = false, features = ["tokio-rustls-comp", "tls-rustls-webpki-roots", "connection-manager"] }
+# SQL Server: the vendored tiberius 0.13.0 (third_party/tiberius/DBCRUST_PATCH.md) —
+# rustls on ring only (no aws-lc-rs, OpenSSL or native-tls); `tds80` implies the
+# modern date/time types, `sql-browser-tokio` resolves named instances. No
+# `winauth`/`integrated-auth-gssapi`/`sspi-rs`: SQL authentication only.
+tiberius = { path = "third_party/tiberius", default-features = false, features = ["rustls", "tds73", "tds80", "sql-browser-tokio"] }
+tokio-util = { version = "0.7", default-features = false, features = ["compat"] }
+# InfluxDB: no SDK (see crates/driver-influxdb); csv-core reads the Flux/v3 CSV
+# streams record by record, already in the lockfile through `csv`
+csv-core = { version = "0.1.12", default-features = false }
 clickhouse = { version = "=0.15.1", default-features = false, features = ["lz4", "rustls-tls-ring", "rustls-tls-webpki-roots"] }
 # DataFusion for file format support (Parquet, CSV, JSON, …). Optimized
 # features: disable unused crypto/encoding/nested/compression expressions

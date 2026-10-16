@@ -1,0 +1,35 @@
+[package]
+name = "dbcrust-driver-influxdb"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust InfluxDB driver (v1 InfluxQL, v2 Flux and v3 SQL over HTTP)"
+
+# Layer 1 of the crate split: depends on `dbcrust-core` and this engine's SDK
+# only (never the root crate, secrets, Docker, AI or another driver); the
+# registry `dbcrust-drivers` is what links it into a build.
+#
+# There is no InfluxDB crate: the `influxdb` crate wraps reqwest 0.13 with
+# aws-lc, has no Flux and no v3, so the three HTTP APIs are spoken directly on
+# the reqwest 0.12 (rustls on ring) the other HTTP drivers already use.
+[dependencies]
+# `tls`: ring is the process-default rustls provider the TLS handshake takes
+dbcrust-core = { workspace = true, features = ["tls"] }
+async-trait = { workspace = true }
+# Incremental CSV records for the Flux annotated CSV and v3 CSV streams
+csv-core = { workspace = true }
+reqwest = { workspace = true, features = ["rustls-tls"] }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["sync", "time", "macros"] }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "net"] }
+rstest = { workspace = true }
+
+[lints]
+workspace = true

@@ -221,7 +221,8 @@ static URL_IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)[a-z][a-z0-9+.\-]*://[^\s"'<>`]+"#).expect("valid url regex")
 });
 static USERINFO_IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b([A-Za-z_][\w.\-]*):([^\s@/:'\x22]+)@([\w.\-]+|\[[0-9A-Fa-f:.]+\])")
+    // The user may be empty (`:token@host`, the form of an API token)
+    Regex::new(r"(?:\b([A-Za-z_][\w.\-]*))?:([^\s@/:'\x22]+)@([\w.\-]+|\[[0-9A-Fa-f:.]+\])")
         .expect("valid userinfo regex")
 });
 /// Well-known credential shapes: OpenAI-style keys, GitHub tokens, Vault
@@ -442,6 +443,22 @@ mod tests {
     }
 
     #[test]
+    fn redact_text_hides_a_password_with_an_empty_user() {
+        // `influxdb2://:TOKEN@host` carries an API token in the password slot
+        for text in [
+            ":Cnry-7f3a9@h:8086/b",
+            "connect to :Cnry-7f3a9@db.example failed",
+            "u:Cnry-7f3a9@h and :Cnry-7f3a9@h",
+        ] {
+            let redacted = redact_text(text);
+            assert!(!redacted.contains("Cnry-7f3a9"), "{text} -> {redacted}");
+            assert!(redacted.contains("[REDACTED]@"), "{redacted}");
+        }
+        // a plain host:port is untouched
+        assert_eq!(redact_text("db.example:8086/b"), "db.example:8086/b");
+    }
+
+    #[test]
     fn test_sanitize_connection_url_simple_format() {
         let url = "user:password@host:5432/db";
         let sanitized = sanitize_connection_url(url);
@@ -523,6 +540,11 @@ mod tests {
     #[case("docker://u:Cnry-7f3a9@container/db?ssl=true")]
     #[case("vault://role:Cnry-7f3a9@database/mydb")]
     #[case("white-dragon://u:Cnry-7f3a9@h:7700")]
+    #[case("redshift://u:Cnry-7f3a9@cluster.example:5439/dev?sslmode=verify-full")]
+    #[case("libsql://:Cnry-7f3a9@db-org.turso.io")]
+    #[case("libsql://db-org.turso.io?authToken=Cnry-7f3a9")]
+    #[case("turso://db-org.turso.io?auth_token=Cnry-7f3a9&namespace=x")]
+    #[case("libsql+http://localhost:8080?AUTHTOKEN=Cnry-7f3a9")]
     // percent-encoded and unusual passwords
     #[case("postgres://u:Cnry%2D7f3a9@h/db")]
     #[case("postgres://u:Cnry-7f3a9%40x@h/db")]

@@ -41,7 +41,7 @@ The **Connections** tab (`⇧⌘H`) is where every connection starts. On the lef
 
 **+ New** opens the form:
 
-- **Engine**: a searchable list grouped into *Servers* (PostgreSQL, MySQL, ClickHouse, MongoDB, Elasticsearch, White Dragon) and *Files* (SQLite, DuckDB, Parquet, CSV, JSON). The fields start with real defaults: `localhost`, the engine's port and default user.
+- **Engine**: a searchable list grouped into *Servers* (PostgreSQL, MySQL, ClickHouse, MongoDB, Elasticsearch, White Dragon, Redis, SQL Server, Redshift, libSQL, InfluxDB) and *Files* (SQLite, DuckDB, Parquet, CSV, JSON). The fields start with real defaults: `localhost`, the engine's port and default user.
 - **Paste connection URL…** fills the form from any URL DBCrust understands (`postgres://…`, `docker://…`, file paths), and keeps options the form has no field for.
 - **Name** is what the connection is called in the list when you save it.
 - **Encryption** summarises the TLS/SSL mode; open it for the details.

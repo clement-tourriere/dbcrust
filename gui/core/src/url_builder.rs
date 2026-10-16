@@ -36,11 +36,17 @@ pub enum TlsSetting {
 /// (its error hints say `?ssl=true`), `tls` for the rest.
 pub fn tls_setting(engine: &DatabaseType) -> TlsSetting {
     match engine {
-        DatabaseType::PostgreSQL => TlsSetting::SslMode,
-        DatabaseType::MySQL | DatabaseType::MongoDB | DatabaseType::WhiteDragon => {
-            TlsSetting::Flag("tls")
-        }
+        DatabaseType::PostgreSQL | DatabaseType::Redshift => TlsSetting::SslMode,
+        DatabaseType::MySQL
+        | DatabaseType::MongoDB
+        | DatabaseType::WhiteDragon
+        | DatabaseType::Redis
+        | DatabaseType::InfluxDB => TlsSetting::Flag("tls"),
         DatabaseType::ClickHouse | DatabaseType::Elasticsearch => TlsSetting::Flag("ssl"),
+        // On unless `encrypt=false`: see `ConnectionSpec::tls_enabled`
+        DatabaseType::SqlServer => TlsSetting::Flag("encrypt"),
+        // On unless `tls=false`: see `ConnectionSpec::tls_enabled`
+        DatabaseType::LibSql => TlsSetting::Flag("tls"),
         _ => TlsSetting::None,
     }
 }
@@ -146,6 +152,36 @@ impl ConnectionSpec {
     /// TLS requested through any of the options DBCrust understands
     /// (`ssl`/`tls`/`secure` true, or a strict `sslmode`).
     pub fn tls_enabled(&self) -> bool {
+        if self.engine == DatabaseType::SqlServer {
+            // SQL Server encrypts unless the URL says `encrypt=false`
+            return !self.options.iter().any(|(key, value)| {
+                key.eq_ignore_ascii_case("encrypt")
+                    && matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "false" | "0" | "no" | "off" | "optional"
+                    )
+            });
+        }
+        if self.engine == DatabaseType::LibSql {
+            // libSQL speaks HTTPS unless the URL says `tls=false`
+            return !self.options.iter().any(|(key, value)| {
+                key.eq_ignore_ascii_case("tls")
+                    && matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "false" | "0" | "no" | "off"
+                    )
+            });
+        }
+        if self.engine == DatabaseType::Redshift {
+            // Redshift requires TLS unless `sslmode` explicitly says less
+            return !self.options.iter().any(|(key, value)| {
+                key.eq_ignore_ascii_case("sslmode")
+                    && matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "disable" | "allow" | "prefer"
+                    )
+            });
+        }
         self.options.iter().any(|(key, value)| {
             let value = value.to_ascii_lowercase();
             match key.to_ascii_lowercase().as_str() {
@@ -159,6 +195,32 @@ impl ConnectionSpec {
     /// Turn the engine's boolean TLS option on or off (no-op for engines
     /// without one). Clears the aliases so the URL never says both.
     pub fn set_tls(&mut self, enabled: bool) {
+        if self.engine == DatabaseType::SqlServer {
+            // Encrypted is the default, so only "off" is written (and
+            // `encrypt=strict` stays strict while encryption stays on)
+            let strict = enabled
+                && self.options.iter().any(|(k, v)| {
+                    k.eq_ignore_ascii_case("encrypt") && v.eq_ignore_ascii_case("strict")
+                });
+            self.options
+                .retain(|(k, _)| !k.eq_ignore_ascii_case("encrypt"));
+            if !enabled {
+                self.options
+                    .push(("encrypt".to_string(), "false".to_string()));
+            } else if strict {
+                self.options
+                    .push(("encrypt".to_string(), "strict".to_string()));
+            }
+            return;
+        }
+        if self.engine == DatabaseType::LibSql {
+            // TLS is the default, so only "off" is written
+            self.options.retain(|(k, _)| !k.eq_ignore_ascii_case("tls"));
+            if !enabled {
+                self.options.push(("tls".to_string(), "false".to_string()));
+            }
+            return;
+        }
         if let TlsSetting::Flag(key) = tls_setting(&self.engine) {
             self.options.retain(|(k, _)| {
                 !matches!(k.to_ascii_lowercase().as_str(), "ssl" | "tls" | "secure")
@@ -1070,6 +1132,21 @@ pub fn form_defaults(engine: &DatabaseType) -> FormDefaults {
         database_hint: match engine {
             _ if !uses_database_name(engine) => None,
             DatabaseType::PostgreSQL => Some("Optional. Empty connects to “postgres”."),
+            DatabaseType::Redis => {
+                Some("Optional. The logical database number (0–15). Empty is 0.")
+            }
+            DatabaseType::SqlServer => {
+                Some("Optional. Empty opens the login’s default database (usually “master”).")
+            }
+            DatabaseType::Redshift => {
+                Some("Optional. Empty opens the cluster’s default database (“dev”).")
+            }
+            DatabaseType::LibSql => {
+                Some("Optional. The sqld namespace (x-namespace); empty for Turso Cloud.")
+            }
+            DatabaseType::InfluxDB => Some(
+                "The database (v1, v3) or bucket (v2) to open. The password field is the API token for v2 and v3.",
+            ),
             _ => Some("Optional. The database to open first."),
         },
         path_hint: match engine {
@@ -1079,6 +1156,14 @@ pub fn form_defaults(engine: &DatabaseType) -> FormDefaults {
             DatabaseType::CSV => "/path/to/data.csv",
             _ => "/path/to/data.json",
         },
+    }
+}
+
+/// What the secret field of the form holds for `engine`.
+pub fn secret_label(engine: &DatabaseType) -> &'static str {
+    match engine {
+        DatabaseType::LibSql => "Auth token",
+        _ => "Password",
     }
 }
 
@@ -1092,6 +1177,11 @@ pub fn engine_aliases(engine: &DatabaseType) -> &'static str {
         DatabaseType::MongoDB => "mongo nosql",
         DatabaseType::Elasticsearch => "es elastic opensearch",
         DatabaseType::WhiteDragon => "wd search",
+        DatabaseType::Redis => "valkey keydb dragonfly cache kv",
+        DatabaseType::SqlServer => "mssql sqlserver azure sql tsql tds microsoft",
+        DatabaseType::Redshift => "aws amazon warehouse spectrum serverless",
+        DatabaseType::LibSql => "turso sqld hrana edge sqlite remote",
+        DatabaseType::InfluxDB => "influx tsdb timeseries time series flux influxql telegraf",
         DatabaseType::Parquet => "pq columnar file",
         DatabaseType::CSV => "tsv file",
         DatabaseType::JSON => "jsonl ndjson file",
@@ -1150,6 +1240,9 @@ pub fn tls_summary(spec: &ConnectionSpec) -> Option<String> {
         TlsSetting::None => None,
         TlsSetting::SslMode => Some(
             match spec.option("sslmode") {
+                None if spec.engine == DatabaseType::Redshift => {
+                    "Default · TLS required, certificate not checked"
+                }
                 None => "Default · uses TLS when the server offers it",
                 Some("disable") => "Off · never encrypted",
                 Some("allow") => "Allowed · plain first, TLS if the server insists",
@@ -1264,6 +1357,11 @@ mod tests {
     #[case(DatabaseType::MongoDB)]
     #[case(DatabaseType::Elasticsearch)]
     #[case(DatabaseType::WhiteDragon)]
+    #[case(DatabaseType::Redis)]
+    #[case(DatabaseType::SqlServer)]
+    #[case(DatabaseType::Redshift)]
+    #[case(DatabaseType::LibSql)]
+    #[case(DatabaseType::InfluxDB)]
     fn network_engines_round_trip(#[case] engine: DatabaseType) {
         let mut spec = network(engine, "app", "s3cret", "shop");
         spec.set_tls(true);
@@ -1404,12 +1502,82 @@ mod tests {
             (DatabaseType::Elasticsearch, true),
             (DatabaseType::MongoDB, true),
             (DatabaseType::WhiteDragon, true),
+            (DatabaseType::Redis, true),
+            (DatabaseType::SqlServer, true),
+            (DatabaseType::InfluxDB, true),
         ] {
             let mut spec = network(engine, "u", "p", "d");
             spec.set_tls(setting);
             let info = ConnectionInfo::parse_url(&build_url(&spec)).expect("parses");
             assert!(info.use_tls, "{:?}", spec.engine);
         }
+    }
+
+    #[test]
+    fn sql_server_encrypts_unless_told_not_to() {
+        let mut spec = network(DatabaseType::SqlServer, "sa", "p", "Sales");
+        assert!(spec.tls_enabled(), "the default is encrypted");
+        assert!(!build_url(&spec).contains("encrypt"));
+        spec.set_tls(false);
+        assert!(!spec.tls_enabled());
+        let url = build_url(&spec);
+        assert!(url.contains("encrypt=false"), "{url}");
+        assert!(!ConnectionInfo::parse_url(&url).expect("parses").use_tls);
+        spec.set_tls(true);
+        assert!(spec.tls_enabled());
+        assert!(!build_url(&spec).contains("encrypt"));
+        // strict stays strict while encryption stays on
+        spec.set_option("encrypt", Some("strict"));
+        spec.set_tls(true);
+        assert!(build_url(&spec).contains("encrypt=strict"));
+        assert!(spec.tls_enabled());
+    }
+
+    #[test]
+    fn libsql_speaks_https_unless_told_otherwise() {
+        let mut spec = network(DatabaseType::LibSql, "", "tok", "");
+        spec.host = "db-org.turso.io".to_string();
+        assert!(spec.tls_enabled(), "TLS is the default");
+        assert!(!build_url(&spec).contains("tls="));
+        assert!(
+            ConnectionInfo::parse_url(&build_url(&spec))
+                .expect("parses")
+                .use_tls
+        );
+        spec.set_tls(false);
+        assert!(!spec.tls_enabled());
+        let url = build_url(&spec);
+        assert!(url.contains("tls=false"), "{url}");
+        let info = ConnectionInfo::parse_url(&url).expect("plain HTTP is confirmed by tls=false");
+        assert!(!info.use_tls);
+        spec.set_tls(true);
+        assert!(spec.tls_enabled());
+        assert!(!build_url(&spec).contains("tls="));
+        assert_eq!(secret_label(&DatabaseType::LibSql), "Auth token");
+        assert_eq!(secret_label(&DatabaseType::PostgreSQL), "Password");
+    }
+
+    #[test]
+    fn redshift_requires_tls_unless_told_otherwise() {
+        let mut spec = network(DatabaseType::Redshift, "awsuser", "p", "dev");
+        assert!(spec.tls_enabled(), "TLS is the default");
+        assert_eq!(tls_setting(&spec.engine), TlsSetting::SslMode);
+        assert_eq!(
+            tls_summary(&spec).as_deref(),
+            Some("Default · TLS required, certificate not checked")
+        );
+        assert!(
+            ConnectionInfo::parse_url(&build_url(&spec))
+                .expect("parses")
+                .use_tls
+        );
+        spec.set_option("sslmode", Some("disable"));
+        assert!(!spec.tls_enabled());
+        let url = build_url(&spec);
+        assert!(url.contains("sslmode=disable"), "{url}");
+        assert!(!ConnectionInfo::parse_url(&url).expect("parses").use_tls);
+        spec.set_option("sslmode", Some("verify-full"));
+        assert!(spec.tls_enabled());
     }
 
     #[test]
@@ -1624,6 +1792,11 @@ mod tests {
             DatabaseType::MongoDB,
             DatabaseType::Elasticsearch,
             DatabaseType::WhiteDragon,
+            DatabaseType::Redis,
+            DatabaseType::SqlServer,
+            DatabaseType::Redshift,
+            DatabaseType::LibSql,
+            DatabaseType::InfluxDB,
         ] {
             let spec = network(engine, "app", password, "shop");
             let masked = build_masked_url(&spec);

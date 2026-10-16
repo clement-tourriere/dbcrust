@@ -650,6 +650,51 @@ impl SqlCompleter {
         suggestions
     }
 
+    /// Redis input is a command line: the first word is a command, the others
+    /// are mostly key names (from the sampled key listing).
+    fn complete_redis_command_line(&mut self, line: &str, pos: usize) -> Vec<Suggestion> {
+        let word_start = line[..pos]
+            .rfind(char::is_whitespace)
+            .map_or(0, |index| index + 1);
+        let current = &line[word_start..pos];
+        let span = Span {
+            start: word_start,
+            end: pos,
+        };
+        if line[..word_start].trim().is_empty() {
+            let lower = current.to_ascii_lowercase();
+            return crate::redis_command::COMMON_COMMANDS
+                .iter()
+                .filter(|command| command.to_ascii_lowercase().starts_with(&lower))
+                .map(|command| Suggestion {
+                    value: (*command).to_string(),
+                    description: Some("Redis command".to_string()),
+                    span,
+                    append_whitespace: true,
+                    extra: None,
+                    style: Some(Style::new().fg(Color::Blue)),
+                    ..Default::default()
+                })
+                .collect();
+        }
+        // Keys are case-sensitive; a typed opening quote is not part of the key
+        let prefix = current.trim_start_matches('"');
+        self.get_tables(None)
+            .into_iter()
+            .filter(|table| table.name.starts_with(prefix))
+            .take(50)
+            .map(|table| Suggestion {
+                value: crate::redis_command::quote_argument(&table.name),
+                description: Some("Redis key".to_string()),
+                span,
+                append_whitespace: true,
+                extra: None,
+                style: Some(Style::new().fg(Color::Cyan)),
+                ..Default::default()
+            })
+            .collect()
+    }
+
     /// Delegate to the command manager's argument completion without
     /// re-entering complete_backslash_commands: classify_command would route
     /// a "\ns " line straight back into complete_ns_command — infinite mutual
@@ -2158,6 +2203,11 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::JSON => "[json]",
                                     crate::database::DatabaseType::DuckDB => "[duckdb]",
                                     crate::database::DatabaseType::WhiteDragon => "[white-dragon]",
+                                    crate::database::DatabaseType::Redis => "[redis]",
+                                    crate::database::DatabaseType::SqlServer => "[mssql]",
+                                    crate::database::DatabaseType::Redshift => "[redshift]",
+                                    crate::database::DatabaseType::LibSql => "[libsql]",
+                                    crate::database::DatabaseType::InfluxDB => "[influxdb]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
@@ -2232,6 +2282,11 @@ impl SqlCompleter {
                                     crate::database::DatabaseType::JSON => "[json]",
                                     crate::database::DatabaseType::DuckDB => "[duckdb]",
                                     crate::database::DatabaseType::WhiteDragon => "[white-dragon]",
+                                    crate::database::DatabaseType::Redis => "[redis]",
+                                    crate::database::DatabaseType::SqlServer => "[mssql]",
+                                    crate::database::DatabaseType::Redshift => "[redshift]",
+                                    crate::database::DatabaseType::LibSql => "[libsql]",
+                                    crate::database::DatabaseType::InfluxDB => "[influxdb]",
                                 }
                             }
                             crate::config::NamedQueryScope::Session(_) => "[session]",
@@ -2292,6 +2347,10 @@ impl SqlCompleter {
 
             // For other backslash commands or when typing the command itself
             return self.complete_backslash_commands(line, pos);
+        }
+
+        if self.get_database_type() == DatabaseType::Redis {
+            return self.complete_redis_command_line(line, pos);
         }
 
         let is_white_dragon = self.get_database_type() == DatabaseType::WhiteDragon;
@@ -2593,6 +2652,35 @@ mod tests {
             .expect("partial SELECT should complete in qualifier-or-SQL mode");
         assert_eq!(select.span, Span { start: 0, end: 3 });
         assert!(select.append_whitespace);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn redis_completes_commands_not_sql_keywords() {
+        let mut database = Database::new_for_test();
+        database.set_connection_info_override(crate::database::ConnectionInfo {
+            database_type: DatabaseType::Redis,
+            host: Some("localhost".to_string()),
+            ..Default::default()
+        });
+        let config = Config::default();
+        let mut completer =
+            SqlCompleter::new(Arc::new(Mutex::new(database)), Arc::new(Mutex::new(config)));
+
+        let suggestions = completer.complete("hg", 2);
+        let values: Vec<&str> = suggestions.iter().map(|s| s.value.as_str()).collect();
+        assert!(
+            values.contains(&"HGET") && values.contains(&"HGETALL"),
+            "{values:?}"
+        );
+        assert!(
+            values.iter().all(|value| value.starts_with("HG")),
+            "{values:?}"
+        );
+        assert_eq!(suggestions[0].span, Span { start: 0, end: 2 });
+
+        // No SQL keyword noise at the start of a command line
+        let suggestions = completer.complete("SEL", 3);
+        assert!(suggestions.iter().all(|s| s.value != "SELECT"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

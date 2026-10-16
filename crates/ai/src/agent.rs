@@ -397,6 +397,7 @@ fn rejected_outcome(detail: &str) -> ToolOutcome {
 
 // The secondary side-effect guard lives in dbcrust_core::safety (shared with the
 // CLI --read-only path); see safety::side_effect_guard.
+use dbcrust_core::database::DatabaseType;
 use dbcrust_core::safety::side_effect_guard;
 
 // ==================== Database-backed tool executor ====================
@@ -423,6 +424,25 @@ impl DbToolExecutor {
         }
     }
 
+    /// The agent's pre-flight check of one statement: `Some(rejection)` when it
+    /// may modify data or has side effects. InfluxDB is not SQL (Flux programs
+    /// start with `from(`), so it is judged by its own lexer-based guard alone.
+    fn guard_statement(&self, sql: &str) -> Option<ToolOutcome> {
+        let db_type = self.db.lock().unwrap().get_database_type();
+        if db_type == DatabaseType::InfluxDB {
+            return dbcrust_core::safety::check_read_only(sql, &db_type)
+                .err()
+                .map(|violation| rejected_outcome(&format!("{}.", violation.reason)));
+        }
+        if !crate::streaming::is_select_query(sql) {
+            return Some(rejected_outcome(
+                "It appears to modify data or is multi-statement.",
+            ));
+        }
+        side_effect_guard(sql)
+            .map(|reason| rejected_outcome(&format!("It {reason}, which has side effects.")))
+    }
+
     /// Run a read-only query, neutralizing the user's `\x` explain-mode so the
     /// agent gets ACTUAL ROWS rather than a silently-rewritten EXPLAIN plan
     /// (`Database::execute_query_with_interrupt_and_info` rewrites to EXPLAIN when
@@ -430,7 +450,20 @@ impl DbToolExecutor {
     /// [`cap_query`]) so a huge result can't be materialized into memory.
     #[allow(clippy::await_holding_lock)]
     async fn run_readonly(&self, sql: &str) -> ToolOutcome {
-        let capped_sql = cap_query(sql, self.max_rows);
+        let db_type = self.db.lock().unwrap().get_database_type();
+        let capped_sql = if matches!(db_type, DatabaseType::SqlServer | DatabaseType::InfluxDB) {
+            // T-SQL: the shared textual guard cannot see `SELECT 1 EXEC …` (no
+            // `;` needed), so SQL Server gets its lexer-based check, and no
+            // `LIMIT` wrapper (T-SQL has none; the driver caps the rows it reads).
+            // InfluxDB speaks InfluxQL, Flux or v3 SQL: its own lexer-based
+            // check, and no wrapper either (a Flux program cannot be wrapped)
+            if let Err(violation) = dbcrust_core::safety::check_read_only(sql, &db_type) {
+                return rejected_outcome(&format!("{}.", violation.reason));
+            }
+            sql.trim().trim_end_matches(';').trim().to_string()
+        } else {
+            cap_query(sql, self.max_rows)
+        };
         let result = {
             let mut db = self.db.lock().unwrap();
             let was_explain = db.is_explain_mode();
@@ -534,11 +567,8 @@ impl AgentToolExecutor for DbToolExecutor {
                     return err_outcome("run_sql requires a 'query' argument");
                 };
                 let sql = crate::streaming::extract_sql(&raw);
-                if !crate::streaming::is_select_query(&sql) {
-                    return rejected_outcome("It appears to modify data or is multi-statement.");
-                }
-                if let Some(reason) = side_effect_guard(&sql) {
-                    return rejected_outcome(&format!("It {reason}, which has side effects."));
+                if let Some(rejected) = self.guard_statement(&sql) {
+                    return rejected;
                 }
                 self.run_readonly(&sql).await
             }
@@ -547,11 +577,8 @@ impl AgentToolExecutor for DbToolExecutor {
                     return err_outcome("explain requires a 'query' argument");
                 };
                 let inner = crate::streaming::extract_sql(&raw);
-                if !crate::streaming::is_select_query(&inner) {
-                    return rejected_outcome("It appears to modify data or is multi-statement.");
-                }
-                if let Some(reason) = side_effect_guard(&inner) {
-                    return rejected_outcome(&format!("It {reason}, which has side effects."));
+                if let Some(rejected) = self.guard_statement(&inner) {
+                    return rejected;
                 }
                 let analyze = call
                     .fn_arguments

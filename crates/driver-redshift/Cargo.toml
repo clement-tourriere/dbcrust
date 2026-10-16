@@ -1,0 +1,32 @@
+[package]
+name = "dbcrust-driver-redshift"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust Amazon Redshift driver (sqlx PostgreSQL protocol, simple queries, SVV_* catalog)"
+
+# Layer 1 of the crate split: depends on `dbcrust-core` and this engine's SDK
+# only (never the root crate, secrets, Docker, AI or another driver); the
+# registry `dbcrust-drivers` is what links it into a build. Redshift speaks the
+# PostgreSQL wire protocol, so the SDK is the same sqlx feature set as
+# `dbcrust-driver-postgres` (no new crate in the lockfile). It does not share
+# code with that driver on purpose: nothing of the extended protocol, the type
+# catalog or `pg_catalog` can be relied on (see `lib.rs`).
+[dependencies]
+dbcrust-core = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio-rustls"] }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "net"] }
+rstest = { workspace = true }
+
+[lints]
+workspace = true

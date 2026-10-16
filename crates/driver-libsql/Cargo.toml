@@ -1,0 +1,34 @@
+[package]
+name = "dbcrust-driver-libsql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust libSQL / Turso driver (Hrana over HTTP, remote only, on reqwest)"
+
+# Layer 1 of the crate split: depends on `dbcrust-core` and this engine's SDK
+# only (never the root crate, secrets, Docker, AI or another driver); the
+# registry `dbcrust-drivers` is what links it into a build. There is no libSQL
+# SDK here on purpose: the `libsql` crate drags a second HTTP/TLS stack with
+# open RustSec advisories and `turso_serverless` forces reqwest 0.13 with the
+# aws-lc provider. Hrana is JSON over HTTP, so the locked reqwest 0.12 (rustls on
+# ring, like the White Dragon driver) is the whole client.
+[dependencies]
+dbcrust-core = { workspace = true }
+async-trait = { workspace = true }
+base64 = { version = "0.23", default-features = false, features = ["std"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "io-util", "net"] }
+rstest = { workspace = true }
+
+[lints]
+workspace = true

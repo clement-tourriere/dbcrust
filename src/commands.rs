@@ -2501,6 +2501,10 @@ impl CommandExecutor for Command {
                     "mongodb",
                     "elasticsearch",
                     "clickhouse",
+                    "redis",
+                    "sqlserver",
+                    "redshift",
+                    "libsql",
                 ];
                 let db_type_str = Select::new("Database type:", database_types)
                     .prompt()
@@ -2511,6 +2515,10 @@ impl CommandExecutor for Command {
                     "mongodb" => (DatabaseType::MongoDB, "27017"),
                     "elasticsearch" => (DatabaseType::Elasticsearch, "9200"),
                     "clickhouse" => (DatabaseType::ClickHouse, "8123"),
+                    "redis" => (DatabaseType::Redis, "6379"),
+                    "sqlserver" => (DatabaseType::SqlServer, "1433"),
+                    "redshift" => (DatabaseType::Redshift, "5439"),
+                    "libsql" => (DatabaseType::LibSql, "443"),
                     _ => (DatabaseType::PostgreSQL, "5432"),
                 };
 

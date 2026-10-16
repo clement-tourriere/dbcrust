@@ -1,19 +1,23 @@
 amends "package://github.com/jdx/hk/releases/download/v1.39.0/hk@1.39.0#/Config.pkl"
 import "package://github.com/jdx/hk/releases/download/v1.39.0/hk@1.39.0#/Builtins.pkl"
 
+// third_party/ holds vendored upstream crates (see third_party/tiberius/DBCRUST_PATCH.md):
+// they keep their own formatting and lint level, so no step touches them.
+local vendored = "third_party/**"
+
 local linters = new Mapping<String, Step> {
-    ["trailing-whitespace"] = Builtins.trailing_whitespace
-    ["newlines"] = Builtins.newlines
-    ["check-merge-conflict"] = Builtins.check_merge_conflict
+    ["trailing-whitespace"] = (Builtins.trailing_whitespace) { exclude = vendored }
+    ["newlines"] = (Builtins.newlines) { exclude = vendored }
+    ["check-merge-conflict"] = (Builtins.check_merge_conflict) { exclude = vendored }
     ["cargo-fmt"] {
         glob = "**/*.rs"
-        exclude = "python/**"
+        exclude = List("python/**", vendored)
         check = "rustfmt --check"
         fix = "rustfmt"
     }
     ["cargo-clippy"] {
         glob = "**/*.rs"
-        exclude = List("python/**", "tests/**")
+        exclude = List("python/**", "tests/**", vendored)
         // Same flags as CI (ci.yml); structural allows live in Cargo.toml [workspace.lints.clippy]
         check = "cargo clippy --all-targets -- -D warnings"
     }

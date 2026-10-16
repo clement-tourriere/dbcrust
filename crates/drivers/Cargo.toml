@@ -26,6 +26,11 @@ dbcrust-driver-mongodb = { workspace = true, optional = true }
 dbcrust-driver-clickhouse = { workspace = true, optional = true }
 dbcrust-driver-elasticsearch = { workspace = true, optional = true }
 dbcrust-driver-white-dragon = { workspace = true, optional = true }
+dbcrust-driver-redis = { workspace = true, optional = true }
+dbcrust-driver-mssql = { workspace = true, optional = true }
+dbcrust-driver-redshift = { workspace = true, optional = true }
+dbcrust-driver-libsql = { workspace = true, optional = true }
+dbcrust-driver-influxdb = { workspace = true, optional = true }
 dbcrust-driver-files = { workspace = true, optional = true }
 
 [features]
@@ -40,6 +45,11 @@ default = [
     "clickhouse",
     "elasticsearch",
     "white-dragon",
+    "redis",
+    "mssql",
+    "redshift",
+    "libsql",
+    "influxdb",
     "files",
 ]
 postgres = ["dep:dbcrust-driver-postgres"]
@@ -49,6 +59,11 @@ mongodb = ["dep:dbcrust-driver-mongodb"]
 clickhouse = ["dep:dbcrust-driver-clickhouse"]
 elasticsearch = ["dep:dbcrust-driver-elasticsearch"]
 white-dragon = ["dep:dbcrust-driver-white-dragon"]
+redis = ["dep:dbcrust-driver-redis"]
+mssql = ["dep:dbcrust-driver-mssql"]
+redshift = ["dep:dbcrust-driver-redshift"]
+libsql = ["dep:dbcrust-driver-libsql"]
+influxdb = ["dep:dbcrust-driver-influxdb"]
 # DataFusion: Parquet, CSV, JSON and DuckDB files
 files = ["dep:dbcrust-driver-files"]
 

@@ -943,7 +943,12 @@ impl CliCore {
             | crate::database::DatabaseType::MySQL
             | crate::database::DatabaseType::MongoDB
             | crate::database::DatabaseType::Elasticsearch
-            | crate::database::DatabaseType::ClickHouse => {}
+            | crate::database::DatabaseType::ClickHouse
+            | crate::database::DatabaseType::Redis
+            | crate::database::DatabaseType::SqlServer
+            | crate::database::DatabaseType::Redshift
+            | crate::database::DatabaseType::LibSql
+            | crate::database::DatabaseType::InfluxDB => {}
             crate::database::DatabaseType::SQLite
             | crate::database::DatabaseType::Parquet
             | crate::database::DatabaseType::CSV
@@ -969,6 +974,12 @@ impl CliCore {
             crate::database::DatabaseType::MySQL => 3306,
             crate::database::DatabaseType::MongoDB => 27017,
             crate::database::DatabaseType::Elasticsearch => 9200,
+            crate::database::DatabaseType::Redis => 6379,
+            crate::database::DatabaseType::SqlServer => 1433,
+            crate::database::DatabaseType::Redshift => 5439,
+            crate::database::DatabaseType::LibSql => 443,
+            // v3's 8181 is made explicit when the URL is parsed
+            crate::database::DatabaseType::InfluxDB => 8086,
             _ => 8123,
         });
         let database_name = connection_info.database.as_deref().unwrap_or("");
@@ -1105,6 +1116,9 @@ impl CliCore {
             "wrong password",
             "invalid password",
             "login incorrect",
+            "noauth",
+            "authentication required",
+            "login failed for user",
             "connection refused", // Some databases return this for bad auth
         ];
 
@@ -1114,6 +1128,14 @@ impl CliCore {
     }
 
     /// Inject password into a connection URL
+    /// An InfluxDB connection that queries in Flux: a program, not `;`-separated
+    /// SQL (a `;` in a comment or string must not cut it).
+    fn speaks_flux(info: &ConnectionInfo) -> bool {
+        info.database_type == crate::database::DatabaseType::InfluxDB
+            && crate::database::InfluxLanguage::from_options(&info.options)
+                == crate::database::InfluxLanguage::Flux
+    }
+
     fn inject_password_into_url(
         original_url: &str,
         password: &str,
@@ -1650,17 +1672,23 @@ impl CliCore {
             .database
             .as_ref()
             .ok_or_else(|| CliError::CommandError("No database connection".to_string()))?;
+        let database_type = database
+            .get_connection_info()
+            .map(|info| info.database_type.clone());
         let splittable = !matches!(
-            database
-                .get_connection_info()
-                .map(|info| info.database_type.clone()),
+            database_type,
             Some(
                 crate::database::DatabaseType::MongoDB
                     | crate::database::DatabaseType::Elasticsearch
                     | crate::database::DatabaseType::WhiteDragon
             )
-        );
-        let statements = if splittable {
+        ) && !database
+            .get_connection_info()
+            .is_some_and(Self::speaks_flux);
+        let statements = if database_type == Some(crate::database::DatabaseType::Redis) {
+            // Not SQL: one command per line, whatever the quoting
+            crate::redis_command::split_script(sql)
+        } else if splittable {
             crate::sql_buffer::split_statements(sql)
         } else {
             vec![sql.to_string()]
@@ -2342,21 +2370,28 @@ impl CliCore {
     ) -> Result<(), CliError> {
         // Mongo/ES/White Dragon input is not necessarily SQL — never split it
         // on semicolons that may belong to a native query or JSON request.
-        let splittable = {
+        let (database_type, flux) = {
             let db_guard = db_arc.lock().unwrap();
-            !matches!(
-                db_guard
-                    .get_connection_info()
-                    .map(|info| info.database_type.clone()),
+            let info = db_guard.get_connection_info();
+            (
+                info.map(|info| info.database_type.clone()),
+                info.is_some_and(Self::speaks_flux),
+            )
+        };
+        let splittable = !flux
+            && !matches!(
+                database_type,
                 Some(
                     crate::database::DatabaseType::MongoDB
                         | crate::database::DatabaseType::Elasticsearch
                         | crate::database::DatabaseType::WhiteDragon
                 )
-            )
-        };
+            );
 
-        let statements = if splittable {
+        let statements = if database_type == Some(crate::database::DatabaseType::Redis) {
+            // Not SQL: one command per line, whatever the quoting
+            crate::redis_command::split_script(sql)
+        } else if splittable {
             crate::sql_buffer::split_statements(sql)
         } else {
             vec![sql.to_string()]

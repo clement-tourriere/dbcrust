@@ -33,6 +33,9 @@ pub fn metadata_table_parts(
             | DatabaseType::MySQL
             | DatabaseType::SQLite
             | DatabaseType::ClickHouse
+            | DatabaseType::SqlServer
+            | DatabaseType::Redshift
+            | DatabaseType::LibSql
     );
     if !supports_schemas {
         return (None, unquote_metadata_identifier(table_name));
@@ -56,7 +59,14 @@ pub fn metadata_table_parts(
                     quote = None;
                 }
             }
-            Some(']') if character == ']' => quote = None,
+            Some(']') if character == ']' => {
+                // `]]` is an escaped bracket inside a [bracketed] identifier
+                if chars.peek().is_some_and(|(_, next)| *next == ']') {
+                    chars.next();
+                } else {
+                    quote = None;
+                }
+            }
             Some(_) => {}
             None if character == '"' || character == '`' => quote = Some(character),
             None if character == '[' => quote = Some(']'),
@@ -176,6 +186,14 @@ mod tests {
     #[case("\"v1.events\"", DatabaseType::PostgreSQL, None, "v1.events")]
     #[case("logs-2026.07", DatabaseType::Elasticsearch, None, "logs-2026.07")]
     #[case("events.archive", DatabaseType::MongoDB, None, "events.archive")]
+    #[case(
+        "[dbo].[Order Items]",
+        DatabaseType::SqlServer,
+        Some("dbo"),
+        "Order Items"
+    )]
+    #[case("[a.b].[c]]d]", DatabaseType::SqlServer, Some("a.b"), "c]d")]
+    #[case("[odd.name]", DatabaseType::SqlServer, None, "odd.name")]
     fn metadata_table_parts_respects_backend_and_identifier_quotes(
         #[case] input: &str,
         #[case] database_type: DatabaseType,

@@ -1,6 +1,6 @@
 # DBCrust
 
-**A fast psql-style database workbench for your terminal.** One CLI for PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, White Dragon search, Docker databases, Vault-backed connections, and SQL over Parquet/CSV/JSON files — with optional AI, Django ORM analysis, Python bindings, and a desktop GUI.
+**A fast psql-style database workbench for your terminal.** One CLI for PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, White Dragon search, Redis/Valkey, SQL Server/Azure SQL, Amazon Redshift, libSQL/Turso, InfluxDB, Docker databases, Vault-backed connections, and SQL over Parquet/CSV/JSON files — with optional AI, Django ORM analysis, Python bindings, and a desktop GUI.
 
 [![CI](https://github.com/clement-tourriere/dbcrust/actions/workflows/ci.yml/badge.svg)](https://github.com/clement-tourriere/dbcrust/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/dbcrust.svg)](https://pypi.org/project/dbcrust/)
@@ -71,6 +71,11 @@ Every connection type is a URL:
 | MongoDB | `mongodb://user:pass@localhost:27017/mydb` |
 | Elasticsearch | `elasticsearch://localhost:9200` |
 | White Dragon | `white-dragon://localhost:7700` |
+| Redis / Valkey | `redis://localhost:6379/0` · `rediss://user:pass@host:6380` (TLS) |
+| SQL Server / Azure SQL | `mssql://user:pass@localhost:1433/mydb` (TLS verified by default) · `mssql://user:pass@host%5CINSTANCE/mydb` |
+| Amazon Redshift | `redshift://user:pass@cluster.abc.eu-west-1.redshift.amazonaws.com:5439/dev` (TLS required by default) |
+| libSQL / Turso | `libsql://my-db-org.turso.io?authToken=…` (HTTPS) · `libsql+http://localhost:8080` (local sqld) |
+| InfluxDB | `influxdb://localhost:8086/db` (v1, InfluxQL) · `influxdb2://:TOKEN@localhost/bucket?org=acme` (v2, Flux) · `influxdb3://:TOKEN@localhost/db` (v3, SQL) · `influxdbs://…` (TLS) |
 | Parquet / CSV / JSON | `./data.parquet` · `./logs/app.csv` · `file://` picker · `json:///events.json` |
 | Docker container | `docker://` (interactive picker) · `docker://my-postgres/mydb` |
 | Saved session | `session://production_db` |

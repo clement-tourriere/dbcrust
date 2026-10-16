@@ -185,6 +185,133 @@ dbcrust 'white-dragon://user:password@search.example.com:443?tls=true'
 
 See the [White Dragon guide](/user-guide/white-dragon/) for examples.
 
+**Redis / Valkey**
+
+**Schemes:** `redis://`, `rediss://` (TLS), `valkey://`, `valkeys://`, `redis+unix://`, `unix://`
+
+```bash
+# Local server, database 0
+dbcrust redis://localhost:6379
+
+# ACL user, password and logical database 2 over TLS
+dbcrust 'rediss://app:secret@cache.example.com:6380/2'
+
+# Unix socket
+dbcrust 'redis+unix:///run/redis.sock?db=1'
+```
+
+**Features:**
+- Queries are `redis-cli` command lines (`HGETALL user:1`, `SCAN 0 MATCH user:* COUNT 100`); replies are mapped to tables by shape
+- `\dt` lists keys with their type using a bounded `SCAN` (never `KEYS`), `\d key` shows type, TTL, memory, size and a sample
+- `--read-only` accepts only a read-command allowlist and refuses `KEYS`, `FLUSHALL`, `CONFIG`, scripting and blocking commands
+- Valkey, KeyDB and Dragonfly work unchanged
+
+See the [Redis guide](/user-guide/redis/) for details.
+
+**SQL Server / Azure SQL**
+
+**Schemes:** `mssql://`, `sqlserver://`, `mssql+tls://`, `sqlserver+tls://`
+
+```bash
+# Local server (TLS on, certificate verified)
+dbcrust 'mssql://sa:Passw0rd!@localhost:1433/master'
+
+# Azure SQL with TDS 8.0 strict encryption
+dbcrust 'sqlserver://app:secret@myserver.database.windows.net/mydb?encrypt=strict'
+
+# Named instance (SQL Browser, UDP 1434): %5C is the backslash
+dbcrust 'mssql://app:secret@dbhost%5CSQLEXPRESS/Sales'
+
+# Development server with a self-signed certificate: explicit opt-in, logged as a warning
+dbcrust 'mssql://sa:Passw0rd!@localhost/master?trustServerCertificate=true'
+```
+
+**Features:**
+- T-SQL over SQL authentication; one pinned session (temp tables, `SET` options and transactions persist)
+- `encrypt=true` (default, certificate verified) | `false` (login only) | `strict` (TDS 8.0); `ca_cert=` pins a CA
+- Metadata from the catalog views (`\dt`, `\d table` with indexes, checks and foreign keys); `EXPLAIN` returns the estimated plan XML without running the statement
+- `--read-only` accepts a single `SELECT` / `WITH … SELECT` and refuses procedures, linked servers, files, DDL and batches
+- Statements past the timeout or Ctrl-C are cancelled on the server (TDS attention)
+
+Windows / integrated and Azure AD sign-in are not supported yet. See the [SQL Server guide](/user-guide/sqlserver/) for details.
+
+**Amazon Redshift**
+
+**Schemes:** `redshift://`, `redshift+tls://`
+
+```bash
+# Provisioned cluster (TLS required by default, certificate not verified)
+dbcrust 'redshift://awsuser:pass@my-cluster.abc123.eu-west-1.redshift.amazonaws.com:5439/dev'
+
+# Serverless workgroup, certificate checked against the bundled Amazon roots
+dbcrust 'redshift://analyst:pass@wg.123456789012.eu-west-1.redshift-serverless.amazonaws.com/dev?sslmode=verify-full'
+
+# Through an SSH tunnel to a private cluster
+dbcrust 'redshift://awsuser:secret@127.0.0.1:15439/dev?sslmode=disable'
+```
+
+**Features:**
+- Redshift SQL over user and password; one pinned session (temp tables, `SET` and transactions persist)
+- `sslmode=require` (default) | `verify-ca` | `verify-full` (+ `sslrootcert=`); `disable` / `allow` / `prefer` only for tunnels and tests
+- Metadata from the `SVV_*` views, Spectrum schemas included (`\dt`, `\d table` with encodings, `DISTSTYLE` and `SORTKEY`); `EXPLAIN` returns the text plan
+- `--read-only` accepts a single `SELECT` / `WITH … SELECT` / `SHOW` / `EXPLAIN` inside `BEGIN READ ONLY`
+- Ctrl-C and the query timeout cancel on the server (`pg_cancel_backend`)
+
+IAM authentication and the Redshift Data API are not supported yet. See the [Redshift guide](/user-guide/redshift/) for details.
+
+**libSQL / Turso**
+
+**Schemes:** `libsql://`, `turso://`, `libsql+http://`
+
+```bash
+# Turso Cloud (HTTPS, token as a query option; it is moved to the secret store, never saved in a URL)
+dbcrust 'libsql://my-db-myorg.turso.io?authToken=eyJhbGciOi...'
+
+# The token is asked for when the server rejects the connection
+dbcrust 'turso://my-db-myorg.turso.io'
+
+# A local sqld (plain HTTP is only accepted for this machine, or with an explicit tls=false)
+dbcrust 'libsql+http://localhost:8080'
+
+# sqld with namespaces
+dbcrust 'libsql+http://localhost:8080/tenant1'
+```
+
+**Features:**
+- SQLite SQL over Hrana-on-HTTP (JSON); each statement stateless, `BEGIN` ... `COMMIT` carried on the server's stream
+- The auth token is the connection's password: secret store, bound to host, port, namespace and transport, redacted everywhere
+- Metadata from `sqlite_schema` and the `pragma_*` functions (`\dt`, `\d table`); `EXPLAIN` returns `EXPLAIN QUERY PLAN` as a tree
+- `--read-only` accepts a single read statement and asks the server (`describe`) before running it; a read-only token is the hard limit
+
+Local files stay `sqlite:///path`; embedded replicas and the agent broker are not supported yet. See the [libSQL & Turso guide](/user-guide/libsql/) for details.
+
+**InfluxDB**
+
+**Schemes:** `influxdb://` (v1, InfluxQL), `influxdb2://` (v2, Flux), `influxdb3://` (v3, SQL); `influxdbs://`, `influxdb2s://`, `influxdb3s://` or `+https` for TLS
+
+```bash
+# v1: database in the path, login optional
+dbcrust 'influxdb://reader:secret@localhost:8086/telemetry'
+
+# v2: the API token goes where a password would, the organization is required
+dbcrust 'influxdb2://:MY_TOKEN@localhost:8086/telemetry?org=acme'
+
+# v3 (port 8181 by default), TLS
+dbcrust 'influxdb3s://:MY_TOKEN@influx.example.com:8181/mydb'
+
+# InfluxQL on a v2 server (DBRP mapping required), self-signed certificate: explicit opt-out
+dbcrust 'influxdb2s://:MY_TOKEN@localhost/telemetry?org=acme&language=influxql&verify_certs=false'
+```
+
+**Features:**
+- Language by generation: InfluxQL (v1), Flux (v2), SQL (v3); `?version=` on the generic scheme, `?language=influxql` on v2/v3
+- The token lives in the password slot (`?token=` is moved there): stored in the secret store, redacted everywhere
+- Replies are read while they arrive and stop at `max_rows` (10 000) / `max_bytes` (64 MiB)
+- `\l`, `\dt`, `\d` from `SHOW …`, the Flux `schema` package or `information_schema`
+- `--read-only` accepts reads only, lexed per language (no `INTO`, `to()`, `http`/`sql`/`secrets` imports…); InfluxDB 1.x does not enforce the `GET` split itself, so use a read-only credential
+
+See the [InfluxDB guide](/user-guide/influxdb/) for details.
+
 ### File Format Schemes
 
 DBCrust can query file formats directly using Apache DataFusion, a powerful SQL query engine that operates on Parquet, CSV, and JSON files. You can either use the explicit scheme or pass a local path with a known extension:

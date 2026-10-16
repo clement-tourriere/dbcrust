@@ -833,6 +833,15 @@ impl Database {
                         )
                         .await
                         .map_err(|e| format!("Error listing PostgreSQL users: {e}").into()),
+                    crate::database::DatabaseType::SqlServer => self
+                        .execute_query(
+                            "SELECT name, type_desc AS type, is_disabled \
+                             FROM sys.server_principals \
+                             WHERE type IN ('S', 'U', 'G') AND name NOT LIKE '##%' \
+                             ORDER BY name",
+                        )
+                        .await
+                        .map_err(|e| format!("Error listing SQL Server logins: {e}").into()),
                     _ => Ok(vec![
                         vec!["Error".to_string()],
                         vec!["Unsupported database type".to_string()],
@@ -889,6 +898,22 @@ impl Database {
                             vec!["Use PostgreSQL's \\di command or".to_string()],
                             vec!["Query pg_indexes system view".to_string()],
                         ]);
+                    }
+                    crate::database::DatabaseType::SqlServer => {
+                        return self
+                            .execute_query(
+                                "SELECT s.name AS [Schema], t.name AS [Table], i.name AS [Index], \
+                                 i.type_desc AS [Type], \
+                                 CASE WHEN i.is_primary_key = 1 THEN 'PRIMARY KEY' \
+                                      WHEN i.is_unique = 1 THEN 'UNIQUE' ELSE 'NON-UNIQUE' END AS [Kind] \
+                                 FROM sys.indexes AS i \
+                                 JOIN sys.tables AS t ON t.object_id = i.object_id \
+                                 JOIN sys.schemas AS s ON s.schema_id = t.schema_id \
+                                 WHERE i.type > 0 AND t.is_ms_shipped = 0 \
+                                 ORDER BY s.name, t.name, i.name",
+                            )
+                            .await
+                            .map_err(|e| format!("Error listing SQL Server indexes: {e}").into());
                     }
                     _ => {
                         return Ok(vec![
@@ -1349,6 +1374,25 @@ impl Database {
     }
 
     /// Get the current connection information
+    /// The `--read-only` statement guard for this connection: InfluxDB is judged
+    /// in the language its connection speaks (InfluxQL, Flux or SQL), every
+    /// other engine by its engine-wide classifier.
+    fn check_read_only_query(
+        &self,
+        query: &str,
+    ) -> std::result::Result<(), crate::safety::ReadOnlyViolation> {
+        let database_type = self.get_database_type();
+        if database_type == crate::database::DatabaseType::InfluxDB
+            && let Some(info) = self.get_connection_info()
+        {
+            return crate::safety::check_influxdb_read_only(
+                query,
+                crate::database::InfluxLanguage::from_options(&info.options),
+            );
+        }
+        crate::safety::check_read_only(query, &database_type)
+    }
+
     pub fn get_connection_info(&self) -> Option<&crate::database::ConnectionInfo> {
         // Check override first (for Vault connections), then fall back to database client
         if let Some(ref override_info) = self.connection_info_override {
@@ -1398,14 +1442,30 @@ impl Database {
 
             // Add table/collection rows. Providers may qualify objects outside
             // the default schema (for example `analytics.orders` in PostgreSQL).
+            // Engines whose objects are not all tables (Redis key types)
+            // name each one's kind; an engine that says nothing keeps the
+            // "table"/"collection" labels below
+            let kinds = database_client
+                .get_metadata_provider()
+                .get_table_kinds(&tables)
+                .await
+                .unwrap_or_default();
+
             for table_reference in tables {
                 let conn_info = database_client.get_connection_info();
-                let (explicit_schema, table) =
-                    if conn_info.database_type == crate::database::DatabaseType::PostgreSQL {
-                        metadata_table_parts(&table_reference, &conn_info.database_type)
-                    } else {
-                        (None, unquote_metadata_identifier(&table_reference))
-                    };
+                let (explicit_schema, table) = if matches!(
+                    conn_info.database_type,
+                    crate::database::DatabaseType::PostgreSQL
+                        | crate::database::DatabaseType::SqlServer
+                        | crate::database::DatabaseType::Redshift
+                ) {
+                    metadata_table_parts(&table_reference, &conn_info.database_type)
+                } else if conn_info.database_type == crate::database::DatabaseType::Redis {
+                    // A key name is not an identifier: keep quotes and brackets
+                    (None, table_reference.clone())
+                } else {
+                    (None, unquote_metadata_identifier(&table_reference))
+                };
                 let schema_name =
                     if conn_info.database_type == crate::database::DatabaseType::MongoDB {
                         "".to_string() // MongoDB doesn't have schemas
@@ -1418,12 +1478,15 @@ impl Database {
                         })
                     };
 
-                let object_type =
-                    if conn_info.database_type == crate::database::DatabaseType::MongoDB {
-                        "collection".to_string()
-                    } else {
-                        "table".to_string()
-                    };
+                let object_type = if let Some(kind) = kinds.get(&table_reference) {
+                    kind.clone()
+                } else if conn_info.database_type == crate::database::DatabaseType::MongoDB {
+                    "collection".to_string()
+                } else if conn_info.database_type == crate::database::DatabaseType::Redis {
+                    "key".to_string()
+                } else {
+                    "table".to_string()
+                };
 
                 results.push(vec![schema_name, table, object_type, self.get_username()]);
             }
@@ -1454,7 +1517,7 @@ impl Database {
         query: &str,
     ) -> std::result::Result<crate::database::StructuredQueryResult, Box<dyn StdError>> {
         if self.read_only {
-            crate::safety::check_read_only(query, &self.get_database_type())?;
+            self.check_read_only_query(query)?;
         }
 
         if self.explain_mode && is_query_explainable(query) {
@@ -1576,7 +1639,7 @@ impl Database {
         // path funnels through (-c/-f/stdin, REPL, named queries, AI run_sql,
         // Python API)
         if self.read_only {
-            crate::safety::check_read_only(query, &self.get_database_type())?;
+            self.check_read_only_query(query)?;
         }
 
         // Check if we should EXPLAIN this query (applies to all database types)
@@ -1767,7 +1830,7 @@ impl Database {
         &mut self,
         query: &str,
     ) -> std::result::Result<Vec<Vec<String>>, Box<dyn StdError>> {
-        crate::safety::check_read_only(query, &self.get_database_type())?;
+        self.check_read_only_query(query)?;
         match self.database_client {
             Some(ref database_client) => database_client
                 .explain_analyze_query_raw(query)
@@ -1863,6 +1926,12 @@ impl Database {
     }
 
     pub fn maybe_add_limit(&self, query: &str) -> String {
+        if self.get_database_type() == crate::database::DatabaseType::SqlServer {
+            return add_default_top(query, self.default_limit);
+        }
+        if self.get_database_type() == crate::database::DatabaseType::InfluxDB {
+            return add_default_limit_influxql(query, self.default_limit);
+        }
         add_default_limit(query, self.default_limit)
     }
 
@@ -2499,6 +2568,86 @@ fn add_default_limit(query: &str, default_limit: usize) -> String {
     }
 }
 
+/// InfluxQL (and v3 SQL) take a trailing `LIMIT`, but `LIMIT` must precede
+/// `OFFSET` / `SLIMIT` / `SOFFSET` / `tz()` in InfluxQL: a query that already
+/// has one of those, or writes with `INTO`, is left alone (the driver's
+/// `max_rows` still caps what is read). Flux programs never start with
+/// `SELECT`, so they are never touched.
+fn add_default_limit_influxql(query: &str, default_limit: usize) -> String {
+    let lower = query.to_lowercase();
+    let has_clause = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|token| {
+            matches!(
+                token,
+                "offset" | "slimit" | "soffset" | "tz" | "into" | "fetch"
+            )
+        });
+    if has_clause {
+        return query.to_string();
+    }
+    add_default_limit(query, default_limit)
+}
+
+/// T-SQL has no `LIMIT`: cap a plain single `SELECT` with `TOP (n)` right after
+/// `SELECT [DISTINCT|ALL]`. Anything that already bounds itself (TOP, FETCH,
+/// OFFSET) or where a leading TOP would not bound the whole statement (UNION,
+/// INTERSECT, EXCEPT, INTO, FOR XML/JSON, several statements) is left alone —
+/// the driver's `max_rows` still caps what is read.
+fn add_default_top(query: &str, default_limit: usize) -> String {
+    const UNTOUCHED: [&str; 8] = [
+        "top",
+        "fetch",
+        "offset",
+        "union",
+        "intersect",
+        "except",
+        "into",
+        "for",
+    ];
+    let trimmed = query.trim_start();
+    let starts_with_select = trimmed
+        .get(..6)
+        .is_some_and(|head| head.eq_ignore_ascii_case("select"))
+        && trimmed[6..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_whitespace() || c == '(' || c == '*');
+    if default_limit == 0 || !starts_with_select {
+        return query.to_string();
+    }
+    let lower = query.to_lowercase();
+    let words = || {
+        lower
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|word| !word.is_empty())
+    };
+    if words().any(|word| UNTOUCHED.contains(&word))
+        || lower.contains("count(")
+        || query.trim_end().trim_end_matches(';').contains(';')
+    {
+        return query.to_string();
+    }
+    let select_end = query.len() - trimmed.len() + 6;
+    let rest = &query[select_end..];
+    let after_space = rest.trim_start();
+    let next_word: String = after_space
+        .chars()
+        .take_while(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_lowercase();
+    let insert_at = if next_word == "distinct" || next_word == "all" {
+        select_end + (rest.len() - after_space.len()) + next_word.len()
+    } else {
+        select_end
+    };
+    format!(
+        "{} TOP ({default_limit}){}",
+        &query[..insert_at],
+        &query[insert_at..]
+    )
+}
+
 /// The catalog lookups `\ddl` (and the AI assistant, through its own
 /// adapter) use to list tables across schemas.
 #[async_trait::async_trait(?Send)]
@@ -2665,6 +2814,69 @@ mod tests {
         assert_eq!(leading_sql_keyword("-- only a comment"), None);
         assert_eq!(leading_sql_keyword("/* unterminated"), None);
         assert_eq!(leading_sql_keyword(""), None);
+    }
+
+    #[rstest]
+    #[case("SELECT * FROM t", "SELECT TOP (100) * FROM t")]
+    #[case(
+        "select a, b from t where x = 1;",
+        "select TOP (100) a, b from t where x = 1;"
+    )]
+    #[case("  SELECT DISTINCT a FROM t", "  SELECT DISTINCT TOP (100) a FROM t")]
+    #[case("SELECT ALL a FROM t", "SELECT ALL TOP (100) a FROM t")]
+    #[case("SELECT\n  a\nFROM t", "SELECT TOP (100)\n  a\nFROM t")]
+    #[case("SELECT * FROM t -- note", "SELECT TOP (100) * FROM t -- note")]
+    fn test_add_default_top_caps_plain_selects(#[case] query: &str, #[case] expected: &str) {
+        assert_eq!(add_default_top(query, 100), expected);
+    }
+
+    #[rstest]
+    #[case("SELECT TOP 5 * FROM t")]
+    #[case("SELECT * FROM t ORDER BY a OFFSET 5 ROWS FETCH NEXT 5 ROWS ONLY")]
+    #[case("SELECT a FROM t UNION SELECT a FROM u")]
+    #[case("SELECT * INTO #copy FROM t")]
+    #[case("SELECT * FROM t FOR JSON PATH")]
+    #[case("SELECT COUNT(*) FROM t")]
+    #[case("SELECT 1; SELECT 2")]
+    #[case("WITH c AS (SELECT 1 AS n) SELECT n FROM c")]
+    #[case("INSERT INTO t SELECT * FROM s")]
+    #[case("SELECTED")]
+    #[case("-- c\nSELECT * FROM t")]
+    fn test_add_default_top_leaves_everything_else_alone(#[case] query: &str) {
+        assert_eq!(add_default_top(query, 100), query);
+        assert_eq!(add_default_top("SELECT * FROM t", 0), "SELECT * FROM t");
+    }
+
+    #[rstest]
+    #[case("SELECT * FROM cpu", "SELECT * FROM cpu LIMIT 100")]
+    #[case(
+        "SELECT mean(usage) FROM cpu WHERE time > now() - 1h GROUP BY time(5m);",
+        "SELECT mean(usage) FROM cpu WHERE time > now() - 1h GROUP BY time(5m) LIMIT 100;"
+    )]
+    #[case("SELECT * FROM cpu LIMIT 5", "SELECT * FROM cpu LIMIT 5")]
+    #[case(
+        "SELECT * FROM cpu LIMIT 5 OFFSET 5",
+        "SELECT * FROM cpu LIMIT 5 OFFSET 5"
+    )]
+    #[case(
+        "SELECT * FROM cpu GROUP BY * SLIMIT 2",
+        "SELECT * FROM cpu GROUP BY * SLIMIT 2"
+    )]
+    #[case(
+        "SELECT * FROM cpu tz('Europe/Paris')",
+        "SELECT * FROM cpu tz('Europe/Paris')"
+    )]
+    #[case("SELECT * INTO copy FROM cpu", "SELECT * INTO copy FROM cpu")]
+    #[case("SHOW MEASUREMENTS", "SHOW MEASUREMENTS")]
+    #[case(
+        "from(bucket: \"b\") |> range(start: -1h)",
+        "from(bucket: \"b\") |> range(start: -1h)"
+    )]
+    fn test_influxql_default_limit_leaves_clauses_alone(
+        #[case] query: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(add_default_limit_influxql(query, 100), expected);
     }
 
     #[rstest]

@@ -1,0 +1,31 @@
+[package]
+name = "dbcrust-driver-mssql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust SQL Server / Azure SQL driver (TDS over rustls with ring, via the vendored tiberius)"
+
+# Layer 1 of the crate split: depends on `dbcrust-core` and this engine's SDK
+# only (never the root crate, secrets, Docker, AI or another driver); the
+# registry `dbcrust-drivers` is what links it into a build.
+[dependencies]
+# `tls`: ring is the process-default rustls provider the TLS handshake takes
+dbcrust-core = { workspace = true, features = ["tls"] }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+futures-util = { workspace = true }
+tiberius = { workspace = true }
+tokio = { workspace = true, features = ["net", "sync", "time", "macros"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+rstest = { workspace = true }
+
+[lints]
+workspace = true

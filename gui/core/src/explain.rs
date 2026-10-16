@@ -361,7 +361,7 @@ impl PlanModel {
     pub fn from_raw(raw: &ExplainRaw) -> PlanModel {
         let built = match raw.db_type {
             DatabaseType::PostgreSQL => postgres_model(raw),
-            DatabaseType::SQLite => sqlite_model(raw),
+            DatabaseType::SQLite | DatabaseType::LibSql => sqlite_model(raw),
             DatabaseType::MySQL => mysql_model(raw),
             _ => None,
         };

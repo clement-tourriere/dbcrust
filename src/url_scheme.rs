@@ -50,7 +50,15 @@ impl ParsedUrl {
     pub fn is_database_scheme(&self) -> bool {
         matches!(
             self.scheme,
-            UrlScheme::Postgres | UrlScheme::MySQL | UrlScheme::SQLite | UrlScheme::WhiteDragon
+            UrlScheme::Postgres
+                | UrlScheme::MySQL
+                | UrlScheme::SQLite
+                | UrlScheme::WhiteDragon
+                | UrlScheme::Redis
+                | UrlScheme::SqlServer
+                | UrlScheme::Redshift
+                | UrlScheme::LibSql
+                | UrlScheme::InfluxDb
         )
     }
 
@@ -79,6 +87,16 @@ pub enum UrlScheme {
     Elasticsearch,
     #[strum(serialize = "white-dragon")]
     WhiteDragon,
+    #[strum(serialize = "redis")]
+    Redis,
+    #[strum(serialize = "mssql")]
+    SqlServer,
+    #[strum(serialize = "redshift")]
+    Redshift,
+    #[strum(serialize = "libsql")]
+    LibSql,
+    #[strum(serialize = "influxdb")]
+    InfluxDb,
     #[strum(serialize = "parquet")]
     Parquet,
     #[strum(serialize = "csv")]
@@ -111,6 +129,11 @@ impl UrlScheme {
             Self::MongoDB => DatabaseType::MongoDB,
             Self::Elasticsearch => DatabaseType::Elasticsearch,
             Self::WhiteDragon => DatabaseType::WhiteDragon,
+            Self::Redis => DatabaseType::Redis,
+            Self::SqlServer => DatabaseType::SqlServer,
+            Self::Redshift => DatabaseType::Redshift,
+            Self::LibSql => DatabaseType::LibSql,
+            Self::InfluxDb => DatabaseType::InfluxDB,
             Self::Parquet => DatabaseType::Parquet,
             Self::Csv => DatabaseType::CSV,
             Self::Json => DatabaseType::JSON,
@@ -153,6 +176,17 @@ impl UrlScheme {
             Self::MongoDB => "MongoDB database connection",
             Self::Elasticsearch => "Elasticsearch cluster connection",
             Self::WhiteDragon => "White Dragon schema-first search endpoint",
+            Self::Redis => "Redis (or Valkey) server; rediss:// for TLS",
+            Self::SqlServer => {
+                "SQL Server or Azure SQL (SQL authentication; encrypt=true by default)"
+            }
+            Self::Redshift => "Amazon Redshift (PostgreSQL protocol, TLS required by default)",
+            Self::LibSql => {
+                "libSQL / Turso over HTTP (sqld or Turso Cloud; libsql+http:// for a local sqld)"
+            }
+            Self::InfluxDb => {
+                "InfluxDB v1 (InfluxQL); influxdb2:// is v2 (Flux), influxdb3:// v3 (SQL), a trailing s is TLS"
+            }
             Self::Parquet => "Parquet file or glob (DataFusion)",
             Self::Csv => "CSV/TSV file or glob (DataFusion)",
             Self::Json => "JSON/NDJSON file or glob (DataFusion)",
@@ -211,6 +245,9 @@ impl UrlScheme {
             full_url.clone()
         };
 
+        // `host\instance` (SQL Server) is not a valid URL host as typed
+        let normalized_url =
+            crate::database::escape_sqlserver_instance_backslash(&normalized_url).into_owned();
         let parsed_url = Url::parse(&normalized_url)?;
         Ok(ParsedUrl::new(scheme, normalized_url, Some(parsed_url)))
     }
@@ -225,6 +262,11 @@ impl UrlScheme {
             "mongodb" | "mongodb+srv" => Ok(Self::MongoDB),
             "elasticsearch" | "elastic" | "es" => Ok(Self::Elasticsearch),
             "white-dragon" | "whitedragon" | "wd" => Ok(Self::WhiteDragon),
+            "redis" | "rediss" | "valkey" | "valkeys" | "redis+unix" | "unix" => Ok(Self::Redis),
+            "mssql" | "sqlserver" | "mssql+tls" | "sqlserver+tls" => Ok(Self::SqlServer),
+            "redshift" | "redshift+tls" => Ok(Self::Redshift),
+            "libsql" | "libsql+http" | "turso" => Ok(Self::LibSql),
+            scheme if crate::database::INFLUXDB_SCHEMES.contains(&scheme) => Ok(Self::InfluxDb),
             "parquet" => Ok(Self::Parquet),
             "csv" => Ok(Self::Csv),
             "json" | "ndjson" => Ok(Self::Json),
@@ -253,6 +295,11 @@ impl UrlScheme {
             Self::MongoDB => Some("MongoDB"),
             Self::Elasticsearch => Some("Elasticsearch"),
             Self::WhiteDragon => Some("White Dragon"),
+            Self::Redis => Some("Redis"),
+            Self::SqlServer => Some("SQL Server"),
+            Self::Redshift => Some("Redshift"),
+            Self::LibSql => Some("libSQL"),
+            Self::InfluxDb => Some("InfluxDB"),
             Self::Parquet => Some("Parquet"),
             Self::Csv => Some("CSV"),
             Self::Json => Some("JSON"),
@@ -272,6 +319,11 @@ impl UrlScheme {
             "white dragon" | "white-dragon" | "whitedragon" | "wd" => {
                 vec![Self::WhiteDragon]
             }
+            "redis" | "valkey" => vec![Self::Redis],
+            "sql server" | "sqlserver" | "mssql" | "azure sql" => vec![Self::SqlServer],
+            "redshift" | "aws redshift" => vec![Self::Redshift],
+            "libsql" | "turso" | "sqld" => vec![Self::LibSql],
+            "influxdb" | "influx" => vec![Self::InfluxDb],
             _ => UrlScheme::iter().collect(),
         }
     }
@@ -511,7 +563,7 @@ mod tests {
     #[test]
     fn test_url_scheme_iteration() {
         let schemes: Vec<_> = UrlScheme::iter().collect();
-        assert_eq!(schemes.len(), 16); // All schemes
+        assert_eq!(schemes.len(), 21); // All schemes
 
         // Verify all schemes have proper string representation
         for scheme in schemes {
@@ -629,6 +681,99 @@ mod tests {
         let parsed = UrlScheme::parse_url("vault://role@mount/database").unwrap();
         assert_eq!(parsed.scheme, UrlScheme::Vault);
         assert!(parsed.is_special_scheme());
+
+        // Redis and its TLS / Valkey / unix-socket spellings
+        for url in [
+            "redis://localhost:6379/0",
+            "rediss://user:pw@cache:6380/1",
+            "valkey://localhost",
+            "valkeys://localhost",
+            "redis+unix:///run/redis.sock?db=1",
+        ] {
+            let parsed = UrlScheme::parse_url(url).unwrap();
+            assert_eq!(parsed.scheme, UrlScheme::Redis, "{url}");
+            assert!(parsed.is_database_scheme());
+        }
+        assert_eq!(UrlScheme::Redis.url_prefix(), "redis://");
+        assert_eq!(UrlScheme::Redis.to_database_type(), Some("Redis"));
+        assert_eq!(
+            UrlScheme::for_database_type("valkey"),
+            vec![UrlScheme::Redis]
+        );
+
+        // SQL Server and its spellings
+        for url in [
+            "mssql://sa:pw@db:1433/Sales",
+            "sqlserver://sa@db/Sales?encrypt=strict",
+            "mssql+tls://sa@db",
+            "sqlserver+tls://sa@db",
+        ] {
+            let parsed = UrlScheme::parse_url(url).unwrap();
+            assert_eq!(parsed.scheme, UrlScheme::SqlServer, "{url}");
+            assert!(parsed.is_database_scheme());
+        }
+        // Redshift and its TLS spelling
+        for url in [
+            "redshift://awsuser:pw@c.abc.eu-west-1.redshift.amazonaws.com:5439/dev",
+            "redshift://awsuser@c.example/dev?sslmode=verify-full",
+            "redshift+tls://awsuser@c.example/dev",
+        ] {
+            let parsed = UrlScheme::parse_url(url).unwrap();
+            assert_eq!(parsed.scheme, UrlScheme::Redshift, "{url}");
+            assert!(parsed.is_database_scheme());
+        }
+        // libSQL / Turso and its spellings
+        for url in [
+            "libsql://my-db-org.turso.io",
+            "libsql://my-db-org.turso.io?authToken=abc",
+            "turso://my-db-org.turso.io",
+            "libsql+http://localhost:8080",
+        ] {
+            let parsed = UrlScheme::parse_url(url).unwrap();
+            assert_eq!(parsed.scheme, UrlScheme::LibSql, "{url}");
+            assert!(parsed.is_database_scheme());
+        }
+        assert_eq!(UrlScheme::LibSql.url_prefix(), "libsql://");
+        assert_eq!(UrlScheme::LibSql.to_database_type(), Some("libSQL"));
+        assert_eq!(
+            UrlScheme::for_database_type("turso"),
+            vec![UrlScheme::LibSql]
+        );
+
+        assert_eq!(UrlScheme::Redshift.url_prefix(), "redshift://");
+        assert_eq!(UrlScheme::Redshift.to_database_type(), Some("Redshift"));
+        assert_eq!(
+            UrlScheme::for_database_type("redshift"),
+            vec![UrlScheme::Redshift]
+        );
+
+        assert_eq!(UrlScheme::SqlServer.url_prefix(), "mssql://");
+        assert_eq!(UrlScheme::SqlServer.to_database_type(), Some("SQL Server"));
+        assert_eq!(
+            UrlScheme::for_database_type("sql server"),
+            vec![UrlScheme::SqlServer]
+        );
+
+        // InfluxDB: every generation and TLS spelling
+        for url in [
+            "influxdb://localhost:8086/telemetry",
+            "influxdbs://db.example/telemetry",
+            "influxdb+https://db.example/telemetry",
+            "influxdb2://:token@localhost/bucket?org=acme",
+            "influxdb2s://db.example:443/bucket?org=acme",
+            "influxdb3://localhost/mydb",
+            "influxdb3+https://db.example/mydb",
+        ] {
+            let parsed = UrlScheme::parse_url(url).unwrap();
+            assert_eq!(parsed.scheme, UrlScheme::InfluxDb, "{url}");
+            assert!(parsed.is_database_scheme());
+        }
+        assert_eq!(UrlScheme::InfluxDb.url_prefix(), "influxdb://");
+        assert_eq!(UrlScheme::InfluxDb.to_database_type(), Some("InfluxDB"));
+        assert_eq!(
+            UrlScheme::for_database_type("influx"),
+            vec![UrlScheme::InfluxDb]
+        );
 
         // Test unsupported scheme
         let result = UrlScheme::parse_url("unsupported://test");
