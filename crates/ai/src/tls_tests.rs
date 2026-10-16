@@ -11,9 +11,9 @@ use dbcrust_core::tls::install_default_crypto_provider;
 #[test]
 fn genai_client_builds_with_installed_provider() {
     install_default_crypto_provider();
-    let client = genai::Client::default();
     // Building the underlying HTTP client is lazy-free in genai: reaching
-    // this point without a panic is the assertion
+    // this point without a panic or an error is the assertion
+    let client = genai::Client::new().expect("genai client");
     drop(client);
 }
 

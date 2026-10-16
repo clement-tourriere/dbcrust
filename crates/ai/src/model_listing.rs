@@ -36,9 +36,10 @@ pub async fn list_models(
 
     dbcrust_core::tls::install_default_crypto_provider();
 
+    let client = Client::new().map_err(|e| AiError::RequestFailed(e.to_string()))?;
     let names = tokio::time::timeout(
         Duration::from_secs(10),
-        Client::default().all_model_names(adapter, provider_config),
+        client.all_model_names(adapter, provider_config),
     )
     .await
     .map_err(|_| AiError::RequestFailed("model listing timed out".to_string()))?

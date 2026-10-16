@@ -233,9 +233,10 @@ pub fn build_client(ai_config: &AiConfig, mode: &ResolvedAuthMode) -> Result<Cli
                 })
             },
         );
-        return Ok(Client::builder()
+        return Client::builder()
             .with_service_target_resolver(target_resolver)
-            .build());
+            .build()
+            .map_err(|e| AiError::RequestFailed(e.to_string()));
     }
 
     // Pre-flight the API key: the auth resolver below maps failures to
@@ -281,7 +282,9 @@ pub fn build_client(ai_config: &AiConfig, mode: &ResolvedAuthMode) -> Result<Cli
         builder = builder.with_service_target_resolver(target_resolver);
     }
 
-    Ok(builder.build())
+    builder
+        .build()
+        .map_err(|e| AiError::RequestFailed(e.to_string()))
 }
 
 fn build_request(system_prompt: &str, messages: &[(MessageRole, String)]) -> ChatRequest {
