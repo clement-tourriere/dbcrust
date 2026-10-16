@@ -37,6 +37,73 @@ jobs:
       - name: tests
         run: mbx test --locked
 
+  # The jobs above build the default features (`bundled`: every engine and
+  # add-on, what the release binaries and wheels ship). This one proves each
+  # slice of that still compiles on its own and that the slim preset really is
+  # slim. `cargo check` only, to keep it cheap.
+  rust-features:
+    name: Rust · feature matrix (${{ matrix.name }})
+    needs: security
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: none, features: "" }
+          - { name: standard, features: "standard" }
+          - { name: standard + python, features: "standard,python" }
+          - { name: postgres, features: "postgres" }
+          - { name: mysql, features: "mysql" }
+          - { name: sqlite, features: "sqlite" }
+          - { name: mongodb, features: "mongodb" }
+          - { name: clickhouse, features: "clickhouse" }
+          - { name: elasticsearch, features: "elasticsearch" }
+          - { name: white-dragon, features: "white-dragon" }
+          - { name: files, features: "files" }
+          - { name: docker, features: "docker" }
+          - { name: ai, features: "ai" }
+          - { name: explain-tui, features: "explain-tui" }
+          - { name: clipboard, features: "clipboard" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Mr Boxington
+        uses: jdx/mr-boxington-action@adc5c234c02592f7edd008bf81d5bc0e9584dc03 # v1.2.0
+        with:
+          version: "1.4.1"
+      - name: check
+        # abi3-py310 supplies the ABI for the `python` entry; no interpreter
+        # is needed to type-check the extension.
+        env:
+          PYO3_NO_PYTHON: "1"
+        run: mbx check --locked -p dbcrust --no-default-features --features "${{ matrix.features }}"
+
+  rust-slim:
+    name: Rust · slim build (standard preset)
+    needs: security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Set up Mr Boxington
+        uses: jdx/mr-boxington-action@adc5c234c02592f7edd008bf81d5bc0e9584dc03 # v1.2.0
+        with:
+          version: "1.4.1"
+      - name: heavy dependencies stay out of `standard`
+        run: |
+          cargo tree --locked -p dbcrust --no-default-features --features standard -e normal --prefix none \
+            | awk '{print $1}' | sort -u > standard-crates.txt
+          if grep -xE '(mongodb|bson|clickhouse|elasticsearch|datafusion(-.*)?|arrow(-.*)?|parquet|bollard|genai|ratatui|arboard|dbcrust-(ai|docker|driver-(mongodb|clickhouse|elasticsearch|white-dragon|files)))' standard-crates.txt; then
+            echo "::error::the standard preset pulls in a crate that belongs to an opt-in feature"
+            exit 1
+          fi
+      - name: clippy
+        run: mbx clippy --locked -p dbcrust --no-default-features --features standard --all-targets -- -D warnings
+      - name: tests
+        run: mbx test --locked -p dbcrust --no-default-features --features standard
+
   rust-i686:
     name: Rust · 32-bit Python compatibility
     needs: security
@@ -59,6 +126,8 @@ jobs:
         # 64-bit Python interpreter when checking our 32-bit wheel library.
         env:
           PYO3_NO_PYTHON: "1"
+        # Default features (`bundled`): the wheels ship every engine, so the
+        # 32-bit check must compile all of them (ClickHouse pin included).
         run: mbx check --locked -p dbcrust --lib --features python --target i686-unknown-linux-gnu
 
   security:

@@ -2,6 +2,10 @@ use crate::password_sanitizer::{sanitize_connection_url, sanitize_ssh_tunnel_str
 use std::ffi::{OsStr, OsString};
 use usage::{Subcommands, ValueEnum};
 
+// Defined in `output_format` (a leaf module shared with `format`/`db`);
+// re-exported so `crate::cli::OutputFormat` keeps resolving.
+pub use crate::output_format::OutputFormat;
+
 /// Connection examples shown under the root help page.
 const ROOT_EXAMPLES: &str = "Examples:
   dbcrust postgres://user:pass@localhost:5432/mydb
@@ -702,26 +706,6 @@ impl From<Shell> for usage::complete::Shell {
             Shell::Nushell => Self::Nu,
         }
     }
-}
-
-/// Output format for query results (`-o/--format`, env `DBCRUST_FORMAT`).
-///
-/// Defined here rather than in `format.rs` because cli.rs is also compiled
-/// standalone into the binaries (`mod cli;` in main.rs) and must not depend
-/// on lib-only modules.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, ValueEnum)]
-pub enum OutputFormat {
-    /// psql-style aligned table (default)
-    #[default]
-    Table,
-    /// Vertical one-record-per-block layout (same as `\x`)
-    Expanded,
-    /// RFC 4180 CSV with a header row
-    Csv,
-    /// One `{"columns":[…],"rows":[[…]],"row_count":n,"truncated":bool}` envelope per statement
-    Json,
-    /// One JSON object per data row, keys in column order
-    Jsonl,
 }
 
 #[cfg(test)]

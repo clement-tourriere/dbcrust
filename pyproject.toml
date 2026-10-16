@@ -67,6 +67,8 @@ bindings = "pyo3"
 module-name = "dbcrust._internal"
 strip = true
 python-source = "python"
+# Default features stay on: `default = ["bundled"]` in Cargo.toml, so the wheel
+# carries every engine and add-on. Do not add `no-default-features` here.
 features = ["python"]
 # Keep demo/scratch/test files out of the shipped wheel
 exclude = [

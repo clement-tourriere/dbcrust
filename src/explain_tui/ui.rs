@@ -1,7 +1,7 @@
 //! UI rendering for the TUI explain visualizer
 
 use super::app::ExplainTuiApp;
-use super::plan_tree::PlanNode;
+use crate::explain_plan::PlanNode;
 use crate::performance_analyzer::PerformanceLevel;
 use ratatui::{
     Frame,

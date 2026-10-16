@@ -1,21 +1,37 @@
 [package]
 name = "dbcrust-gui-core"
-version = "0.38.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 publish = false
 description = "GPUI-free backend of the DBCrust desktop app: per-connection database workers, config/storage ownership, and pure query/result/schema models"
 
 [dependencies]
-dbcrust = { path = "../..", default-features = false }
-tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time"] }
-futures-util = { version = "0.3", default-features = false, features = ["std"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-toml = "0.9"
-thiserror = "2"
-tracing = "0.1"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# `bundled`: the desktop app offers every engine and the Docker picker
+dbcrust = { path = "../..", default-features = false, features = ["bundled"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
+futures-util = { workspace = true }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+toml = { workspace = true, features = ["std", "display", "parse", "serde"] }
+thiserror = { workspace = true, features = ["std"] }
+tracing = { workspace = true, features = ["std", "attributes"] }
+chrono = { workspace = true }
 
 [dev-dependencies]
-rstest = { version = "0.26", default-features = false }
-tempfile = "3"
+# Enables the secrets crate's `test-mode` switch for this crate's tests: the
+# `cfg!(test)` heuristic is only true inside the crate that owns the code, so
+# threads a test spawns would otherwise reach the real config dir and keychain.
+dbcrust-secrets = { workspace = true, features = ["test-mode"] }
+rstest = { workspace = true }
+tempfile = { workspace = true, features = ["getrandom"] }
+
+[package.metadata.cargo-machete]
+# Feature-only dev-dependency (see [dev-dependencies])
+ignored = ["dbcrust-secrets"]
+
+[lints]
+workspace = true

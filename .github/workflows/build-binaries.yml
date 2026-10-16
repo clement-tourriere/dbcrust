@@ -20,6 +20,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
+# Release artefacts ship every engine and add-on: the native binaries name the
+# `bundled` preset explicitly, and the wheels (`--features python`, which keeps
+# the default features) get it because `default = ["bundled"]`. A slimmer build
+# is a user choice (`--no-default-features --features standard`), not a release
+# artefact. Do not drop `bundled` here without an announced release.
 env:
   PACKAGE_NAME: dbcrust
   MODULE_NAME: dbcrust
@@ -317,7 +322,7 @@ jobs:
 
       - name: "Build native binaries"
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc --bin dbcrust-agent
+          cargo build --release --target ${{ matrix.target }} --features bundled --bin dbcrust --bin dbc --bin dbcrust-agent
           mkdir -p dist
           cd target/${{ matrix.target }}/release
           tar czf ../../../dist/dbcrust-${{ matrix.target }}.tar.gz dbcrust dbc dbcrust-agent
@@ -352,7 +357,7 @@ jobs:
 
       - name: "Build native binaries with cross"
         run: |
-          cross build --release --target aarch64-unknown-linux-gnu --bin dbcrust --bin dbc --bin dbcrust-agent
+          cross build --release --target aarch64-unknown-linux-gnu --features bundled --bin dbcrust --bin dbc --bin dbcrust-agent
           mkdir -p dist
           cd target/aarch64-unknown-linux-gnu/release
           tar czf ../../../dist/dbcrust-aarch64-unknown-linux-gnu.tar.gz dbcrust dbc dbcrust-agent
@@ -387,7 +392,7 @@ jobs:
 
       - name: "Build native binaries"
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc --bin dbcrust-agent
+          cargo build --release --target ${{ matrix.target }} --features bundled --bin dbcrust --bin dbc --bin dbcrust-agent
           mkdir dist
           cd target/${{ matrix.target }}/release
           Compress-Archive -Path dbcrust.exe,dbc.exe,dbcrust-agent.exe -DestinationPath ../../../dist/dbcrust-${{ matrix.target }}.zip
@@ -426,7 +431,7 @@ jobs:
 
       - name: "Build native binaries"
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc --bin dbcrust-agent
+          cargo build --release --target ${{ matrix.target }} --features bundled --bin dbcrust --bin dbc --bin dbcrust-agent
           mkdir -p dist
           cd target/${{ matrix.target }}/release
           tar czf ../../../dist/dbcrust-${{ matrix.target }}.tar.gz dbcrust dbc dbcrust-agent

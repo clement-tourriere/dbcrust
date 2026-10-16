@@ -2783,42 +2783,30 @@ dependencies = [
 name = "dbcrust"
 version = "0.38.0"
 dependencies = [
- "aes-gcm",
  "arboard",
- "argon2",
  "async-trait",
- "base64 0.23.1",
- "bollard",
- "bson",
  "chrono",
- "clickhouse",
  "crossterm",
- "datafusion",
  "dbcrust-agent-protocol",
+ "dbcrust-ai",
+ "dbcrust-broker",
+ "dbcrust-core",
+ "dbcrust-docker",
+ "dbcrust-drivers",
+ "dbcrust-secrets",
  "dirs 6.0.0",
- "elasticsearch",
  "futures-util",
- "genai",
- "half",
- "hex",
- "hostname",
  "inquire",
- "keyring",
  "libc",
- "mongodb",
  "nu-ansi-term",
  "percent-encoding",
- "pgvector",
- "prettytable-rs",
  "pyo3",
  "rand 0.9.5",
  "ratatui",
  "reedline",
  "regex",
  "reqwest 0.12.28",
- "reqwest 0.13.2",
  "rstest",
- "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2834,7 +2822,6 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "usage-rs",
- "uuid",
  "zeroize",
 ]
 
@@ -2862,12 +2849,231 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbcrust-ai"
+version = "0.38.0"
+dependencies = [
+ "async-trait",
+ "base64 0.23.1",
+ "dbcrust-core",
+ "dbcrust-secrets",
+ "dirs 6.0.0",
+ "futures-util",
+ "genai",
+ "rand 0.9.5",
+ "reqwest 0.12.28",
+ "reqwest 0.13.2",
+ "rstest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "dbcrust-broker"
+version = "0.38.0"
+dependencies = [
+ "chrono",
+ "dbcrust-agent-protocol",
+ "dbcrust-core",
+ "dbcrust-drivers",
+ "dbcrust-secrets",
+ "hex",
+ "libc",
+ "rstest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "zeroize",
+]
+
+[[package]]
+name = "dbcrust-core"
+version = "0.38.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "half",
+ "nu-ansi-term",
+ "percent-encoding",
+ "prettytable-rs",
+ "regex",
+ "rstest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sqlparser",
+ "strum 0.27.2",
+ "thiserror 2.0.20",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "url",
+ "usage-rs",
+]
+
+[[package]]
+name = "dbcrust-docker"
+version = "0.38.0"
+dependencies = [
+ "bollard",
+ "dbcrust-core",
+ "dirs 6.0.0",
+ "futures-util",
+ "hex",
+ "rstest",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dbcrust-driver-clickhouse"
+version = "0.38.0"
+dependencies = [
+ "async-trait",
+ "clickhouse",
+ "dbcrust-core",
+ "reqwest 0.12.28",
+ "rstest",
+ "serde",
+ "tracing",
+]
+
+[[package]]
+name = "dbcrust-driver-elasticsearch"
+version = "0.38.0"
+dependencies = [
+ "async-trait",
+ "dbcrust-core",
+ "elasticsearch",
+ "regex",
+ "rstest",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "dbcrust-driver-files"
+version = "0.38.0"
+dependencies = [
+ "async-trait",
+ "datafusion",
+ "dbcrust-core",
+ "futures-util",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dbcrust-driver-mongodb"
+version = "0.38.0"
+dependencies = [
+ "async-trait",
+ "bson",
+ "dbcrust-core",
+ "futures-util",
+ "mongodb",
+ "percent-encoding",
+ "rstest",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "dbcrust-driver-mysql"
+version = "0.38.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dbcrust-core",
+ "hex",
+ "percent-encoding",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dbcrust-driver-postgres"
+version = "0.38.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dbcrust-core",
+ "hex",
+ "pgvector",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dbcrust-driver-sqlite"
+version = "0.38.0"
+dependencies = [
+ "async-trait",
+ "dbcrust-core",
+ "hex",
+ "sqlx",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dbcrust-driver-white-dragon"
+version = "0.38.0"
+dependencies = [
+ "async-trait",
+ "dbcrust-core",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "dbcrust-drivers"
+version = "0.38.0"
+dependencies = [
+ "dbcrust-core",
+ "dbcrust-driver-clickhouse",
+ "dbcrust-driver-elasticsearch",
+ "dbcrust-driver-files",
+ "dbcrust-driver-mongodb",
+ "dbcrust-driver-mysql",
+ "dbcrust-driver-postgres",
+ "dbcrust-driver-sqlite",
+ "dbcrust-driver-white-dragon",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "dbcrust-gui"
 version = "0.38.0"
 dependencies = [
  "async-channel",
  "chrono",
  "dbcrust-gui-core",
+ "dbcrust-secrets",
  "gpui-kit",
  "image",
  "lsp-types",
@@ -2891,6 +3097,7 @@ version = "0.38.0"
 dependencies = [
  "chrono",
  "dbcrust",
+ "dbcrust-secrets",
  "futures-util",
  "rstest",
  "serde",
@@ -2900,6 +3107,33 @@ dependencies = [
  "tokio",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
+]
+
+[[package]]
+name = "dbcrust-secrets"
+version = "0.38.0"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "chrono",
+ "dirs 6.0.0",
+ "hex",
+ "hostname",
+ "inquire",
+ "keyring",
+ "libc",
+ "percent-encoding",
+ "rand 0.9.5",
+ "rstest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]

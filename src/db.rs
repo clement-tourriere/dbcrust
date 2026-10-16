@@ -1,82 +1,24 @@
 use crate::config::SSHTunnelConfig;
-use crate::database::{
-    ConnectionInfo, DatabaseClient, DatabaseType, DatabaseTypeExt, create_database_client,
-};
+use crate::database::{ConnectionInfo, DatabaseClient, DatabaseType, DatabaseTypeExt};
+#[cfg(feature = "docker")]
 use crate::docker::DockerPhase;
+#[cfg(feature = "docker")]
 use crate::docker_route::DockerRoute;
+#[cfg(feature = "docker")]
 use crate::docker_tunnel::DockerTunnel;
+use crate::drivers::create_database_client;
 use crate::pgpass;
 
 use inquire::MultiSelect;
 use std::collections::HashMap;
 use std::error::Error as StdError;
+#[cfg(feature = "docker")]
 use std::sync::Arc;
 use tracing::{debug, info};
 
-pub(crate) fn unquote_metadata_identifier(identifier: &str) -> String {
-    let trimmed = identifier.trim();
-    if trimmed.len() >= 2 {
-        if trimmed.starts_with('"') && trimmed.ends_with('"') {
-            return trimmed[1..trimmed.len() - 1].replace("\"\"", "\"");
-        }
-        if trimmed.starts_with('`') && trimmed.ends_with('`') {
-            return trimmed[1..trimmed.len() - 1].replace("``", "`");
-        }
-        if trimmed.starts_with('[') && trimmed.ends_with(']') {
-            return trimmed[1..trimmed.len() - 1].replace("]]", "]");
-        }
-    }
-    trimmed.to_string()
-}
-
-pub(crate) fn metadata_table_parts(
-    table_name: &str,
-    database_type: &DatabaseType,
-) -> (Option<String>, String) {
-    let supports_schemas = matches!(
-        database_type,
-        DatabaseType::PostgreSQL
-            | DatabaseType::MySQL
-            | DatabaseType::SQLite
-            | DatabaseType::ClickHouse
-    );
-    if !supports_schemas {
-        return (None, unquote_metadata_identifier(table_name));
-    }
-
-    let mut quote = None;
-    let mut chars = table_name.char_indices().peekable();
-    while let Some((index, character)) = chars.next() {
-        match quote {
-            Some('"') if character == '"' => {
-                if chars.peek().is_some_and(|(_, next)| *next == '"') {
-                    chars.next();
-                } else {
-                    quote = None;
-                }
-            }
-            Some('`') if character == '`' => {
-                if chars.peek().is_some_and(|(_, next)| *next == '`') {
-                    chars.next();
-                } else {
-                    quote = None;
-                }
-            }
-            Some(']') if character == ']' => quote = None,
-            Some(_) => {}
-            None if character == '"' || character == '`' => quote = Some(character),
-            None if character == '[' => quote = Some(']'),
-            None if character == '.' => {
-                let schema = unquote_metadata_identifier(&table_name[..index]);
-                let table = unquote_metadata_identifier(&table_name[index + 1..]);
-                return (Some(schema), table);
-            }
-            None => {}
-        }
-    }
-
-    (None, unquote_metadata_identifier(table_name))
-}
+// Metadata DTOs live in `crate::model`; re-exported so `crate::db::TableDetails`
+// (and `dbcrust::db::TableDetails` for the GUI) keep resolving.
+pub use crate::model::*;
 
 #[derive(Debug)]
 pub struct ColumnSelectionAborted;
@@ -97,32 +39,6 @@ pub struct PoolStats {
     pub active_connections: u32,
     pub idle_connections: u32,
     pub acquire_timeout_seconds: u64,
-}
-
-/// Column filtering metadata to track when results are filtered
-#[derive(Debug, Clone)]
-pub struct ColumnFilteringInfo {
-    pub total_columns: usize,
-    pub displayed_columns: usize,
-    pub filtered_column_names: Vec<String>,
-}
-
-impl ColumnFilteringInfo {
-    pub fn new(
-        total_columns: usize,
-        displayed_columns: usize,
-        filtered_column_names: Vec<String>,
-    ) -> Self {
-        Self {
-            total_columns,
-            displayed_columns,
-            filtered_column_names,
-        }
-    }
-
-    pub fn is_filtered(&self) -> bool {
-        self.displayed_columns < self.total_columns
-    }
 }
 
 /// Query results with optional column filtering information
@@ -150,6 +66,7 @@ impl FrontendMode {
 
 /// A connected Docker container: the database, what to record for it, and
 /// how it is reached.
+#[cfg(feature = "docker")]
 pub struct DockerConnection {
     pub database: Database,
     /// The resolved connection (stable: for a relayed connection the host is
@@ -171,10 +88,13 @@ pub struct Database {
     // `docker exec` relay for Docker connections the host cannot route to.
     // Owned here so it lives (and dies) with the connection: dropping the
     // Database aborts the relay and every exec it started.
+    #[cfg(feature = "docker")]
     docker_tunnel: Option<Arc<DockerTunnel>>,
+    #[cfg(feature = "docker")]
     docker_route: Option<DockerRoute>,
     // The Docker daemon this connection was made through (see
     // `docker_daemon_pin`)
+    #[cfg(feature = "docker")]
     docker_daemon: Option<String>,
 
     // Application settings and state
@@ -219,14 +139,19 @@ impl Database {
     ) -> std::result::Result<Self, Box<dyn StdError>> {
         // Docker targets don't need (and mustn't wait for) the config files
         if url.starts_with("docker://") {
-            let (database, _) = Self::from_docker_url_with_mode(
-                url,
-                default_limit,
-                expanded_display_default,
-                frontend_mode,
-            )
-            .await?;
-            return Ok(database);
+            #[cfg(feature = "docker")]
+            {
+                let (database, _) = Self::from_docker_url_with_mode(
+                    url,
+                    default_limit,
+                    expanded_display_default,
+                    frontend_mode,
+                )
+                .await?;
+                return Ok(database);
+            }
+            #[cfg(not(feature = "docker"))]
+            return Err(Box::new(crate::features::FeatureNotCompiled::Docker));
         }
         let config = crate::config::Config::load();
         Self::from_url_with_config(
@@ -255,14 +180,19 @@ impl Database {
 
         // Handle Docker URLs specially
         if url.starts_with("docker://") {
-            let (database, _) = Self::from_docker_url_with_mode(
-                url,
-                default_limit,
-                expanded_display_default,
-                frontend_mode,
-            )
-            .await?;
-            return Ok(database);
+            #[cfg(feature = "docker")]
+            {
+                let (database, _) = Self::from_docker_url_with_mode(
+                    url,
+                    default_limit,
+                    expanded_display_default,
+                    frontend_mode,
+                )
+                .await?;
+                return Ok(database);
+            }
+            #[cfg(not(feature = "docker"))]
+            return Err(Box::new(crate::features::FeatureNotCompiled::Docker));
         }
 
         // Parse the connection info from URL
@@ -332,7 +262,13 @@ impl Database {
         );
         result
     }
+}
 
+// Docker connection flow: needs the `docker` feature (`dbcrust-docker`). A
+// build without it answers `docker://` URLs with
+// `FeatureNotCompiled::Docker` (see `from_url_with_config`).
+#[cfg(feature = "docker")]
+impl Database {
     /// Create a new Database instance from a Docker URL
     pub async fn from_docker_url(
         url: &str,
@@ -357,7 +293,7 @@ impl Database {
         debug!("[Database::from_docker_url] Creating database from Docker URL");
 
         // Parse Docker URL (container, credentials, database, options)
-        let mut template = crate::docker::DockerTarget::parse(url)
+        let mut template = crate::docker_target::DockerTarget::parse(url)
             .ok_or("Invalid Docker URL format")?
             .to_connection_info();
 
@@ -415,7 +351,7 @@ impl Database {
     /// and so does dropping this future.
     ///
     /// Which daemon: the current one, unless `template.options` carries
-    /// [`crate::docker::PINNED_DAEMON_OPTION`] (as the siblings of an open
+    /// [`crate::docker_target::PINNED_DAEMON_OPTION`] (as the siblings of an open
     /// Docker connection do: see [`Database::docker_daemon_pin`]), in which
     /// case that very daemon is used, whatever context is current by now.
     pub async fn connect_docker_container<P, B, Fut>(
@@ -436,7 +372,9 @@ impl Database {
 
         // The pin is routing information, not a database option
         let mut template = template.clone();
-        let pinned = template.options.remove(crate::docker::PINNED_DAEMON_OPTION);
+        let pinned = template
+            .options
+            .remove(crate::docker_target::PINNED_DAEMON_OPTION);
         let docker_client = match pinned {
             Some(pin) => crate::docker::DockerClient::with_endpoint(
                 crate::docker::DockerEndpoint::from_pinned(&pin)?,
@@ -483,7 +421,7 @@ impl Database {
     }
 
     /// For a Docker connection: the identity of the daemon it was made
-    /// through. Put it under [`crate::docker::PINNED_DAEMON_OPTION`] in the
+    /// through. Put it under [`crate::docker_target::PINNED_DAEMON_OPTION`] in the
     /// options of a follow-up request (another database of the same
     /// container) so it reaches the same daemon even if the user switched
     /// docker contexts meanwhile.
@@ -515,10 +453,10 @@ impl Database {
                 .database
                 .clone()
                 .or(docker_connection.database_name),
-            file_path: None,
             options: template.options.clone(),
             docker_container: template.docker_container.clone(),
             use_tls: template.use_tls,
+            ..Default::default()
         }
     }
 
@@ -660,7 +598,9 @@ impl Database {
         Self::from_docker_url_with_mode(url, default_limit, expanded_display_default, frontend_mode)
             .await
     }
+}
 
+impl Database {
     /// Create a new Database instance from ConnectionInfo
     pub async fn from_connection_info(
         connection_info: ConnectionInfo,
@@ -757,8 +697,11 @@ impl Database {
             database_client: Some(database_client),
             connection_info_override,
             ssh_tunnel,
+            #[cfg(feature = "docker")]
             docker_tunnel: None,
+            #[cfg(feature = "docker")]
             docker_route: None,
+            #[cfg(feature = "docker")]
             docker_daemon: None,
             expanded_display: expanded_display_default.unwrap_or(false),
             output_format: crate::cli::OutputFormat::Table,
@@ -804,7 +747,6 @@ impl Database {
         default_limit: Option<usize>,
         expanded_display_default: Option<bool>,
         ssh_tunnel_config: Option<SSHTunnelConfig>,
-        _ssl_mode: Option<sqlx::postgres::PgSslMode>,
     ) -> std::result::Result<Self, Box<dyn StdError>> {
         // Legacy method - convert parameters to ConnectionInfo and use from_connection_info
         let password = if password_param.is_empty() {
@@ -820,10 +762,7 @@ impl Database {
             username: Some(user.to_string()),
             password,
             database: Some(dbname.to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         Self::from_connection_info(
@@ -1384,13 +1323,6 @@ impl Database {
         }
     }
 
-    pub fn get_pool(&self) -> Option<&sqlx::PgPool> {
-        // Legacy method - pool management is now handled by database clients
-        None
-    }
-
-    // Pool management methods removed - now handled by database clients
-
     pub fn get_database_client(&self) -> Option<&dyn DatabaseClient> {
         self.database_client.as_deref()
     }
@@ -1652,6 +1584,7 @@ impl Database {
             debug!("EXPLAIN mode is enabled, executing EXPLAIN query");
 
             // Check if TUI mode is enabled (PostgreSQL only for now)
+            #[cfg(feature = "explain-tui")]
             if self.explain_tui_mode && self.get_database_type() == DatabaseType::PostgreSQL {
                 debug!("TUI mode is enabled, launching visualizer");
                 return self.execute_explain_with_tui(query).await;
@@ -1724,6 +1657,7 @@ impl Database {
     }
 
     /// Execute an EXPLAIN query and display in the TUI visualizer
+    #[cfg(feature = "explain-tui")]
     async fn execute_explain_with_tui(
         &mut self,
         query: &str,
@@ -2169,8 +2103,11 @@ impl Database {
             database_client: None, // No database client in test mode
             connection_info_override: None,
             ssh_tunnel: None, // No SSH tunnel in test mode
+            #[cfg(feature = "docker")]
             docker_tunnel: None,
+            #[cfg(feature = "docker")]
             docker_route: None,
+            #[cfg(feature = "docker")]
             docker_daemon: None,
             expanded_display: false,
             output_format: crate::cli::OutputFormat::Table,
@@ -2504,63 +2441,6 @@ impl Database {
     }
 }
 
-#[derive(Debug, serde::Serialize)]
-pub struct TableDetails {
-    pub name: String,
-    pub schema: String,
-    #[allow(dead_code)]
-    pub full_name: String,
-    pub columns: Vec<ColumnInfo>,
-    pub indexes: Vec<IndexInfo>,
-    pub check_constraints: Vec<CheckConstraintInfo>,
-    pub foreign_keys: Vec<ForeignKeyInfo>,
-    pub referenced_by: Vec<ReferencedByInfo>,
-    /// Nested field details for struct/complex types (column_name -> field descriptions)
-    pub nested_field_details: std::collections::HashMap<String, Vec<String>>,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct ColumnInfo {
-    pub name: String,
-    pub data_type: String,
-    pub collation: String,
-    pub nullable: bool,
-    pub default_value: Option<String>,
-    pub enum_values: Option<Vec<String>>, // For enum types, contains the possible values
-}
-
-#[derive(Debug, PartialEq, Eq, Hash, Clone, serde::Serialize)]
-pub struct IndexInfo {
-    pub name: String,
-    pub index_type: String,
-    pub is_primary: bool,
-    pub is_unique: bool,
-    pub predicate: Option<String>,
-    pub definition: String,
-    #[allow(dead_code)]
-    pub constraint_def: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct ForeignKeyInfo {
-    pub name: String,
-    pub definition: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct CheckConstraintInfo {
-    pub name: String,
-    pub definition: String,
-}
-
-#[derive(Debug, serde::Serialize)]
-pub struct ReferencedByInfo {
-    pub schema: String,
-    pub table: String,
-    pub constraint_name: String,
-    pub definition: String,
-}
-
 // Helper function to determine if a query can be explained
 fn is_query_explainable(query: &str) -> bool {
     let query = query.trim().to_lowercase();
@@ -2619,6 +2499,22 @@ fn add_default_limit(query: &str, default_limit: usize) -> String {
     }
 }
 
+/// The catalog lookups `\ddl` (and the AI assistant, through its own
+/// adapter) use to list tables across schemas.
+#[async_trait::async_trait(?Send)]
+impl crate::ddl::TableCatalog for Database {
+    async fn catalog_schemas(&mut self) -> std::result::Result<Vec<String>, Box<dyn StdError>> {
+        self.get_schemas().await
+    }
+
+    async fn catalog_tables(
+        &mut self,
+        schema_filter: Option<&str>,
+    ) -> std::result::Result<Vec<String>, Box<dyn StdError>> {
+        self.get_tables_and_views(schema_filter).await
+    }
+}
+
 impl Drop for Database {
     fn drop(&mut self) {
         if let Some(_ssh_tunnel) = &mut self.ssh_tunnel {
@@ -2634,32 +2530,105 @@ mod tests {
     use super::*;
     use rstest::rstest;
 
-    #[rstest]
-    #[case(
-        "analytics.orders",
-        DatabaseType::PostgreSQL,
-        Some("analytics"),
-        "orders"
-    )]
-    #[case(
-        "\"odd.schema\".\"Order.Items\"",
-        DatabaseType::PostgreSQL,
-        Some("odd.schema"),
-        "Order.Items"
-    )]
-    #[case("\"v1.events\"", DatabaseType::PostgreSQL, None, "v1.events")]
-    #[case("logs-2026.07", DatabaseType::Elasticsearch, None, "logs-2026.07")]
-    #[case("events.archive", DatabaseType::MongoDB, None, "events.archive")]
-    fn metadata_table_parts_respects_backend_and_identifier_quotes(
-        #[case] input: &str,
-        #[case] database_type: DatabaseType,
-        #[case] schema: Option<&str>,
-        #[case] table: &str,
-    ) {
+    // -- docker:// pinning (the connect flow lives here, the daemon code in
+    // `dbcrust-docker`) ---------------------------------------------------
+
+    // -- builds without an add-on or a connector ---------------------------
+
+    #[cfg(not(feature = "docker"))]
+    #[tokio::test]
+    async fn docker_urls_say_docker_is_not_compiled() {
+        let error = Database::from_url("docker://some-container/app", None, None)
+            .await
+            .err()
+            .expect("docker:// cannot connect without the feature");
         assert_eq!(
-            metadata_table_parts(input, &database_type),
-            (schema.map(str::to_string), table.to_string())
+            error.downcast_ref::<crate::features::FeatureNotCompiled>(),
+            Some(&crate::features::FeatureNotCompiled::Docker)
         );
+        assert!(error.to_string().contains("`docker` cargo feature"));
+    }
+
+    #[cfg(not(feature = "mongodb"))]
+    #[tokio::test]
+    async fn a_disabled_engine_says_which_feature_provides_it() {
+        let error = Database::from_url("mongodb://localhost:27017/app", None, None)
+            .await
+            .err()
+            .expect("MongoDB cannot connect without the feature");
+        let text = error.to_string();
+        assert!(
+            text.contains("MongoDB support is not compiled into this build"),
+            "{text}"
+        );
+        assert!(text.contains("`mongodb` cargo feature"), "{text}");
+    }
+
+    #[cfg(not(feature = "files"))]
+    #[tokio::test]
+    async fn file_formats_name_the_files_feature() {
+        let error = Database::from_url("csv:///tmp/does-not-matter.csv", None, None)
+            .await
+            .err()
+            .expect("CSV cannot connect without the feature");
+        assert!(
+            error.to_string().contains("`files` cargo feature"),
+            "{error}"
+        );
+    }
+
+    #[cfg(feature = "docker")]
+    #[tokio::test]
+    async fn a_pinned_daemon_is_used_whatever_the_current_context_is() {
+        // The current daemon (whatever it is here) is not consulted: the
+        // pin names a socket that doesn't exist, and that is what fails.
+        let mut template = crate::docker_target::DockerTarget::parse("docker://some-container")
+            .unwrap()
+            .to_connection_info();
+        template.options.insert(
+            crate::docker_target::PINNED_DAEMON_OPTION.to_string(),
+            "unix:///nonexistent/dbcrust-pinned.sock".to_string(),
+        );
+        let error = match Database::connect_docker_container(
+            &template,
+            |_| {},
+            |_| async { Err::<Database, _>("unreachable".into()) },
+        )
+        .await
+        {
+            Ok(_) => panic!("a missing daemon cannot connect"),
+            Err(e) => e,
+        };
+        let text = error.to_string();
+        assert!(text.contains("dbcrust-pinned.sock"), "{text}");
+        assert!(matches!(
+            error.downcast_ref::<crate::docker::DockerError>(),
+            Some(crate::docker::DockerError::DaemonUnavailable { .. })
+        ));
+    }
+
+    #[cfg(feature = "docker")]
+    #[test]
+    fn a_pin_that_cannot_be_used_is_an_error_not_a_fallback() {
+        let mut template = crate::docker_target::DockerTarget::parse("docker://c")
+            .unwrap()
+            .to_connection_info();
+        template.options.insert(
+            crate::docker_target::PINNED_DAEMON_OPTION.to_string(),
+            "ssh://me@host".to_string(),
+        );
+        let error = futures_util::FutureExt::now_or_never(Database::connect_docker_container(
+            &template,
+            |_| {},
+            |_| async { Err::<Database, _>("unreachable".into()) },
+        ))
+        .expect("fails before any await")
+        .err()
+        .expect("error");
+        assert!(matches!(
+            error.downcast_ref::<crate::docker::DockerError>(),
+            Some(crate::docker::DockerError::Endpoint(_))
+        ));
     }
 
     #[rstest]

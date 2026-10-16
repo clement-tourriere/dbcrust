@@ -27,10 +27,21 @@ run = "cargo build --release"
 description = "Build the CLI in debug mode"
 run = "cargo build"
 
+[tasks."build:slim"]
+description = "Build the slim CLI in release mode (standard preset: PostgreSQL, MySQL, SQLite; no DataFusion/MongoDB/ClickHouse/Elasticsearch/Docker/AI/TUI/clipboard)"
+run = "cargo build --release --no-default-features --features standard --bin dbcrust --bin dbc"
+
 [tasks."install"]
 description = "Build release binaries and install dbcrust + dbc + dbcrust-agent locally (~/.cargo/bin)"
 run = [
   "cargo install --path . --locked --force",
+  "cargo install --path crates/agent --locked --force",
+]
+
+[tasks."install:slim"]
+description = "Install the slim dbcrust + dbc (standard preset) and dbcrust-agent locally (~/.cargo/bin)"
+run = [
+  "cargo install --path . --locked --force --no-default-features --features standard",
   "cargo install --path crates/agent --locked --force",
 ]
 
@@ -49,6 +60,16 @@ run = "cargo fmt"
 [tasks."check"]
 description = "Run fmt + clippy + tests + Python lint/type-check/tests (CI parity)"
 depends = ["fmt", "lint", "test", "py:lint", "py:test"]
+
+[tasks."check:features"]
+description = "Type-check the root crate for the zero-engine build, the standard preset and each feature alone (CI's feature matrix)"
+run = '''
+set -e
+for features in "" standard standard,python postgres mysql sqlite mongodb clickhouse elasticsearch white-dragon files docker ai explain-tui clipboard; do
+  echo "== --no-default-features --features '$features'"
+  PYO3_NO_PYTHON=1 cargo check --locked -p dbcrust --no-default-features --features "$features"
+done
+'''
 
 # ══════════════════════════════════════════════════════════════════════════════
 # GUI Tasks

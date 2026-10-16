@@ -1,0 +1,62 @@
+[package]
+name = "dbcrust-broker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust credential broker core: alias registry, enrollment, policy gateway, audit log and the Unix socket server"
+
+# Layer 3 of the crate split: the credential-holding process. It depends on
+# `dbcrust-core`, `dbcrust-secrets` (without its `prompt` feature), the engine
+# registry and the agent wire protocol only — never on the root crate, the CLI
+# grammar, `inquire`, `reedline`, the AI stack or Docker (`boundary_tests` in
+# lib.rs fails if one of them shows up in this manifest). The `dbcrust broker …`
+# front end (arguments, prompts, exit codes) lives in the root crate.
+[dependencies]
+dbcrust-core = { workspace = true }
+dbcrust-secrets = { workspace = true }
+dbcrust-drivers = { workspace = true }
+dbcrust-agent-protocol = { workspace = true, features = ["tokio"] }
+chrono = { workspace = true }
+hex = { workspace = true, features = ["std"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+sha2 = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+toml = { workspace = true, features = ["display", "parse", "serde"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "signal", "sync", "time"] }
+tracing = { workspace = true, features = ["std"] }
+zeroize = { workspace = true, features = ["alloc", "serde"] }
+# `testkit` seeds a SQLite database and a temp state dir; compiled for this
+# crate's own tests and, through `test-support`, for the root crate's
+# end-to-end tests
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls"], optional = true }
+tempfile = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[features]
+default = []
+# `broker::testkit` for other crates' tests. Dev-dependency only.
+test-support = ["dep:sqlx", "dep:tempfile"]
+
+[dev-dependencies]
+# The unit tests enroll and run against the engines the broker supports; the
+# workspace entry carries no engines of its own (the root crate's features pick
+# them for a real build)
+dbcrust-drivers = { workspace = true, features = ["postgres", "mysql", "sqlite", "clickhouse"] }
+# `cfg!(test)` is only true inside the crate under test: without `test-mode`
+# the secrets crate would treat these tests as a normal build and reach the
+# real config directory and keychain from unnamed threads (tokio workers).
+dbcrust-secrets = { workspace = true, features = ["test-mode"] }
+rstest = { workspace = true }
+sqlx = { workspace = true, features = ["sqlite", "runtime-tokio-rustls"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

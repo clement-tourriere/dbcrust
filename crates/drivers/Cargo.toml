@@ -1,0 +1,60 @@
+[package]
+name = "dbcrust-drivers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust engine registry: which client serves which database engine, and which connectors a build contains"
+
+# Layer 1 of the crate split: the registry depends on `dbcrust-core` and the
+# driver crates, nothing else. The credential broker and the root crate ask it
+# for a `Box<dyn DatabaseClient>`; neither names a driver type.
+#
+# One cargo feature per connector, each forwarding to an optional driver crate.
+# The `connectors!` table in `src/lib.rs` carries the same feature name on every
+# row, so a build only contains the engines whose feature is on; the others
+# fail with `DatabaseError::ConnectorNotBuilt` naming that feature.
+[dependencies]
+dbcrust-core = { workspace = true }
+dbcrust-driver-postgres = { workspace = true, optional = true }
+dbcrust-driver-mysql = { workspace = true, optional = true }
+dbcrust-driver-sqlite = { workspace = true, optional = true }
+dbcrust-driver-mongodb = { workspace = true, optional = true }
+dbcrust-driver-clickhouse = { workspace = true, optional = true }
+dbcrust-driver-elasticsearch = { workspace = true, optional = true }
+dbcrust-driver-white-dragon = { workspace = true, optional = true }
+dbcrust-driver-files = { workspace = true, optional = true }
+
+[features]
+# Standalone (`cargo test -p dbcrust-drivers`) the registry has every engine.
+# Dependants name what they need: the workspace entry is `default-features =
+# false`, and the root crate's `bundled`/`standard` presets pick the engines.
+default = [
+    "postgres",
+    "mysql",
+    "sqlite",
+    "mongodb",
+    "clickhouse",
+    "elasticsearch",
+    "white-dragon",
+    "files",
+]
+postgres = ["dep:dbcrust-driver-postgres"]
+mysql = ["dep:dbcrust-driver-mysql"]
+sqlite = ["dep:dbcrust-driver-sqlite"]
+mongodb = ["dep:dbcrust-driver-mongodb"]
+clickhouse = ["dep:dbcrust-driver-clickhouse"]
+elasticsearch = ["dep:dbcrust-driver-elasticsearch"]
+white-dragon = ["dep:dbcrust-driver-white-dragon"]
+# DataFusion: Parquet, CSV, JSON and DuckDB files
+files = ["dep:dbcrust-driver-files"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

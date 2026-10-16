@@ -1,0 +1,61 @@
+[package]
+name = "dbcrust-ai"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust AI assistant: multi-provider text-to-SQL, the agent loop, ChatGPT sign-in and provider key storage"
+
+# Layer 2 of the crate split: depends on `dbcrust-core` and `dbcrust-secrets`
+# (no driver SDK, Docker, TUI or the root crate). The assistant reaches the
+# database only through the `AiSession` trait; the root crate implements it for
+# its `Database` type.
+[dependencies]
+dbcrust-core = { workspace = true, features = ["tls"] }
+dbcrust-secrets = { workspace = true }
+async-trait = { workspace = true }
+base64 = { version = "0.23", default-features = false, features = ["std"] }
+dirs = { workspace = true }
+futures-util = { workspace = true }
+# Multi-provider LLM client — owns provider/model handling so dbcrust doesn't
+# hardcode providers or model lists. Its default `rustls-tls` feature makes
+# reqwest 0.13 pull in rustls' aws-lc-rs provider (a large C/asm build), so it
+# is disabled and TLS is enabled below without a bundled provider.
+genai = { version = "=0.7.0-beta.2", default-features = false }
+# genai's own reqwest (0.13, a different semver line from the 0.12 below): the
+# alias exists only to turn on `rustls-no-provider` — same rustls + platform
+# verifier as genai's `rustls-tls`, minus the aws-lc-rs provider. Never used
+# outside the TLS regression tests; `dbcrust_core::tls::install_default_crypto_provider`
+# supplies ring at runtime.
+reqwest_genai = { package = "reqwest", version = "0.13", features = ["rustls-no-provider"], default-features = false }
+rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+sha2 = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tracing = { workspace = true, features = ["std"] }
+url = { workspace = true }
+# PKCE + JWT-payload decoding for "Sign in with ChatGPT" (already transitive)
+uuid = { version = "1", default-features = false, features = ["v4"] }
+
+[dev-dependencies]
+# `cfg!(test)` is only true inside the crate under test, so the secrets crate
+# would see this crate's tests as a normal build and reach the real
+# ~/.config/dbcrust and keychain from any unnamed thread (`test_isolation`
+# canaries this); `test-mode` switches it on for every test build,
+# `test-support` exposes the fault-injecting backend `key_storage` tests use.
+dbcrust-secrets = { workspace = true, features = ["test-mode", "test-support"] }
+rstest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[package.metadata.cargo-machete]
+# Feature-only alias for genai's reqwest 0.13 (see the dependency comment)
+ignored = ["reqwest_genai"]
+
+[lints]
+workspace = true

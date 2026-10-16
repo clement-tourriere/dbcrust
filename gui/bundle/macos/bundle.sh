@@ -4,7 +4,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../../.."
-version=$(sed -n 's/^version = "\(.*\)"/\1/p' gui/Cargo.toml | head -1)
+# gui/ inherits the version from [workspace.package] in the root manifest
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 
 cargo build -p dbcrust-gui --profile gui-release
 

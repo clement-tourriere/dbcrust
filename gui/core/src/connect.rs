@@ -645,10 +645,9 @@ async fn resolve_vault(
         username: Some(credentials.username.clone()),
         password: Some(credentials.password),
         database: template_info.database.clone(),
-        file_path: None,
         options,
-        docker_container: None,
         use_tls: template_info.use_tls,
+        ..Default::default()
     };
     Ok(VaultLogin { postgres_url, info })
 }
@@ -681,19 +680,12 @@ mod tests {
     fn vault_url_completion() {
         let info = ConnectionInfo {
             database_type: DatabaseType::PostgreSQL,
-            host: None,
-            port: None,
-            username: None,
-            password: None,
-            database: None,
-            file_path: None,
             options: std::collections::HashMap::from([
                 ("vault_mount".to_string(), "database".to_string()),
                 ("vault_database".to_string(), "app".to_string()),
                 ("vault_role".to_string(), "ro".to_string()),
             ]),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
         assert_eq!(complete_vault_url(&info, "x"), "vault://ro@database/app");
     }
@@ -708,10 +700,8 @@ mod tests {
             username: Some("app".into()),
             password: Some("p@ss:w/rd".into()),
             database: Some(database.into()),
-            file_path: None,
-            options: std::collections::HashMap::new(),
             docker_container: Some(container.into()),
-            use_tls: false,
+            ..Default::default()
         }
     }
 

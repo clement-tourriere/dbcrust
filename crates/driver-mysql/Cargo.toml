@@ -1,0 +1,29 @@
+[package]
+name = "dbcrust-driver-mysql"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust MySQL/MariaDB driver (sqlx)"
+
+# Layer 1 of the crate split: depends on `dbcrust-core` and this engine's SDK
+# only (never the root crate, secrets, Docker, AI or another driver); the
+# registry `dbcrust-drivers` is what links it into a build.
+[dependencies]
+dbcrust-core = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true, features = ["std"] }
+percent-encoding = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
+sqlx = { workspace = true, features = ["mysql", "runtime-tokio-rustls", "chrono", "json", "uuid", "rust_decimal"] }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

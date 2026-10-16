@@ -1,7 +1,11 @@
 [package]
 name = "dbcrust-gui"
-version = "0.38.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 publish = false
 description = "DBCrust desktop app — a native GPU-accelerated database workbench built with GPUI Kit"
 default-run = "dbcrust-gui"
@@ -31,19 +35,19 @@ dbcrust-gui-core = { path = "core" }
 gpui-kit = { version = "=0.7.1", features = ["tree-sitter-sql"] }
 # Types of GPUI Kit's LSP-style completion provider (same version as gpui-base)
 lsp-types = "0.97"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-strum = { version = "0.27", features = ["derive"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "env-filter"] }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+strum = { workspace = true, features = ["derive", "std"] }
+tracing = { workspace = true, features = ["std", "attributes"] }
+tracing-subscriber = { workspace = true, features = ["std", "fmt", "env-filter"] }
 # Wakes GPUI from the tray's native callbacks (already in the tree through GPUI)
 async-channel = "2"
 # Decodes the bundled tray icons (the screenshot harness encodes PNGs with it too)
 image = { version = "0.25", default-features = false, features = ["png"] }
 # Raw NSView / HWND of the main window, to hide it without destroying it
 raw-window-handle = "0.6"
-tempfile = { version = "3", optional = true }
-chrono = { version = "0.4", optional = true, default-features = false, features = ["clock", "std"] }
+tempfile = { workspace = true, features = ["getrandom"], optional = true }
+chrono = { workspace = true, optional = true }
 
 # The menu bar / notification area icon. Linux has no tray this round (GPUI
 # cannot hide a window there and tray-icon needs a GTK main loop), so nothing
@@ -60,5 +64,16 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Wind
 
 [dev-dependencies]
 gpui-kit = { version = "=0.7.1", features = ["tree-sitter-sql", "test-support"] }
-rstest = { version = "0.26", default-features = false }
-tempfile = "3"
+# Enables the secrets crate's `test-mode` switch for this crate's tests: the
+# `cfg!(test)` heuristic is only true inside the crate that owns the code, so
+# threads a test spawns would otherwise reach the real config dir and keychain.
+dbcrust-secrets = { workspace = true, features = ["test-mode"] }
+rstest = { workspace = true }
+tempfile = { workspace = true, features = ["getrandom"] }
+
+[package.metadata.cargo-machete]
+# Feature-only dev-dependency (see [dev-dependencies])
+ignored = ["dbcrust-secrets"]
+
+[lints]
+workspace = true

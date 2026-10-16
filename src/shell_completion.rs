@@ -39,7 +39,9 @@ pub fn url_candidates(prefix: &str) -> Vec<Candidate<'static>> {
     };
     match scheme {
         "session" => session_candidates(),
-        "docker" if !rest.contains('/') => docker_container_candidates(),
+        "docker" if cfg!(feature = "docker") && !rest.contains('/') => {
+            docker_container_candidates()
+        }
         "sqlite" | "duckdb" | "parquet" | "csv" | "json" | "ndjson" => {
             path_candidates(&format!("{scheme}://"), rest)
         }
@@ -47,9 +49,10 @@ pub fn url_candidates(prefix: &str) -> Vec<Candidate<'static>> {
     }
 }
 
-/// Every `scheme://` prefix, described.
+/// Every `scheme://` prefix this build can serve, described.
 pub fn scheme_candidates() -> Vec<Candidate<'static>> {
     UrlScheme::iter()
+        .filter(UrlScheme::is_available)
         .map(|scheme| Candidate::described(scheme.url_prefix(), scheme.description()))
         .collect()
 }
@@ -214,12 +217,22 @@ mod tests {
     #[test]
     fn test_scheme_candidates_cover_every_url_scheme() {
         let values: Vec<String> = scheme_candidates().into_iter().map(|c| c.value).collect();
-        for scheme in UrlScheme::iter() {
+        for scheme in UrlScheme::iter().filter(UrlScheme::is_available) {
             assert!(values.contains(&scheme.url_prefix()), "{scheme}");
         }
-        assert!(values.contains(&"postgres://".to_string()));
-        assert!(values.contains(&"docker://".to_string()));
         assert!(values.contains(&"session://".to_string()));
+        assert_eq!(
+            values.contains(&"docker://".to_string()),
+            cfg!(feature = "docker")
+        );
+        assert_eq!(
+            values.contains(&"mongodb://".to_string()),
+            cfg!(feature = "mongodb")
+        );
+        assert_eq!(
+            values.contains(&"postgres://".to_string()),
+            cfg!(feature = "postgres")
+        );
     }
 
     #[test]

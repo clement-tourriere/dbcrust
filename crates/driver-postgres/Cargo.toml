@@ -1,0 +1,31 @@
+[package]
+name = "dbcrust-driver-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust PostgreSQL driver (sqlx + pgvector)"
+
+# Layer 1 of the crate split: depends on `dbcrust-core` and this engine's SDK
+# only (never the root crate, secrets, Docker, AI or another driver); the
+# registry `dbcrust-drivers` is what links it into a build.
+[dependencies]
+dbcrust-core = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true, features = ["std"] }
+# Vector/halfvec column decoding (the `vector` extension)
+pgvector = { workspace = true, features = ["sqlx", "halfvec"] }
+serde_json = { workspace = true, features = ["std"] }
+sqlx = { workspace = true, features = ["postgres", "runtime-tokio-rustls", "chrono", "json", "uuid", "ipnetwork", "rust_decimal"] }
+tokio = { workspace = true, features = ["macros", "sync", "time"] }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

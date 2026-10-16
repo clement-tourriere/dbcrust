@@ -319,7 +319,6 @@ pub struct SessionHistoryInfo {
 mod tests {
     use super::*;
     use crate::database::{ConnectionInfo, DatabaseType};
-    use std::collections::HashMap;
 
     #[test]
     fn test_session_id_postgresql() {
@@ -328,12 +327,8 @@ mod tests {
             host: Some("localhost".to_string()),
             port: Some(5432),
             username: Some("user".to_string()),
-            password: None,
             database: Some("mydb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let session_id = SessionId::from_connection_info(&connection_info);
@@ -350,15 +345,8 @@ mod tests {
     fn test_session_id_sqlite() {
         let connection_info = ConnectionInfo {
             database_type: DatabaseType::SQLite,
-            host: None,
-            port: None,
-            username: None,
-            password: None,
-            database: None,
             file_path: Some("/path/to/db.sqlite".to_string()),
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let session_id = SessionId::from_connection_info(&connection_info);
@@ -373,12 +361,9 @@ mod tests {
             host: Some("localhost".to_string()),
             port: Some(5432),
             username: Some("user".to_string()),
-            password: None,
             database: Some("mydb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
             docker_container: Some("my-postgres-container".to_string()),
-            use_tls: false,
+            ..Default::default()
         };
 
         let session_id = SessionId::from_connection_info(&connection_info);
@@ -396,12 +381,8 @@ mod tests {
             host: Some("vault-postgres.internal".to_string()),
             port: Some(5432),
             username: Some("v-root-readonly-xyz".to_string()),
-            password: None,
             database: Some("myapp".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         connection_info
@@ -429,12 +410,8 @@ mod tests {
             host: Some("localhost".to_string()),
             port: Some(5432),
             username: Some("user".to_string()),
-            password: None,
             database: Some("mydb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let session_id1 = SessionId::from_connection_info(&connection_info);

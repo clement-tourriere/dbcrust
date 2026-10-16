@@ -23,7 +23,7 @@ gui/
 | `explain.rs` | Plan view model (PostgreSQL JSON → tree via `dbcrust::explain_tui`, SQLite/MySQL/DataFusion tabular plans). |
 | `history.rs` | In-memory query history per connection. |
 | `gui_state.rs` | Desktop-only persisted state (`~/.config/dbcrust/gui_state.toml`): open drafts (with the file or saved query they save to), theme, sizes, menu bar / tray behaviour, Connections page metadata. |
-| `docker.rs`, `vault.rs` | Discovery for the Connections page (each on a short-lived runtime thread). `docker::discover_snapshot()` returns the containers with the daemon that listed them; `DockerDaemon::connect_request` pins a connect to it. How a container is reached (published port → OrbStack domain → container address → relay through `docker exec`) lives in the core crate: `src/docker_route.rs`, `src/docker_tunnel.rs`. |
+| `docker.rs`, `vault.rs` | Discovery for the Connections page (each on a short-lived runtime thread). `docker::discover_snapshot()` returns the containers with the daemon that listed them; `DockerDaemon::connect_request` pins a connect to it. How a container is reached (published port → OrbStack domain → container address → relay through `docker exec`) lives in the `dbcrust-docker` crate: `crates/docker/src/docker_route.rs`, `crates/docker/src/docker_tunnel.rs`. |
 | `launcher.rs` | The Connections page's pure model: what the list holds (saved / recent / Docker, search, filters, dedup, selection rules), Docker publishing facts, connect-phase log, environment tags and their `gui_state.toml` part (`LauncherState`), removing a recent entry. |
 | `env.rs` | Login-shell `PATH` import with timeout. |
 

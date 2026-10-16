@@ -6,6 +6,7 @@ use strum::{Display, EnumIter, IntoStaticStr};
 use url::Url;
 
 use crate::config::Config;
+#[cfg(feature = "docker")]
 use crate::docker::DockerClient;
 
 /// Error types for URL scheme operations
@@ -99,6 +100,44 @@ pub enum UrlScheme {
 }
 
 impl UrlScheme {
+    /// The engine this scheme connects to, for the schemes that name one.
+    fn engine(&self) -> Option<crate::database::DatabaseType> {
+        use crate::database::DatabaseType;
+        Some(match self {
+            Self::Postgres => DatabaseType::PostgreSQL,
+            Self::MySQL => DatabaseType::MySQL,
+            Self::SQLite => DatabaseType::SQLite,
+            Self::ClickHouse => DatabaseType::ClickHouse,
+            Self::MongoDB => DatabaseType::MongoDB,
+            Self::Elasticsearch => DatabaseType::Elasticsearch,
+            Self::WhiteDragon => DatabaseType::WhiteDragon,
+            Self::Parquet => DatabaseType::Parquet,
+            Self::Csv => DatabaseType::CSV,
+            Self::Json => DatabaseType::JSON,
+            Self::DuckDB => DatabaseType::DuckDB,
+            Self::Docker | Self::File | Self::Session | Self::Recent | Self::Vault => return None,
+        })
+    }
+
+    /// Whether this build can serve the scheme: its connector (or, for
+    /// `docker://`, the `docker` feature) is compiled in. Completion and help
+    /// only offer available schemes; parsing still accepts every scheme so a
+    /// disabled one fails with the "not compiled in" message and not with
+    /// "unknown scheme".
+    pub fn is_available(&self) -> bool {
+        match self {
+            Self::Docker => cfg!(feature = "docker"),
+            // The picker lists SQLite databases and the DataFusion file formats
+            Self::File => {
+                crate::drivers::is_compiled(&crate::database::DatabaseType::SQLite)
+                    || crate::drivers::is_compiled(&crate::database::DatabaseType::CSV)
+            }
+            scheme => scheme
+                .engine()
+                .is_none_or(|engine| crate::drivers::is_compiled(&engine)),
+        }
+    }
+
     /// Returns the URL prefix for this scheme (including ://)
     pub fn url_prefix(&self) -> String {
         format!("{self}://")
@@ -264,8 +303,10 @@ pub trait UrlSchemeCompleter: Send + Sync {
 }
 
 /// Docker scheme completer - provides docker container names
+#[cfg(feature = "docker")]
 pub struct DockerSchemeCompleter;
 
+#[cfg(feature = "docker")]
 #[async_trait]
 impl UrlSchemeCompleter for DockerSchemeCompleter {
     fn scheme(&self) -> UrlScheme {
@@ -380,6 +421,7 @@ impl UrlSchemeManager {
         let mut completers: HashMap<UrlScheme, Box<dyn UrlSchemeCompleter>> = HashMap::new();
 
         // Register completers for schemes that support contextual completion
+        #[cfg(feature = "docker")]
         completers.insert(UrlScheme::Docker, Box::new(DockerSchemeCompleter));
         completers.insert(
             UrlScheme::Session,
@@ -396,6 +438,7 @@ impl UrlSchemeManager {
         use strum::IntoEnumIterator;
 
         UrlScheme::iter()
+            .filter(UrlScheme::is_available)
             .map(|scheme| (scheme.url_prefix(), scheme.description()))
             .collect()
     }
@@ -405,6 +448,7 @@ impl UrlSchemeManager {
         use strum::IntoEnumIterator;
 
         UrlScheme::iter()
+            .filter(UrlScheme::is_available)
             .map(|scheme| scheme.url_prefix())
             .filter(|prefix| prefix.starts_with(partial))
             .collect()
@@ -484,9 +528,13 @@ mod tests {
         assert_eq!(suggestions.len(), 1);
         assert_eq!(suggestions[0], "postgres://");
 
+        // `docker://` is only offered by builds that can serve it
         let suggestions = UrlSchemeManager::get_scheme_suggestions("doc");
-        assert_eq!(suggestions.len(), 1);
-        assert_eq!(suggestions[0], "docker://");
+        if cfg!(feature = "docker") {
+            assert_eq!(suggestions, ["docker://"]);
+        } else {
+            assert!(suggestions.is_empty(), "{suggestions:?}");
+        }
 
         let suggestions = UrlSchemeManager::get_scheme_suggestions("va");
         assert_eq!(suggestions.len(), 1);
@@ -652,5 +700,30 @@ mod tests {
         let sqlite_schemes = UrlScheme::for_database_type("sqlite");
         assert_eq!(sqlite_schemes.len(), 1);
         assert!(sqlite_schemes.contains(&UrlScheme::SQLite));
+    }
+
+    #[test]
+    fn test_availability_follows_the_compiled_connectors() {
+        assert_eq!(UrlScheme::Docker.is_available(), cfg!(feature = "docker"));
+        assert_eq!(UrlScheme::MongoDB.is_available(), cfg!(feature = "mongodb"));
+        assert_eq!(
+            UrlScheme::Postgres.is_available(),
+            cfg!(feature = "postgres")
+        );
+        // Not engines: always there
+        for scheme in [UrlScheme::Session, UrlScheme::Recent, UrlScheme::Vault] {
+            assert!(scheme.is_available(), "{scheme}");
+        }
+        // Disabled schemes are neither listed nor suggested …
+        let listed: Vec<String> = UrlSchemeManager::get_all_schemes()
+            .into_iter()
+            .map(|(prefix, _)| prefix)
+            .collect();
+        assert_eq!(
+            listed.contains(&"mongodb://".to_string()),
+            cfg!(feature = "mongodb")
+        );
+        // … but still parse, so the connect error can say what is missing
+        assert!(UrlScheme::parse_url("mongodb://db/app").is_ok());
     }
 }

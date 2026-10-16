@@ -1,40 +1,20 @@
 use crate::database::{DatabaseType, DatabaseTypeExt};
 use chrono::{DateTime, Utc};
-use dirs::home_dir;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::debug;
 use url::Url;
 
-const VAULT_OPTION_KEYS: [&str; 3] = ["vault_mount", "vault_database", "vault_role"];
-const PASSWORD_COMMAND_OPTION_KEYS: [&str; 3] =
-    ["password_command", "password_cmd", "password-command"];
-const DBCRUST_CONFIG_DIR_ENV: &str = "DBCRUST_CONFIG_DIR";
-
-fn is_vault_option_key(key: &str) -> bool {
-    VAULT_OPTION_KEYS.contains(&key)
-}
-
-/// Return true when a URL/session option is one of DBCrust's password command keys.
-pub fn is_password_command_option_key(key: &str) -> bool {
-    PASSWORD_COMMAND_OPTION_KEYS
-        .iter()
-        .any(|option_key| key.eq_ignore_ascii_case(option_key))
-}
-
-/// Return true for DBCrust-only options that must not be forwarded to database drivers.
-pub fn is_dbcrust_internal_connection_option(key: &str) -> bool {
-    is_vault_option_key(key)
-        || is_password_command_option_key(key)
-        || key.eq_ignore_ascii_case(crate::database::OPT_HARDEN_READ_ONLY)
-        || key.eq_ignore_ascii_case(crate::database::OPT_HARDEN_TIMEOUT_SECS)
-}
+// Option-key helpers live in `crate::options`; re-exported for the paths that
+// predate the split (`crate::config::is_dbcrust_internal_connection_option`).
+use crate::options::PASSWORD_COMMAND_OPTION_KEYS;
+pub use crate::options::{is_dbcrust_internal_connection_option, is_password_command_option_key};
 
 fn append_connection_options(url: &str, options: &HashMap<String, String>) -> String {
     let filtered_options: Vec<_> = options
@@ -218,30 +198,6 @@ struct ConnectionLookup {
     secret_options: Vec<(String, String)>,
 }
 
-static STORE_NOTICE_SHOWN: AtomicBool = AtomicBool::new(false);
-static LEGACY_HINT_SHOWN: AtomicBool = AtomicBool::new(false);
-
-/// Tell the user (once per run, on stderr) why the store could not answer.
-fn warn_store_problem(error: &crate::secrets::SecretError) {
-    if !STORE_NOTICE_SHOWN.swap(true, Ordering::Relaxed) {
-        eprintln!("Saved credentials are not available: {error}");
-    }
-}
-
-/// Suggest `dbcrust secrets migrate` once per run, interactive sessions only
-/// (stderr; never in one-shot output).
-pub(crate) fn hint_legacy_secret_used() {
-    if crate::database::one_shot_mode() || !crate::secrets::is_interactive() {
-        return;
-    }
-    if !LEGACY_HINT_SHOWN.swap(true, Ordering::Relaxed) {
-        eprintln!(
-            "Note: a password came from a legacy file (~/.dbcrust, ai_keys.enc or the old keychain entry). \
-             Run `dbcrust secrets migrate` to move it into the secure store."
-        );
-    }
-}
-
 /// Resolve credentials for a connection target.
 ///
 /// Order: the secret store (by target binding) → the legacy `.dbcrust`
@@ -279,7 +235,7 @@ fn lookup_connection_credentials(
                 );
                 return ConnectionLookup::default();
             }
-            Err(e) => warn_store_problem(&e),
+            Err(e) => crate::secrets::hints::warn_store_problem(&e),
         }
     }
 
@@ -291,7 +247,7 @@ fn lookup_connection_credentials(
         if let Ok(Some(password)) =
             crate::dbcrust_pass::lookup_password(legacy_type, host, port, dbname, user)
         {
-            hint_legacy_secret_used();
+            crate::secrets::hints::hint_legacy_secret_used();
             found.password = Some(password);
             return found;
         }
@@ -726,7 +682,7 @@ impl SavedSession {
             let use_tls = options
                 .remove("ssl")
                 .is_some_and(|value| value.eq_ignore_ascii_case("true"));
-            let target = crate::docker::DockerTarget {
+            let target = crate::docker_target::DockerTarget {
                 user: Some(self.user.clone()).filter(|user| !user.is_empty()),
                 container: container.to_string(),
                 database: Some(self.dbname.clone()).filter(|db| !db.is_empty()),
@@ -1224,7 +1180,7 @@ pub struct Config {
 
     // AI assistant configuration
     #[serde(default)]
-    pub ai: crate::ai::config::AiConfig,
+    pub ai: crate::ai_config::AiConfig,
 
     // Recent connections - not serialized with main config, stored separately
     #[serde(skip)]
@@ -1285,7 +1241,7 @@ impl Config {
             metadata_timeout_seconds: default_metadata_timeout(),
             vector_display: crate::vector_display::VectorDisplayConfig::default(),
             complex_display: crate::complex_display::ComplexDisplayConfig::default(),
-            ai: crate::ai::config::AiConfig::default(),
+            ai: crate::ai_config::AiConfig::default(),
             recent_connections_storage: if load_storage {
                 Self::load_recent_connections()
             } else {
@@ -1446,28 +1402,7 @@ impl Config {
     /// different `HOME`, such as Docker, systemd, or IDE-launched servers).
     /// Tests still use an isolated temp directory unless explicitly overridden.
     pub fn get_config_directory() -> Result<PathBuf, Box<dyn Error>> {
-        if let Some(config_dir) = get_config_dir_override() {
-            ensure_directory(&config_dir)?;
-            return Ok(config_dir);
-        }
-
-        if is_test_mode() {
-            // For tests, use a temp directory based on process ID
-            let temp_dir = std::env::temp_dir();
-            let pid = std::process::id();
-            let test_dir = temp_dir.join(format!("dbcrust_test_{pid}"));
-
-            ensure_directory(&test_dir)?;
-            Ok(test_dir)
-        } else {
-            // For production, use the real config directory
-            if let Some(config_dir) = get_config_dir_impl() {
-                ensure_directory(&config_dir)?;
-                Ok(config_dir)
-            } else {
-                Err("Failed to get configuration directory".into())
-            }
-        }
+        crate::secrets::paths::config_directory()
     }
 
     /// Get the path to the main configuration file.
@@ -3023,7 +2958,7 @@ impl Config {
         if connection_info.is_docker_connection() {
             // The daemon pin belongs to one live connection; TLS is part of
             // the saved target (`ssl=true`, like in `docker://` URLs)
-            options.remove(crate::docker::PINNED_DAEMON_OPTION);
+            options.remove(crate::docker_target::PINNED_DAEMON_OPTION);
             if connection_info.use_tls {
                 options.insert("ssl".to_string(), "true".to_string());
             }
@@ -3698,117 +3633,13 @@ impl Config {
     }
 }
 
-// Removed get_test_config_path - now using Config::get_config_directory() for all paths
-
-#[allow(dead_code)]
-fn get_config_dir_impl() -> Option<PathBuf> {
-    home_dir().map(|home| home.join(".config").join("dbcrust"))
-}
-
-/// Replace `path` atomically: write a temp file next to it, then rename it
-/// over the original. A concurrent reader (another DBCrust process, or the
-/// desktop app's connection workers) sees either the old or the new file,
-/// never a truncated one. Symlinks are followed (the link itself is kept).
-///
-/// The temp file is created owner-only (0600 on Unix) before any content is
-/// written; afterwards it takes the existing file's permissions, so a file
-/// the user restricted stays restricted and new files stay private.
-pub fn write_file_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
-    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let file_name = target
-        .file_name()
-        .map(|name| name.to_string_lossy().to_string())
-        .unwrap_or_else(|| "dbcrust".to_string());
-    // Unique per write: concurrent writers (threads, processes) never share
-    // a temp file, and `create_new` guarantees it starts with our mode
-    static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let temp = target.with_file_name(format!(
-        ".{file_name}.tmp-{}-{}",
-        std::process::id(),
-        NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let result = (|| {
-        let mut options = fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let mut file = options.open(&temp)?;
-        file.write_all(contents)?;
-        file.sync_all()?;
-        if let Ok(metadata) = fs::metadata(&target) {
-            fs::set_permissions(&temp, metadata.permissions())?;
-        }
-        fs::rename(&temp, &target)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
-    result
-}
-
-pub(crate) fn is_test_mode() -> bool {
-    // Detect test mode using multiple strategies since cfg!(test) doesn't work
-    // across crate boundaries, while the env/thread-name checks cover Python and
-    // integration-test harnesses.
-    cfg!(test)
-        || std::env::var("RUST_TEST_MODE").is_ok()
-        || std::thread::current()
-            .name()
-            .map(|name| name.contains("test"))
-            .unwrap_or(false)
-}
-
-/// The config directory pinned for this whole process by
-/// [`set_config_dir_override`]. Nothing sets it in the CLI or the app.
-static CONFIG_DIR_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-
-/// Pin every DBCrust user file of this process (config.toml, sessions,
-/// recents, saved queries, the Vault cache, history, the AI key file and
-/// the desktop app's state) under `path`, on every thread at once, without
-/// touching the environment (which other threads may read concurrently).
-/// It wins over `DBCRUST_CONFIG_DIR`, the test heuristic and the home
-/// directory. Set it before any file is read; the first call wins, and a
-/// later call returns whether `path` is the one in effect. For test
-/// harnesses.
-#[doc(hidden)]
-pub fn set_config_dir_override(path: PathBuf) -> bool {
-    let in_effect = CONFIG_DIR_OVERRIDE.get_or_init(|| path.clone());
-    *in_effect == path
-}
-
-/// The one place the config directory is chosen from: the process override,
-/// then `DBCRUST_CONFIG_DIR`.
-fn get_config_dir_override() -> Option<PathBuf> {
-    if let Some(path) = CONFIG_DIR_OVERRIDE.get() {
-        return Some(path.clone());
-    }
-    let raw = std::env::var_os(DBCRUST_CONFIG_DIR_ENV)?;
-    if raw.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(raw))
-}
+// The config-directory resolution, test-mode detection and atomic writer live
+// in `secrets::paths` (they must be shared with the secret store, which has no
+// dependency on this module); these re-exports keep the historical paths.
+pub use crate::secrets::paths::{is_test_mode, set_config_dir_override, write_file_atomically};
 
 fn get_config_path() -> Option<PathBuf> {
     Config::get_config_file_path().ok()
-}
-
-fn ensure_directory(path: &Path) -> io::Result<()> {
-    if path.exists() {
-        if path.is_dir() {
-            Ok(())
-        } else {
-            Err(io::Error::other(format!(
-                "Config path exists but is not a directory: {}",
-                path.display()
-            )))
-        }
-    } else {
-        fs::create_dir_all(path)
-    }
 }
 
 fn ensure_config_dir(config_path: &Path) -> io::Result<()> {
@@ -3827,53 +3658,6 @@ mod tests {
     use rstest::rstest;
     use std::env;
 
-    #[test]
-    fn atomic_write_replaces_content_and_keeps_symlinks_and_permissions() {
-        let dir = tempfile::tempdir().unwrap();
-        let real = dir.path().join("real.toml");
-        fs::write(&real, "old = 1\n").unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
-        }
-
-        write_file_atomically(&real, b"new = 2\n").unwrap();
-        assert_eq!(fs::read_to_string(&real).unwrap(), "new = 2\n");
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = fs::metadata(&real).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
-
-            let link = dir.path().join("link.toml");
-            std::os::unix::fs::symlink(&real, &link).unwrap();
-            write_file_atomically(&link, b"via = 3\n").unwrap();
-            assert!(
-                fs::symlink_metadata(&link)
-                    .unwrap()
-                    .file_type()
-                    .is_symlink()
-            );
-            assert_eq!(fs::read_to_string(&real).unwrap(), "via = 3\n");
-        }
-        // New files are private
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let fresh = dir.path().join("fresh.toml");
-            write_file_atomically(&fresh, b"a = 1\n").unwrap();
-            let mode = fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600);
-        }
-        // No temp files left behind
-        let leftovers: Vec<_> = fs::read_dir(dir.path())
-            .unwrap()
-            .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
-            .collect();
-        assert!(leftovers.is_empty());
-    }
     use std::ffi::OsString;
     use std::fs;
     use std::path::Path;
@@ -4023,7 +3807,7 @@ mod tests {
         // The directory the other tests in this process already use (an
         // explicit DBCRUST_CONFIG_DIR, else the one the test heuristic picks),
         // so they are unaffected
-        let dir = std::env::var_os(DBCRUST_CONFIG_DIR_ENV)
+        let dir = std::env::var_os(crate::secrets::paths::CONFIG_DIR_ENV)
             .filter(|dir| !dir.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -4214,12 +3998,8 @@ mod tests {
             host: Some("testhost".to_string()),
             port: Some(5433),
             username: Some("testuser".to_string()),
-            password: None,
             database: Some("testdb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         // Save session
@@ -4252,16 +4032,16 @@ mod tests {
             username: Some("app".to_string()),
             password: Some("secret".to_string()),
             database: Some("shop".to_string()),
-            file_path: None,
             options: HashMap::from([
                 ("sslmode".to_string(), "verify-full".to_string()),
                 (
-                    crate::docker::PINNED_DAEMON_OPTION.to_string(),
+                    crate::docker_target::PINNED_DAEMON_OPTION.to_string(),
                     "unix:///var/run/docker.sock".to_string(),
                 ),
             ]),
             docker_container: Some("pg".to_string()),
             use_tls: true,
+            ..Default::default()
         };
         config
             .save_session_from_connection_info("docker_tls", &connection_info)
@@ -4271,12 +4051,12 @@ mod tests {
         assert!(
             !session
                 .options
-                .contains_key(crate::docker::PINNED_DAEMON_OPTION)
+                .contains_key(crate::docker_target::PINNED_DAEMON_OPTION)
         );
         let url = session.reconstruct_connection_url().unwrap();
         // The relay port, the daemon and the password never come back
         assert_eq!(url, "docker://app@pg/shop?ssl=true&sslmode=verify-full");
-        let target = crate::docker::DockerTarget::parse(&url).unwrap();
+        let target = crate::docker_target::DockerTarget::parse(&url).unwrap();
         assert!(target.use_tls);
         assert_eq!(
             target.options.get("sslmode").map(String::as_str),
@@ -4294,12 +4074,8 @@ mod tests {
             host: Some("testhost".to_string()),
             port: Some(5432),
             username: Some("testuser".to_string()),
-            password: None,
             database: Some("testdb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
         config
             .save_session_from_connection_info("test_session", &connection_info)
@@ -4590,12 +4366,8 @@ mod tests {
             host: Some("pg.example.com".to_string()),
             port: Some(5432),
             username: Some("pguser".to_string()),
-            password: None,
             database: Some("pgdb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let result = config.save_session_from_connection_info("pg_session", &pg_connection_info);
@@ -4607,12 +4379,8 @@ mod tests {
             host: Some("mysql.example.com".to_string()),
             port: Some(3306),
             username: Some("mysqluser".to_string()),
-            password: None,
             database: Some("mysqldb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let result =
@@ -4622,15 +4390,8 @@ mod tests {
         // Test SQLite session
         let sqlite_connection_info = ConnectionInfo {
             database_type: DatabaseType::SQLite,
-            host: None,
-            port: None,
-            username: None,
-            password: None,
-            database: None,
             file_path: Some("/path/to/db.sqlite".to_string()),
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let result =
@@ -4675,12 +4436,8 @@ mod tests {
             host: Some("testhost".to_string()),
             port: Some(5432),
             username: Some("testuser".to_string()),
-            password: None,
             database: Some("testdb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let result =
@@ -4722,15 +4479,8 @@ mod tests {
         // Test that relative paths get converted to absolute paths for saved sessions
         let sqlite_relative_connection_info = ConnectionInfo {
             database_type: DatabaseType::SQLite,
-            host: None,
-            port: None,
-            username: None,
-            password: None,
-            database: None,
             file_path: Some("test.db".to_string()),
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let result = config
@@ -4748,15 +4498,8 @@ mod tests {
 
         let sqlite_absolute_connection_info = ConnectionInfo {
             database_type: DatabaseType::SQLite,
-            host: None,
-            port: None,
-            username: None,
-            password: None,
-            database: None,
             file_path: Some(abs_path_str.clone()),
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let result = config
@@ -4828,12 +4571,8 @@ mod tests {
             host: Some("localhost".to_string()),
             port: Some(5432),
             username: Some("testuser".to_string()),
-            password: None,
             database: Some("testdb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let result =
@@ -4990,12 +4729,8 @@ mod tests {
             host: Some("oldhost".to_string()),
             port: Some(5432),
             username: Some("olduser".to_string()),
-            password: None,
             database: Some("olddb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         let result =
@@ -5008,12 +4743,8 @@ mod tests {
             host: Some("newhost".to_string()),
             port: Some(5433),
             username: Some("newuser".to_string()),
-            password: None,
             database: Some("newdb".to_string()),
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
 
         // Save session with same name (should update)
@@ -6053,26 +5784,15 @@ mod tests {
             username: Some("u".to_string()),
             password: Some(CANARY.to_string()),
             database: Some("db".to_string()),
-            file_path: None,
             options,
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
-        let docker_target = crate::docker::DockerTarget::parse(&format!(
+        let docker_target = crate::docker_target::DockerTarget::parse(&format!(
             "docker://u:{CANARY}@pg/db?sslpassword={CANARY}"
         ))
         .unwrap();
-        let docker_connection = crate::docker::DockerDatabaseConnection {
-            container_name: "pg".to_string(),
-            database_type: DatabaseType::PostgreSQL,
-            host: "127.0.0.1".to_string(),
-            port: 5432,
-            username: Some("u".to_string()),
-            password: Some(CANARY.to_string()),
-            database_name: None,
-        };
-
-        for (name, shown) in [
+        #[cfg_attr(not(feature = "docker"), allow(unused_mut))]
+        let mut printed = vec![
             ("SSHTunnelConfig", format!("{tunnel:?} {tunnel:#?}")),
             ("SavedSession", format!("{session:?} {session:#?}")),
             ("RecentConnection", format!("{recent:?} {recent:#?}")),
@@ -6083,8 +5803,21 @@ mod tests {
                 "DockerTarget",
                 format!("{docker_target:?} {docker_target:#?}"),
             ),
-            ("DockerDatabaseConnection", format!("{docker_connection:?}")),
-        ] {
+        ];
+        #[cfg(feature = "docker")]
+        {
+            let docker_connection = crate::docker::DockerDatabaseConnection {
+                container_name: "pg".to_string(),
+                database_type: DatabaseType::PostgreSQL,
+                host: "127.0.0.1".to_string(),
+                port: 5432,
+                username: Some("u".to_string()),
+                password: Some(CANARY.to_string()),
+                database_name: None,
+            };
+            printed.push(("DockerDatabaseConnection", format!("{docker_connection:?}")));
+        }
+        for (name, shown) in printed {
             assert!(!shown.contains(CANARY), "{name} leaks: {shown}");
         }
         // Passwords print as Some("***"), absence as None
@@ -6138,10 +5871,8 @@ mod tests {
             username: Some("u".to_string()),
             password: Some(CANARY.to_string()),
             database: Some("db".to_string()),
-            file_path: None,
             options,
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         };
         config
             .save_session_from_connection_info("canary", &info)
@@ -6193,5 +5924,33 @@ mod tests {
         }
         let session = config.get_session("canary").unwrap();
         assert!(!session.options.contains_key("sslpassword"));
+    }
+
+    /// A config written by a full build must load in a slim one: `[ai]` and
+    /// sessions for engines the build leaves out keep parsing (the engines are
+    /// `DatabaseType` variants in every build).
+    #[test]
+    fn test_config_with_ai_and_disabled_engines_parses_in_every_build() {
+        let config: Config =
+            toml::from_str("[ai]\nenabled = true\nprovider = \"openai\"\nmodel = \"gpt-5\"\n")
+                .expect("[ai] section");
+        assert!(config.ai.enabled);
+        assert_eq!(config.ai.provider, "openai");
+
+        #[derive(serde::Deserialize)]
+        struct Row {
+            database_type: DatabaseType,
+        }
+        for (name, expected) in [
+            ("MongoDB", DatabaseType::MongoDB),
+            ("ClickHouse", DatabaseType::ClickHouse),
+            ("Elasticsearch", DatabaseType::Elasticsearch),
+            ("WhiteDragon", DatabaseType::WhiteDragon),
+            ("Parquet", DatabaseType::Parquet),
+            ("DuckDB", DatabaseType::DuckDB),
+        ] {
+            let row: Row = toml::from_str(&format!("database_type = \"{name}\"")).unwrap();
+            assert_eq!(row.database_type, expected);
+        }
     }
 }

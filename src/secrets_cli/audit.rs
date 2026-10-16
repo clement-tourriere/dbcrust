@@ -12,6 +12,7 @@
 //!   run, and `enc:` values are classified by their prefix, not decrypted.
 
 use crate::secrets::StoreStatus;
+use crate::secrets::legacy::ai_keys as legacy;
 use regex::Regex;
 use serde::Serialize;
 use std::fs;
@@ -398,8 +399,9 @@ impl Auditor {
     }
 
     fn audit_legacy_keychain(&mut self) {
-        for name in crate::ai::key_storage::legacy::keychain_account_names() {
-            if crate::ai::key_storage::legacy::keychain_entry_exists(&name) {
+        let providers = legacy::suggested_provider_names();
+        for name in legacy::keychain_account_names(&providers) {
+            if legacy::keychain_entry_exists(&name) {
                 self.findings.push(Finding {
                     rule: "legacy.keychain.ai",
                     severity: Severity::Low,

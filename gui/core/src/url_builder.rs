@@ -1178,6 +1178,18 @@ mod tests {
     use dbcrust::database::ConnectionInfo;
     use rstest::rstest;
 
+    /// The connect form lists every `DatabaseType`; the desktop app depends on
+    /// `dbcrust` with the `bundled` preset so that each of them can connect.
+    #[test]
+    fn the_desktop_build_compiles_every_engine() {
+        for engine in DatabaseType::supported_types() {
+            assert!(
+                dbcrust::drivers::is_compiled(&engine),
+                "{engine} is offered by the connect form but not compiled in"
+            );
+        }
+    }
+
     fn network(engine: DatabaseType, user: &str, password: &str, database: &str) -> ConnectionSpec {
         let mut spec = ConnectionSpec::new(engine);
         spec.host = "db.example.com".into();

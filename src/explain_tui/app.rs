@@ -1,6 +1,6 @@
 //! Application state and event handling for the TUI explain visualizer
 
-use super::plan_tree::{PlanNode, PlanStatistics};
+use crate::explain_plan::{PlanNode, PlanStatistics};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use std::time::Duration;
 

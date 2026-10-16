@@ -1,0 +1,34 @@
+[package]
+name = "dbcrust-docker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust Docker integration: daemon selection, container discovery, route probing and the docker-exec relay"
+
+# Layer 1 of the crate split: depends on `dbcrust-core` and bollard only (never
+# the root crate, secrets, a driver SDK or the AI stack). The root `db` module
+# drives it through `DockerClient::connect_container`, handing in the database
+# handshake as a closure, so nothing here names `Database`.
+[dependencies]
+dbcrust-core = { workspace = true }
+bollard = { workspace = true }
+dirs = { workspace = true }
+futures-util = { workspace = true }
+hex = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
+sha2 = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+rstest = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

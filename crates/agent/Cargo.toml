@@ -1,10 +1,12 @@
 [package]
 name = "dbcrust-agent"
-version = "0.38.0"
-edition = "2024"
-rust-version = "1.91"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
 publish = false
-license = "MIT"
 description = "Thin, credential-free DBCrust client for AI agents: talks to the DBCrust broker over a Unix socket (one-shot CLI + MCP server)"
 
 [[bin]]
@@ -24,13 +26,16 @@ path = "src/main.rs"
 #   mise exec -- cargo tree --locked -p dbcrust-agent -e normal
 # ─────────────────────────────────────────────────────────────────────────────
 [dependencies]
-dbcrust-agent-protocol = { path = "../agent-protocol", features = ["tokio"] }
-tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "io-std", "macros", "time"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+dbcrust-agent-protocol = { workspace = true, features = ["tokio"] }
+tokio = { workspace = true, features = ["rt", "net", "io-util", "io-std", "macros", "time"] }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
 # Same CLI grammar engine as the main `dbcrust` binary (see src/cli.rs there)
-usage = { package = "usage-rs", version = "6.8" }
+usage = { workspace = true }
 
 [dev-dependencies]
-rstest = { version = "0.26", default-features = false }
-tempfile = "3"
+rstest = { workspace = true }
+tempfile = { workspace = true, features = ["getrandom"] }
+
+[lints]
+workspace = true

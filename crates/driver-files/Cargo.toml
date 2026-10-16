@@ -1,0 +1,30 @@
+[package]
+name = "dbcrust-driver-files"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust File-format driver (Parquet, CSV, JSON via Apache DataFusion)"
+
+# Layer 1 of the crate split: depends on `dbcrust-core` and this engine's SDK
+# only (never the root crate, secrets, Docker, AI or another driver); the
+# registry `dbcrust-drivers` is what links it into a build.
+[dependencies]
+dbcrust-core = { workspace = true }
+async-trait = { workspace = true }
+# Feature set (parquet, sql, expressions) is in `[workspace.dependencies]`
+datafusion = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true, features = ["std"] }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
+tracing = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

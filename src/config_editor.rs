@@ -229,8 +229,8 @@ fn parse_log_level(v: &str) -> Result<LogLevel, String> {
     }
 }
 
-fn parse_execution_mode(v: &str) -> Result<crate::ai::config::AiExecutionMode, String> {
-    use crate::ai::config::AiExecutionMode;
+fn parse_execution_mode(v: &str) -> Result<crate::ai_config::AiExecutionMode, String> {
+    use crate::ai_config::AiExecutionMode;
     match v {
         "confirm" => Ok(AiExecutionMode::Confirm),
         "auto_select" => Ok(AiExecutionMode::AutoSelect),
@@ -243,8 +243,8 @@ const LOG_LEVELS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 const DISPLAY_MODES: &[&str] = &["full", "truncated", "summary", "viz"];
 const AI_EXECUTION_MODES: &[&str] = &["confirm", "auto_select", "auto_execute"];
 
-fn parse_auth_method(v: &str) -> Result<crate::ai::config::AiAuthMethod, String> {
-    use crate::ai::config::AiAuthMethod;
+fn parse_auth_method(v: &str) -> Result<crate::ai_config::AiAuthMethod, String> {
+    use crate::ai_config::AiAuthMethod;
     match v {
         "api_key" => Ok(AiAuthMethod::ApiKey),
         "chatgpt_subscription" => Ok(AiAuthMethod::ChatgptSubscription),
@@ -841,7 +841,10 @@ static SCHEMA: &[FieldSpec] = &[
         get: |c| c.ai.provider.clone(),
         set: |c, v| {
             let p = v.trim().to_lowercase();
-            if p != "auto" && genai::adapter::AdapterKind::from_lower_str(&p).is_none() {
+            // Without the `ai` feature there is no provider list to check
+            // against; the value is kept as written (`[ai]` still parses)
+            #[cfg(feature = "ai")]
+            if p != "auto" && crate::ai::AdapterKind::from_lower_str(&p).is_none() {
                 return Err(format!(
                     "unknown provider: {v} (use \"auto\" or a genai provider key like anthropic, openai, gemini, ollama)"
                 ));

@@ -1,7 +1,8 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_local_definitions)]
 
-pub mod ai; // AI assistant integration (text-to-SQL, multi-provider)
+#[cfg(feature = "ai")]
+mod ai_session_impl; // `impl ai::AiSession for db::Database`
 pub mod broker; // Credential broker for AI agents (`dbcrust broker …`)
 pub mod cli;
 pub mod cli_core; // New unified CLI core
@@ -9,60 +10,61 @@ pub mod command_completion; // Trait-based command completion system
 pub mod commands; // New type-safe enum-based command system
 pub mod completion;
 pub mod completion_provider; // Database-agnostic completion trait
-pub mod complex_display; // Unified display system for complex data types
 pub mod config;
 pub mod config_editor; // Schema-driven \config menu, get/set, tunnel manager
-pub mod database; // New database abstraction layer
-pub mod database_clickhouse; // ClickHouse implementation
-pub mod database_datafusion; // DataFusion implementation for file formats (Parquet, CSV, JSON)
-pub mod database_elasticsearch; // Elasticsearch implementation
-pub mod database_mongodb; // MongoDB implementation
-pub mod database_mysql; // MySQL implementation
-pub mod database_postgresql; // PostgreSQL implementation
-pub mod database_sqlite; // SQLite implementation
-pub mod database_white_dragon; // White Dragon HTTP/SQL implementation
 pub mod db;
-pub mod dbcrust_pass; // Legacy password file (.dbcrust): read, list, delete, migrate only
-pub mod docker; // Docker container integration
-pub mod docker_endpoint; // which Docker daemon: DOCKER_CONTEXT / DOCKER_HOST / contexts
-pub mod docker_route; // reachability candidates, probing, route reporting
-pub mod docker_tunnel; // docker exec relay for containers the host can't route to
+pub mod drivers; // Driver registry: engine -> client factory, compiled-in connectors
+#[cfg(feature = "explain-tui")]
 pub mod explain_tui;
-pub mod format; // Made format module public
-pub mod geojson_display;
+pub mod features; // Add-ons a build may leave out + their "not compiled in" error
 pub mod highlighter;
 pub mod history_manager; // Per-session command history management
-pub mod json_display; // JSON display implementation
 pub mod logging;
 pub mod myconf; // MySQL configuration file support
 pub mod named_queries;
 pub mod pager;
-pub mod password_encryption; // Decrypt-only reader for legacy `enc:` machine-key values
-pub mod password_sanitizer;
-pub mod performance_analyzer; // Performance analysis for EXPLAIN queries
 pub mod pgpass;
 pub mod prompt;
-pub mod regex_operators; // Cross-backend translation of PG-style regex operators (~, ~*, !~, !~*)
-pub mod safety; // Read-only statement classification (--read-only + AI agent guard)
+#[cfg(feature = "explain-tui")]
 pub mod schema_tui;
 pub mod script;
-pub mod secrets; // Secret store: OS keychain / Argon2id passphrase file, target-bound records
 pub mod secrets_cli; // `dbcrust secrets status|audit|migrate|unlock|lock|delete`
 pub mod shell_completion; // Custom shell completion with URL schemes
 pub mod sql_buffer; // Multiline validation + statement splitting for the REPL
 pub mod sql_context; // SQL context analysis for better autocompletion
-pub mod sql_parser; // Enhanced SQL parser for autocompletion
 pub mod sql_parser_mysql; // MySQL-specific SQL parser
 pub mod sql_parser_postgresql; // PostgreSQL-specific SQL parser
 pub mod sql_parser_sqlite; // SQLite-specific SQL parser
 pub mod sql_parser_trait; // Database-specific SQL parser trait system
+pub mod sql_validator; // Reedline validator (Enter submits or continues) for the REPL
 pub mod ssh_tunnel; // Add the SSH tunnel module
-pub mod tls; // Process-wide rustls crypto provider (ring)
 pub mod update; // Self-update (--update): release check + channel-aware upgrade
 pub mod url_scheme; // URL scheme autocompletion support
 pub mod vault_client; // Add backslash commands module
-pub mod vault_encryption; // Vault credential encryption utilities
-pub mod vector_display; // Vector visualization for PostgreSQL extensions // GeoJSON display implementation // TUI-based query plan visualizer
+
+// Modules that moved to `dbcrust-core` (the bottom layer of the crate split),
+// re-exported under their historical paths so `crate::database::…`,
+// `dbcrust::format::…` and friends keep resolving for the rest of this crate,
+// the GUI and the PyO3 bindings.
+pub use dbcrust_core::{
+    ai_config, complex_display, ddl, docker_target, explain_plan, format, geojson_display,
+    json_display, model, options, output_format, password_sanitizer, performance_analyzer,
+    regex_operators, safety, sql_parser, tls, vector_display,
+};
+
+// The AI assistant and Docker discovery/routing/relay moved to their own
+// crates, each behind its cargo feature (`ai`, `docker`); same story.
+#[cfg(feature = "ai")]
+pub use dbcrust_ai as ai; // AI assistant (text-to-SQL, multi-provider); `ai_session_impl` implements its session trait
+#[cfg(feature = "docker")]
+pub use dbcrust_docker::{docker, docker_endpoint, docker_route, docker_tunnel};
+
+/// `dbcrust_core::database`, plus the client factory: it names every driver,
+/// so it lives in [`drivers`] and is re-exported here for existing paths.
+pub mod database {
+    pub use crate::drivers::create_database_client;
+    pub use dbcrust_core::database::*;
+}
 
 // Note: main.rs functions are not directly accessible as modules in lib.rs
 // We'll create PyO3 wrappers that call the main functionality directly
@@ -80,8 +82,15 @@ use tokio::runtime::Runtime;
 #[cfg(feature = "python")]
 use tokio::sync::Mutex as TokioMutex;
 
+// Secret store, config-dir/test-mode logic and the read-only legacy credential
+// readers live in the `dbcrust-secrets` crate; these keep every old path
+// (`dbcrust::secrets::…`, `crate::dbcrust_pass::…`, …) resolving.
 pub use config::Config;
 pub use db::Database;
+pub use dbcrust_secrets as secrets;
+pub use dbcrust_secrets::legacy::{dbcrust_pass, password_encryption, vault_encryption};
+#[cfg(test)]
+mod test_isolation; // canaries for the dbcrust-secrets `test-mode` wiring
 pub use logging::{debug, get_log_file_path_string};
 pub use myconf::{get_mysql_config_path, lookup_mysql_password, save_mysql_config};
 pub use pgpass::{get_pgpass_path, lookup_password};
@@ -323,7 +332,6 @@ impl PyDatabase {
                     Some(config_val.default_limit), // Use loaded config
                     Some(config_val.expanded_display_default), // Use loaded config
                     None,                           // No SSH tunnel from Python interface yet
-                    None,                           // No SSL mode specified
                 )
                 .await
             })
@@ -991,13 +999,16 @@ pub fn ai_config_status(py: Python<'_>) -> PyResult<Py<PyAny>> {
         "dbcrust_config_dir_env",
         std::env::var("DBCRUST_CONFIG_DIR").unwrap_or_default(),
     )?;
-    dict.set_item(
-        "codex_auth_file",
-        crate::ai::chatgpt_auth::codex_auth_path()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default(),
-    )?;
-    dict.set_item("enabled", config.ai.enabled)?;
+    #[cfg(feature = "ai")]
+    let codex_auth_file = crate::ai::chatgpt_auth::codex_auth_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    #[cfg(not(feature = "ai"))]
+    let codex_auth_file = String::new();
+    dict.set_item("codex_auth_file", codex_auth_file)?;
+    // Without the `ai` feature the assistant cannot run whatever the config says
+    dict.set_item("compiled", cfg!(feature = "ai"))?;
+    dict.set_item("enabled", cfg!(feature = "ai") && config.ai.enabled)?;
     dict.set_item("provider", &config.ai.provider)?;
     dict.set_item("model", &config.ai.model)?;
     dict.set_item("auth_method", config.ai.auth_method.to_string())?;
@@ -1006,7 +1017,10 @@ pub fn ai_config_status(py: Python<'_>) -> PyResult<Py<PyAny>> {
     Ok(dict.into_any().unbind())
 }
 
-#[cfg(feature = "python")]
+#[cfg(all(feature = "python", not(feature = "ai")))]
+fn apply_python_ai_autodiscovery(_config: &mut crate::config::Config) {}
+
+#[cfg(all(feature = "python", feature = "ai"))]
 fn apply_python_ai_autodiscovery(config: &mut crate::config::Config) {
     if config.ai.enabled || crate::ai::chatgpt_auth::codex_auth_path().is_none() {
         return;
@@ -1017,7 +1031,7 @@ fn apply_python_ai_autodiscovery(config: &mut crate::config::Config) {
     // use it directly instead of requiring a dbcrust config volume.
     config.ai.enabled = true;
     config.ai.provider = "openai".to_string();
-    config.ai.auth_method = crate::ai::config::AiAuthMethod::ChatgptSubscription;
+    config.ai.auth_method = crate::ai_config::AiAuthMethod::ChatgptSubscription;
     config.ai.model = "gpt-5-codex".to_string();
 }
 
@@ -1041,6 +1055,49 @@ fn apply_python_ai_autodiscovery(config: &mut crate::config::Config) {
 #[pyfunction]
 #[pyo3(signature = (connection_url, question, django_context, agentic=true, max_iterations=None, progress_path=None, stdout_progress=false))]
 pub fn run_ai_investigation(
+    py: Python<'_>,
+    connection_url: String,
+    question: String,
+    django_context: String,
+    agentic: bool,
+    max_iterations: Option<usize>,
+    progress_path: Option<String>,
+    stdout_progress: bool,
+) -> PyResult<String> {
+    // Without the `ai` feature the name stays importable (python/dbcrust and
+    // the Django toolkit import it) and answers with the usual message.
+    #[cfg(not(feature = "ai"))]
+    {
+        let _ = (
+            py,
+            connection_url,
+            question,
+            django_context,
+            agentic,
+            max_iterations,
+            progress_path,
+            stdout_progress,
+        );
+        Err(DbcrustError::new_err(
+            crate::features::FeatureNotCompiled::Ai.to_string(),
+        ))
+    }
+    #[cfg(feature = "ai")]
+    run_ai_investigation_impl(
+        py,
+        connection_url,
+        question,
+        django_context,
+        agentic,
+        max_iterations,
+        progress_path,
+        stdout_progress,
+    )
+}
+
+#[cfg(all(feature = "python", feature = "ai"))]
+#[allow(clippy::too_many_arguments)]
+fn run_ai_investigation_impl(
     py: Python<'_>,
     connection_url: String,
     question: String,

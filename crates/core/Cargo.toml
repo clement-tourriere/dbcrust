@@ -1,0 +1,59 @@
+[package]
+name = "dbcrust-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust core: database client traits, connection/metadata/result types, SQL parsing, read-only classification, redaction and result formatting. No driver SDKs, no I/O stack"
+
+# Layer 0 of the crate split. Do not add database drivers (sqlx, mongodb,
+# clickhouse, elasticsearch, datafusion), HTTP stacks (reqwest, genai), Docker,
+# TUI/REPL crates (ratatui, reedline, inquire) or keystores here: every driver
+# crate depends on this one, so what lands here is rebuilt by everything.
+[dependencies]
+async-trait = { workspace = true }
+chrono = { workspace = true }
+# `f16` vector formatting in vector_display
+half = { version = "2.7", default-features = false }
+nu-ansi-term = { version = "0.50.3", default-features = false }
+percent-encoding = { version = "2.3", default-features = false }
+prettytable-rs = { version = "0.10", default-features = false }
+# Default features on purpose: `(?i)` needs `unicode-case` and the root build
+# already unifies the full default set; core must not rely on a sibling to
+# supply it (standalone `-p dbcrust-core` tests fail without)
+regex = "1.12"
+serde = { workspace = true, features = ["derive"] }
+# `preserve_order`: result rows keep their column order in JSON/JSONL output.
+# The root build gets it from another dependency; declared here so core does
+# not depend on that
+serde_json = { workspace = true, features = ["std", "preserve_order"] }
+# The same package and the same feature set datafusion-sql unifies today
+# (`visitor` for the statement visitors, `recursive-protection` for the
+# parser's stack guard). Exact pin: it must stay the version datafusion uses so
+# the lockfile keeps a single sqlparser.
+sqlparser = { version = "=0.61.0", default-features = false, features = ["std", "visitor", "recursive-protection"] }
+strum = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+tracing = { workspace = true, features = ["std"] }
+url = { version = "2.5.8", default-features = false }
+
+# `OutputFormat` derives `usage::ValueEnum` for the CLI grammar; only the
+# binary front end needs that, so it is opt-in (root enables it)
+usage = { workspace = true, optional = true }
+# `tls::install_default_crypto_provider`; ring is the single provider
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+
+[features]
+default = []
+usage = ["dep:usage"]
+tls = ["dep:rustls"]
+
+[dev-dependencies]
+rstest = { workspace = true }
+toml = { workspace = true, features = ["display", "parse", "serde"] }
+
+[lints]
+workspace = true

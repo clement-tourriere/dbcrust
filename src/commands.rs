@@ -1313,44 +1313,51 @@ impl CommandExecutor for Command {
             }
 
             Command::ToggleExplainTuiMode => {
-                let mut db = database.lock().unwrap();
-                db.toggle_explain_tui_mode();
-                let status = if db.is_explain_tui_mode() {
-                    "ON"
-                } else {
-                    "OFF"
-                };
-                let db_type = db.get_database_type();
+                #[cfg(not(feature = "explain-tui"))]
+                {
+                    Ok(CommandResult::Error(crate::features::FeatureNotCompiled::ExplainTui.to_string()))
+                }
+                #[cfg(feature = "explain-tui")]
+                {
+                    let mut db = database.lock().unwrap();
+                    db.toggle_explain_tui_mode();
+                    let status = if db.is_explain_tui_mode() {
+                        "ON"
+                    } else {
+                        "OFF"
+                    };
+                    let db_type = db.get_database_type();
 
-                // Check if TUI can run
-                if db.is_explain_tui_mode() {
-                    if !crate::explain_tui::can_run_tui() {
-                        db.toggle_explain_tui_mode(); // Turn it back off
-                        if let Some(reason) = crate::explain_tui::tui_unavailable_reason() {
+                    // Check if TUI can run
+                    if db.is_explain_tui_mode() {
+                        if !crate::explain_tui::can_run_tui() {
+                            db.toggle_explain_tui_mode(); // Turn it back off
+                            if let Some(reason) = crate::explain_tui::tui_unavailable_reason() {
+                                return Ok(CommandResult::Error(format!(
+                                    "Cannot enable TUI mode: {reason}"
+                                )));
+                            }
+                        }
+
+                        // Check database compatibility
+                        if !matches!(db_type, crate::database::DatabaseType::PostgreSQL) {
+                            db.toggle_explain_tui_mode(); // Turn it back off
                             return Ok(CommandResult::Error(format!(
-                                "Cannot enable TUI mode: {reason}"
+                                "Explain TUI mode currently only supports PostgreSQL. Current database: {}",
+                                db_type.display_name()
                             )));
                         }
-                    }
 
-                    // Check database compatibility
-                    if !matches!(db_type, crate::database::DatabaseType::PostgreSQL) {
-                        db.toggle_explain_tui_mode(); // Turn it back off
-                        return Ok(CommandResult::Error(format!(
-                            "Explain TUI mode currently only supports PostgreSQL. Current database: {}",
-                            db_type.display_name()
-                        )));
+                        Ok(CommandResult::Output(format!(
+                            "Explain TUI visualizer mode: {status}\n\
+                             Queries will now display in an interactive TUI.\n\
+                             Press 'q' to exit the visualizer and return to the prompt."
+                        )))
+                    } else {
+                        Ok(CommandResult::Output(format!(
+                            "Explain TUI visualizer mode: {status}"
+                        )))
                     }
-
-                    Ok(CommandResult::Output(format!(
-                        "Explain TUI visualizer mode: {status}\n\
-                         Queries will now display in an interactive TUI.\n\
-                         Press 'q' to exit the visualizer and return to the prompt."
-                    )))
-                } else {
-                    Ok(CommandResult::Output(format!(
-                        "Explain TUI visualizer mode: {status}"
-                    )))
                 }
             }
 
@@ -1397,28 +1404,35 @@ impl CommandExecutor for Command {
             },
 
             Command::SchemaViewer => {
-                // Check if TUI can run
-                if !crate::explain_tui::can_run_tui() {
-                    if let Some(reason) = crate::explain_tui::tui_unavailable_reason() {
-                        return Ok(CommandResult::Error(format!(
-                            "Cannot launch schema viewer: {reason}"
-                        )));
-                    }
+                #[cfg(not(feature = "explain-tui"))]
+                {
+                    Ok(CommandResult::Error(crate::features::FeatureNotCompiled::ExplainTui.to_string()))
                 }
+                #[cfg(feature = "explain-tui")]
+                {
+                    // Check if TUI can run
+                    if !crate::explain_tui::can_run_tui() {
+                        if let Some(reason) = crate::explain_tui::tui_unavailable_reason() {
+                            return Ok(CommandResult::Error(format!(
+                                "Cannot launch schema viewer: {reason}"
+                            )));
+                        }
+                    }
 
-                // Load schema metadata (fast: only names + FK relationships)
-                let mut db = database.lock().unwrap();
-                let schema_data = crate::schema_tui::load_schema_data(&mut db).await;
-                drop(db);
+                    // Load schema metadata (fast: only names + FK relationships)
+                    let mut db = database.lock().unwrap();
+                    let schema_data = crate::schema_tui::load_schema_data(&mut db).await;
+                    drop(db);
 
-                match schema_data {
-                    Ok(data) => match crate::schema_tui::run_schema_tui(data, database.clone()) {
-                        Ok(_) => Ok(CommandResult::Continue),
-                        Err(e) => Ok(CommandResult::Error(format!("Schema viewer error: {e}"))),
-                    },
-                    Err(e) => Ok(CommandResult::Error(format!(
-                        "Failed to load schema data: {e}"
-                    ))),
+                    match schema_data {
+                        Ok(data) => match crate::schema_tui::run_schema_tui(data, database.clone()) {
+                            Ok(_) => Ok(CommandResult::Continue),
+                            Err(e) => Ok(CommandResult::Error(format!("Schema viewer error: {e}"))),
+                        },
+                        Err(e) => Ok(CommandResult::Error(format!(
+                            "Failed to load schema data: {e}"
+                        ))),
+                    }
                 }
             }
 
@@ -1499,7 +1513,7 @@ impl CommandExecutor for Command {
                 // huge catalog can't produce an unbounded dump
                 const DDL_TABLE_CAP: usize = 100;
                 let (names, overflow_note) = if tables.is_empty() {
-                    match crate::ai::schema_context::collect_table_names(&mut db, &db_type).await {
+                    match crate::ddl::collect_table_names(&mut *db, &db_type).await {
                         Ok(mut names) => {
                             let total = names.len();
                             if total > DDL_TABLE_CAP {
@@ -1534,7 +1548,7 @@ impl CommandExecutor for Command {
                 for (name, detail) in details {
                     match detail {
                         Some(d) => {
-                            out.push_str(&crate::ai::schema_context::format_table_ddl(
+                            out.push_str(&crate::ddl::format_table_ddl(
                                 &d, &db_type,
                             ));
                             out.push('\n');
@@ -2027,37 +2041,44 @@ impl CommandExecutor for Command {
             },
 
             Command::CopyExplainPlan => {
-                use arboard::Clipboard;
-                let db = database.lock().unwrap();
-                match db.get_last_json_plan() {
-                    Some(json_plan) => match Clipboard::new() {
-                        Ok(mut clipboard) => match clipboard.set_text(json_plan.clone()) {
-                            Ok(()) => Ok(CommandResult::Output(format!(
-                                "EXPLAIN JSON plan copied to clipboard ({} characters)",
-                                json_plan.len()
-                            ))),
+                #[cfg(not(feature = "clipboard"))]
+                {
+                    Ok(CommandResult::Error(crate::features::FeatureNotCompiled::Clipboard.to_string()))
+                }
+                #[cfg(feature = "clipboard")]
+                {
+                    use arboard::Clipboard;
+                    let db = database.lock().unwrap();
+                    match db.get_last_json_plan() {
+                        Some(json_plan) => match Clipboard::new() {
+                            Ok(mut clipboard) => match clipboard.set_text(json_plan.clone()) {
+                                Ok(()) => Ok(CommandResult::Output(format!(
+                                    "EXPLAIN JSON plan copied to clipboard ({} characters)",
+                                    json_plan.len()
+                                ))),
+                                Err(e) => Ok(CommandResult::Error(format!(
+                                    "Error copying to clipboard: {e}"
+                                ))),
+                            },
                             Err(e) => Ok(CommandResult::Error(format!(
-                                "Error copying to clipboard: {e}"
+                                "Error accessing clipboard: {e}"
                             ))),
                         },
-                        Err(e) => Ok(CommandResult::Error(format!(
-                            "Error accessing clipboard: {e}"
-                        ))),
-                    },
-                    None => {
-                        // Check if we have a database client to provide a more specific error message
-                        if let Some(database_client) = db.get_database_client() {
-                            if database_client
-                                .get_connection_info()
-                                .database_type
-                                .is_file_based()
-                            {
-                                Ok(CommandResult::Error("\\ecopy is not supported for SQLite databases. SQLite EXPLAIN queries don't produce JSON plans.".to_string()))
+                        None => {
+                            // Check if we have a database client to provide a more specific error message
+                            if let Some(database_client) = db.get_database_client() {
+                                if database_client
+                                    .get_connection_info()
+                                    .database_type
+                                    .is_file_based()
+                                {
+                                    Ok(CommandResult::Error("\\ecopy is not supported for SQLite databases. SQLite EXPLAIN queries don't produce JSON plans.".to_string()))
+                                } else {
+                                    Ok(CommandResult::Error("No EXPLAIN JSON plan available. Run an EXPLAIN query first with \\ef or \\er.".to_string()))
+                                }
                             } else {
                                 Ok(CommandResult::Error("No EXPLAIN JSON plan available. Run an EXPLAIN query first with \\ef or \\er.".to_string()))
                             }
-                        } else {
-                            Ok(CommandResult::Error("No EXPLAIN JSON plan available. Run an EXPLAIN query first with \\ef or \\er.".to_string()))
                         }
                     }
                 }
@@ -2087,39 +2108,48 @@ impl CommandExecutor for Command {
                 }
             }
 
-            Command::ListDockerContainers => match crate::docker::DockerClient::new() {
-                Ok(docker_client) => match docker_client.list_database_containers().await {
-                    Ok(containers) => {
-                        if containers.is_empty() {
-                            Ok(CommandResult::Output(
-                                "No database containers found.".to_string(),
-                            ))
-                        } else {
-                            let output = containers
-                                .iter()
-                                .map(|c| {
-                                    let db_type = c
-                                        .database_type
-                                        .as_ref()
-                                        .map(|dt| dt.to_string())
-                                        .unwrap_or_else(|| "Unknown".to_string());
-                                    format!("{} ({})", c.name, db_type)
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            Ok(CommandResult::Output(format!(
-                                "Available database containers:\n{output}"
-                            )))
-                        }
-                    }
-                    Err(e) => Ok(CommandResult::Error(format!(
-                        "Failed to list Docker containers: {e}"
-                    ))),
-                },
-                Err(e) => Ok(CommandResult::Error(format!(
-                    "Failed to connect to Docker: {e}"
-                ))),
-            },
+            Command::ListDockerContainers => {
+                #[cfg(not(feature = "docker"))]
+                {
+                    Ok(CommandResult::Error(
+                        crate::features::FeatureNotCompiled::Docker.to_string(),
+                    ))
+                }
+                #[cfg(feature = "docker")]
+                match crate::docker::DockerClient::new() {
+                        Ok(docker_client) => match docker_client.list_database_containers().await {
+                            Ok(containers) => {
+                                if containers.is_empty() {
+                                    Ok(CommandResult::Output(
+                                        "No database containers found.".to_string(),
+                                    ))
+                                } else {
+                                    let output = containers
+                                        .iter()
+                                        .map(|c| {
+                                            let db_type = c
+                                                .database_type
+                                                .as_ref()
+                                                .map(|dt| dt.to_string())
+                                                .unwrap_or_else(|| "Unknown".to_string());
+                                            format!("{} ({})", c.name, db_type)
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    Ok(CommandResult::Output(format!(
+                                        "Available database containers:\n{output}"
+                                    )))
+                                }
+                            }
+                            Err(e) => Ok(CommandResult::Error(format!(
+                                "Failed to list Docker containers: {e}"
+                            ))),
+                        },
+                        Err(e) => Ok(CommandResult::Error(format!(
+                            "Failed to connect to Docker: {e}"
+                        ))),
+                }
+            }
 
             Command::ExplainRaw { query } => {
                 let mut db = database.lock().unwrap();
@@ -2953,7 +2983,22 @@ impl CommandExecutor for Command {
                 }
             }
 
-            // AI assistant commands
+            // AI assistant commands (only with the `ai` feature; a build without
+            // it answers every one of them with the "not compiled in" error)
+            #[cfg(not(feature = "ai"))]
+            Command::AiStatus
+            | Command::AiSetup
+            | Command::AiSelectProvider { .. }
+            | Command::AiSelectModel { .. }
+            | Command::AiToggle { .. }
+            | Command::AiClearHistory
+            | Command::AiLogin
+            | Command::AiLogout
+            | Command::AiGenerateSql { .. } => Ok(CommandResult::Error(
+                crate::features::FeatureNotCompiled::Ai.to_string(),
+            )),
+
+            #[cfg(feature = "ai")]
             Command::AiStatus => {
                 let mut output = String::new();
                 let adapter = crate::ai::effective_provider(&config.ai);
@@ -3018,12 +3063,14 @@ impl CommandExecutor for Command {
                 Ok(CommandResult::Output(output))
             }
 
+            #[cfg(feature = "ai")]
             Command::AiSetup => {
                 // This is handled interactively in cli_core.rs
                 // Return a marker that cli_core should handle
                 Ok(CommandResult::Output("__AI_SETUP__".to_string()))
             }
 
+            #[cfg(feature = "ai")]
             Command::AiSelectProvider { provider } => {
                 // This is handled interactively in cli_core.rs
                 match provider {
@@ -3032,11 +3079,13 @@ impl CommandExecutor for Command {
                 }
             }
 
+            #[cfg(feature = "ai")]
             Command::AiSelectModel { model } => match model {
                 Some(m) => Ok(CommandResult::Output(format!("__AI_MODEL__{m}"))),
                 None => Ok(CommandResult::Output("__AI_MODEL__".to_string())),
             },
 
+            #[cfg(feature = "ai")]
             Command::AiToggle { state } => match state {
                 Some(true) => {
                     config.ai.enabled = true;
@@ -3060,16 +3109,19 @@ impl CommandExecutor for Command {
                 }
             },
 
+            #[cfg(feature = "ai")]
             Command::AiClearHistory => {
                 // Handled in cli_core.rs where conversation state lives
                 Ok(CommandResult::Output("__AI_CLEAR_HISTORY__".to_string()))
             }
 
+            #[cfg(feature = "ai")]
             Command::AiLogin => {
                 // Browser + local callback server — handled in cli_core.rs
                 Ok(CommandResult::Output("__AI_LOGIN__".to_string()))
             }
 
+            #[cfg(feature = "ai")]
             Command::AiLogout => {
                 crate::ai::chatgpt_auth::delete_tokens();
                 if config.ai.auth_method == crate::ai::config::AiAuthMethod::ChatgptSubscription {
@@ -3081,6 +3133,7 @@ impl CommandExecutor for Command {
                 ))
             }
 
+            #[cfg(feature = "ai")]
             Command::AiGenerateSql { .. } => {
                 // Handled via ?? prefix in cli_core.rs REPL loop
                 Ok(CommandResult::Continue)
@@ -4696,5 +4749,115 @@ mod tests {
 
         // \ai unknown → error
         assert!(CommandParser::parse("\\ai unknown").is_err());
+    }
+
+    // -- add-ons a build may leave out (see `crate::features`) --------------
+
+    /// Run `command` against a throw-away SQLite database.
+    #[cfg(feature = "sqlite")]
+    #[allow(dead_code)] // unused in a build that has every add-on
+    async fn run_on_sqlite(command: Command) -> CommandResult {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("addons.db");
+        std::fs::File::create(&path).unwrap();
+        let database = Database::from_url(&format!("sqlite://{}", path.display()), None, None)
+            .await
+            .expect("sqlite database");
+        let database = Arc::new(Mutex::new(database));
+        let mut config = DbCrustConfig::default();
+        let mut script = String::new();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let mut prompt = DbPrompt::new("user".to_string(), "addons.db".to_string());
+        command
+            .execute(&database, &mut config, &mut script, &interrupt, &mut prompt)
+            .await
+            .expect("command runs")
+    }
+
+    #[allow(dead_code)] // unused in a build that has every add-on
+    fn assert_not_compiled(result: CommandResult, feature: &str) {
+        match result {
+            CommandResult::Error(message) => {
+                assert!(
+                    message.contains("not compiled into this build"),
+                    "{message}"
+                );
+                assert!(
+                    message.contains(&format!("`{feature}` cargo feature")),
+                    "{message}"
+                );
+            }
+            other => panic!("expected the not-compiled error, got {other:?}"),
+        }
+    }
+
+    #[cfg(all(feature = "sqlite", not(feature = "ai")))]
+    #[tokio::test]
+    async fn ai_commands_say_ai_is_not_compiled() {
+        for command in [
+            Command::AiStatus,
+            Command::AiSetup,
+            Command::AiLogin,
+            Command::AiToggle { state: None },
+            Command::AiGenerateSql {
+                natural_language: "all users".to_string(),
+            },
+        ] {
+            assert_not_compiled(run_on_sqlite(command).await, "ai");
+        }
+    }
+
+    #[cfg(all(feature = "sqlite", not(feature = "docker")))]
+    #[tokio::test]
+    async fn the_docker_command_says_docker_is_not_compiled() {
+        assert_not_compiled(run_on_sqlite(Command::ListDockerContainers).await, "docker");
+    }
+
+    #[cfg(all(feature = "sqlite", not(feature = "explain-tui")))]
+    #[tokio::test]
+    async fn the_tui_commands_say_the_tui_is_not_compiled() {
+        assert_not_compiled(
+            run_on_sqlite(Command::ToggleExplainTuiMode).await,
+            "explain-tui",
+        );
+        assert_not_compiled(run_on_sqlite(Command::SchemaViewer).await, "explain-tui");
+    }
+
+    #[cfg(all(feature = "sqlite", not(feature = "clipboard")))]
+    #[tokio::test]
+    async fn ecopy_says_the_clipboard_is_not_compiled() {
+        assert_not_compiled(run_on_sqlite(Command::CopyExplainPlan).await, "clipboard");
+    }
+
+    /// `\ddl` is not an AI feature: it works without `ai` too.
+    #[cfg(feature = "sqlite")]
+    #[tokio::test]
+    async fn ddl_dumps_tables_in_every_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ddl.db");
+        std::fs::File::create(&path).unwrap();
+        let mut database = Database::from_url(&format!("sqlite://{}", path.display()), None, None)
+            .await
+            .expect("sqlite database");
+        database
+            .execute_query("CREATE TABLE pets (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+            .await
+            .expect("create table");
+        let database = Arc::new(Mutex::new(database));
+        let mut config = DbCrustConfig::default();
+        let mut script = String::new();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        let mut prompt = DbPrompt::new("user".to_string(), "ddl.db".to_string());
+        let result = Command::DumpDdl { tables: vec![] }
+            .execute(&database, &mut config, &mut script, &interrupt, &mut prompt)
+            .await
+            .expect("command runs");
+        match result {
+            CommandResult::Output(ddl) => {
+                assert!(ddl.contains("CREATE TABLE main.pets ("), "{ddl}");
+                assert!(ddl.contains("name TEXT NOT NULL"), "{ddl}");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }

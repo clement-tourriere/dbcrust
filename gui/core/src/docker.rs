@@ -164,15 +164,9 @@ impl DockerDaemon {
     pub fn connect_request(&self, container: &str) -> ConnectRequest {
         ConnectRequest::info(ConnectionInfo {
             database_type: DatabaseType::PostgreSQL, // replaced by the container's engine
-            host: None,
-            port: None,
-            username: None,
-            password: None,
-            database: None,
-            file_path: None,
             options: [(PINNED_DAEMON_OPTION.to_string(), self.pin.clone())].into(),
             docker_container: Some(container.to_string()),
-            use_tls: false,
+            ..Default::default()
         })
     }
 }

@@ -23,11 +23,12 @@
 //! ```
 
 mod app;
-mod plan_tree;
 mod ui;
 
 pub use app::{ExplainTuiApp, TuiResult};
-pub use plan_tree::{PlanNode, PlanStatistics, parse_postgresql_plan};
+// The plan parser is UI-independent and lives in `crate::explain_plan`;
+// re-exported so `explain_tui::{PlanNode, …}` (used by the GUI) keeps resolving.
+pub use crate::explain_plan::{PlanNode, PlanStatistics, parse_postgresql_plan};
 
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},

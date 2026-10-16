@@ -74,7 +74,15 @@ mise run install        # build + install dbcrust and dbc into ~/.cargo/bin
 
 # Option B: cargo only (CLI only)
 cargo install --path . --locked --force
+
+# Slim build: PostgreSQL, MySQL and SQLite only (no DataFusion, MongoDB,
+# ClickHouse, Elasticsearch, Docker, AI, TUI or clipboard): a much smaller binary
+# and a much shorter build
+cargo install --path . --locked --force --no-default-features --features standard
+mise run install:slim    # the same through mise
 ```
+
+The default build includes every engine and add-on. See [Build features](/dbcrust/user-guide/development/#build-features) to pick exactly what you need.
 
 With mise, Cargo builds go through [Mr Boxington](https://mr-boxington.jdx.dev/), a shared build cache: rebuilds, other branches and worktrees reuse compiled crates. See [Build cache](/dbcrust/user-guide/development/#build-cache-mr-boxington).
 

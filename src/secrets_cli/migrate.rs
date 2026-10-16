@@ -19,8 +19,8 @@
 //! Wildcard `.dbcrust` entries are never bound automatically; third-party
 //! files (`.pgpass`, `.my.cnf`) are reported and never edited.
 
-use crate::ai::key_storage::legacy;
 use crate::dbcrust_pass::{self, LegacyLineKind};
+use crate::secrets::legacy::ai_keys as legacy;
 use crate::secrets::{RecordId, SecretError, SecretStore, TargetBinding};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
@@ -442,7 +442,7 @@ impl Migrator {
         // --- ai_keys.enc and the old keychain entries ---
         let mut named: Vec<(String, String, Source, Zeroizing<String>)> = Vec::new();
         if self.paths.legacy_keychain {
-            for account in legacy::keychain_account_names() {
+            for account in legacy::keychain_account_names(&legacy::suggested_provider_names()) {
                 if let Some(value) = legacy::keychain_get(&account) {
                     named.push((
                         account.clone(),

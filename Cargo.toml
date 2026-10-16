@@ -1,15 +1,12 @@
 [package]
 name = "dbcrust"
-version = "0.38.0"
-edition = "2024"
-# usage-rs 6 requires Rust >= 1.91 (edition 2024 alone needs 1.85) — declared
-# so `cargo install` on older toolchains fails with a clear message instead of
-# a cryptic build error
-rust-version = "1.91"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Fast Rust database workbench for PostgreSQL, MySQL, SQLite, ClickHouse, MongoDB, Elasticsearch, and SQL over Parquet/CSV/JSON — agent-ready one-shot mode (JSON output, stable exit codes, read-only guard), optional AI, SSH/Vault, and Django analysis"
-authors = ["dbcrust authors"]
-license = "MIT"
-repository = "https://github.com/clement-tourriere/dbcrust"
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
 readme = "README.md"
 default-run = "dbcrust"
 
@@ -28,27 +25,13 @@ path = "src/bin/dbc.rs"
 
 [dependencies]
 reedline = { version = "0.47", default-features = false }
-sqlx = { version = "0.8", features = [
-    "runtime-tokio-rustls",
-    "postgres",
-    "sqlite",
-    "mysql",
-    "chrono",
-    "json",
-    "uuid",
-    "ipnetwork",
-    "rust_decimal",
-    "regexp",
-], default-features = false }
-prettytable-rs = { version = "0.10", default-features = false }
 # CLI parsing via the usage spec (https://usage.jdx.dev): derive macros compile
 # the grammar into static tables; `completions` powers the in-binary
 # `__complete_word__` protocol the generated shell scripts call back into
-usage = { package = "usage-rs", version = "6.8", features = ["completions"] }
-hex = { version = "0.4", default-features = false, features = ["std"] }
-chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
-serde = { version = "1.0", features = ["derive"], default-features = false }
-serde_json = { version = "1.0.149", default-features = false, features = ["std"] }
+usage = { workspace = true, features = ["completions"] }
+chrono = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
 nu-ansi-term = { version = "0.50.3", default-features = false }
 pyo3 = { version = "0.29.2", features = [
     "extension-module",
@@ -56,19 +39,15 @@ pyo3 = { version = "0.29.2", features = [
     # with requires-python >=3.10 produced wheels pip refuses to resolve
     "abi3-py310",
 ], optional = true, default-features = false }
-toml = { version = "0.9.12", default-features = false, features = [
-    "display",
-    "parse",
-    "serde"
-] }
-dirs = { version = "6.0", default-features = false }
+toml = { workspace = true, features = ["display", "parse", "serde"] }
+dirs = { workspace = true }
 regex = { version = "1.12", default-features = false, features = [
     "unicode-perl",
     "std",
 ] }
 
-tempfile = { version = "3.27", default-features = false }
-tokio = { version = "1.52", default-features = false, features = [
+tempfile = { workspace = true }
+tokio = { workspace = true, features = [
     "rt-multi-thread",
     "macros",
     "net",
@@ -78,87 +57,104 @@ tokio = { version = "1.52", default-features = false, features = [
     "signal",
     "io-util",
 ] }
-async-trait = { version = "0.1", default-features = false }
-rand = { version = "0.9.4", default-features = false, features = ["std", "std_rng", "thread_rng"] }
-thiserror = { version = "2.0.18", default-features = false }
-tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "ansi", "env-filter"] }
+async-trait = { workspace = true }
+rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
+thiserror = { workspace = true }
+tracing = { workspace = true, features = ["std"] }
+tracing-subscriber = { workspace = true, features = ["std", "fmt", "ansi", "env-filter"] }
 tracing-appender = { version = "0.2.4", default-features = false }
-url = { version = "2.5.8", default-features = false }
-percent-encoding = { version = "2.3", default-features = false }
+url = { workspace = true }
+percent-encoding = { workspace = true }
 # Use ring as the crypto backend for rustls (more portable than aws-lc-rs for cross-compilation)
-reqwest = { version = "0.12.28", features = ["json", "rustls-tls", "stream"], default-features = false }
-# Multi-provider LLM client — owns provider/model handling so dbcrust doesn't
-# hardcode providers or model lists. Its default `rustls-tls` feature makes
-# reqwest 0.13 pull in rustls' aws-lc-rs provider (a large C/asm build), so it
-# is disabled and TLS is enabled below without a bundled provider.
-genai = { version = "=0.7.0-beta.2", default-features = false }
-# genai's own reqwest (0.13, a different semver line from the 0.12 above): the
-# alias exists only to turn on `rustls-no-provider` — same rustls + platform
-# verifier as genai's `rustls-tls`, minus the aws-lc-rs provider. Never used
-# directly; `tls::install_default_crypto_provider` supplies ring at runtime.
-reqwest_genai = { package = "reqwest", version = "0.13", features = ["rustls-no-provider"], default-features = false }
-# ring is the single rustls crypto provider (see src/tls.rs)
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-inquire = { version = "0.9.4", default-features = false, features = ["crossterm"] }
-arboard = { version = "3.4", default-features = false }
-bollard = { version = "0.20", default-features = false, features = ["http", "pipe"] }
-strum = { version = "0.27", features = ["derive"], default-features = false }
-aes-gcm = { version = "0.10", default-features = false, features = ["std", "aes", "getrandom"] }
-sha2 = { version = "0.10.9", default-features = false, features = ["std"] }
-# PKCE + JWT-payload decoding for "Sign in with ChatGPT" (already transitive)
-base64 = { version = "0.23", default-features = false, features = ["std"] }
-uuid = { version = "1", default-features = false, features = ["v4"] }
-keyring = { version = "3", default-features = false, features = ["apple-native", "linux-native", "windows-native"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+inquire = { workspace = true, features = ["crossterm"] }
+# Clipboard for `\copyexplain` (feature `clipboard`)
+arboard = { version = "3.4", default-features = false, optional = true }
+strum = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true, features = ["std"] }
+# Database-client traits, connection/metadata types, SQL helpers, formatting
+# (everything the drivers and front ends share). `usage` lets `OutputFormat`
+# derive the CLI grammar's `ValueEnum`; `tls` exposes the rustls provider setup.
+dbcrust-core = { workspace = true, features = ["usage", "tls"] }
 # Wire protocol shared with the credential-free `dbcrust-agent` client; the
-# broker (src/broker, Unix only) is the server side
-dbcrust-agent-protocol = { path = "crates/agent-protocol", features = ["tokio"] }
-# Secret store (src/secrets): Argon2id passphrase KDF, zeroized secret values
-argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "zeroize"] }
-zeroize = { version = "1.8", default-features = false, features = ["alloc", "serde"] }
-# Use rustls-tls-ring to avoid aws-lc-rs cross-compilation issues on ARM64 Linux.
-# 0.15.2's Native reader uses `const ...: usize = 1 << 32`, breaking i686.
-# Keep this exact pin until an upstream fix passes our 32-bit Python check.
-clickhouse = { version = "=0.15.1", default-features = false, features = ["lz4", "rustls-tls-ring", "rustls-tls-webpki-roots"] }
-mongodb = { version = "3.9", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
-bson = { version = "2.15", default-features = false }
-elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
-futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
-hostname = { version = "0.4.2", default-features = false }
+# broker (`crates/broker`, Unix only) is the server side
+dbcrust-agent-protocol = { workspace = true, features = ["tokio"] }
+# Secret store, legacy credential readers and config-dir/test-mode logic
+# (`dbcrust-secrets`, re-exported as `dbcrust::secrets`). The root enables
+# `prompt` (passphrase prompt via inquire); `test-mode` and `test-support` are
+# dev-dependency features, see [dev-dependencies].
+dbcrust-secrets = { workspace = true, features = ["prompt"] }
+zeroize = { workspace = true, features = ["alloc", "serde"] }
+# Engine registry: every connector is a `dbcrust-driver-*` crate behind it; the
+# SDK versions/features (the ClickHouse pin included) are declared once in
+# `[workspace.dependencies]`. No engine is enabled here: the engine features of
+# this crate (`postgres`, `mysql`, …, see [features]) forward to the registry.
+dbcrust-drivers = { workspace = true }
+# AI assistant (`dbcrust-ai`, re-exported as `dbcrust::ai`): genai, ChatGPT
+# sign-in and provider key storage live there; `AiSession` is implemented for
+# `Database` in `src/ai_session_impl.rs` (feature `ai`)
+dbcrust-ai = { workspace = true, optional = true }
+# Credential broker core (`dbcrust-broker`, re-exported as `dbcrust::broker`);
+# the `dbcrust broker …` front end is `src/broker/`
+dbcrust-broker = { workspace = true }
+# Docker daemon selection, container discovery, route probing and the
+# `docker exec` relay (`dbcrust-docker`, re-exported as `dbcrust::docker*`;
+# feature `docker`)
+dbcrust-docker = { workspace = true, optional = true }
+# Concurrent metadata fetches, Docker route probing, Vault lookups
+futures-util = { workspace = true }
 
-# DataFusion for file format support (Parquet, CSV, JSON, etc.)
-# Optimized features: disable unused crypto/encoding/nested/compression expressions
-datafusion = { version = "53.0", default-features = false, features = [
-    "parquet",              # Parquet file support (includes CSV, JSON which are core)
-    "sql",                  # SQL query parsing and execution
-    "string_expressions",   # String functions for SQL queries
-    "datetime_expressions", # Date/time functions for SQL queries
-    "regex_expressions",    # Regex support in SQL queries
-    "unicode_expressions",  # Unicode string handling
-    "recursive_protection", # Stack overflow protection for complex queries
-] }
-# Note: object_store is already a transitive dependency via datafusion
-
-# Extension support (always available)
-pgvector = { version = "0.4", default-features = false, features = ["sqlx", "halfvec"] }
-half = { version = "2.7", default-features = false }
-
-# TUI support for explain visualizer
-ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
+# TUI support for the explain visualizer and the schema browser (feature
+# `explain-tui`). `crossterm` stays unconditional: the wizards and the pager
+# read the terminal size and drain stray key events with it.
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"], optional = true }
 crossterm = { version = "0.29", default-features = false }
-textwrap = { version = "0.16", default-features = false, features = ["unicode-width"] }
+textwrap = { version = "0.16", default-features = false, features = ["unicode-width"], optional = true }
 
-[target.'cfg(unix)'.dependencies]
-# geteuid / flock for the secret file backend's permission and locking checks;
-# also umask/rlimit/prctl/ptrace/chown for the credential broker's hardening
-libc = { version = "0.2", default-features = false }
+[target.'cfg(unix)'.dev-dependencies]
+# The broker end-to-end tests (`src/broker/e2e_tests.rs`) call getuid/umask
+# directly; the hardening itself lives in `dbcrust-broker`
+libc = { workspace = true }
 
-[package.metadata.cargo-machete]
-# Feature-only alias for genai's reqwest 0.13 (see the dependency comment)
-ignored = ["reqwest_genai"]
-
+# Cargo features (see "Build features" in docs/.../development.md).
+#
+# `default = ["bundled"]` ships every engine and add-on DBCrust has shipped so
+# far (owner decision D3); `standard` is the slim PostgreSQL/MySQL/SQLite
+# preset. A new connector is a driver crate, a `dbcrust-drivers` feature and
+# row, and a root feature below. Light ones are added to `bundled` explicitly
+# (with a changelog note); heavy ones (DuckDB, AWS…) stay opt-in. The release
+# binaries, the Python wheels and the desktop app build with `bundled`.
 [features]
-default = []
+default = ["bundled"]
+bundled = [
+    "standard",
+    "mongodb",
+    "clickhouse",
+    "elasticsearch",
+    "white-dragon",
+    "files",
+    "docker",
+    "ai",
+    "explain-tui",
+    "clipboard",
+]
+standard = ["postgres", "mysql", "sqlite"]
+# Engines: each forwards to the same-named feature of `dbcrust-drivers`
+postgres = ["dbcrust-drivers/postgres"]
+mysql = ["dbcrust-drivers/mysql"]
+sqlite = ["dbcrust-drivers/sqlite"]
+mongodb = ["dbcrust-drivers/mongodb"]
+clickhouse = ["dbcrust-drivers/clickhouse"]
+elasticsearch = ["dbcrust-drivers/elasticsearch"]
+white-dragon = ["dbcrust-drivers/white-dragon"]
+# DataFusion: Parquet, CSV, JSON and DuckDB files (the heaviest connector)
+files = ["dbcrust-drivers/files"]
+# Add-ons
+docker = ["dep:dbcrust-docker"]
+ai = ["dep:dbcrust-ai"]
+# Explain-plan TUI and schema browser TUI
+explain-tui = ["dep:ratatui", "dep:textwrap"]
+clipboard = ["dep:arboard"]
 python = ["pyo3", "pyo3/macros"]
 
 [profile.release]
@@ -204,10 +200,139 @@ lto = true        # Enable Link Time Optimization
 codegen-units = 1 # Maximize performance
 
 [dev-dependencies]
-rstest = { version = "0.26", default-features = false }
-tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
+# `cfg!(test)` is only true inside the crate under test, so the secrets crate
+# would see this crate's tests as a normal build and reach the real
+# ~/.config/dbcrust and keychain from any unnamed thread. `test-mode` forces
+# its test-mode switch on in every test build (dev-dependency features are not
+# unified into normal or release builds); `test-support` exposes the fault
+# injecting backend and the legacy-value encoder the migrate/audit tests use.
+dbcrust-secrets = { workspace = true, features = ["test-mode", "test-support"] }
+# Fixtures (`testkit`) the end-to-end tests share with the broker crate's own
+dbcrust-broker = { workspace = true, features = ["test-support"] }
+rstest = { workspace = true }
+# The broker's test fixtures seed a SQLite database directly and its end-to-end
+# tests (gated on DATABASE_URL) talk to PostgreSQL; the clients themselves live
+# in the `dbcrust-driver-*` crates, which own sqlx's runtime and type features
+sqlx = { workspace = true, features = ["sqlite", "postgres", "runtime-tokio-rustls"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
-[lints.clippy]
+[lints]
+workspace = true
+
+[workspace]
+resolver = "3"
+# The desktop GUI (GPUI) is opt-in: `cargo build`/`cargo test` at the root
+# only build the CLI and the agent client. Use `mise run gui:*` or
+# `-p dbcrust-gui[-core]` for the GUI.
+members = ["crates/*", "gui", "gui/core"]
+# `dbcrust-agent` is the credential-free thin client shipped next to the CLI;
+# the library crates are listed so `cargo test`/`clippy` at the root cover them
+default-members = [
+    ".",
+    "crates/agent",
+    "crates/core",
+    "crates/secrets",
+    "crates/drivers",
+    "crates/docker",
+    "crates/ai",
+    "crates/broker",
+    "crates/driver-postgres",
+    "crates/driver-mysql",
+    "crates/driver-sqlite",
+    "crates/driver-mongodb",
+    "crates/driver-clickhouse",
+    "crates/driver-elasticsearch",
+    "crates/driver-white-dragon",
+    "crates/driver-files",
+]
+
+[workspace.package]
+# Single source of truth for the version: members inherit it with
+# `version.workspace = true`; Commitizen (.cz.toml) bumps this line.
+version = "0.38.0"
+edition = "2024"
+# usage-rs 6 requires Rust >= 1.91 (edition 2024 alone needs 1.85) — declared
+# so `cargo install` on older toolchains fails with a clear message instead of
+# a cryptic build error
+rust-version = "1.91"
+authors = ["dbcrust authors"]
+license = "MIT"
+repository = "https://github.com/clement-tourriere/dbcrust"
+
+# Dependencies shared by two or more members. Entries carry the version (and
+# `default-features`); members list the features they need so each member's
+# resolved feature set stays what it was before the workspace table existed.
+[workspace.dependencies]
+serde = { version = "1.0", default-features = false }
+serde_json = { version = "1.0.149", default-features = false }
+tokio = { version = "1.52", default-features = false }
+thiserror = { version = "2.0.18", default-features = false }
+tracing = { version = "0.1.44", default-features = false }
+tracing-subscriber = { version = "0.3.23", default-features = false }
+chrono = { version = "0.4.44", default-features = false, features = ["clock", "std"] }
+toml = { version = "0.9.12", default-features = false }
+tempfile = { version = "3.27", default-features = false }
+futures-util = { version = "0.3.32", default-features = false, features = ["std"] }
+strum = { version = "0.27", default-features = false }
+usage = { package = "usage-rs", version = "6.8" }
+rstest = { version = "0.26", default-features = false }
+dbcrust-agent-protocol = { path = "crates/agent-protocol" }
+dbcrust-secrets = { path = "crates/secrets" }
+dirs = { version = "6.0", default-features = false }
+hex = { version = "0.4", default-features = false }
+rand = { version = "0.9.4", default-features = false }
+inquire = { version = "0.9.4", default-features = false }
+percent-encoding = { version = "2.3", default-features = false }
+url = { version = "2.5.8", default-features = false }
+sha2 = { version = "0.10.9", default-features = false }
+zeroize = { version = "1.8", default-features = false }
+libc = { version = "0.2", default-features = false }
+dbcrust-core = { path = "crates/core", default-features = false }
+dbcrust-docker = { path = "crates/docker" }
+dbcrust-ai = { path = "crates/ai" }
+dbcrust-broker = { path = "crates/broker", default-features = false }
+bollard = { version = "0.20", default-features = false, features = ["http", "pipe"] }
+
+# Engine registry and one crate per connector (`crates/drivers`,
+# `crates/driver-*`): the registry depends on all of them, each driver only on
+# `dbcrust-core` and its own SDK.
+dbcrust-drivers = { path = "crates/drivers", default-features = false }
+dbcrust-driver-postgres = { path = "crates/driver-postgres" }
+dbcrust-driver-mysql = { path = "crates/driver-mysql" }
+dbcrust-driver-sqlite = { path = "crates/driver-sqlite" }
+dbcrust-driver-mongodb = { path = "crates/driver-mongodb" }
+dbcrust-driver-clickhouse = { path = "crates/driver-clickhouse" }
+dbcrust-driver-elasticsearch = { path = "crates/driver-elasticsearch" }
+dbcrust-driver-white-dragon = { path = "crates/driver-white-dragon" }
+dbcrust-driver-files = { path = "crates/driver-files" }
+
+# Driver SDKs shared between the root crate (until its drivers move) and the
+# driver crates. Versions and the always-needed features live here; members add
+# engine-specific features (sqlx, pgvector, reqwest) on their own line.
+async-trait = { version = "0.1", default-features = false }
+sqlx = { version = "0.8", default-features = false }
+pgvector = { version = "0.4", default-features = false }
+reqwest = { version = "0.12.28", default-features = false }
+mongodb = { version = "3.9", default-features = false, features = ["rustls-tls", "compat-3-0-0"] }
+bson = { version = "2.15", default-features = false }
+elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
+# Use rustls-tls-ring to avoid aws-lc-rs cross-compilation issues on ARM64 Linux.
+# 0.15.2's Native reader uses `const ...: usize = 1 << 32`, breaking i686.
+# Keep this exact pin until an upstream fix passes our 32-bit Python check.
+clickhouse = { version = "=0.15.1", default-features = false, features = ["lz4", "rustls-tls-ring", "rustls-tls-webpki-roots"] }
+# DataFusion for file format support (Parquet, CSV, JSON, …). Optimized
+# features: disable unused crypto/encoding/nested/compression expressions
+datafusion = { version = "53.0", default-features = false, features = [
+    "parquet",              # Parquet file support (includes CSV, JSON which are core)
+    "sql",                  # SQL query parsing and execution
+    "string_expressions",   # String functions for SQL queries
+    "datetime_expressions", # Date/time functions for SQL queries
+    "regex_expressions",    # Regex support in SQL queries
+    "unicode_expressions",  # Unicode string handling
+    "recursive_protection", # Stack overflow protection for complex queries
+] }
+
+[workspace.lints.clippy]
 # Structural lints acknowledged in AUDIT.md — allowed so CI's `-D warnings`
 # gates real regressions. Remove entries as the corresponding code is
 # refactored.
@@ -219,11 +344,3 @@ type_complexity = "allow"
 enum_variant_names = "allow"
 too_many_arguments = "allow"
 should_implement_trait = "allow"
-
-[workspace]
-# The desktop GUI (GPUI) is opt-in: `cargo build`/`cargo test` at the root
-# only build the CLI and the agent client. Use `mise run gui:*` or
-# `-p dbcrust-gui[-core]` for the GUI.
-members = ["crates/agent-protocol", "crates/agent", "gui", "gui/core"]
-# `dbcrust-agent` is the credential-free thin client shipped next to the CLI
-default-members = [".", "crates/agent"]

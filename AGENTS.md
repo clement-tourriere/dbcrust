@@ -17,6 +17,10 @@ mise run build:dev
 # Build optimized release version
 mise run build
 
+# Slim build (standard preset: PostgreSQL, MySQL, SQLite) and the feature matrix
+mise run build:slim
+mise run check:features
+
 # Desktop app (GPUI Kit): run / release build / backend tests
 mise run gui:dev
 mise run gui:build

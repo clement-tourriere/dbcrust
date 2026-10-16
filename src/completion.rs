@@ -331,7 +331,7 @@ impl SqlCompleter {
     /// Format a metadata table name for insertion into SQL.
     fn format_table_completion(name: &str, database_type: DatabaseType) -> String {
         if database_type == DatabaseType::Elasticsearch
-            && crate::database_elasticsearch::ElasticsearchClient::needs_quoting(name)
+            && crate::database::elasticsearch_index_needs_quoting(name)
         {
             return format!("\"{}\"", name.replace('"', "\"\""));
         }
@@ -2573,13 +2573,7 @@ mod tests {
             database_type: DatabaseType::WhiteDragon,
             host: Some("localhost".to_string()),
             port: Some(7700),
-            username: None,
-            password: None,
-            database: None,
-            file_path: None,
-            options: HashMap::new(),
-            docker_container: None,
-            use_tls: false,
+            ..Default::default()
         });
         let config = Config::default();
         let mut completer =

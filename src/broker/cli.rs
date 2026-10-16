@@ -11,13 +11,28 @@ use super::paths::{
 };
 use super::privileges::{drop_privileges, enforce_binary_trust, user_ids};
 use super::registry::Registry;
-use super::server::{DEFAULT_MAX_CONNECTIONS, Server, ServerConfig, bind_socket_with};
-use super::service::{self, InstallRequest, UninstallRequest};
+use super::server::{
+    DEFAULT_MAX_CONNECTIONS, Server, ServerConfig, bind_socket_with, probe_socket,
+};
+use super::service::{self, InstallRequest, ServicePrompts, UninstallRequest};
 use crate::cli::{BrokerAction, BrokerModeArg, OutputFormat};
 use crate::secrets::{AgentAccess, KeySource, PassphraseFileBackend, SecretStore};
 use std::path::PathBuf;
 use std::sync::Arc;
 use zeroize::Zeroizing;
+
+/// The terminal questions of `install-service` / `uninstall-service`: the
+/// broker core asks through [`ServicePrompts`], this is the `inquire` side.
+struct TerminalPrompts;
+
+impl ServicePrompts for TerminalPrompts {
+    fn confirm(&mut self, question: &str, default: bool) -> Option<bool> {
+        inquire::Confirm::new(question)
+            .with_default(default)
+            .prompt()
+            .ok()
+    }
+}
 
 fn mode_of(arg: Option<BrokerModeArg>) -> BrokerMode {
     match arg.unwrap_or_default() {
@@ -287,6 +302,7 @@ pub async fn run(
                     target_os: target_os.clone(),
                 },
                 interactive,
+                &mut TerminalPrompts,
             )
             .await
         }
@@ -295,11 +311,14 @@ pub async fn run(
             dry_run,
             target_os,
         }) => {
-            service::uninstall(&UninstallRequest {
-                purge: *purge,
-                dry_run: *dry_run,
-                target_os: target_os.clone(),
-            })
+            service::uninstall(
+                &UninstallRequest {
+                    purge: *purge,
+                    dry_run: *dry_run,
+                    target_os: target_os.clone(),
+                },
+                &mut TerminalPrompts,
+            )
             .await
         }
     };
@@ -713,29 +732,6 @@ fn policy(
 }
 
 // ---- status --------------------------------------------------------------------
-
-/// Ask a running broker for its version over the socket (blocking, short).
-pub(super) fn probe_socket(path: &std::path::Path) -> Option<String> {
-    use dbcrust_agent_protocol::{ClientMessage, PROTOCOL_VERSION, ServerMessage};
-    use std::time::Duration;
-    let mut stream = std::os::unix::net::UnixStream::connect(path).ok()?;
-    stream.set_read_timeout(Some(Duration::from_secs(2))).ok()?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
-        .ok()?;
-    dbcrust_agent_protocol::write_message(
-        &mut stream,
-        &ClientMessage::Hello {
-            protocol: PROTOCOL_VERSION,
-            client: "dbcrust broker status".to_string(),
-        },
-    )
-    .ok()?;
-    match dbcrust_agent_protocol::read_message::<_, ServerMessage>(&mut stream).ok()? {
-        ServerMessage::Welcome { broker_version, .. } => Some(broker_version),
-        _ => None,
-    }
-}
 
 fn status(
     mode: Option<BrokerModeArg>,

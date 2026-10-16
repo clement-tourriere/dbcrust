@@ -82,6 +82,68 @@ mise run py:test      # run pytest
 pip install -e ./python  # alternative: pip editable install
 ```
 
+### Build features
+
+The root crate (`dbcrust`) is split into Cargo features so a build only contains the engines and add-ons it needs. **The default build is `bundled`**: every engine and add-on DBCrust has shipped so far. Release binaries, Python wheels and the desktop app all use `bundled`.
+
+| Feature | What it enables | Pulls in |
+|---------|-----------------|----------|
+| `bundled` (default) | Everything below | — |
+| `standard` | `postgres` + `mysql` + `sqlite` (the slim preset) | sqlx |
+| `postgres` | PostgreSQL | sqlx, pgvector |
+| `mysql` | MySQL / MariaDB | sqlx |
+| `sqlite` | SQLite | sqlx (bundled libsqlite3) |
+| `mongodb` | MongoDB | `mongodb`, `bson` |
+| `clickhouse` | ClickHouse | `clickhouse` (pinned `=0.15.1`) |
+| `elasticsearch` | Elasticsearch | `elasticsearch` SDK |
+| `white-dragon` | White Dragon search SQL over HTTP | reqwest only |
+| `files` | Parquet, CSV, JSON and DuckDB files | Apache DataFusion / Arrow / Parquet |
+| `docker` | `docker://` URLs, `\docker`, container completion | bollard |
+| `ai` | `??`, `???`, `\ai`, the Python AI functions | genai, reqwest 0.13 |
+| `explain-tui` | `\x` plan TUI and the `\sv` schema browser | ratatui, textwrap |
+| `clipboard` | `\ecopy` | arboard |
+| `python` | PyO3 bindings (maturin passes it) | pyo3 |
+
+```bash
+# the default, everything
+cargo install --path . --locked
+
+# the slim preset: PostgreSQL, MySQL, SQLite
+cargo install --path . --locked --no-default-features --features standard
+mise run build:slim      # release build of the slim preset
+mise run install:slim    # install it
+
+# a custom build: SQLite and ClickHouse with Docker discovery
+cargo build --no-default-features --features sqlite,clickhouse,docker
+
+# type-check the whole matrix (what CI does)
+mise run check:features
+```
+
+Cost of each feature, as unique crates added to the normal dependency tree (`cargo tree -p dbcrust --no-default-features --features <x> -e normal`), against 216 crates for the zero-engine build:
+
+| Feature | Added crates | | Feature | Added crates |
+|---------|-------------:|-|---------|-------------:|
+| `files` | +107 | | `ai` | +34 |
+| `mongodb` | +53 | | `explain-tui` | +22 |
+| `mysql` | +46 | | `clickhouse` | +16 |
+| `postgres` | +35 | | `elasticsearch` | +15 |
+| `sqlite` | +21 | | `docker`, `clipboard` | +7 each |
+
+`standard` is 272 crates against 467 for `bundled`; the dev-profile binary drops from about 327 MB (201 MB stripped) to 77 MB (49 MB stripped). DataFusion is by far the heaviest piece, which is why `files` is the first thing to drop.
+
+A disabled engine is still a `DatabaseType`: config files, sessions and `recent.toml` written by a full build keep parsing. Connecting to it fails with a message that names the feature, e.g. *"MongoDB support is not compiled into this build (enable the `mongodb` cargo feature, or install a full build)"*; `dbcrust-drivers` exposes `is_compiled`, `compiled_engines` and `required_feature` for code that has to adapt. URL-scheme completion only offers the schemes the build can serve, and the credential broker refuses to enrol an engine the build does not contain (`unsupported_engine`, same hint).
+
+#### Adding a connector
+
+1. A `dbcrust-driver-<name>` crate (depends on `dbcrust-core` and its SDK only).
+2. In `dbcrust-drivers`: an optional dependency, a same-named feature, and **one row** in the `connectors!` table (`"<feature>" => Engine => path::Client;`). The `match`es have no wildcard, so a missing row is a compile error.
+3. In the root `Cargo.toml`: `<name> = ["dbcrust-drivers/<name>"]`.
+4. Decide where it lives:
+   * **Light** (small SDK, no heavy transitive tree): add it to `bundled` explicitly, with a changelog note, so the default build gains it.
+   * **Heavy** (DuckDB, AWS SDKs …): leave it out of `bundled`; users opt in with `--features <name>`. Never add a connector to `bundled` silently.
+5. Add it to the matrix in `.github/workflows/ci.yml` (`rust-features`) and to `mise run check:features`.
+
 ## Testing
 
 ```bash
@@ -216,10 +278,13 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 |------|-------------|
 | `build` | `cargo build --release` |
 | `build:dev` | `cargo build` |
+| `build:slim` | Release build of the slim preset (`--no-default-features --features standard`) |
+| `install:slim` | Install the slim preset into `~/.cargo/bin` |
 | `test` | `cargo test` |
 | `lint` | Clippy with strict settings |
 | `fmt` | `cargo fmt` |
 | `check` | fmt → lint → test |
+| `check:features` | `cargo check` of the zero-engine build, `standard` and each feature alone |
 | `gui:dev` | Run the desktop app (dev build, optimised dependencies) |
 | `gui:build` | Optimised build of the desktop app (`target/gui-release`) |
 | `gui:install` | Install `dbcrust-gui` into `~/.cargo/bin` |
@@ -239,60 +304,49 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 ## Project layout
 
 ```
-├── src/                       # Rust CLI + library
+├── src/                       # `dbcrust` (root crate): CLI, REPL, config, PyO3 bindings
 │   ├── main.rs                # tokio entry point
-│   ├── lib.rs                 # public API + PyO3 bindings
-│   ├── commands.rs            # backslash command enum (strum-driven)
+│   ├── lib.rs                 # public API (re-exports the crates below under their old paths) + PyO3 bindings
 │   ├── cli.rs                 # argument parsing (usage-rs derive)
-│   ├── cli_core.rs            # REPL loop and command dispatch
+│   ├── cli_core.rs            # REPL loop, one-shot mode and command dispatch
+│   ├── commands.rs            # backslash command enum (strum-driven)
 │   ├── config.rs              # TOML config + session + named query storage
-│   ├── database.rs            # DatabaseClient / MetadataProvider traits
-│   ├── database_postgresql.rs # PostgreSQL implementation
-│   ├── database_mysql.rs      # MySQL implementation
-│   ├── database_sqlite.rs     # SQLite implementation
-│   ├── database_clickhouse.rs # ClickHouse implementation
-│   ├── database_mongodb.rs    # MongoDB implementation
-│   ├── database_elasticsearch.rs # Elasticsearch implementation
-│   ├── database_datafusion.rs # Parquet/CSV/JSON via DataFusion
+│   ├── config_editor.rs       # schema-driven `\config` menu / get / set
+│   ├── db.rs                  # `Database` session: connect flow, docker/SSH tunnels, EXPLAIN
+│   ├── drivers.rs             # facade over dbcrust-drivers
+│   ├── ai_session_impl.rs     # `impl AiSession for Database` (the assistant lives in dbcrust-ai)
 │   ├── completion.rs          # SQL autocompletion engine
 │   ├── command_completion.rs  # backslash command completion
-│   ├── format.rs              # output formatting (table, expanded, psql)
+│   ├── shell_completion.rs    # shell completion generation (bash/zsh/fish/powershell)
 │   ├── prompt.rs              # reedline custom prompt
 │   ├── highlighter.rs         # SQL syntax highlighting
+│   ├── sql_validator.rs       # reedline validator (Enter submits or continues)
+│   ├── sql_parser_*.rs        # per-engine parsers used by completion
+│   ├── url_scheme.rs          # URL scheme parsing and normalization
 │   ├── ssh_tunnel.rs          # SSH tunnel management
 │   ├── vault_client.rs        # Vault HTTP client
-│   ├── vault_encryption.rs    # Vault credential cache encryption
-│   ├── docker.rs              # Docker container discovery (bollard)
 │   ├── named_queries.rs       # named query parameter substitution
-│   ├── pgpass.rs              # .pgpass file support
-│   ├── dbcrust_pass.rs        # .dbcrust password file (all databases)
-│   ├── password_encryption.rs # Decrypt-only reader for legacy `enc:` machine-key values
-│   ├── secrets/               # Secret store: keychain / Argon2id file backends, target-bound records
-│   ├── secrets_cli/           # `dbcrust secrets` status / audit / migrate
-│   ├── password_sanitizer.rs  # URL password redaction
+│   ├── pgpass.rs, myconf.rs   # .pgpass / .my.cnf support
 │   ├── history_manager.rs     # per-session history
-│   ├── performance_analyzer.rs # query performance analysis
-│   ├── script.rs              # external editor integration
-│   ├── pager.rs               # output paging
+│   ├── script.rs, pager.rs    # external editor integration, output paging
 │   ├── logging.rs             # tracing setup
-│   ├── explain_tui/           # interactive EXPLAIN TUI (ratatui + crossterm)
-│   │   ├── mod.rs
-│   │   ├── app.rs
-│   │   ├── plan_tree.rs
-│   │   └── ui.rs
-│   ├── sql_parser.rs          # SQL parsing
-│   ├── sql_parser_postgresql.rs
-│   ├── sql_parser_mysql.rs
-│   ├── sql_parser_sqlite.rs
-│   ├── sql_parser_trait.rs
-│   ├── sql_context.rs         # SQL context for autocompletion
-│   ├── url_scheme.rs          # URL scheme parsing and normalization
-│   ├── shell_completion.rs    # shell completion generation (bash/zsh/fish/powershell)
-│   ├── complex_display.rs     # complex type rendering
-│   ├── json_display.rs        # JSON pretty display
-│   ├── geojson_display.rs     # GeoJSON rendering
-│   ├── vector_display.rs      # pgvector display
-│   └── myconf.rs              # MySQL .my.cnf support
+│   ├── update.rs              # `--update`
+│   ├── secrets_cli/           # `dbcrust secrets` status / audit / migrate
+│   ├── broker/                # `dbcrust broker …` front end (prompts, arguments, e2e tests)
+│   ├── features.rs            # `FeatureNotCompiled`: the error of an add-on the build leaves out
+│   ├── explain_tui/           # interactive EXPLAIN TUI (ratatui + crossterm; feature `explain-tui`)
+│   └── schema_tui/            # interactive schema browser TUI (feature `explain-tui`)
+├── crates/
+│   ├── core/                  # dbcrust-core: client traits, model DTOs, SQL/format/display, safety, password sanitizer
+│   ├── secrets/               # dbcrust-secrets: keychain / Argon2id file store, legacy readers, config-dir/test-mode paths
+│   ├── drivers/               # dbcrust-drivers: engine registry, `create_database_client`, one cargo feature per engine
+│   ├── driver-postgres/       # one crate per engine: -mysql, -sqlite, -mongodb, -clickhouse,
+│   │                          #   -elasticsearch, -white-dragon, -files (DataFusion: Parquet/CSV/JSON)
+│   ├── docker/                # dbcrust-docker: daemon selection, discovery, route probing, `docker exec` relay (bollard)
+│   ├── ai/                    # dbcrust-ai: genai assistant, agent loop, ChatGPT sign-in, `AiSession` trait
+│   ├── broker/                # dbcrust-broker: credential broker core (registry, admin, gateway, audit, socket server)
+│   ├── agent-protocol/        # wire protocol shared by the broker and the thin agent client
+│   └── agent/                 # dbcrust-agent: credential-free client for AI coding agents
 ├── gui/                       # desktop app (GPUI Kit)
 │   ├── core/                  # dbcrust-gui-core: workers, storage, models (no GPUI)
 │   ├── src/                   # dbcrust-gui: views, workspace, commands
