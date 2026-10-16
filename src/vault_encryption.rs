@@ -1,3 +1,12 @@
+//! Encryption of the Vault credential cache (`vault_credentials.enc`).
+//!
+//! The AES-256-GCM key is SHA-256 over the Vault token and a fixed salt — it
+//! is **not** derived from any machine identifier. The cache is therefore
+//! exactly as strong as the protection of the Vault token (`$VAULT_TOKEN` /
+//! `~/.vault-token`): anyone who can read the token can read the cache.
+//! Passwords, API keys and tokens that DBCrust itself saves live in the
+//! secret store instead (`crate::secrets`).
+
 use aes_gcm::{
     Aes256Gcm, KeyInit, Nonce,
     aead::{Aead, OsRng, rand_core::RngCore},

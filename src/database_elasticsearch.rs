@@ -603,12 +603,15 @@ impl ElasticsearchClient {
 
         debug!(
             "[ElasticsearchClient::new] Connecting to URL: {}",
-            url_string
+            crate::password_sanitizer::redact_url(&url_string)
         );
 
         // Parse URL
         let url = Url::parse(&url_string).map_err(|e| {
-            DatabaseError::ConnectionError(format!("Invalid Elasticsearch URL: {e}"))
+            DatabaseError::ConnectionError(format!(
+                "Invalid Elasticsearch URL: {}",
+                crate::password_sanitizer::redact_error(&e)
+            ))
         })?;
 
         // Create connection pool

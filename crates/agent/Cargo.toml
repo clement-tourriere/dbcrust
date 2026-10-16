@@ -1,0 +1,36 @@
+[package]
+name = "dbcrust-agent"
+version = "0.38.0"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+license = "MIT"
+description = "Thin, credential-free DBCrust client for AI agents: talks to the DBCrust broker over a Unix socket (one-shot CLI + MCP server)"
+
+[[bin]]
+name = "dbcrust-agent"
+path = "src/main.rs"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KEEP THIS CRATE THIN.
+#
+# `dbcrust-agent` runs inside the AI agent's trust boundary and must never be
+# able to see credentials. It therefore must NOT depend on the root `dbcrust`
+# crate, nor on anything that links a keystore, database drivers, config
+# storage, an HTTP stack, or an LLM client (sqlx, keyring, datafusion, reqwest,
+# mongodb, clickhouse, genai, …). Allowed: the protocol crate, tokio (minimal
+# features), serde_json, the CLI parser. Verify after touching dependencies:
+#
+#   mise exec -- cargo tree --locked -p dbcrust-agent -e normal
+# ─────────────────────────────────────────────────────────────────────────────
+[dependencies]
+dbcrust-agent-protocol = { path = "../agent-protocol", features = ["tokio"] }
+tokio = { version = "1", default-features = false, features = ["rt", "net", "io-util", "io-std", "macros", "time"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Same CLI grammar engine as the main `dbcrust` binary (see src/cli.rs there)
+usage = { package = "usage-rs", version = "6.8" }
+
+[dev-dependencies]
+rstest = { version = "0.26", default-features = false }
+tempfile = "3"

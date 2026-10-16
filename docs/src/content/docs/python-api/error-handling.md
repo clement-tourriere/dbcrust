@@ -52,6 +52,10 @@ except dbcrust.DbcrustConnectionError as e:
     # "Failed to connect to database: failed to lookup address information"
 ```
 
+Passwords and other secrets (URL userinfo, `password=`/`token=`/`api_key=`
+query values, bearer tokens) are redacted from error messages before they reach
+Python, so exception text is safe to log.
+
 ### DbcrustCommandError
 
 Raised when command execution fails. Common causes:

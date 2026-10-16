@@ -56,6 +56,39 @@ pub fn read_only_requested() -> bool {
     READ_ONLY_REQUESTED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Per-connection hardening request carried in `ConnectionInfo::options`.
+///
+/// The process-wide [`read_only_requested`] flag cannot serve the credential
+/// broker, which hosts aliases with different access levels in one process.
+/// Only the broker gateway sets these keys (the connection is built from the
+/// stored record, never from request data); the CLI never forwards them to a
+/// driver (see `config::is_dbcrust_internal_connection_option`).
+pub const OPT_HARDEN_READ_ONLY: &str = "dbcrust_harden_read_only";
+/// Server-side statement timeout in seconds for this connection.
+pub const OPT_HARDEN_TIMEOUT_SECS: &str = "dbcrust_harden_timeout_secs";
+
+/// Whether this connection must start every transaction read-only.
+pub fn connection_read_only(options: &HashMap<String, String>) -> bool {
+    read_only_requested()
+        || options
+            .get(OPT_HARDEN_READ_ONLY)
+            .is_some_and(|value| value == "1")
+}
+
+/// The per-connection server-side statement timeout, when requested.
+pub fn connection_timeout_secs(options: &HashMap<String, String>) -> Option<u64> {
+    options
+        .get(OPT_HARDEN_TIMEOUT_SECS)
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+}
+
+/// True for connections built by the credential broker: no `.pgpass`, no
+/// environment-derived defaults beyond what the record provides.
+pub fn is_hardened_connection(options: &HashMap<String, String>) -> bool {
+    options.contains_key(OPT_HARDEN_READ_ONLY) || options.contains_key(OPT_HARDEN_TIMEOUT_SECS)
+}
+
 thread_local! {
     static THREAD_INTERRUPT_FLAG: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
         const { std::cell::RefCell::new(None) };
@@ -699,7 +732,7 @@ impl DatabaseType {
 }
 
 /// Connection information parsed from database URL
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ConnectionInfo {
     pub database_type: DatabaseType,
     pub host: Option<String>,
@@ -711,6 +744,30 @@ pub struct ConnectionInfo {
     pub options: HashMap<String, String>, // Query parameters
     pub docker_container: Option<String>, // For Docker containers
     pub use_tls: bool,                    // Use TLS/SSL for the connection
+}
+
+// `Debug` never shows the password or secret-looking option values
+impl std::fmt::Debug for ConnectionInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionInfo")
+            .field("database_type", &self.database_type)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field(
+                "password",
+                &crate::password_sanitizer::mask_secret(&self.password),
+            )
+            .field("database", &self.database)
+            .field("file_path", &self.file_path)
+            .field(
+                "options",
+                &crate::password_sanitizer::redact_options(&self.options),
+            )
+            .field("docker_container", &self.docker_container)
+            .field("use_tls", &self.use_tls)
+            .finish()
+    }
 }
 
 /// Server information returned by database connections
@@ -790,22 +847,22 @@ impl fmt::Display for ServerInfo {
 /// Errors that can occur during database operations
 #[derive(Error, Debug)]
 pub enum DatabaseError {
-    #[error("Unsupported database URL scheme: {0}")]
+    #[error("Unsupported database URL scheme: {}", crate::password_sanitizer::redact_text(.0))]
     UnsupportedScheme(String),
 
-    #[error("Invalid database URL: {0}")]
+    #[error("Invalid database URL: {}", crate::password_sanitizer::redact_text(.0))]
     InvalidUrl(String),
 
     #[error("Docker error: {0}")]
     Docker(#[from] crate::docker::DockerError),
 
-    #[error("Connection error: {0}")]
+    #[error("Connection error: {}", crate::password_sanitizer::redact_text(.0))]
     ConnectionError(String),
 
-    #[error("Query error: {0}")]
+    #[error("Query error: {}", crate::password_sanitizer::redact_text(.0))]
     QueryError(String),
 
-    #[error("Metadata error: {0}")]
+    #[error("Metadata error: {}", crate::password_sanitizer::redact_text(.0))]
     MetadataError(String),
 
     #[error("Feature not supported for {database_type}: {feature}")]
@@ -814,7 +871,7 @@ pub enum DatabaseError {
         feature: String,
     },
 
-    #[error("SQLx error: {0}")]
+    #[error("SQLx error: {}", crate::password_sanitizer::redact_text(&.0.to_string()))]
     SqlxError(#[from] sqlx::Error),
 
     #[error("DataFusion error: {0}")]

@@ -29,6 +29,7 @@ pub enum ConfigSection {
     Ai,
     Logging,
     History,
+    Secrets,
     SshTunnelPatterns,
 }
 
@@ -45,6 +46,7 @@ impl ConfigSection {
             ConfigSection::Ai => "AI assistant",
             ConfigSection::Logging => "Logging",
             ConfigSection::History => "History",
+            ConfigSection::Secrets => "Secret storage",
             ConfigSection::SshTunnelPatterns => "SSH tunnel patterns",
         }
     }
@@ -101,6 +103,11 @@ impl ConfigSection {
             ConfigSection::History => {
                 format!("per-session={}", on_off(config.history.per_session_enabled))
             }
+            ConfigSection::Secrets => format!(
+                "backend={}, unlock-cache={}",
+                config.secrets.backend.as_str(),
+                on_off(config.secrets.file_unlock_cache)
+            ),
             ConfigSection::SshTunnelPatterns => {
                 let n = config.ssh_tunnel_patterns.len();
                 format!("{n} pattern{}", if n == 1 { "" } else { "s" })
@@ -246,6 +253,8 @@ fn parse_auth_method(v: &str) -> Result<crate::ai::config::AiAuthMethod, String>
 }
 
 const AI_AUTH_METHODS: &[&str] = &["api_key", "chatgpt_subscription"];
+
+const SECRETS_BACKENDS: &[&str] = &["auto", "keychain", "file"];
 
 /// Every editable scalar leaf of [`Config`], grouped by section.
 ///
@@ -1132,6 +1141,36 @@ static SCHEMA: &[FieldSpec] = &[
         get: |c| c.history.cleanup_after_days.to_string(),
         set: |c, v| {
             c.history.cleanup_after_days = pnum(v)?;
+            Ok(())
+        },
+    },
+    // ---------- Secret storage ----------
+    FieldSpec {
+        path: "secrets.backend",
+        label: "Secret storage backend",
+        help: "auto = OS keychain on macOS/Windows, encrypted file on Linux; no silent fallback (default: auto)",
+        kind: FieldKind::Enum(SECRETS_BACKENDS),
+        section: ConfigSection::Secrets,
+        sensitive: false,
+        get: |c| c.secrets.backend.as_str().to_string(),
+        set: |c, v| {
+            c.secrets.backend = crate::secrets::BackendChoice::parse(v)
+                .ok_or_else(|| format!("invalid secrets backend: {v}"))?;
+            crate::secrets::reset_default_store();
+            Ok(())
+        },
+    },
+    FieldSpec {
+        path: "secrets.file_unlock_cache",
+        label: "Cache file unlock for the login session",
+        help: "Linux file backend: remember the unlocked key in the kernel session keyring (default: true)",
+        kind: FieldKind::Bool,
+        section: ConfigSection::Secrets,
+        sensitive: false,
+        get: |c| c.secrets.file_unlock_cache.to_string(),
+        set: |c, v| {
+            c.secrets.file_unlock_cache = pbool(v);
+            crate::secrets::reset_default_store();
             Ok(())
         },
     },

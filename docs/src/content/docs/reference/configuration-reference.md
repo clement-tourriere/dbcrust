@@ -27,7 +27,9 @@ DBCrust uses dedicated files for different types of data:
 | `~/.config/dbcrust/config.toml` | Main configuration and settings | TOML |
 | `~/.config/dbcrust/named_queries.toml` | Named query storage | TOML |
 | `~/.config/dbcrust/vault_credentials.enc` | Encrypted Vault credentials | Binary (AES-256-GCM) |
-| `~/.config/dbcrust/ai_keys.enc` | Encrypted AI API keys / OAuth token fallback | Text with encrypted values |
+| `~/.config/dbcrust/secrets.enc` | Passphrase-encrypted secret store (Linux / `secrets.backend = "file"`) | Binary (AES-256-GCM, Argon2id) |
+| `~/.config/dbcrust/secrets_index.toml` | Non-secret inventory of stored secrets | TOML |
+| `~/.config/dbcrust/ai_keys.enc` | **Legacy** machine-key AI key file (read-only; `dbcrust secrets migrate`) | Text with `enc:` values |
 | `~/.config/dbcrust/dbcrust.log` | Application logs | Plain text |
 
 ### Configuration Hierarchy
@@ -272,7 +274,7 @@ agentic_max_rows_per_tool = 50      # Rows from one tool query fed back to the m
 | `agentic_max_iterations` | Integer | `8` | Max tool-call turns for `???` investigations |
 | `agentic_max_rows_per_tool` | Integer | `50` | Rows from one `???` tool query fed to the model |
 
-API keys are **not** stored in `config.toml` — they resolve from environment variables, the OS keychain, or an encrypted file (in that order).
+API keys are **not** stored in `config.toml` — they resolve from environment variables, then the [secret store](../user-guide/secret-storage.md) (with a read-only fallback to the legacy locations until `dbcrust secrets migrate`).
 
 For Python/Django AI entrypoints, ChatGPT-subscription auth can also be auto-detected from `~/.codex/auth.json`. In Docker, run `codex login` on the host and mount the host `~/.codex` directory read-only to the container user's home to avoid a dbcrust-specific config volume.
 

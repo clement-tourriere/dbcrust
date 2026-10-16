@@ -266,7 +266,9 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 │   ├── named_queries.rs       # named query parameter substitution
 │   ├── pgpass.rs              # .pgpass file support
 │   ├── dbcrust_pass.rs        # .dbcrust password file (all databases)
-│   ├── password_encryption.rs # AES-256-GCM password encryption
+│   ├── password_encryption.rs # Decrypt-only reader for legacy `enc:` machine-key values
+│   ├── secrets/               # Secret store: keychain / Argon2id file backends, target-bound records
+│   ├── secrets_cli/           # `dbcrust secrets` status / audit / migrate
 │   ├── password_sanitizer.rs  # URL password redaction
 │   ├── history_manager.rs     # per-session history
 │   ├── performance_analyzer.rs # query performance analysis

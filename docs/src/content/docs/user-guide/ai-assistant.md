@@ -36,7 +36,7 @@ AI features are **disabled by default**. Run the interactive wizard once:
 The wizard walks you through:
 
 1. **Provider** — Anthropic, OpenAI, Gemini, Ollama, Groq, DeepSeek, xAI, OpenRouter, Z.AI, GitHub Copilot, Cohere, or Together. The choice is saved (`provider` under `[ai]`) and drives authentication and routing.
-2. **Authentication** — an API key stored in your OS keychain, an encrypted file, or an environment variable. For OpenAI you can instead [sign in with ChatGPT](#sign-in-with-chatgpt) and use your subscription.
+2. **Authentication** — an API key stored in the [secret store](secret-storage.md) (OS keychain, or a passphrase-encrypted file on Linux) or an environment variable. For OpenAI you can instead [sign in with ChatGPT](#sign-in-with-chatgpt) and use your subscription.
 3. **Model** — picked from a **live list fetched from your provider** (so it reflects what your key can access), with type-to-filter and a free-text escape hatch. Falls back to curated suggestions when the list can't be fetched.
 
 Local providers like Ollama need no API key — just a model name and optionally an `endpoint`.
@@ -121,7 +121,7 @@ If you have a ChatGPT plan (Plus, Pro, Business, …), the assistant can use it 
 \ai login
 ```
 
-This opens your browser for an OAuth sign-in (the same flow Codex CLI uses), stores the tokens in your OS keychain (encrypted-file fallback), and routes requests through the ChatGPT Codex backend on your plan's quota. If you already ran `codex login`, the setup wizard also offers to **reuse your Codex CLI session** — no second sign-in needed.
+This opens your browser for an OAuth sign-in (the same flow Codex CLI uses), stores the tokens in the [secret store](secret-storage.md) (as `oauth:chatgpt_oauth_tokens`; there is no weaker fallback), and routes requests through the ChatGPT Codex backend on your plan's quota. If you already ran `codex login`, the setup wizard also offers to **reuse your Codex CLI session** — no second sign-in needed.
 
 Things to know:
 
@@ -152,10 +152,10 @@ endpoint = "http://localhost:11434/v1/"
 Keys are resolved in order:
 
 1. **Environment variable** — the provider's standard name (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …)
-2. **OS keychain** — stored under the `dbcrust` service
-3. **Encrypted file** — AES-GCM encrypted, in the DBCrust config directory
+2. **Secret store** — the OS keychain on macOS/Windows, or the Argon2id passphrase-encrypted `secrets.enc` on Linux (see [Secret Storage](secret-storage.md)); stored as `ai:<provider>`
+3. *Legacy locations (read-only)* — the old `dbcrust` keychain entries and the machine-key `ai_keys.enc`. They keep working until you run `dbcrust secrets migrate`.
 
-`\ai setup` lets you pick where to store the key. Keys never appear in `config.toml`.
+`\ai setup` stores the key in the secret store (or shows the environment variable to set). There is **no automatic weaker fallback**: if the store is locked, you get an error telling you to run `dbcrust secrets unlock`. Keys never appear in `config.toml`.
 
 ## Configuration reference
 

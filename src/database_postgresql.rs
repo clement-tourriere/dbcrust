@@ -829,7 +829,14 @@ pub struct PostgreSQLClient {
 impl PostgreSQLClient {
     pub async fn new(connection_info: ConnectionInfo) -> Result<Self, DatabaseError> {
         // Build PostgreSQL connection options
-        let mut connect_options = sqlx::postgres::PgConnectOptions::new();
+        // Broker connections never consult ~/.pgpass: the stored record is
+        // the only credential source
+        let mut connect_options =
+            if crate::database::is_hardened_connection(&connection_info.options) {
+                sqlx::postgres::PgConnectOptions::new_without_pgpass()
+            } else {
+                sqlx::postgres::PgConnectOptions::new()
+            };
 
         if let Some(ref host) = connection_info.host {
             // Resolve *.localhost to 127.0.0.1 for connection, but preserve original hostname
@@ -879,8 +886,17 @@ impl PostgreSQLClient {
         // --read-only hardening at connect-options level so every pooled
         // connection starts its transactions read-only (server-enforced,
         // unlike the textual statement guard)
-        if crate::database::read_only_requested() {
-            connect_options = connect_options.options([("default_transaction_read_only", "on")]);
+        let mut server_options: Vec<(String, String)> = Vec::new();
+        if crate::database::connection_read_only(&connection_info.options) {
+            server_options.push(("default_transaction_read_only".into(), "on".into()));
+        }
+        // Server-side statement timeout (the credential broker's ceiling);
+        // the CLI's own timeout is enforced client-side in fetch_all_session
+        if let Some(secs) = crate::database::connection_timeout_secs(&connection_info.options) {
+            server_options.push(("statement_timeout".into(), (secs * 1000).to_string()));
+        }
+        if !server_options.is_empty() {
+            connect_options = connect_options.options(server_options);
         }
 
         // Handle SSL mode from options

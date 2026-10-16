@@ -40,6 +40,8 @@ export default defineConfig({
             { label: 'Elasticsearch', slug: 'user-guide/elasticsearch' },
             { label: 'White Dragon', slug: 'user-guide/white-dragon' },
             { label: 'Password Management', slug: 'user-guide/password-management' },
+            { label: 'Secret Storage', slug: 'user-guide/secret-storage' },
+            { label: 'Agent Connections', slug: 'user-guide/agent-connections' },
             { label: 'Troubleshooting', slug: 'user-guide/troubleshooting' },
             { label: 'Development', slug: 'user-guide/development' },
           ],

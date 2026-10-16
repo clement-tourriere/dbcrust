@@ -79,6 +79,20 @@ with dbcrust.connect("postgres://user@localhost/myapp") as connection:
 # Connection automatically closed
 ```
 
+#### Credentials are never handed back
+
+`connection.connection_url` returns the URL you connected with, **redacted**: the
+password and the value of any secret-looking query parameter (`password`,
+`token`, `api_key`, `sslpassword`, …) are replaced by `[REDACTED]`. The same
+redaction is applied to connection and driver error messages raised as
+`DbcrustError` exceptions, so a URL quoted in an error text never leaks a secret.
+
+```python
+with dbcrust.connect("postgres://app:s3cret@db.example.com/shop?sslmode=require") as connection:
+    print(connection.connection_url)
+    # postgres://app:[REDACTED]@db.example.com/shop?sslmode=require
+```
+
 ### 2. Direct Command Execution
 
 Execute SQL queries and backslash commands directly:

@@ -6,7 +6,7 @@ use dbcrust::database::{DatabaseType, DatabaseTypeExt};
 use std::time::Duration;
 
 /// What to connect to.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum ConnectTarget {
     /// Any URL DBCrust understands: `postgres://`, `mysql://`, `sqlite://`,
     /// `docker://`, `vault://role@mount/db`, file paths, …
@@ -19,6 +19,21 @@ pub enum ConnectTarget {
     /// Fully resolved connection details (credentials and options included),
     /// e.g. another database of an open connection's server.
     Info(Box<dbcrust::database::ConnectionInfo>),
+}
+
+// A URL target can carry a password: `Debug` shows it redacted.
+impl std::fmt::Debug for ConnectTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Url(url) => f
+                .debug_tuple("Url")
+                .field(&dbcrust::password_sanitizer::redact_url(url))
+                .finish(),
+            Self::Session(name) => f.debug_tuple("Session").field(name).finish(),
+            Self::Recent(entry) => f.debug_tuple("Recent").field(entry).finish(),
+            Self::Info(info) => f.debug_tuple("Info").field(info).finish(),
+        }
+    }
 }
 
 /// A connection request from the UI.

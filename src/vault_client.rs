@@ -81,7 +81,7 @@ pub enum VaultError {
     TokenError,
     #[error("Failed to read token file ~/.vault-token: {0}")]
     TokenFileError(String),
-    #[error("Vault API error: {0}")]
+    #[error("Vault API error: {}", crate::password_sanitizer::redact_text(.0))]
     ApiError(String),
     #[error("Connection URL parsing error: {0}")]
     UrlParseError(#[from] url::ParseError),
@@ -99,7 +99,7 @@ pub enum VaultError {
     RequestError(#[from] reqwest::Error),
     #[error("JSON parsing error: {0}")]
     JsonError(#[from] serde_json::Error),
-    #[error("Vault credential process failed: {0}")]
+    #[error("Vault credential process failed: {}", crate::password_sanitizer::redact_text(.0))]
     CredentialProcessError(String),
 }
 
@@ -147,9 +147,24 @@ struct VaultCredentialProcessOutput {
     vault_addr: Option<String>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct VaultDbConfigConnectionDetails {
     pub connection_url: Option<String>,
+}
+
+// The connection URL template may embed a static password
+impl std::fmt::Debug for VaultDbConfigConnectionDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultDbConfigConnectionDetails")
+            .field(
+                "connection_url",
+                &self
+                    .connection_url
+                    .as_deref()
+                    .map(crate::password_sanitizer::redact_url),
+            )
+            .finish()
+    }
 }
 
 fn deserialize_allowed_roles<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
@@ -190,10 +205,19 @@ pub struct VaultDbConfigData {
     pub allowed_roles: Option<Vec<String>>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize)]
 pub struct VaultDynamicCredentialsData {
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for VaultDynamicCredentialsData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VaultDynamicCredentialsData")
+            .field("username", &self.username)
+            .field("password", &"***")
+            .finish()
+    }
 }
 
 #[derive(Deserialize, Debug)]

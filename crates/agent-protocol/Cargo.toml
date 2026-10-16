@@ -1,0 +1,24 @@
+[package]
+name = "dbcrust-agent-protocol"
+version = "0.38.0"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+license = "MIT"
+description = "Wire protocol between the DBCrust credential broker and the thin dbcrust-agent client: length-prefixed JSON frames, no credential-bearing fields"
+
+# Keep this crate tiny: it is linked by the credential-free agent client and by
+# the broker. Do not add database drivers, keystores, or HTTP stacks here.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", default-features = false, features = ["io-util"], optional = true }
+
+[features]
+default = []
+# Async framing helpers over tokio's AsyncRead/AsyncWrite
+tokio = ["dep:tokio"]
+
+[dev-dependencies]
+rstest = { version = "0.26", default-features = false }
+tokio = { version = "1", default-features = false, features = ["io-util", "rt", "macros"] }

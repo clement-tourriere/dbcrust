@@ -403,7 +403,10 @@ impl SqliteClient {
             }
         };
 
-        debug!("[SqliteClient::new] Connecting to: {}", database_url);
+        debug!(
+            "[SqliteClient::new] Connecting to: {}",
+            crate::password_sanitizer::redact_url(&database_url)
+        );
 
         // with_regexp registers a REGEXP function on every connection, which
         // powers the translated `~` / `~*` regex operators
@@ -413,16 +416,58 @@ impl SqliteClient {
 
         // --read-only hardening at connect-options level: the pragma applies
         // to EVERY pooled connection (a post-connect PRAGMA would reach one)
-        if crate::database::read_only_requested() {
+        let read_only = crate::database::connection_read_only(&connection_info.options);
+        if read_only {
             connect_options = connect_options.pragma("query_only", "ON");
+        }
+        // Credential-broker connections additionally open the file read-only
+        // (the OS refuses writes even if query_only were somehow cleared)
+        if read_only && crate::database::is_hardened_connection(&connection_info.options) {
+            connect_options = connect_options.read_only(true);
         }
 
         // Configure connection pool with SQLite-specific optimizations
-        let pool = SqlitePoolOptions::new()
+        let mut pool_options = SqlitePoolOptions::new()
             .max_connections(5) // SQLite doesn't need as many connections as network databases
             .min_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(10))
-            .idle_timeout(std::time::Duration::from_secs(600)) // Keep connections alive longer
+            .idle_timeout(std::time::Duration::from_secs(600)); // Keep connections alive longer
+
+        // Statement deadline (credential broker): SQLite has no server-side
+        // timeout, so a progress handler interrupts the statement once the
+        // time since the connection was acquired exceeds the limit
+        if let Some(secs) = crate::database::connection_timeout_secs(&connection_info.options) {
+            use std::sync::Arc;
+            use std::sync::atomic::{AtomicU64, Ordering};
+            let epoch = std::time::Instant::now();
+            let limit_ms = secs.saturating_mul(1000);
+            let started = Arc::new(AtomicU64::new(0));
+            let on_acquire = started.clone();
+            pool_options = pool_options
+                .before_acquire(move |_conn, _meta| {
+                    let started = on_acquire.clone();
+                    Box::pin(async move {
+                        started.store(epoch.elapsed().as_millis() as u64 + 1, Ordering::Relaxed);
+                        Ok(true)
+                    })
+                })
+                .after_connect(move |conn, _meta| {
+                    let started = started.clone();
+                    Box::pin(async move {
+                        conn.lock_handle()
+                            .await?
+                            .set_progress_handler(1000, move || {
+                                let start = started.load(Ordering::Relaxed);
+                                start == 0
+                                    || (epoch.elapsed().as_millis() as u64).saturating_sub(start)
+                                        < limit_ms
+                            });
+                        Ok(())
+                    })
+                });
+        }
+
+        let pool = pool_options
             .connect_with(connect_options)
             .await
             .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?;
@@ -430,7 +475,7 @@ impl SqliteClient {
         // Apply SQLite-specific optimizations — skipped in read-only mode,
         // where the journal-mode conversion (a write) would fail under
         // query_only
-        if !crate::database::read_only_requested() {
+        if !read_only {
             Self::apply_sqlite_optimizations(&pool).await?;
         }
 

@@ -33,9 +33,9 @@ MCP still makes sense when the agent has no shell (hosted assistants), or when y
 | Schema discovery | `\ddl` compact DDL dump · `\dt` / `\d table` are JSON-aware |
 | Guardrails | `--read-only` (+ connect-level hardening) · `--timeout` · `--max-rows` |
 | Never hangs | `--no-input` fails fast with a hint instead of prompting (implied when stdin isn't a TTY) |
-| Credential hygiene | `session://name` — no secrets in argv; Vault, pgpass, encrypted `.dbcrust` also supported |
+| Credential hygiene | `session://name` — no secrets in argv; the secret store (keychain / encrypted file), Vault and pgpass are supported. For production, the [credential broker](/dbcrust/user-guide/agent-connections/) keeps the password out of the agent's reach entirely |
 | Scripts | `-f file.sql` (interleaved with `-c` in argv order) and stdin pipes |
-| Self-documentation | `dbcrust agents` prints the full contract in ~100 lines |
+| Self-documentation | `dbcrust agents` prints the full contract in ~130 lines |
 
 ## Two directions, one tool
 
@@ -48,5 +48,6 @@ They compose nicely — an agent can even invoke `dbcrust "$URL" -c '\ddl'` to g
 
 ## Next steps
 
+- [Agent connections](/dbcrust/user-guide/agent-connections/) — the credential broker: enrolled aliases, forced read-only, audit log, MCP setup (recommended for production data)
 - [Quickstart](/dbcrust/ai-agents/quickstart/) — install, teach your agent, paste-ready snippets
 - [Safety & guardrails](/dbcrust/ai-agents/safety/) — the read-only guard, limits, and the full output contract

@@ -362,7 +362,7 @@ impl ClickHouseClient {
 
         debug!(
             "[ClickHouseClient::new] Connecting to: {} as user: {:?}, has password: {}",
-            database_url,
+            crate::password_sanitizer::redact_url(&database_url),
             &connection_info.username,
             connection_info.password.is_some()
         );
@@ -376,6 +376,13 @@ impl ClickHouseClient {
         }
         if let Some(password) = &connection_info.password {
             client = client.with_password(password);
+        }
+        // Server-enforced hardening on every request of this client
+        if let Some(secs) = crate::database::connection_timeout_secs(&connection_info.options) {
+            client = client.with_setting("max_execution_time", secs.to_string());
+        }
+        if crate::database::connection_read_only(&connection_info.options) {
+            client = client.with_setting("readonly", "1");
         }
 
         // If we resolved a *.localhost domain, add the original hostname as a header
@@ -417,6 +424,15 @@ impl ClickHouseClient {
             request = request.header("X-ClickHouse-Key", password.as_str());
         }
 
+        // Per-request server-side hardening (credential broker / --read-only)
+        let options = &self.connection_info.options;
+        if let Some(secs) = crate::database::connection_timeout_secs(options) {
+            request = request.query(&[("max_execution_time", secs.to_string())]);
+        }
+        if crate::database::connection_read_only(options) {
+            request = request.query(&[("readonly", "1")]);
+        }
+
         request
     }
 
@@ -441,7 +457,7 @@ impl ClickHouseClient {
         );
         debug!(
             "[ClickHouseClient::execute_http_user_query] Target URL: {}",
-            url
+            crate::password_sanitizer::redact_url(&url)
         );
         debug!(
             "[ClickHouseClient::execute_http_user_query] Username: {:?}, Has password: {}",
@@ -449,8 +465,16 @@ impl ClickHouseClient {
             self.connection_info.password.is_some()
         );
 
-        // Create HTTP client
-        let client = reqwest::Client::new();
+        // Create HTTP client. Broker connections never use proxy environment
+        // variables: the record names the only endpoint the secret may reach.
+        let client = if crate::database::is_hardened_connection(&self.connection_info.options) {
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?
+        } else {
+            reqwest::Client::new()
+        };
 
         // Try with TabSeparatedWithNames first (for SELECT queries)
         let formatted_sql = format!("{} FORMAT TabSeparatedWithNames", sql.trim_end_matches(';'));

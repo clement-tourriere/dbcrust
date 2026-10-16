@@ -92,7 +92,7 @@ DBCrust provides a comprehensive set of backslash commands (meta-commands) that 
 | `\savepass` | Save password to .dbcrust file (interactive) | `\savepass` |
 | `\listpass` | List stored passwords (without showing passwords) | `\listpass` |
 | `\deletepass` | Delete stored password (interactive selection) | `\deletepass` |
-| `\encryptpass` | Encrypt all plaintext passwords in .dbcrust | `\encryptpass` |
+| `\encryptpass` | Deprecated — explains `dbcrust secrets migrate` | `\encryptpass` |
 
 
 **MongoDB Operations**
@@ -318,6 +318,36 @@ dbcrust config edit                     # open in $EDITOR
 ```
 
 Note: a relative SQLite file literally named `config` must be opened as `sqlite://config`.
+
+#### `dbcrust secrets` - Secret Store, Audit and Migration
+
+Inspect and manage saved passwords, AI keys and tokens, with no database connection and without ever printing a value (see [Secret Storage](../user-guide/secret-storage.md)):
+
+```bash
+dbcrust secrets status [-o json]      # backend, lock state, record counts, index drift
+dbcrust secrets audit [-o json]       # scan known locations; exit 1 on high-severity findings
+dbcrust secrets migrate [--dry-run] [--yes]   # move legacy .dbcrust / ai_keys.enc / session secrets
+dbcrust secrets unlock                # Linux file backend: passphrase once per login session
+dbcrust secrets lock                  # forget the cached unlock key
+dbcrust secrets delete <id> [--yes]   # e.g. ai:openai, conn:postgresql:alice@db:5432/app
+```
+
+Exit codes: `0` ok · `1` audit found high-severity items / an operation failed · `2` cannot run here (non-interactive, unknown id, locked store).
+
+#### `dbcrust broker` - Credential Broker for AI Agents
+
+The broker holds database credentials so agents never see them; agents reach it through the credential-free `dbcrust-agent` client over a Unix socket. No database connection is needed to run these commands (Unix only; Windows reports "not supported yet"):
+
+```bash
+dbcrust broker enroll <alias> <url> [--allow-writes] [--max-rows N] [--timeout SECS] [--max-bytes N] [--description TEXT]
+dbcrust broker serve [--mode user|service] [--state-dir PATH] [--socket PATH]
+dbcrust broker list [-o json]         # aliases and their policy, never credentials
+dbcrust broker policy <alias> [--max-rows N] [--timeout SECS] [--max-bytes N] [--read-only]
+dbcrust broker revoke <alias>
+dbcrust broker status [-o json]       # mode, state, whether a broker answers on the socket
+```
+
+The enrollment URL must not contain a password: it is asked for interactively (never from arguments, the environment or a pipe; SQLite needs none). Aliases are read-only by default, DDL/DCL/admin statements are always refused, and `policy` can only tighten — loosening needs `enroll` again. Exit codes: `0` ok · `1` failure · `2` cannot be done as asked (invalid or forbidden input, no terminal).
 
 ### Display Commands
 
@@ -851,8 +881,8 @@ Session 'production' saved successfully
 ```
 
 :::note[Password Security]
-Sessions never store passwords. DBCrust integrates with:
-- Universal `.dbcrust` encrypted password file
+Sessions never store passwords in `sessions.toml`. DBCrust integrates with:
+- The secret store (OS keychain / passphrase-encrypted file; see [Secret Storage](../user-guide/secret-storage.md)) and, read-only, the legacy `.dbcrust` file
 - PostgreSQL: `.pgpass` file
 - MySQL: `.my.cnf` file
 - Saved-session `password_command` for dynamic secret stores

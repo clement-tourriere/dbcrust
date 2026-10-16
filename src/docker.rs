@@ -139,7 +139,7 @@ pub struct DockerContainerInfo {
     pub labels: HashMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct DockerDatabaseConnection {
     pub container_name: String,
     pub database_type: DatabaseType,
@@ -148,6 +148,23 @@ pub struct DockerDatabaseConnection {
     pub username: Option<String>,
     pub password: Option<String>,
     pub database_name: Option<String>,
+}
+
+impl std::fmt::Debug for DockerDatabaseConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DockerDatabaseConnection")
+            .field("container_name", &self.container_name)
+            .field("database_type", &self.database_type)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("username", &self.username)
+            .field(
+                "password",
+                &crate::password_sanitizer::mask_secret(&self.password),
+            )
+            .field("database_name", &self.database_name)
+            .finish()
+    }
 }
 
 /// A successful [`DockerClient::connect_via_routes`].
@@ -1010,7 +1027,7 @@ pub const PINNED_DAEMON_OPTION: &str = "docker_daemon";
 ///
 /// Parts are taken verbatim (no percent-decoding, as `docker://` URLs always
 /// were) except option values, which are percent-encoded.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct DockerTarget {
     pub user: Option<String>,
     pub password: Option<String>,
@@ -1030,6 +1047,25 @@ const OPTION_ENCODE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHAN
     .remove(b'_')
     .remove(b'.')
     .remove(b'~');
+
+impl std::fmt::Debug for DockerTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DockerTarget")
+            .field("user", &self.user)
+            .field(
+                "password",
+                &crate::password_sanitizer::mask_secret(&self.password),
+            )
+            .field("container", &self.container)
+            .field("database", &self.database)
+            .field(
+                "options",
+                &crate::password_sanitizer::redact_options(&self.options),
+            )
+            .field("use_tls", &self.use_tls)
+            .finish()
+    }
+}
 
 impl DockerTarget {
     /// `None` unless `url` starts with `docker://`.

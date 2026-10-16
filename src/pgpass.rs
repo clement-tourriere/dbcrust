@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 /// Represents a parsed entry from the .pgpass file
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PgPassEntry {
     pub hostname: String,
     pub port: String,
@@ -17,6 +17,18 @@ pub struct PgPassEntry {
     pub username: String,
     #[allow(dead_code)]
     pub password: String,
+}
+
+impl std::fmt::Debug for PgPassEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PgPassEntry")
+            .field("hostname", &self.hostname)
+            .field("port", &self.port)
+            .field("database", &self.database)
+            .field("username", &self.username)
+            .field("password", &"***")
+            .finish()
+    }
 }
 
 /// Gets the path to the .pgpass file based on the current platform

@@ -34,6 +34,8 @@ pub async fn list_models(
         .map(|s| Endpoint::from_owned(s.to_string()));
     let provider_config = ProviderConfig::from((endpoint, auth));
 
+    crate::tls::install_default_crypto_provider();
+
     let names = tokio::time::timeout(
         Duration::from_secs(10),
         Client::default().all_model_names(adapter, provider_config),

@@ -5,6 +5,11 @@ description: The read-only guard, limits, exit codes, and output contract for ag
 
 Agents make mistakes; guardrails make them cheap. This page is the full contract an agent-driven `dbcrust` run obeys.
 
+
+:::tip[Protecting credentials, not just statements]
+Everything on this page runs the agent *as you*: it can reach any password your account can. For production databases enroll the connection with the [credential broker](/dbcrust/user-guide/agent-connections/) so the agent never holds one.
+:::
+
 ## The read-only guard
 
 ```bash

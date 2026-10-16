@@ -2,6 +2,7 @@
 #![allow(non_local_definitions)]
 
 pub mod ai; // AI assistant integration (text-to-SQL, multi-provider)
+pub mod broker; // Credential broker for AI agents (`dbcrust broker …`)
 pub mod cli;
 pub mod cli_core; // New unified CLI core
 pub mod command_completion; // Trait-based command completion system
@@ -21,7 +22,7 @@ pub mod database_postgresql; // PostgreSQL implementation
 pub mod database_sqlite; // SQLite implementation
 pub mod database_white_dragon; // White Dragon HTTP/SQL implementation
 pub mod db;
-pub mod dbcrust_pass; // Universal password file (.dbcrust) support
+pub mod dbcrust_pass; // Legacy password file (.dbcrust): read, list, delete, migrate only
 pub mod docker; // Docker container integration
 pub mod docker_endpoint; // which Docker daemon: DOCKER_CONTEXT / DOCKER_HOST / contexts
 pub mod docker_route; // reachability candidates, probing, route reporting
@@ -36,7 +37,7 @@ pub mod logging;
 pub mod myconf; // MySQL configuration file support
 pub mod named_queries;
 pub mod pager;
-pub mod password_encryption; // Password encryption for .dbcrust file
+pub mod password_encryption; // Decrypt-only reader for legacy `enc:` machine-key values
 pub mod password_sanitizer;
 pub mod performance_analyzer; // Performance analysis for EXPLAIN queries
 pub mod pgpass;
@@ -45,6 +46,8 @@ pub mod regex_operators; // Cross-backend translation of PG-style regex operator
 pub mod safety; // Read-only statement classification (--read-only + AI agent guard)
 pub mod schema_tui;
 pub mod script;
+pub mod secrets; // Secret store: OS keychain / Argon2id passphrase file, target-bound records
+pub mod secrets_cli; // `dbcrust secrets status|audit|migrate|unlock|lock|delete`
 pub mod shell_completion; // Custom shell completion with URL schemes
 pub mod sql_buffer; // Multiline validation + statement splitting for the REPL
 pub mod sql_context; // SQL context analysis for better autocompletion
@@ -54,6 +57,7 @@ pub mod sql_parser_postgresql; // PostgreSQL-specific SQL parser
 pub mod sql_parser_sqlite; // SQLite-specific SQL parser
 pub mod sql_parser_trait; // Database-specific SQL parser trait system
 pub mod ssh_tunnel; // Add the SSH tunnel module
+pub mod tls; // Process-wide rustls crypto provider (ring)
 pub mod update; // Self-update (--update): release check + channel-aware upgrade
 pub mod url_scheme; // URL scheme autocompletion support
 pub mod vault_client; // Add backslash commands module
@@ -255,6 +259,8 @@ fn cli_error_to_pyerr(err: crate::cli_core::CliError) -> PyErr {
 #[cfg(feature = "python")]
 #[pymodule]
 pub fn _internal(_py: Python<'_>, m: Bound<'_, PyModule>) -> PyResult<()> {
+    crate::tls::install_default_crypto_provider();
+
     // Legacy classes (keep for backward compatibility)
     m.add_class::<PyDatabase>()?;
     m.add_class::<PyConfig>()?;
@@ -322,7 +328,10 @@ impl PyDatabase {
                 .await
             })
             .map_err(|e| {
-                DbcrustConnectionError::new_err(format!("Failed to connect to database: {e}"))
+                DbcrustConnectionError::new_err(format!(
+                    "Failed to connect to database: {}",
+                    crate::password_sanitizer::redact_error(&e)
+                ))
             })?;
 
         Ok(PyDatabase {
@@ -339,7 +348,12 @@ impl PyDatabase {
                 let mut db = self.inner.lock().await;
                 db.execute_query(query).await
             })
-            .map_err(|e| DbcrustCommandError::new_err(format!("Query execution failed: {e}")))?;
+            .map_err(|e| {
+                DbcrustCommandError::new_err(format!(
+                    "Query execution failed: {}",
+                    crate::password_sanitizer::redact_error(&e)
+                ))
+            })?;
 
         Python::attach(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
     }
@@ -366,7 +380,12 @@ impl PyDatabase {
                 let mut db = self.inner.lock().await;
                 db.list_databases().await
             })
-            .map_err(|e| DbcrustCommandError::new_err(format!("Failed to list databases: {e}")))?;
+            .map_err(|e| {
+                DbcrustCommandError::new_err(format!(
+                    "Failed to list databases: {}",
+                    crate::password_sanitizer::redact_error(&e)
+                ))
+            })?;
 
         Python::attach(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
     }
@@ -379,7 +398,12 @@ impl PyDatabase {
                 let mut db = self.inner.lock().await;
                 db.list_tables().await
             })
-            .map_err(|e| DbcrustCommandError::new_err(format!("Failed to list tables: {e}")))?;
+            .map_err(|e| {
+                DbcrustCommandError::new_err(format!(
+                    "Failed to list tables: {}",
+                    crate::password_sanitizer::redact_error(&e)
+                ))
+            })?;
 
         Python::attach(|py| Ok(results.into_pyobject(py)?.into_any().unbind()))
     }
@@ -392,7 +416,12 @@ impl PyDatabase {
                 let mut db = self.inner.lock().await;
                 db.get_table_details(table_name).await
             })
-            .map_err(|e| DbcrustCommandError::new_err(format!("Failed to describe table: {e}")))?;
+            .map_err(|e| {
+                DbcrustCommandError::new_err(format!(
+                    "Failed to describe table: {}",
+                    crate::password_sanitizer::redact_error(&e)
+                ))
+            })?;
 
         Python::attach(|py| {
             let dict = PyDict::new(py);
@@ -457,9 +486,12 @@ impl PyConfig {
 
     /// Save the configuration (documented format, comments preserved).
     pub fn save(&self) -> PyResult<()> {
-        self.inner
-            .save_with_documentation()
-            .map_err(|e| DbcrustConfigError::new_err(format!("Failed to save config: {e}")))
+        self.inner.save_with_documentation().map_err(|e| {
+            DbcrustConfigError::new_err(format!(
+                "Failed to save config: {}",
+                crate::password_sanitizer::redact_error(&e)
+            ))
+        })
     }
 }
 
@@ -474,8 +506,12 @@ impl PyConnection {
         timeout: Option<f64>,
         auto_commit: Option<bool>,
     ) -> PyResult<Self> {
-        let rt = Runtime::new()
-            .map_err(|e| DbcrustError::new_err(format!("Failed to create Tokio runtime: {e}")))?;
+        let rt = Runtime::new().map_err(|e| {
+            DbcrustError::new_err(format!(
+                "Failed to create Tokio runtime: {}",
+                crate::password_sanitizer::redact_error(&e)
+            ))
+        })?;
 
         let rt_arc = Arc::new(rt);
         let rt_clone = rt_arc.clone();
@@ -490,7 +526,10 @@ impl PyConnection {
                 .await
             })
             .map_err(|e| {
-                DbcrustConnectionError::new_err(format!("Failed to connect to database: {e}"))
+                DbcrustConnectionError::new_err(format!(
+                    "Failed to connect to database: {}",
+                    crate::password_sanitizer::redact_error(&e)
+                ))
             })?;
 
         // Detect database type from URL
@@ -509,7 +548,8 @@ impl PyConnection {
         Ok(PyConnection {
             inner: Arc::new(TokioMutex::new(db_instance)),
             rt: rt_clone,
-            connection_url: connection_url.to_string(),
+            // Never keep (or hand back to Python) a URL's password
+            connection_url: crate::password_sanitizer::redact_url(connection_url),
             database_type,
             auto_commit: auto_commit.unwrap_or(true),
             timeout,
@@ -558,7 +598,12 @@ impl PyConnection {
                     .ok_or("No database client available")?
                     .get_server_info()
                     .await
-                    .map_err(|e| format!("Failed to get server info: {}", e))
+                    .map_err(|e| {
+                        format!(
+                            "Failed to get server info: {}",
+                            crate::password_sanitizer::redact_error(&e)
+                        )
+                    })
             })
             .map_err(|e: String| PyRuntimeError::new_err(e))?;
 
@@ -580,7 +625,12 @@ impl PyConnection {
                 let mut db = self.inner.lock().await;
                 db.execute_query(query).await
             })
-            .map_err(|e| DbcrustCommandError::new_err(format!("Query execution failed: {e}")))?;
+            .map_err(|e| {
+                DbcrustCommandError::new_err(format!(
+                    "Query execution failed: {}",
+                    crate::password_sanitizer::redact_error(&e)
+                ))
+            })?;
 
         // Extract column names and data rows
         if results.is_empty() {
@@ -614,7 +664,8 @@ impl PyConnection {
         })
     }
 
-    /// Get connection URL (read-only)
+    /// Get connection URL (read-only), with any password or secret query
+    /// value replaced by `[REDACTED]`
     #[getter]
     pub fn connection_url(&self) -> &str {
         &self.connection_url
@@ -654,7 +705,12 @@ impl PyCursor {
                 let mut db = self.connection.lock().await;
                 db.execute_query(query).await
             })
-            .map_err(|e| DbcrustCommandError::new_err(format!("Query execution failed: {e}")))?;
+            .map_err(|e| {
+                DbcrustCommandError::new_err(format!(
+                    "Query execution failed: {}",
+                    crate::password_sanitizer::redact_error(&e)
+                ))
+            })?;
 
         // Extract column names and data rows
         if !results.is_empty() {
@@ -699,7 +755,10 @@ impl PyCursor {
                     db.execute_query(statement).await
                 })
                 .map_err(|e| {
-                    DbcrustCommandError::new_err(format!("Script execution failed: {e}"))
+                    DbcrustCommandError::new_err(format!(
+                        "Script execution failed: {}",
+                        crate::password_sanitizer::redact_error(&e)
+                    ))
                 })?;
 
             // Process results to separate headers from data
@@ -915,7 +974,10 @@ pub fn py_connect(
 #[pyfunction]
 pub fn ai_config_status(py: Python<'_>) -> PyResult<Py<PyAny>> {
     let config_dir = crate::config::Config::get_config_directory().map_err(|e| {
-        DbcrustConfigError::new_err(format!("Failed to resolve config directory: {e}"))
+        DbcrustConfigError::new_err(format!(
+            "Failed to resolve config directory: {}",
+            crate::password_sanitizer::redact_error(&e)
+        ))
     })?;
     let config_path = config_dir.join("config.toml");
     let mut config = crate::config::Config::load();
@@ -993,7 +1055,7 @@ pub fn run_ai_investigation(
     // including the dashboard's polling requests. Errors are plain Strings here
     // (no PyErr without the GIL) and mapped back to a Python exception after.
     let result: Result<String, String> = py.detach(move || {
-        let rt = Runtime::new().map_err(|e| format!("Failed to create Tokio runtime: {e}"))?;
+        let rt = Runtime::new().map_err(|e| format!("Failed to create Tokio runtime: {}", crate::password_sanitizer::redact_error(&e)))?;
 
         rt.block_on(async move {
             let mut config = crate::config::Config::load();
@@ -1023,7 +1085,7 @@ pub fn run_ai_investigation(
                 crate::db::FrontendMode::Gui,
             )
             .await
-            .map_err(|e| format!("Failed to connect: {e}"))?;
+            .map_err(|e| format!("Failed to connect: {}", crate::password_sanitizer::redact_error(&e)))?;
             let db_type = database.get_database_type();
 
             let progress: Box<dyn crate::ai::agent::ProgressSink> = match &progress_path {
@@ -1060,7 +1122,7 @@ pub fn run_ai_investigation(
                     &interrupt,
                 )
                 .await
-                .map_err(|e| format!("AI investigation failed: {e}"))
+                .map_err(|e| format!("AI investigation failed: {}", crate::password_sanitizer::redact_error(&e)))
             } else {
                 // Single-shot: build the full schema context and prepend the extra context.
                 let (schema_ctx, _cacheable) = crate::ai::schema_context::build_schema_context(
@@ -1078,7 +1140,7 @@ pub fn run_ai_investigation(
                 let messages = vec![(crate::ai::MessageRole::User, question.to_string())];
                 let resp = crate::ai::generate(&config.ai, &system_prompt, &messages)
                     .await
-                    .map_err(|e| format!("AI generation failed: {e}"))?;
+                    .map_err(|e| format!("AI generation failed: {}", crate::password_sanitizer::redact_error(&e)))?;
                 Ok(crate::ai::streaming::extract_sql(&resp.content))
             }
         })
@@ -1092,8 +1154,12 @@ pub fn run_ai_investigation(
 #[cfg(feature = "python")]
 #[pyfunction]
 pub fn run_command(args: Vec<String>) -> PyResult<i32> {
-    let rt = Runtime::new()
-        .map_err(|e| DbcrustError::new_err(format!("Failed to create Tokio runtime: {e}")))?;
+    let rt = Runtime::new().map_err(|e| {
+        DbcrustError::new_err(format!(
+            "Failed to create Tokio runtime: {}",
+            crate::password_sanitizer::redact_error(&e)
+        ))
+    })?;
 
     rt.block_on(run_main_cli_workflow(args))
 }
@@ -1103,8 +1169,13 @@ pub fn run_command(args: Vec<String>) -> PyResult<i32> {
 #[cfg(feature = "python")]
 #[pyfunction]
 pub fn run_cli_loop(connection_url: Option<String>) -> PyResult<i32> {
-    let rt = Runtime::new()
-        .map_err(|e| DbcrustError::new_err(format!("Failed to create Tokio runtime: {e}")))?;
+    crate::tls::install_default_crypto_provider();
+    let rt = Runtime::new().map_err(|e| {
+        DbcrustError::new_err(format!(
+            "Failed to create Tokio runtime: {}",
+            crate::password_sanitizer::redact_error(&e)
+        ))
+    })?;
 
     rt.block_on(async {
         match connection_url {
@@ -1115,7 +1186,12 @@ pub fn run_cli_loop(connection_url: Option<String>) -> PyResult<i32> {
             )) as Box<dyn std::error::Error>),
         }
     })
-    .map_err(|e| DbcrustArgumentError::new_err(format!("Interactive CLI failed: {e}")))
+    .map_err(|e| {
+        DbcrustArgumentError::new_err(format!(
+            "Interactive CLI failed: {}",
+            crate::password_sanitizer::redact_error(&e)
+        ))
+    })
 }
 
 /// Unified CLI workflow using CliCore - provides 100% feature parity with Rust CLI
@@ -1136,7 +1212,8 @@ async fn run_main_cli_workflow(args: Vec<String>) -> PyResult<i32> {
         }
         Err(e @ ParseExit::Usage(_)) => {
             return Err(DbcrustArgumentError::new_err(format!(
-                "Error parsing arguments: {e}"
+                "Error parsing arguments: {}",
+                crate::password_sanitizer::redact_error(&e)
             )));
         }
     };
@@ -1174,7 +1251,9 @@ pub async fn run_interactive_cli(url: &str) -> Result<(), Box<dyn std::error::Er
 
     // Run the CLI with the constructed args
     CliCore::run_with_args(args).await.map(|_| ()).map_err(|e| {
-        Box::new(std::io::Error::other(format!("CLI execution failed: {e}")))
-            as Box<dyn std::error::Error>
+        Box::new(std::io::Error::other(format!(
+            "CLI execution failed: {}",
+            crate::password_sanitizer::redact_error(&e)
+        ))) as Box<dyn std::error::Error>
     })
 }

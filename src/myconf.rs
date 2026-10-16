@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use tracing::debug;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct MySQLConfig {
     pub host: Option<String>,
     pub port: Option<u16>,
@@ -20,6 +20,25 @@ pub struct MySQLConfig {
     pub ssl_ca: Option<String>,
     pub ssl_cert: Option<String>,
     pub ssl_key: Option<String>,
+}
+
+impl std::fmt::Debug for MySQLConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MySQLConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field(
+                "password",
+                &crate::password_sanitizer::mask_secret(&self.password),
+            )
+            .field("database", &self.database)
+            .field("socket", &self.socket)
+            .field("ssl_ca", &self.ssl_ca)
+            .field("ssl_cert", &self.ssl_cert)
+            .field("ssl_key", &self.ssl_key)
+            .finish()
+    }
 }
 
 /// Get the path to the MySQL configuration file

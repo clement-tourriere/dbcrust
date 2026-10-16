@@ -317,10 +317,10 @@ jobs:
 
       - name: "Build native binaries"
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc
+          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc --bin dbcrust-agent
           mkdir -p dist
           cd target/${{ matrix.target }}/release
-          tar czf ../../../dist/dbcrust-${{ matrix.target }}.tar.gz dbcrust dbc
+          tar czf ../../../dist/dbcrust-${{ matrix.target }}.tar.gz dbcrust dbc dbcrust-agent
           cd ../../../dist
           sha256sum dbcrust-${{ matrix.target }}.tar.gz > dbcrust-${{ matrix.target }}.tar.gz.sha256
 
@@ -352,10 +352,10 @@ jobs:
 
       - name: "Build native binaries with cross"
         run: |
-          cross build --release --target aarch64-unknown-linux-gnu --bin dbcrust --bin dbc
+          cross build --release --target aarch64-unknown-linux-gnu --bin dbcrust --bin dbc --bin dbcrust-agent
           mkdir -p dist
           cd target/aarch64-unknown-linux-gnu/release
-          tar czf ../../../dist/dbcrust-aarch64-unknown-linux-gnu.tar.gz dbcrust dbc
+          tar czf ../../../dist/dbcrust-aarch64-unknown-linux-gnu.tar.gz dbcrust dbc dbcrust-agent
           cd ../../../dist
           sha256sum dbcrust-aarch64-unknown-linux-gnu.tar.gz > dbcrust-aarch64-unknown-linux-gnu.tar.gz.sha256
 
@@ -387,10 +387,10 @@ jobs:
 
       - name: "Build native binaries"
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc
+          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc --bin dbcrust-agent
           mkdir dist
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path dbcrust.exe,dbc.exe -DestinationPath ../../../dist/dbcrust-${{ matrix.target }}.zip
+          Compress-Archive -Path dbcrust.exe,dbc.exe,dbcrust-agent.exe -DestinationPath ../../../dist/dbcrust-${{ matrix.target }}.zip
           cd ../../../dist
           Get-FileHash -Algorithm SHA256 dbcrust-${{ matrix.target }}.zip | ForEach-Object { "$($_.Hash.ToLower())  dbcrust-${{ matrix.target }}.zip" } | Out-File -Encoding ASCII dbcrust-${{ matrix.target }}.zip.sha256
         shell: powershell
@@ -426,10 +426,10 @@ jobs:
 
       - name: "Build native binaries"
         run: |
-          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc
+          cargo build --release --target ${{ matrix.target }} --bin dbcrust --bin dbc --bin dbcrust-agent
           mkdir -p dist
           cd target/${{ matrix.target }}/release
-          tar czf ../../../dist/dbcrust-${{ matrix.target }}.tar.gz dbcrust dbc
+          tar czf ../../../dist/dbcrust-${{ matrix.target }}.tar.gz dbcrust dbc dbcrust-agent
           cd ../../../dist
           shasum -a 256 dbcrust-${{ matrix.target }}.tar.gz > dbcrust-${{ matrix.target }}.tar.gz.sha256
 

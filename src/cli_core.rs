@@ -6,6 +6,7 @@ use crate::database::{ConnectionInfo, DatabaseType, DatabaseTypeExt};
 use crate::db::Database;
 use crate::format::{format_query_results_expanded, format_query_results_psql_with_info};
 use crate::history_manager::{SessionHistoryManager, SessionId};
+use crate::password_sanitizer::{redact_error, redact_text, redact_url};
 use crate::prompt::DbPrompt;
 use crate::{logging, pager};
 use dirs;
@@ -154,7 +155,11 @@ impl std::fmt::Display for CliError {
                                   For more details, set 'level = \"debug\"' in config.toml."
                         )
                     } else {
-                        write!(f, "❌ Vault authentication failed (403 Forbidden)\n\n{msg}")
+                        write!(
+                            f,
+                            "❌ Vault authentication failed (403 Forbidden)\n\n{}",
+                            redact_text(msg)
+                        )
                     }
                 } else if msg.contains("Vault address not set") {
                     write!(
@@ -187,12 +192,15 @@ impl std::fmt::Display for CliError {
                     )
                 } else {
                     // Default connection error formatting
-                    write!(f, "{msg}")
+                    write!(f, "{}", redact_text(msg))
                 }
             }
-            CliError::CommandError(msg) => write!(f, "{msg}"),
-            CliError::ConfigError(msg) => write!(f, "Configuration error: {msg}"),
-            CliError::ArgumentError(msg) => write!(f, "Argument error: {msg}"),
+            // Driver/helper text can quote the connection URL or credentials
+            CliError::CommandError(msg) => write!(f, "{}", redact_text(msg)),
+            CliError::ConfigError(msg) => {
+                write!(f, "Configuration error: {}", redact_text(msg))
+            }
+            CliError::ArgumentError(msg) => write!(f, "Argument error: {}", redact_text(msg)),
         }
     }
 }
@@ -404,6 +412,7 @@ impl CliCore {
     /// (`{"error":{"code":…,"message":…}}`) when the output format is
     /// json/jsonl, plain text otherwise.
     fn emit_one_shot_error(&self, code: &str, message: &str) {
+        let message = &redact_text(message);
         match self.run_overrides.format {
             crate::cli::OutputFormat::Json | crate::cli::OutputFormat::Jsonl => {
                 let error = serde_json::json!({"error": {"code": code, "message": message}});
@@ -463,6 +472,9 @@ impl CliCore {
         // connect-options level, and Database inits its guard from it
         crate::database::set_read_only_requested(cli_core.run_overrides.read_only);
         set_prompts_allowed(!args.no_input && stdin_is_terminal);
+        // The secret store never prompts when the CLI may not (--no-input,
+        // piped stdin, one-shot runs): it reports Locked instead.
+        crate::secrets::set_interactive(prompts_allowed() && !cli_core.run_overrides.one_shot);
 
         // Handle shell completion generation if requested; the script calls
         // the binary it was generated for (`dbc` keeps its own name)
@@ -489,6 +501,24 @@ impl CliCore {
         if let Some(crate::cli::CliCommand::Config { action }) = &args.subcommand {
             cli_core.handle_config_subcommand(action)?;
             return Ok(0);
+        }
+
+        // Handle `dbcrust secrets ...` — no database connection needed
+        if let Some(crate::cli::CliCommand::Secrets { action }) = &args.subcommand {
+            let interactive = prompts_allowed();
+            return Ok(crate::secrets_cli::run(
+                action.as_ref(),
+                args.format,
+                &cli_core.config,
+                interactive,
+            ));
+        }
+
+        // Handle `dbcrust broker ...` — credential broker, no database
+        // connection needed
+        if let Some(crate::cli::CliCommand::Broker { action }) = &args.subcommand {
+            let interactive = prompts_allowed();
+            return Ok(crate::broker::run(action.as_ref(), args.format, interactive).await);
         }
 
         // Handle `dbcrust agents` — print the embedded agent guide and exit
@@ -850,18 +880,17 @@ impl CliCore {
     }
 
     /// Handle database connection setup - core connection logic
-    /// Connect to database with password management (lookup from .dbcrust, prompt on failure, save option)
+    /// Connect to database with password management (lookup in the secret store / legacy files, prompt on failure, save to the store)
     async fn connect_with_password_management(
         &mut self,
         original_url: &str,
         ssh_tunnel_config: Option<&crate::config::SSHTunnelConfig>,
     ) -> Result<(crate::db::Database, Option<ConnectionInfo>), CliError> {
         use crate::database::ConnectionInfo;
-        use crate::dbcrust_pass::{DatabaseType, lookup_password, save_password};
 
         debug!(
             "🔐 Starting connection with password management for URL: {}",
-            original_url
+            redact_url(original_url)
         );
 
         let parsed_original_connection = ConnectionInfo::parse_url(original_url).ok();
@@ -916,7 +945,7 @@ impl CliCore {
                 // Check if this is an authentication error
                 if !Self::is_authentication_error(&error_msg) {
                     // Not an auth error, return the original error
-                    eprintln!("Failed to connect to database: {e}");
+                    eprintln!("Failed to connect to database: {}", redact_error(&e));
                     eprintln!(
                         "Connection URL: {}",
                         crate::password_sanitizer::sanitize_connection_url(original_url)
@@ -934,12 +963,13 @@ impl CliCore {
         })?;
 
         // Extract connection parameters
-        let db_type_enum = match connection_info.database_type {
-            crate::database::DatabaseType::PostgreSQL => DatabaseType::PostgreSQL,
-            crate::database::DatabaseType::MySQL => DatabaseType::MySQL,
-            crate::database::DatabaseType::MongoDB => DatabaseType::MongoDB,
-            crate::database::DatabaseType::Elasticsearch => DatabaseType::Elasticsearch,
-            crate::database::DatabaseType::ClickHouse => DatabaseType::ClickHouse,
+        let database_type = connection_info.database_type.clone();
+        match database_type {
+            crate::database::DatabaseType::PostgreSQL
+            | crate::database::DatabaseType::MySQL
+            | crate::database::DatabaseType::MongoDB
+            | crate::database::DatabaseType::Elasticsearch
+            | crate::database::DatabaseType::ClickHouse => {}
             crate::database::DatabaseType::SQLite
             | crate::database::DatabaseType::Parquet
             | crate::database::DatabaseType::CSV
@@ -957,26 +987,33 @@ impl CliCore {
                         .to_string(),
                 ));
             }
-        };
+        }
 
         let host = connection_info.host.as_deref().unwrap_or("localhost");
-        let port = connection_info.port.unwrap_or(match db_type_enum {
-            DatabaseType::PostgreSQL => 5432,
-            DatabaseType::MySQL => 3306,
-            DatabaseType::MongoDB => 27017,
-            DatabaseType::Elasticsearch => 9200,
-            DatabaseType::ClickHouse => 8123,
-            DatabaseType::SQLite => 0, // Not used
+        let port = connection_info.port.unwrap_or(match database_type {
+            crate::database::DatabaseType::PostgreSQL => 5432,
+            crate::database::DatabaseType::MySQL => 3306,
+            crate::database::DatabaseType::MongoDB => 27017,
+            crate::database::DatabaseType::Elasticsearch => 9200,
+            _ => 8123,
         });
         let database_name = connection_info.database.as_deref().unwrap_or("");
         let username = connection_info.username.as_deref().unwrap_or("");
+        let tls_mode = crate::config::tls_mode_from_options(&connection_info.options);
 
         // If no password was in the original URL, try looking it up
         if connection_info.password.is_none() {
-            debug!("🔍 Looking up password in .dbcrust file");
-            match lookup_password(db_type_enum.clone(), host, port, database_name, username) {
-                Ok(Some(password)) => {
-                    debug!("✅ Found password in .dbcrust file");
+            debug!("🔍 Looking up a saved password");
+            match crate::config::lookup_connection_password(
+                &database_type,
+                host,
+                port,
+                database_name,
+                username,
+                tls_mode.as_deref(),
+            ) {
+                Some(password) => {
+                    debug!("✅ Found a saved password");
                     // Create new URL with password
                     let url_with_password = Self::inject_password_into_url(original_url, &password)
                         .map_err(|e| {
@@ -999,16 +1036,16 @@ impl CliCore {
                             return Ok((database, None));
                         }
                         Err(e) => {
-                            debug!("❌ Connection failed even with looked-up password: {e}");
+                            debug!(
+                                "❌ Connection failed even with looked-up password: {}",
+                                redact_error(&e)
+                            );
                             // Continue to prompt for password
                         }
                     }
                 }
-                Ok(None) => {
-                    debug!("🔍 No password found in .dbcrust file");
-                }
-                Err(e) => {
-                    debug!("⚠️  Error looking up password: {e}");
+                None => {
+                    debug!("🔍 No saved password found");
                 }
             }
         }
@@ -1017,7 +1054,7 @@ impl CliCore {
         if !prompts_allowed() {
             return Err(prompt_blocked_error(
                 "Password entry",
-                "Put the password in the URL, ~/.dbcrust, pgpass/myconf, or use a saved session://.",
+                "Put the password in the URL, save it with \\savepass or an interactive connect, use pgpass/myconf, or use a saved session://.",
             ));
         }
         let prompted_password = inquire::Password::new("🔐 Password:")
@@ -1039,30 +1076,34 @@ impl CliCore {
             Ok(database) => {
                 debug!("✅ Connection successful with prompted password");
 
-                // Automatically save the password with encryption (no confirmation prompts)
-                match save_password(
-                    db_type_enum,
+                // Save the password to the secret store (no confirmation prompt).
+                // Never to the legacy ~/.dbcrust file.
+                match crate::config::save_connection_password(
+                    &database_type,
                     host,
                     port,
                     database_name,
                     username,
+                    tls_mode.as_deref(),
                     &prompted_password,
-                    true,
                 ) {
                     Ok(()) => {
                         // stderr: must not pollute one-shot stdout results
-                        eprintln!("✅ Password saved to .dbcrust file (encrypted)");
+                        eprintln!("✅ Password saved to the secure store");
                     }
                     Err(e) => {
-                        debug!("⚠️  Failed to save password: {e}");
-                        // Don't show error to user - saving is optional, connection succeeded
+                        // The connection worked; only the save failed
+                        eprintln!("Password was not saved: {e}");
                     }
                 }
 
                 Ok((database, None))
             }
             Err(e) => {
-                eprintln!("❌ Connection failed with provided password: {e}");
+                eprintln!(
+                    "❌ Connection failed with provided password: {}",
+                    redact_error(&e)
+                );
                 eprintln!(
                     "Connection URL: {}",
                     crate::password_sanitizer::sanitize_connection_url(original_url)
@@ -1477,7 +1518,7 @@ impl CliCore {
             )
             .await
             .map_err(|e| {
-                eprintln!("Failed to connect to database: {e}");
+                eprintln!("Failed to connect to database: {}", redact_error(&e));
                 eprintln!(
                     "Connection URL: {}",
                     crate::password_sanitizer::sanitize_connection_url(&full_url_str)
@@ -2602,15 +2643,13 @@ impl CliCore {
         };
 
         let storage_options = vec![
-            "OS Keychain",
-            "Encrypted file",
+            "Secure store (OS keychain, or passphrase-encrypted file on Linux)",
             "Environment variable (show command)",
         ];
         let method = match wizard_step(
             inquire::Select::new("How to store the API key?", storage_options).prompt(),
         )? {
-            Some("OS Keychain") => KeyStorageMethod::OsKeyring,
-            Some("Encrypted file") => KeyStorageMethod::EncryptedFile,
+            Some(choice) if choice.starts_with("Secure store") => KeyStorageMethod::SecretStore,
             Some(_) => KeyStorageMethod::EnvVarHint,
             None => {
                 println!("API key not stored.");
@@ -3341,7 +3380,9 @@ impl CliCore {
         ssh_tunnel_config: Option<&crate::config::SSHTunnelConfig>,
     ) -> Result<(Database, Option<ConnectionInfo>), CliError> {
         let (role, mount_path, database_name) = crate::vault_client::parse_vault_url(url)
-            .ok_or_else(|| CliError::ConnectionError(format!("Invalid vault URL format: {url}")))?;
+            .ok_or_else(|| {
+                CliError::ConnectionError(format!("Invalid vault URL format: {}", redact_url(url)))
+            })?;
 
         eprintln!("🔐 Connecting to Vault...");
 

@@ -4,21 +4,21 @@ title: "Password Management"
 
 # Password Management
 
-DBCrust provides comprehensive password management for all supported database types through the universal `.dbcrust` file system. This system works like PostgreSQL's `.pgpass` but extends support to all databases with automatic encryption and cross-platform compatibility.
+DBCrust remembers database passwords for all supported database types. Saved passwords live in the **secret store** (OS keychain, or a passphrase-encrypted file on Linux) — see [Secret Storage](secret-storage.md). The older universal `.dbcrust` file is still **read** (and can be migrated with `dbcrust secrets migrate`) but DBCrust never writes to it or encrypts it any more.
 
 ## 🔐 Overview
 
 The password management system provides:
 
-- **Universal Support**: Works with PostgreSQL, MySQL, MongoDB, Elasticsearch, ClickHouse, SQLite
-- **Automatic Lookup**: Searches for passwords when connecting without credentials
-- **Authentication Retry**: Prompts for password on auth failure and offers to save it
-- **Secure Encryption**: Machine-specific encryption ensures passwords only work on the machine where they were saved
-- **Cross-Platform**: Works on Linux, macOS, and Windows with platform-specific security features
+- **Universal Support**: Works with PostgreSQL, MySQL, MongoDB, Elasticsearch, ClickHouse
+- **Automatic Lookup**: Searches for passwords when connecting without credentials: the secret store first, then the legacy `.dbcrust` file, then `.pgpass` / `.my.cnf`
+- **Authentication Retry**: Prompts for password on auth failure and saves it to the secret store
+- **Target-bound**: A stored password is only used for the exact engine, host, port, database and user it was saved for
+- **Cross-Platform**: macOS Keychain, Windows Credential Manager, Argon2id passphrase file on Linux
 
-## 📁 Password File Format
+## 📁 Legacy `.dbcrust` File Format (read-only)
 
-The `.dbcrust` file uses the format:
+Older versions saved passwords in `~/.dbcrust`. DBCrust still reads it as a fallback; new passwords go to the secret store instead. Run `dbcrust secrets migrate` to move existing entries. The file uses the format:
 ```
 database_type:host:port:database:username:password
 ```
@@ -29,7 +29,7 @@ database_type:host:port:database:username:password
 # PostgreSQL - plaintext password
 postgresql:localhost:5432:myapp:dbuser:mypassword
 
-# MySQL - encrypted password (prefixed with 'enc:')
+# MySQL - legacy machine-key value (prefixed with 'enc:'; readable, never written)
 mysql:db.example.com:3306:webapp:admin:enc:a1b2c3d4e5f6789...
 
 # MongoDB cluster
@@ -47,7 +47,7 @@ clickhouse:ch.example.com:8123:analytics:analyst:ch_password
 
 ### Wildcard Support
 
-Use `*` to match any value for that field:
+Use `*` to match any value for that field. Wildcards are a legacy feature: `dbcrust secrets migrate` never converts them automatically (a wildcard would hand one password to every matching target); it lets you bind one to a concrete target instead.
 
 ```bash
 # Match any host/port for testdb database
@@ -69,8 +69,9 @@ postgresql:localhost:5432:myapp:*:shared_password
 
 ### Security
 
-- **Unix/macOS**: File permissions automatically set to `0600` (readable/writable by owner only)
+- **Unix/macOS**: A legacy file readable by other users is refused; keep it at `0600`
 - **Windows**: Relies on NTFS directory security and file system permissions
+- `dbcrust secrets audit` reports plaintext and `enc:` lines and loose permissions
 
 ## 🔄 Automatic Password Flow
 
@@ -80,7 +81,7 @@ DBCrust automatically manages passwords through this flow:
 graph TD
     A[Connect to Database] --> B{Password in URL?}
     B -->|Yes| C[Use Provided Password]
-    B -->|No| D[Lookup in .dbcrust]
+    B -->|No| D[Lookup: secret store, then legacy .dbcrust, then pgpass / my.cnf]
     D --> E{Password Found?}
     E -->|Yes| F[Try Connection with Found Password]
     E -->|No| G[Prompt for Password]
@@ -92,9 +93,9 @@ graph TD
     J -->|No| G
     G --> K[Try Connection with Entered Password]
     K --> L{Connection Success?}
-    L -->|Yes| M[Save Password to .dbcrust?]
+    L -->|Yes| M[Save password to the secret store]
     L -->|No| N[Authentication Failed]
-    M --> O[Password Saved Encrypted]
+    M --> O[Password stored, bound to the target]
     O --> I
 ```
 
@@ -107,8 +108,8 @@ graph TD
 # 2. Authentication fails, automatic prompt appears
 🔐 Password: [hidden input]
 
-# 3. Password accepted, automatically saved
-✅ Password saved to .dbcrust file (encrypted)
+# 3. Password accepted, automatically saved to the secret store
+✅ Password saved to the secure store
 ✓ Successfully connected to database
 
 # 4. Next time: automatic connection using saved password
@@ -118,7 +119,7 @@ graph TD
 
 ## Saved Sessions with Dynamic Password Commands
 
-Saved sessions never store password values, but they can store a command that prints the password to stdout. This is useful for Vault, cloud CLIs, password managers, and other rotating-secret workflows.
+Saved sessions never store password values in `sessions.toml`, but they can store a command that prints the password to stdout. This is useful for Vault, cloud CLIs, password managers, and other rotating-secret workflows.
 
 ```sql
 \ss chpprd --password-command vault kv get -mount=secret -field=password preprod/gim/admin/clickhouse/default-user
@@ -151,7 +152,7 @@ password_command = "vault kv get -mount=secret -field=password preprod/gim/admin
 
 ### `\savepass` - Save Password
 
-Interactively save a password to the `.dbcrust` file:
+Interactively save a password to the secret store:
 
 ```sql
 postgres@myapp=> \savepass
@@ -161,26 +162,27 @@ Port: 5432
 Database name: myapp
 Username: postgres
 Password: [hidden input]
-Password saved for postgresql:postgres@localhost:5432/myapp (encrypted)
+Password saved for postgresql:postgres@localhost:5432/myapp (secure store)
 ```
 
 **Features:**
 - Interactive prompts for all connection details
 - Default values provided based on common database ports
-- Passwords automatically encrypted
-- Updates existing entries if found
+- The password is stored in the OS keychain / encrypted file, bound to this exact target
+- Updates the existing entry if found
 
 ### `\listpass` - List Stored Passwords
 
-Display all stored credentials without showing the actual passwords:
+Display all stored credentials without showing the actual passwords. Entries still in the legacy `.dbcrust` file are marked `(legacy)`:
 
 ```sql
 postgres@myapp=> \listpass
 Saved passwords:
   postgresql:postgres@localhost:5432/myapp
   mysql:admin@db.example.com:3306/webapp
-  mongodb:analyst@cluster.mongodb.net:27017/analytics
-  elasticsearch:elastic@es.cluster.com:9200/logs
+  mongodb:analyst@cluster.mongodb.net:27017/analytics (legacy)
+
+(legacy) entries are still in ~/.dbcrust — run `dbcrust secrets migrate` to move them into the secure store.
 ```
 
 ### `\deletepass` - Delete Password
@@ -198,107 +200,55 @@ Selection: 2
 Password deleted: mysql:admin@db.example.com:3306/webapp
 ```
 
-### `\encryptpass` - Encrypt Passwords
+### `\encryptpass` - Deprecated
 
-Convert all plaintext passwords in the `.dbcrust` file to encrypted format:
+DBCrust no longer encrypts `.dbcrust`: its machine-derived key could be recomputed by any process of your user, so it protected nothing. The command now just points to the replacement:
 
 ```sql
 postgres@myapp=> \encryptpass
-Encrypted 3 password(s) in .dbcrust file.
+DBCrust no longer encrypts ~/.dbcrust ... Run `dbcrust secrets migrate` to move existing entries
 ```
 
-**When to use:**
-- After manually editing the `.dbcrust` file with plaintext passwords
-- Migrating from an old system
-- Converting existing plaintext entries to encrypted format
+## 🔒 Security Model
 
-## 🔒 Encryption Details
+Saved passwords are protected by the [secret store](secret-storage.md), not by a key derived from your machine:
 
-### Machine-Specific Keys
+- **macOS / Windows**: the OS keychain (service `dbcrust.store`).
+- **Linux**: `secrets.enc`, AES-256-GCM under an Argon2id key derived from a passphrase only you know; the unlocked key is cached in the kernel session keyring until you log out (`dbcrust secrets unlock` / `lock`).
+- **Bound to the target**: the record stores engine, host, port, database, user and TLS mode, and is refused for any other target.
+- **Never plaintext, never machine-derived**: legacy `enc:` values are only ever decrypted to be migrated.
+- **Memory**: secret values are zeroized after use.
 
-Passwords are encrypted using AES-256-GCM with machine-specific keys derived from:
-
-
-**Linux**
-
-- Machine ID from `/etc/machine-id` or `/var/lib/dbus/machine-id`
-- User home directory path
-- Hostname, username, user ID
-- Fixed salt for additional security
-
-
-**macOS**
-
-- Hardware UUID via `ioreg` or `system_profiler`
-- User home directory path
-- Hostname, username
-- Fixed salt for additional security
-
-
-**Windows**
-
-- Machine GUID via PowerShell or WMI
-- User home directory path
-- Hostname, USERNAME environment variable
-- Fixed salt for additional security
-
-### Security Features
-
-- **Machine-Specific**: Encrypted passwords only work on the machine where they were created
-- **User-Specific**: Incorporates user identity into the encryption key
-- **Salt Protection**: Fixed salt prevents rainbow table attacks
-- **Memory Safety**: Passwords cleared from memory after use
-- **Auto-Detection**: System automatically detects encrypted vs plaintext passwords
-
-### Password Format
-
-```bash
-# Plaintext password
-postgresql:localhost:5432:myapp:user:mypassword
-
-# Encrypted password (prefixed with 'enc:')
-postgresql:localhost:5432:myapp:user:enc:a1b2c3d4e5f6789abcdef...
-```
+See [Secret Storage](secret-storage.md) for the threat model, `dbcrust secrets audit` and the migration walk-through.
 
 ## 🌐 Cross-Platform Usage
 
-### Linux Example
+### Linux
 
 ```bash
-# Create .dbcrust file
-echo "postgresql:localhost:5432:myapp:postgres:mypass" > ~/.dbcrust
-chmod 600 ~/.dbcrust
-
-# Connect automatically
+# First connect: prompts for the DB password, then (once) for a passphrase
+# that protects ~/.config/dbcrust/secrets.enc
 dbcrust postgres://postgres@localhost:5432/myapp
+
+# Later runs: unlock once per login session, then connect without prompts
+dbcrust secrets unlock
+dbcrust -c 'select 1' postgres://postgres@localhost:5432/myapp
 ```
 
-### macOS Example
+### macOS and Windows
 
 ```bash
-# Same as Linux
-echo "postgresql:localhost:5432:myapp:postgres:mypass" > ~/.dbcrust
-chmod 600 ~/.dbcrust
-
-# Connect automatically
+# First connect saves the password in the OS keychain / Credential Manager
 dbcrust postgres://postgres@localhost:5432/myapp
-```
-
-### Windows Example
-
-```powershell
-# Create .dbcrust file in user profile
-Set-Content -Path "$env:USERPROFILE\.dbcrust" -Value "postgresql:localhost:5432:myapp:postgres:mypass"
-
-# Connect automatically
+# Later runs connect without prompting
 dbcrust postgres://postgres@localhost:5432/myapp
 ```
 
 ## 🔧 Advanced Configuration
 
-### Custom Password File Location
+### Custom Legacy Password File Location
 
-Set the `DBCRUST_PASSFILE` environment variable to use a custom location:
+Set the `DBCRUST_PASSFILE` environment variable to point the (read-only) legacy lookup and `dbcrust secrets migrate` at another file:
 
 
 **Linux/macOS**
@@ -316,9 +266,9 @@ $env:DBCRUST_PASSFILE = "C:\path\to\my\custom\passwords"
 dbcrust postgres://postgres@localhost:5432/myapp
 ```
 
-### Escaping Special Characters
+### Escaping Special Characters (legacy file)
 
-If your credentials contain colons (`:`) or backslashes (`\`), escape them:
+If credentials in a legacy `.dbcrust` file contain colons (`:`) or backslashes (`\`), escape them:
 
 ```bash
 # Host with colon in name
@@ -335,16 +285,9 @@ postgresql:localhost:5432:db\\name:user:password
 
 For team environments, consider these patterns:
 
-1. **Individual Password Files**: Each team member maintains their own `.dbcrust`
-2. **Shared Credentials**: Use environment variables for shared database credentials
-3. **Role-Based Access**: Different `.dbcrust` entries for different database roles
-
-```bash
-# Example team setup
-postgresql:prod.example.com:5432:myapp:readonly:readonly_pass
-postgresql:prod.example.com:5432:myapp:admin:admin_pass
-postgresql:staging.example.com:5432:myapp:developer:dev_pass
-```
+1. **Individual stores**: every team member keeps their own secret store; nothing secret is shared through git.
+2. **Shared credentials**: use environment variables, Vault (`vault://`) or a `password_command` for shared database credentials.
+3. **Role-based access**: save one password per database role (the store keeps one record per user/host/port/database).
 
 ## 🐛 Troubleshooting
 
@@ -352,27 +295,36 @@ postgresql:staging.example.com:5432:myapp:developer:dev_pass
 
 #### Password Not Found
 ```bash
-# Check file exists and has correct permissions
-ls -la ~/.dbcrust
+# Where do saved secrets live, and is the store locked?
+dbcrust secrets status
 
-# Verify file format
-cat ~/.dbcrust
-
-# Check for typos in connection parameters
+# The stored password is bound to the exact host, port, database and user
+# it was saved for: a different host (or user) prompts again.
 ```
 
-#### Permission Denied (Unix/macOS)
+#### Secret storage is locked
 ```bash
-# Fix file permissions
-chmod 600 ~/.dbcrust
+# Linux file backend: enter the passphrase once for this login session
+dbcrust secrets unlock
+# One-shot (-c/-f), --no-input and the desktop app never prompt: they report "locked"
 ```
 
-#### Encryption/Decryption Errors
+#### Forgot the passphrase
 ```bash
-# Usually indicates the password was encrypted on a different machine
-# Re-save the password on the current machine:
+# secrets.enc cannot be recovered. Remove it and save your passwords again:
+rm ~/.config/dbcrust/secrets.enc ~/.config/dbcrust/secrets_index.toml
+```
+
+#### Legacy `enc:` value cannot be decrypted
+```bash
+# It was encrypted on another machine (or with another hostname/user).
+# `dbcrust secrets migrate` keeps such lines untouched; re-enter the password:
 dbcrust postgres://postgres@localhost:5432/myapp
-# Enter password when prompted - it will be re-encrypted for this machine
+```
+
+#### Permission Denied on the legacy file (Unix/macOS)
+```bash
+chmod 600 ~/.dbcrust
 ```
 
 #### Connection Still Fails
@@ -398,13 +350,14 @@ console_output = true
 
 Then check the logs for password lookup activity:
 ```
-DEBUG [dbcrust] Looking up password in .dbcrust file
-DEBUG [dbcrust] Found password in .dbcrust file
+DEBUG [dbcrust] Looking up a saved password
+DEBUG [dbcrust] Found a saved password
 DEBUG [dbcrust] Connection successful with looked-up password
 ```
 
 ## 🔗 Related Features
 
+- **[Secret Storage](secret-storage.md)**: Where passwords live, `dbcrust secrets status|audit|migrate|unlock|lock`
 - **[Vault Integration](../advanced/vault-integration.md)**: For dynamic database credentials
 - **[Session Management](../user-guide/advanced-features.md#session-management)**: Save complete connection configurations
 - **[Security](../advanced/security.md)**: Overall security best practices

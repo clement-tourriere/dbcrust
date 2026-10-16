@@ -47,7 +47,7 @@ ClickHouse, MongoDB, Elasticsearch, and Parquet/CSV/JSON files.
 Agents should never paste passwords into argv. Pick one:
 
 ```bash
-dbcrust postgres://user@host/db        # prompts once, saves encrypted to ~/.dbcrust
+dbcrust postgres://user@host/db        # prompts once, saves to the secure store (keychain / encrypted file)
 # then inside the REPL:  \ss dev      → saved session
 ```
 

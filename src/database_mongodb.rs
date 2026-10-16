@@ -226,10 +226,9 @@ pub struct MongoDBClient {
 }
 
 impl MongoDBClient {
-    pub async fn new(connection_info: ConnectionInfo) -> Result<Self, DatabaseError> {
-        debug!("[MongoDBClient::new] Creating MongoDB client");
-
-        // Build MongoDB connection string
+    /// The driver connection string, password included. Only ever hand this
+    /// to the driver; log [`crate::password_sanitizer::redact_url`] of it.
+    fn build_connection_string(connection_info: &ConnectionInfo) -> String {
         let mut connection_string = "mongodb://".to_string();
 
         // Add authentication if provided
@@ -289,9 +288,18 @@ impl MongoDBClient {
             connection_string.push_str(&params.join("&"));
         }
 
+        connection_string
+    }
+
+    pub async fn new(connection_info: ConnectionInfo) -> Result<Self, DatabaseError> {
+        debug!("[MongoDBClient::new] Creating MongoDB client");
+
+        // Build MongoDB connection string (holds the password: never log it)
+        let connection_string = Self::build_connection_string(&connection_info);
+
         debug!(
             "[MongoDBClient::new] Connection string: {}",
-            connection_string
+            crate::password_sanitizer::redact_url(&connection_string)
         );
 
         // Parse connection string into ClientOptions
@@ -299,7 +307,8 @@ impl MongoDBClient {
             .await
             .map_err(|e| {
                 DatabaseError::ConnectionError(format!(
-                    "Failed to parse MongoDB connection string: {e}"
+                    "Failed to parse MongoDB connection string: {}",
+                    crate::password_sanitizer::redact_error(&e)
                 ))
             })?;
 
@@ -1785,6 +1794,43 @@ fn parse_regex_condition(condition: &str) -> Option<Document> {
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    fn canary_info(options: &[(&str, &str)]) -> ConnectionInfo {
+        ConnectionInfo {
+            database_type: crate::database::DatabaseType::MongoDB,
+            host: Some("mongo.internal".to_string()),
+            port: Some(27017),
+            username: Some("app".to_string()),
+            password: Some("Cnry-7f3a9".to_string()),
+            database: Some("shop".to_string()),
+            file_path: None,
+            options: options
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            docker_container: None,
+            use_tls: false,
+        }
+    }
+
+    #[rstest]
+    #[case(&[])]
+    #[case(&[("authSource", "admin"), ("tlsCertificateKeyFilePassword", "Cnry-7f3a9")])]
+    #[case(&[("password", "Cnry-7f3a9")])]
+    fn connection_string_log_form_is_redacted(#[case] options: &[(&str, &str)]) {
+        let info = canary_info(options);
+        let connection_string = MongoDBClient::build_connection_string(&info);
+        // The driver still gets the real password…
+        assert!(
+            connection_string.starts_with("mongodb://app:Cnry-7f3a9@mongo.internal:27017/shop")
+        );
+        // …but what is logged does not
+        let logged = crate::password_sanitizer::redact_url(&connection_string);
+        assert!(!logged.contains("Cnry-7f3a9"), "{logged}");
+        assert!(logged.starts_with("mongodb://app:[REDACTED]@mongo.internal:27017/shop"));
+        let debug = format!("{info:?}");
+        assert!(!debug.contains("Cnry-7f3a9"), "{debug}");
+    }
 
     #[test]
     fn metadata_inference_unions_optional_nested_fields() {

@@ -89,8 +89,17 @@ percent-encoding = { version = "2.3", default-features = false }
 # Use ring as the crypto backend for rustls (more portable than aws-lc-rs for cross-compilation)
 reqwest = { version = "0.12.28", features = ["json", "rustls-tls", "stream"], default-features = false }
 # Multi-provider LLM client — owns provider/model handling so dbcrust doesn't
-# hardcode providers or model lists. Default feature is rustls-tls (no OpenSSL).
-genai = "=0.7.0-beta.2"
+# hardcode providers or model lists. Its default `rustls-tls` feature makes
+# reqwest 0.13 pull in rustls' aws-lc-rs provider (a large C/asm build), so it
+# is disabled and TLS is enabled below without a bundled provider.
+genai = { version = "=0.7.0-beta.2", default-features = false }
+# genai's own reqwest (0.13, a different semver line from the 0.12 above): the
+# alias exists only to turn on `rustls-no-provider` — same rustls + platform
+# verifier as genai's `rustls-tls`, minus the aws-lc-rs provider. Never used
+# directly; `tls::install_default_crypto_provider` supplies ring at runtime.
+reqwest_genai = { package = "reqwest", version = "0.13", features = ["rustls-no-provider"], default-features = false }
+# ring is the single rustls crypto provider (see src/tls.rs)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 inquire = { version = "0.9.4", default-features = false, features = ["crossterm"] }
 arboard = { version = "3.4", default-features = false }
 bollard = { version = "0.20", default-features = false, features = ["http", "pipe"] }
@@ -101,6 +110,12 @@ sha2 = { version = "0.10.9", default-features = false, features = ["std"] }
 base64 = { version = "0.23", default-features = false, features = ["std"] }
 uuid = { version = "1", default-features = false, features = ["v4"] }
 keyring = { version = "3", default-features = false, features = ["apple-native", "linux-native", "windows-native"] }
+# Wire protocol shared with the credential-free `dbcrust-agent` client; the
+# broker (src/broker, Unix only) is the server side
+dbcrust-agent-protocol = { path = "crates/agent-protocol", features = ["tokio"] }
+# Secret store (src/secrets): Argon2id passphrase KDF, zeroized secret values
+argon2 = { version = "0.5.3", default-features = false, features = ["alloc", "zeroize"] }
+zeroize = { version = "1.8", default-features = false, features = ["alloc", "serde"] }
 # Use rustls-tls-ring to avoid aws-lc-rs cross-compilation issues on ARM64 Linux.
 # 0.15.2's Native reader uses `const ...: usize = 1 << 32`, breaking i686.
 # Keep this exact pin until an upstream fix passes our 32-bit Python check.
@@ -132,6 +147,15 @@ half = { version = "2.7", default-features = false }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 crossterm = { version = "0.29", default-features = false }
 textwrap = { version = "0.16", default-features = false, features = ["unicode-width"] }
+
+[target.'cfg(unix)'.dependencies]
+# geteuid / flock for the secret file backend's permission and locking checks;
+# also umask/rlimit/prctl/ptrace/chown for the credential broker's hardening
+libc = { version = "0.2", default-features = false }
+
+[package.metadata.cargo-machete]
+# Feature-only alias for genai's reqwest 0.13 (see the dependency comment)
+ignored = ["reqwest_genai"]
 
 [features]
 default = []
@@ -198,6 +222,8 @@ should_implement_trait = "allow"
 
 [workspace]
 # The desktop GUI (GPUI) is opt-in: `cargo build`/`cargo test` at the root
-# only build the CLI. Use `mise run gui:*` or `-p dbcrust-gui[-core]`.
-members = ["gui", "gui/core"]
-default-members = ["."]
+# only build the CLI and the agent client. Use `mise run gui:*` or
+# `-p dbcrust-gui[-core]` for the GUI.
+members = ["crates/agent-protocol", "crates/agent", "gui", "gui/core"]
+# `dbcrust-agent` is the credential-free thin client shipped next to the CLI
+default-members = [".", "crates/agent"]

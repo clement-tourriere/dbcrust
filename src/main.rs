@@ -107,6 +107,8 @@ pub async fn async_main() -> Result<(), Box<dyn StdError>> {
 
 /// Main async workflow with pre-parsed arguments (for Python integration)
 pub async fn async_main_with_args(args: Args) -> Result<(), Box<dyn StdError>> {
+    dbcrust::tls::install_default_crypto_provider();
+
     // Initialize tracing system
     if let Err(e) = init_tracing() {
         eprintln!("Failed to initialize logging: {e}");
@@ -118,11 +120,40 @@ pub async fn async_main_with_args(args: Args) -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn StdError>> {
+/// Entry point. The tokio runtime is built by hand (instead of
+/// `#[tokio::main]`) so `broker serve` can scrub the environment — variables
+/// that would redirect a database connection or its trust roots — before any
+/// runtime thread exists: removing variables while other threads may read the
+/// environment is unsound.
+fn main() -> Result<(), Box<dyn StdError>> {
+    #[cfg(unix)]
+    if dbcrust::broker::hardening::argv_is_broker_serve(std::env::args_os()) {
+        dbcrust::broker::hardening::scrub_environment();
+    }
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run_cli())
+}
+
+async fn run_cli() -> Result<(), Box<dyn StdError>> {
+    dbcrust::tls::install_default_crypto_provider();
+
     // Parse before logging is up: a completion reply (`__complete_word__`)
     // must be the only thing on stdout, and console logging writes there
     let args = Args::parse_from_argv(std::env::args_os()).unwrap_or_else(|e| e.exit());
+
+    // `dbcrust broker …` runs before the user's config and logging are
+    // touched: in service mode the process belongs to a dedicated service
+    // user whose home must not be populated, and the broker logs to stderr
+    // on its own
+    if let Some(dbcrust::cli::CliCommand::Broker { action }) = &args.subcommand {
+        use std::io::IsTerminal;
+        let interactive = !args.no_input && std::io::stdin().is_terminal();
+        let code = dbcrust::broker::run(action.as_ref(), args.format, interactive).await;
+        std::process::exit(code);
+    }
 
     // Initialize tracing system before anything else
     if let Err(e) = init_tracing() {

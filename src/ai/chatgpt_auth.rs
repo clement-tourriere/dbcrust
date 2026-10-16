@@ -59,7 +59,7 @@ impl OAuthConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ChatGptTokens {
     pub access_token: String,
     pub refresh_token: String,
@@ -71,6 +71,18 @@ pub struct ChatGptTokens {
     /// was available — treated as "always refresh".
     #[serde(default)]
     pub expires_at: Option<i64>,
+}
+
+impl std::fmt::Debug for ChatGptTokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChatGptTokens")
+            .field("access_token", &"***")
+            .field("refresh_token", &"***")
+            .field("id_token", &self.id_token.as_ref().map(|_| "***"))
+            .field("account_id", &self.account_id)
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
 }
 
 #[derive(Deserialize)]

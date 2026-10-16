@@ -28,6 +28,7 @@ pub(super) fn page_for(spec: &FieldSpec) -> SettingsPage {
             | ConfigSection::Features
             | ConfigSection::Timeouts
             | ConfigSection::History
+            | ConfigSection::Secrets
             | ConfigSection::SshTunnelPatterns => SettingsPage::Terminal,
         },
     }

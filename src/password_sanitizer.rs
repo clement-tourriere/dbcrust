@@ -1,76 +1,321 @@
 use regex::Regex;
-use url::Url;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::LazyLock;
 
-/// Sanitize a connection URL by removing the password
-pub fn sanitize_connection_url(url: &str) -> String {
-    // Check if this is our special Docker format with comment
-    if let Some(comment_pos) = url.find(" # Docker: ") {
-        let main_url = &url[..comment_pos];
-        let comment_part = &url[comment_pos..];
+/// Replacement for a secret in redacted URLs and text.
+pub const REDACTED: &str = "[REDACTED]";
+/// Replacement for a secret value shown through `Debug`.
+const MASK: &str = "***";
 
-        // Sanitize the main URL part and re-add the comment
-        let sanitized_main = sanitize_connection_url(main_url);
-        return format!("{sanitized_main}{comment_part}");
-    }
+/// Substrings that mark an option/query key as holding a secret. Compared
+/// against the lowercased key with `_`, `-` and `.` removed.
+const SECRET_KEY_WORDS: [&str; 10] = [
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "token",
+    "apikey",
+    "accesskey",
+    "credential",
+    "authorization",
+    // Mongo: carries e.g. AWS_SESSION_TOKEN:...
+    "authmechanismproperties",
+];
+/// Keys that are secret only as a whole word (`authSource` is not).
+const SECRET_KEY_EXACT: [&str; 2] = ["pass", "auth"];
 
-    // A connection string without a scheme: user:password@host:port/db.
-    // URLs with any scheme (mysql://, docker://, …) are handled by the URL
-    // parser below — splitting them here mangled `mysql://u:p@h` into
-    // `mysql:[REDACTED]@h`.
-    if !url.contains("://") && url.contains('@') && url.contains(':') {
-        // This looks like a simple connection string format: user:password@host:port/db
-        let parts: Vec<&str> = url.split('@').collect();
-        if parts.len() >= 2 {
-            let user_pass = parts[0];
-            let rest = parts[1..].join("@");
-            if user_pass.contains(':') {
-                let user_parts: Vec<&str> = user_pass.splitn(2, ':').collect();
-                if user_parts.len() == 2 {
-                    return format!("{}:[REDACTED]@{}", user_parts[0], rest);
-                }
-            }
-        }
-    }
+/// True for option / query-string keys that hold a secret (`password`,
+/// `sslpassword`, `api_key`, `token`, `password_command`…), case-insensitive.
+pub fn is_secret_key(key: &str) -> bool {
+    let normalized: String = key
+        .chars()
+        .filter(|c| !matches!(c, '_' | '-' | '.'))
+        .flat_map(char::to_lowercase)
+        .collect();
+    SECRET_KEY_EXACT.contains(&normalized.as_str())
+        || SECRET_KEY_WORDS
+            .iter()
+            .any(|word| normalized.contains(word))
+}
 
-    // Try to parse as a proper URL
-    if let Ok(parsed) = Url::parse(url) {
-        let mut sanitized = parsed.clone();
-        if parsed.password().is_some() {
-            let _ = sanitized.set_password(Some("[REDACTED]"));
-        }
-        // URL-decode the final result to make [REDACTED] readable in logs
-        let result = sanitized.to_string();
-        result.replace("%5BREDACTED%5D", "[REDACTED]")
-    } else {
-        redact_unparsable_url(url)
+/// Secret keys that must never reach storage. `password_command` is a
+/// documented reference to a secret, persisted on purpose.
+pub fn is_secret_option_key(key: &str) -> bool {
+    is_secret_key(key) && !crate::config::is_password_command_option_key(key)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Replace secrets with [`REDACTED`] (logs, errors, display).
+    Mask,
+    /// Remove secrets entirely; password commands are kept (storage).
+    Strip,
+}
+
+fn percent_decoded(text: &str) -> String {
+    percent_encoding::percent_decode_str(text)
+        .decode_utf8_lossy()
+        .into_owned()
+}
+
+fn is_scheme(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+}
+
+fn secret_pair(key: &str, mode: Mode) -> bool {
+    let key = percent_decoded(key);
+    match mode {
+        Mode::Mask => is_secret_key(&key),
+        Mode::Strip => is_secret_option_key(&key),
     }
 }
 
-/// Best-effort redaction for URLs the parser rejects (bad port, stray
-/// characters…): anything between `scheme://user:` and the last `@` of the
-/// authority is treated as the password. Never returns the input verbatim
-/// when it looks like it carries credentials.
-fn redact_unparsable_url(url: &str) -> String {
-    let Some(scheme_end) = url.find("://") else {
-        return url.to_string();
-    };
-    let authority_start = scheme_end + 3;
-    let after_scheme = &url[authority_start..];
-    // The last `@` wins: passwords may contain `@`. An `@` later in the
-    // path or query over-redacts, which is acceptable for unparsable input.
-    let Some(at) = after_scheme.rfind('@') else {
-        return url.to_string();
-    };
-    let userinfo = &after_scheme[..at];
-    match userinfo.find(':') {
-        Some(colon) => format!(
-            "{}{}:[REDACTED]{}",
-            &url[..authority_start],
-            &userinfo[..colon],
-            &after_scheme[at..]
-        ),
-        None => url.to_string(),
+/// Scrub a `k=v&k=v` (or `;`-separated) query string / fragment.
+fn scrub_pairs(pairs: &str, mode: Mode) -> String {
+    if !pairs.contains('=') {
+        return pairs.to_string();
     }
+    let mut out = String::with_capacity(pairs.len());
+    let mut kept_any = false;
+    let mut separator = "";
+    let mut rest = pairs;
+    loop {
+        let end = rest.find(['&', ';']).unwrap_or(rest.len());
+        let pair = &rest[..end];
+        let next_separator = rest.get(end..end + 1).unwrap_or("");
+        match pair.split_once('=') {
+            Some((key, value)) if secret_pair(key, mode) => match mode {
+                Mode::Mask if !value.is_empty() => {
+                    out.push_str(separator);
+                    out.push_str(&format!("{key}={REDACTED}"));
+                    kept_any = true;
+                }
+                Mode::Mask => {
+                    out.push_str(separator);
+                    out.push_str(pair);
+                    kept_any = true;
+                }
+                Mode::Strip => {}
+            },
+            _ => {
+                out.push_str(separator);
+                out.push_str(pair);
+                kept_any = true;
+            }
+        }
+        if next_separator.is_empty() {
+            break;
+        }
+        // Stripping re-joins what is left with `&`
+        separator = match mode {
+            Mode::Mask => next_separator,
+            Mode::Strip if kept_any => "&",
+            Mode::Strip => "",
+        };
+        rest = &rest[end + 1..];
+    }
+    out
+}
+
+fn scrub_url(url: &str, mode: Mode) -> String {
+    // Our special Docker format: `<url> # Docker: <container>`
+    if let Some(comment_pos) = url.find(" # Docker: ") {
+        let (main_url, comment) = url.split_at(comment_pos);
+        return format!("{}{comment}", scrub_url(main_url, mode));
+    }
+
+    let (prefix, rest, has_scheme) = match url.find("://") {
+        Some(at) if is_scheme(&url[..at]) => (&url[..at + 3], &url[at + 3..], true),
+        _ => ("", url, false),
+    };
+
+    let (mut head, mut tail) = match rest.find(['?', '#']) {
+        Some(at) => rest.split_at(at),
+        None => (rest, ""),
+    };
+    // File URLs (`sqlite:///a:b@c.db`) have a path, not an authority
+    let file_like = rest.starts_with('/')
+        || [
+            "sqlite", "file", "csv", "parquet", "json", "jsonl", "ndjson",
+        ]
+        .iter()
+        .any(|scheme| prefix.trim_end_matches("://").eq_ignore_ascii_case(scheme));
+    let mut at = head.rfind('@').filter(|_| !file_like);
+    if at.is_none() && has_scheme && !file_like {
+        // `scheme://user:p?ss@host`: a `?`/`#` inside the password moved the
+        // cut too early. A non-numeric "port" in the authority gives it away.
+        let authority = head.split('/').next().unwrap_or("");
+        let looks_broken = authority.rsplit_once(':').is_some_and(|(_, port)| {
+            !port.chars().all(|c| c.is_ascii_digit()) && !port.contains(']')
+        });
+        if looks_broken && let Some(last_at) = rest.rfind('@') {
+            head = rest;
+            tail = "";
+            at = Some(last_at);
+        }
+    }
+
+    let mut out = String::with_capacity(url.len());
+    out.push_str(prefix);
+    match at {
+        Some(at) if has_scheme || !head[..at].chars().any(char::is_whitespace) => {
+            let (userinfo, host) = head.split_at(at);
+            match userinfo.split_once(':') {
+                Some((user, password)) if !password.is_empty() => {
+                    out.push_str(user);
+                    if mode == Mode::Mask {
+                        out.push(':');
+                        out.push_str(REDACTED);
+                    }
+                }
+                _ => out.push_str(userinfo),
+            }
+            out.push_str(host);
+        }
+        _ => out.push_str(head),
+    }
+
+    if let Some(query) = tail.strip_prefix('?') {
+        let (query, fragment) = match query.split_once('#') {
+            Some((query, fragment)) => (query, Some(fragment)),
+            None => (query, None),
+        };
+        let query = scrub_pairs(query, mode);
+        if !query.is_empty() {
+            out.push('?');
+            out.push_str(&query);
+        }
+        if let Some(fragment) = fragment {
+            out.push('#');
+            out.push_str(&scrub_pairs(fragment, mode));
+        }
+    } else if let Some(fragment) = tail.strip_prefix('#') {
+        out.push('#');
+        out.push_str(&scrub_pairs(fragment, mode));
+    }
+
+    if has_scheme {
+        out
+    } else {
+        // libpq/ADO style `host=h password=secret` strings
+        scrub_key_values(&out)
+    }
+}
+
+static KEY_VALUE_SECRET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)(^|[?&;,\s#'"(])((?:[\w.\-]*(?:password|passwd|pwd|secret|token|api[_\-.]?key|access[_\-.]?key|credential|authorization|authmechanismproperties)[\w.\-]*)|pass|auth)(\s*=\s*)('[^']*'|"[^"]*"|[^\s&;#]+)"#,
+    )
+    .expect("valid secret key=value regex")
+});
+static JSON_SECRET: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)("[\w.\-]*(?:password|passwd|secret|token|api[_\-.]?key|credential)[\w.\-]*"\s*:\s*)"(?:[^"\\]|\\.)*""#,
+    )
+    .expect("valid secret json regex")
+});
+static URL_IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)[a-z][a-z0-9+.\-]*://[^\s"'<>`]+"#).expect("valid url regex")
+});
+static USERINFO_IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\b([A-Za-z_][\w.\-]*):([^\s@/:'\x22]+)@([\w.\-]+|\[[0-9A-Fa-f:.]+\])")
+        .expect("valid userinfo regex")
+});
+/// Well-known credential shapes: OpenAI-style keys, GitHub tokens, Vault
+/// tokens and JWTs.
+static TOKEN_SHAPES_IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"\b(?:sk-[A-Za-z0-9_\-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|hv[sbr]\.[A-Za-z0-9_\-]{16,}|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})",
+    )
+    .expect("valid token shape regex")
+});
+static BEARER_IN_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=\-]{8,}").expect("valid bearer regex")
+});
+
+fn scrub_key_values(text: &str) -> String {
+    KEY_VALUE_SECRET
+        .replace_all(text, format!("${{1}}${{2}}${{3}}{REDACTED}").as_str())
+        .into_owned()
+}
+
+/// Redact a connection URL / DSN for logs, errors and display: the userinfo
+/// password and the values of secret-looking query keys (`password`, `token`,
+/// `api_key`, `password_command`…) become `[REDACTED]`; everything else —
+/// including non-secret options — is kept. Works on any scheme, IPv6 hosts,
+/// percent-encoded userinfo and malformed input (string based, never
+/// re-serialised), and is idempotent.
+pub fn redact_url(url: &str) -> String {
+    scrub_url(url, Mode::Mask)
+}
+
+/// Remove every credential from a URL before it is stored: userinfo
+/// passwords and secret-looking query pairs are dropped (`u:p@h` → `u@h`).
+/// `password_command` options are kept — they reference a secret, they are
+/// not one.
+pub fn strip_url_secrets(url: &str) -> String {
+    scrub_url(url, Mode::Strip)
+}
+
+/// Redact URL-shaped substrings, `key=value` secrets, JSON secret fields,
+/// `user:pass@host` pairs and bearer tokens inside arbitrary text (driver and
+/// HTTP error messages).
+pub fn redact_text(text: &str) -> String {
+    let text = URL_IN_TEXT.replace_all(text, |caps: &regex::Captures| redact_url(&caps[0]));
+    let text = scrub_key_values(&text);
+    let text = JSON_SECRET.replace_all(&text, format!("${{1}}\"{REDACTED}\"").as_str());
+    let text = USERINFO_IN_TEXT.replace_all(&text, format!("${{1}}:{REDACTED}@${{3}}").as_str());
+    let text = BEARER_IN_TEXT.replace_all(&text, format!("${{1}} {REDACTED}").as_str());
+    TOKEN_SHAPES_IN_TEXT
+        .replace_all(&text, REDACTED)
+        .into_owned()
+}
+
+/// `redact_text` for any displayable error.
+pub fn redact_error(error: &dyn std::fmt::Display) -> String {
+    redact_text(&error.to_string())
+}
+
+/// A password for `Debug` output: `Some("***")` or `None`.
+pub fn mask_secret(secret: &Option<String>) -> Option<&'static str> {
+    secret.as_ref().map(|_| MASK)
+}
+
+/// Options for `Debug` output: secret values masked, URL-shaped values
+/// scrubbed, sorted for stable output.
+pub fn redact_options<'a>(
+    options: impl IntoIterator<Item = (&'a String, &'a String)>,
+) -> BTreeMap<&'a str, String> {
+    options
+        .into_iter()
+        .map(|(key, value)| {
+            let value = if is_secret_key(key) {
+                MASK.to_string()
+            } else {
+                redact_text(value)
+            };
+            (key.as_str(), value)
+        })
+        .collect()
+}
+
+/// Drop secret options and scrub URL-shaped values before storage.
+pub fn scrub_options_for_storage(options: &mut HashMap<String, String>) {
+    options.retain(|key, _| !is_secret_option_key(key));
+    for value in options.values_mut() {
+        if value.contains("://") {
+            *value = strip_url_secrets(value);
+        }
+    }
+}
+
+/// Sanitize a connection URL by removing the password (and other secrets,
+/// see [`redact_url`]).
+pub fn sanitize_connection_url(url: &str) -> String {
+    redact_url(url)
 }
 
 /// Sanitize an SSH tunnel string by removing the password
@@ -262,5 +507,180 @@ mod tests {
         let text = "Normal log message without sensitive data";
         let sanitized = sanitize_text_for_logging(text);
         assert_eq!(sanitized, text);
+    }
+
+    const CANARY: &str = "Cnry-7f3a9";
+
+    #[rstest]
+    // userinfo, every scheme
+    #[case("postgres://u:Cnry-7f3a9@h:5432/db")]
+    #[case("postgresql://u:Cnry-7f3a9@h/db?sslmode=require")]
+    #[case("mysql://u:Cnry-7f3a9@h:3306/db")]
+    #[case("mongodb://u:Cnry-7f3a9@h1:27017,h2:27017/db?replicaSet=rs0")]
+    #[case("mongodb+srv://u:Cnry-7f3a9@cluster0.example.net/db?retryWrites=true")]
+    #[case("clickhouse://default:Cnry-7f3a9@h:8123/db")]
+    #[case("docker://u:Cnry-7f3a9@container/db")]
+    #[case("docker://u:Cnry-7f3a9@container/db?ssl=true")]
+    #[case("vault://role:Cnry-7f3a9@database/mydb")]
+    #[case("white-dragon://u:Cnry-7f3a9@h:7700")]
+    // percent-encoded and unusual passwords
+    #[case("postgres://u:Cnry%2D7f3a9@h/db")]
+    #[case("postgres://u:Cnry-7f3a9%40x@h/db")]
+    #[case("postgres://u:Cnry-7f3a9@x@h/db")]
+    #[case("postgres://u:Cnry-7f3a9/x@h/db")]
+    #[case("postgres://u:Cnry-7f3a9?x@h/db")]
+    // IPv6
+    #[case("postgres://u:Cnry-7f3a9@[::1]:5432/db")]
+    #[case("postgres://u:Cnry-7f3a9@[2001:db8::1]/db")]
+    // query-param secrets, any case / key
+    #[case("postgres://u@h/db?password=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?PASSWORD=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?sslmode=require&pass=Cnry-7f3a9&application_name=app")]
+    #[case("postgres://u@h/db?pwd=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?passwd=Cnry-7f3a9")]
+    #[case("clickhouse://u@h/db?token=Cnry-7f3a9")]
+    #[case("clickhouse://u@h/db?Secret=Cnry-7f3a9")]
+    #[case("elasticsearch://h:9200?api_key=Cnry-7f3a9")]
+    #[case("elasticsearch://h:9200?apikey=Cnry-7f3a9")]
+    #[case("elasticsearch://h:9200?API-KEY=Cnry-7f3a9")]
+    #[case("s3://h/b?access_key=Cnry-7f3a9&secret_key=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?sslpassword=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?auth=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?Authorization=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?credentials=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?password_command=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?password_cmd=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?pass%77ord=x&password=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?password=Cnry-7f3a9#frag")]
+    #[case("postgres://u@h/db#password=Cnry-7f3a9")]
+    #[case("postgres://u@h/db?a=1;password=Cnry-7f3a9")]
+    #[case("mongodb://u@h/db?authMechanismProperties=AWS_SESSION_TOKEN:Cnry-7f3a9")]
+    // both userinfo and query
+    #[case("postgres://u:Cnry-7f3a9@h/db?password=Cnry-7f3a9&token=Cnry-7f3a9")]
+    // schemeless / DSN / malformed
+    #[case("u:Cnry-7f3a9@h:5432/db")]
+    #[case("host=h user=u password=Cnry-7f3a9 dbname=db")]
+    #[case("host=h password='Cnry-7f3a9' dbname=db")]
+    #[case("Server=h;User Id=u;Password=Cnry-7f3a9;Database=db")]
+    #[case("postgres://u:Cnry-7f3a9@h:bad/db")]
+    #[case("postgres://u:Cnry-7f3a9@")]
+    #[case("postgres://u:Cnry-7f3a9@h:5432/db # Docker: pg")]
+    fn test_redact_url_never_leaks_the_canary(#[case] url: &str) {
+        for redacted in [redact_url(url), sanitize_connection_url(url)] {
+            assert!(!redacted.contains(CANARY), "{url} -> {redacted}");
+            assert!(
+                !redacted.contains(&CANARY.replace('-', "%2D")),
+                "{url} -> {redacted}"
+            );
+            assert_eq!(redact_url(&redacted), redacted, "not idempotent: {url}");
+        }
+        // The text variant must agree
+        let text = redact_text(&format!("error connecting to {url}: refused"));
+        assert!(!text.contains(CANARY), "{url} -> {text}");
+    }
+
+    #[rstest]
+    #[case(
+        "postgres://u:Cnry-7f3a9@h:5432/db?sslmode=require&application_name=my%20app",
+        "postgres://u:[REDACTED]@h:5432/db?sslmode=require&application_name=my%20app"
+    )]
+    #[case(
+        "postgres://u@h/db?sslmode=require&password=Cnry-7f3a9&connect_timeout=5",
+        "postgres://u@h/db?sslmode=require&password=[REDACTED]&connect_timeout=5"
+    )]
+    #[case(
+        "mongodb+srv://u:Cnry-7f3a9@c.example.net/db?authSource=admin&retryWrites=true",
+        "mongodb+srv://u:[REDACTED]@c.example.net/db?authSource=admin&retryWrites=true"
+    )]
+    #[case(
+        "postgres://u:Cnry-7f3a9@[::1]:5432/db",
+        "postgres://u:[REDACTED]@[::1]:5432/db"
+    )]
+    #[case("docker://u:Cnry-7f3a9@pg/db", "docker://u:[REDACTED]@pg/db")]
+    #[case("vault://role@database/mydb", "vault://role@database/mydb")]
+    #[case("postgres://u@h/db#section", "postgres://u@h/db#section")]
+    #[case("postgres://u@h/db?email=a@b.c", "postgres://u@h/db?email=a@b.c")]
+    #[case("postgres://u@h:5432/db", "postgres://u@h:5432/db")]
+    #[case("sqlite:///tmp/a.db", "sqlite:///tmp/a.db")]
+    #[case("/tmp/a.db", "/tmp/a.db")]
+    #[case("host=h dbname=db", "host=h dbname=db")]
+    #[case("postgres://u@h/db?password=", "postgres://u@h/db?password=")]
+    #[case("postgres://u:@h/db", "postgres://u:@h/db")]
+    #[case(
+        "host=h user=u password=Cnry-7f3a9 dbname=db",
+        "host=h user=u password=[REDACTED] dbname=db"
+    )]
+    #[case(
+        "postgres://u:Cnry-7f3a9@h:5432/db # Docker: pg",
+        "postgres://u:[REDACTED]@h:5432/db # Docker: pg"
+    )]
+    fn test_redact_url_keeps_everything_else(#[case] url: &str, #[case] expected: &str) {
+        assert_eq!(redact_url(url), expected);
+    }
+
+    #[rstest]
+    #[case(
+        "postgres://u:Cnry-7f3a9@h/db?sslmode=require&password=Cnry-7f3a9",
+        "postgres://u@h/db?sslmode=require"
+    )]
+    #[case("postgres://u@h/db?token=Cnry-7f3a9", "postgres://u@h/db")]
+    #[case(
+        "clickhouse://u@h/db?secure=true&password_command=echo%20hi",
+        "clickhouse://u@h/db?secure=true&password_command=echo%20hi"
+    )]
+    #[case("postgres://u@h/db", "postgres://u@h/db")]
+    fn test_strip_url_secrets(#[case] url: &str, #[case] expected: &str) {
+        assert_eq!(strip_url_secrets(url), expected);
+    }
+
+    #[rstest]
+    #[case("password", true)]
+    #[case("SSLPassword", true)]
+    #[case("pass", true)]
+    #[case("api-key", true)]
+    #[case("Secret_Key", true)]
+    #[case("authorization", true)]
+    #[case("password_command", true)]
+    #[case("sslmode", false)]
+    #[case("application_name", false)]
+    #[case("authSource", false)]
+    #[case("passenger", false)]
+    fn test_is_secret_key(#[case] key: &str, #[case] expected: bool) {
+        assert_eq!(is_secret_key(key), expected);
+    }
+
+    #[test]
+    fn test_redact_text_scrubs_urls_inside_error_messages() {
+        // Built at runtime so secret scanners don't flag the test source
+        let bearer = "tok".repeat(6);
+        let message = format!(
+            "error connecting to \"postgres://u:{CANARY}@db.internal:5432/app?sslmode=require\" \
+             (caused by: password={CANARY}; also user:{CANARY}@host.example; \
+             Authorization: Bearer {bearer}; {{\"password\": \"{CANARY}\"}})"
+        );
+        let redacted = redact_text(&message);
+        assert!(!redacted.contains(CANARY), "{redacted}");
+        assert!(!redacted.contains(&bearer), "{redacted}");
+        assert!(redacted.contains("db.internal:5432/app?sslmode=require"));
+        assert_eq!(
+            redact_text("plain failure: timeout"),
+            "plain failure: timeout"
+        );
+        assert_eq!(redact_text(&redacted), redacted);
+    }
+
+    #[test]
+    fn test_redact_options_masks_secret_values() {
+        let options: HashMap<String, String> = [
+            ("sslmode", "require"),
+            ("password", CANARY),
+            ("endpoint", &format!("https://u:{CANARY}@h/x")),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let shown = format!("{:?}", redact_options(&options));
+        assert!(!shown.contains(CANARY), "{shown}");
+        assert!(shown.contains("require"));
     }
 }

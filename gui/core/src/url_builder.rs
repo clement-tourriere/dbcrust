@@ -55,7 +55,7 @@ pub fn uses_database_name(engine: &DatabaseType) -> bool {
 }
 
 /// A connection described field by field.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ConnectionSpec {
     pub engine: DatabaseType,
     /// A non-canonical scheme to keep when rebuilding (`mongodb+srv`,
@@ -70,6 +70,41 @@ pub struct ConnectionSpec {
     pub path: String,
     /// Query options in the order they appear in the URL.
     pub options: Vec<(String, String)>,
+}
+
+/// Option pairs for `Debug`: secret-looking values masked.
+fn masked_options(options: &[(String, String)]) -> Vec<(&str, String)> {
+    options
+        .iter()
+        .map(|(key, value)| {
+            let value = if dbcrust::password_sanitizer::is_secret_key(key) {
+                "***".to_string()
+            } else {
+                dbcrust::password_sanitizer::redact_text(value)
+            };
+            (key.as_str(), value)
+        })
+        .collect()
+}
+
+// `Debug` never shows the password or secret-looking option values.
+impl std::fmt::Debug for ConnectionSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionSpec")
+            .field("engine", &self.engine)
+            .field("scheme", &self.scheme)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field(
+                "password",
+                &if self.password.is_empty() { "" } else { "***" },
+            )
+            .field("database", &self.database)
+            .field("path", &self.path)
+            .field("options", &masked_options(&self.options))
+            .finish()
+    }
 }
 
 impl ConnectionSpec {
@@ -148,7 +183,7 @@ impl ConnectionSpec {
 /// (`docker://[user[:password]@]container[/database][?options]`).
 /// DBCrust does not percent-decode the userinfo, container and database, so
 /// those parts are used verbatim; option values are percent-encoded.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct DockerSpec {
     pub user: String,
     pub password: String,
@@ -158,6 +193,22 @@ pub struct DockerSpec {
     /// is not here: it is [`DockerSpec::use_tls`].
     pub options: Vec<(String, String)>,
     pub use_tls: bool,
+}
+
+impl std::fmt::Debug for DockerSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DockerSpec")
+            .field("user", &self.user)
+            .field(
+                "password",
+                &if self.password.is_empty() { "" } else { "***" },
+            )
+            .field("container", &self.container)
+            .field("database", &self.database)
+            .field("options", &masked_options(&self.options))
+            .field("use_tls", &self.use_tls)
+            .finish()
+    }
 }
 
 impl DockerSpec {
@@ -1840,6 +1891,37 @@ mod tests {
         }
         assert_eq!(percent_encode("~-._abcXYZ019"), "~-._abcXYZ019");
         assert_eq!(percent_decode("a%2fb%2Fc%zz%4"), "a/b/c%zz%4");
+    }
+
+    #[test]
+    fn debug_output_never_contains_the_password() {
+        const CANARY: &str = "Cnry-7f3a9";
+        let mut spec = network(DatabaseType::PostgreSQL, "app", CANARY, "shop");
+        spec.set_option("sslmode", Some("require"));
+        spec.set_option("sslpassword", Some(CANARY));
+        let docker = DockerSpec {
+            user: "app".into(),
+            password: CANARY.into(),
+            container: "pg".into(),
+            options: vec![("token".into(), CANARY.into())],
+            ..Default::default()
+        };
+        let shown = format!(
+            "{spec:?} {spec:#?} {docker:?} {:?}",
+            Target::Docker(docker.clone())
+        );
+        assert!(!shown.contains(CANARY), "{shown}");
+        assert!(shown.contains("sslmode"), "{shown}");
+        assert!(shown.contains("***"), "{shown}");
+
+        let request = crate::types::ConnectRequest::url(format!("postgres://app:{CANARY}@h/db"));
+        let shown = format!("{request:?}");
+        assert!(!shown.contains(CANARY), "{shown}");
+        assert!(shown.contains("[REDACTED]"), "{shown}");
+        let error = crate::error::GuiError::Connection(format!(
+            "connection to postgres://app:{CANARY}@h/db?password={CANARY} refused"
+        ));
+        assert!(!error.to_string().contains(CANARY), "{error}");
     }
 }
 

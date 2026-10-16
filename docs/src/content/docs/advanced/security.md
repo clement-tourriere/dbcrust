@@ -89,58 +89,16 @@ ssl_ca_path = "~/.config/dbcrust/ssl/ca.crt"
 
 ## 🔑 Credential Management
 
-### Universal Password Management
+### Secret storage
 
-DBCrust provides a comprehensive password management system that works across all supported database types through the `.dbcrust` file system:
+Saved passwords, AI keys and OAuth tokens live in one secret store (see [Secret Storage](../user-guide/secret-storage.md)):
 
-**Key Security Features:**
-- **Machine-Specific Encryption**: Passwords are encrypted with AES-256-GCM using machine-specific keys
-- **Cross-Platform Security**: Uses OS-specific identifiers (Linux: machine-id, macOS: Hardware UUID, Windows: Machine GUID)
-- **Automatic Password Detection**: System automatically detects encrypted vs plaintext passwords
-- **Secure File Permissions**: Unix systems automatically set file permissions to `0600` (owner read/write only)
-
-**File Format:**
-```bash
-# ~/.dbcrust - Universal password file for all database types
-database_type:host:port:database:username:password
-
-# Examples with encryption
-postgresql:localhost:5432:myapp:postgres:enc:a1b2c3d4e5f6789...
-mysql:db.example.com:3306:webapp:admin:enc:b2c3d4e5f6789...
-mongodb:cluster.mongodb.net:27017:analytics:analyst:enc:c3d4e5f6789...
-```
-
-**Machine-Specific Key Generation:**
-The encryption key is derived from multiple machine-specific identifiers:
-
-
-**Linux**
-
-- `/etc/machine-id` or `/var/lib/dbus/machine-id`
-- User home directory path
-- Hostname and username
-- User ID (UID)
-
-
-**macOS**
-
-- IOKit Hardware UUID via `ioreg`
-- User home directory path
-- Hostname and username
-
-
-**Windows**
-
-- Machine GUID via PowerShell/WMI
-- User home directory path
-- Hostname and USERNAME
-
-**Security Benefits:**
-- Encrypted passwords only work on the machine where they were created
-- Cannot be copied to other machines or users
-- Incorporates user identity into encryption key
-- Uses fixed salt to prevent rainbow table attacks
-- Memory-safe password handling
+- **Backends**: OS keychain on macOS/Windows; an AES-256-GCM file keyed by an Argon2id passphrase on Linux. No machine-derived keys.
+- **No silent downgrade**: a locked or unavailable store is an error with a hint (`dbcrust secrets unlock` / `status`).
+- **Target-bound**: each record carries the exact engine, host, port, database, user and TLS mode; it is refused for any other target.
+- **Never prompts without a human**: one-shot runs, `--no-input`, piped stdin and the desktop app report `locked` instead.
+- **Audit and migration**: `dbcrust secrets audit` finds credentials left in legacy files; `dbcrust secrets migrate` moves them into the store with verification and without touching `.pgpass` / `.my.cnf`.
+- **Legacy `.dbcrust`**: still read as a fallback, never written; its `enc:` machine-key values only ever decrypt for migration.
 
 ### Legacy Credential Storage
 
@@ -152,11 +110,11 @@ DBCrust also supports traditional credential storage methods:
 # password = "secret123"  # This is not supported
 
 # ✅ Use these secure methods instead:
-# 1. Universal .dbcrust file (recommended)
+# 1. The secret store (saved automatically after the first prompt)
 # 2. Environment variables
 # 3. Database-specific files (.pgpass/.my.cnf)
-# 3. HashiCorp Vault
-# 4. SSH key authentication
+# 4. HashiCorp Vault
+# 5. SSH key authentication
 ```
 
 ### Environment Variable Security

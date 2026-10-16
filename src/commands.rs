@@ -132,7 +132,7 @@ pub enum Command {
     },
     VaultCacheExpired,
 
-    // Password management commands (.dbcrust file)
+    // Password management commands (secure store; legacy .dbcrust read-only)
     SavePassword {
         db_type: Option<String>,
         host: Option<String>,
@@ -522,10 +522,10 @@ impl CommandShortcut {
             CommandShortcut::Vcr => "Force refresh vault credentials",
             CommandShortcut::Vce => "Show expired vault credentials",
             // Password management commands
-            CommandShortcut::Savepass => "Save password to .dbcrust file",
+            CommandShortcut::Savepass => "Save password to the secure store",
             CommandShortcut::Listpass => "List stored passwords (without showing passwords)",
             CommandShortcut::Deletepass => "Delete stored password",
-            CommandShortcut::Encryptpass => "Encrypt all plaintext passwords in .dbcrust",
+            CommandShortcut::Encryptpass => "Deprecated: explains `dbcrust secrets migrate`",
             // Complex display commands (minimal set)
             CommandShortcut::Cd => "Set complex data display mode",
             CommandShortcut::Cdj => "Toggle JSON pretty printing",
@@ -2458,9 +2458,10 @@ impl CommandExecutor for Command {
                 }
             }
 
-            // Password management commands
+            // Password management commands (secret store; the legacy
+            // ~/.dbcrust file is only read, listed and deleted from)
             Command::SavePassword { .. } => {
-                use crate::dbcrust_pass::{DatabaseType, save_password};
+                use crate::database::DatabaseType;
                 use inquire::{Password, Select, Text};
 
                 // Interactive prompts for all parameters
@@ -2470,13 +2471,18 @@ impl CommandExecutor for Command {
                     "mongodb",
                     "elasticsearch",
                     "clickhouse",
-                    "sqlite",
                 ];
                 let db_type_str = Select::new("Database type:", database_types)
                     .prompt()
                     .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
 
-                let db_type = DatabaseType::from_str(db_type_str).unwrap();
+                let (db_type, default_port) = match db_type_str {
+                    "mysql" => (DatabaseType::MySQL, "3306"),
+                    "mongodb" => (DatabaseType::MongoDB, "27017"),
+                    "elasticsearch" => (DatabaseType::Elasticsearch, "9200"),
+                    "clickhouse" => (DatabaseType::ClickHouse, "8123"),
+                    _ => (DatabaseType::PostgreSQL, "5432"),
+                };
 
                 let host = Text::new("Host:")
                     .with_default("localhost")
@@ -2484,14 +2490,7 @@ impl CommandExecutor for Command {
                     .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
 
                 let port_str = Text::new("Port:")
-                    .with_default(match db_type {
-                        DatabaseType::PostgreSQL => "5432",
-                        DatabaseType::MySQL => "3306",
-                        DatabaseType::MongoDB => "27017",
-                        DatabaseType::Elasticsearch => "9200",
-                        DatabaseType::ClickHouse => "8123",
-                        DatabaseType::SQLite => "0", // Not used for SQLite
-                    })
+                    .with_default(default_port)
                     .prompt()
                     .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
 
@@ -2514,25 +2513,11 @@ impl CommandExecutor for Command {
                         CommandError::InvalidSyntax(format!("Password input error: {e}"))
                     })?;
 
-                // Always encrypt passwords by default (no confirmation prompt)
-                let encrypt = true;
-
-                match save_password(
-                    db_type.clone(),
-                    &host,
-                    port,
-                    &database,
-                    &username,
-                    &password,
-                    encrypt,
+                match crate::config::save_connection_password(
+                    &db_type, &host, port, &database, &username, None, &password,
                 ) {
                     Ok(()) => Ok(CommandResult::Output(format!(
-                        "Password saved for {}:{}@{}:{}/{} (encrypted)",
-                        db_type.as_str(),
-                        username,
-                        host,
-                        port,
-                        database
+                        "Password saved for {db_type_str}:{username}@{host}:{port}/{database} (secure store)"
                     ))),
                     Err(e) => Ok(CommandResult::Error(format!(
                         "Failed to save password: {e}"
@@ -2541,127 +2526,70 @@ impl CommandExecutor for Command {
             }
 
             Command::ListPasswords => {
-                use crate::dbcrust_pass::list_entries;
-
-                match list_entries() {
-                    Ok(entries) => {
-                        if entries.is_empty() {
-                            Ok(CommandResult::Output(
-                                "No saved passwords found.".to_string(),
-                            ))
-                        } else {
-                            let mut output = "Saved passwords:\n".to_string();
-                            for (db_type, host, port, database, username) in entries {
-                                output.push_str(&format!(
-                                    "  {}:{}@{}:{}/{}\n",
-                                    db_type.as_str(),
-                                    username,
-                                    host,
-                                    port,
-                                    database
-                                ));
-                            }
-                            Ok(CommandResult::Output(output))
-                        }
+                let entries = saved_password_entries();
+                if entries.is_empty() {
+                    Ok(CommandResult::Output(
+                        "No saved passwords found.".to_string(),
+                    ))
+                } else {
+                    let mut output = "Saved passwords:\n".to_string();
+                    let mut has_legacy = false;
+                    for entry in &entries {
+                        output.push_str(&format!("  {}\n", entry.label()));
+                        has_legacy |= entry.legacy;
                     }
-                    Err(e) => Ok(CommandResult::Error(format!(
-                        "Failed to list passwords: {e}"
-                    ))),
+                    if has_legacy {
+                        output.push_str(
+                            "\n(legacy) entries are still in ~/.dbcrust — run `dbcrust secrets migrate` to move them into the secure store.\n",
+                        );
+                    }
+                    Ok(CommandResult::Output(output))
                 }
             }
 
             Command::DeletePassword { .. } => {
-                use crate::dbcrust_pass::{delete_password, list_entries};
                 use inquire::Select;
 
-                // First list available passwords
-                let entries = match list_entries() {
-                    Ok(entries) => entries,
-                    Err(e) => {
-                        return Ok(CommandResult::Error(format!(
-                            "Failed to list passwords: {e}"
-                        )));
-                    }
-                };
-
+                let entries = saved_password_entries();
                 if entries.is_empty() {
                     return Ok(CommandResult::Output(
                         "No saved passwords to delete.".to_string(),
                     ));
                 }
 
-                // Create selection list
-                let options: Vec<String> = entries
-                    .iter()
-                    .map(|(db_type, host, port, database, username)| {
-                        format!(
-                            "{}:{}@{}:{}/{}",
-                            db_type.as_str(),
-                            username,
-                            host,
-                            port,
-                            database
-                        )
-                    })
-                    .collect();
-
-                let selection = Select::new("Select password to delete:", options)
+                let labels: Vec<String> = entries.iter().map(SavedPasswordEntry::label).collect();
+                let selection = Select::new("Select password to delete:", labels.clone())
                     .prompt()
                     .map_err(|e| CommandError::InvalidSyntax(format!("Input error: {e}")))?;
 
-                // Find the selected entry
-                let selected_entry =
-                    entries
-                        .iter()
-                        .find(|(db_type, host, port, database, username)| {
-                            format!(
-                                "{}:{}@{}:{}/{}",
-                                db_type.as_str(),
-                                username,
-                                host,
-                                port,
-                                database
-                            ) == selection
-                        });
-
-                if let Some((db_type, host, port_str, database, username)) = selected_entry {
-                    let port: u16 = port_str.parse().map_err(|_| {
-                        CommandError::InvalidSyntax("Invalid port number".to_string())
-                    })?;
-
-                    match delete_password(db_type.clone(), host, port, database, username) {
-                        Ok(true) => Ok(CommandResult::Output(format!(
-                            "Password deleted: {selection}"
-                        ))),
-                        Ok(false) => Ok(CommandResult::Output(
-                            "No matching password found to delete.".to_string(),
-                        )),
-                        Err(e) => Ok(CommandResult::Error(format!(
-                            "Failed to delete password: {e}"
-                        ))),
-                    }
-                } else {
-                    Ok(CommandResult::Error(
+                let Some(entry) = labels
+                    .iter()
+                    .position(|label| *label == selection)
+                    .map(|index| &entries[index])
+                else {
+                    return Ok(CommandResult::Error(
                         "Selected entry not found.".to_string(),
-                    ))
-                }
-            }
-
-            Command::EncryptPasswords => {
-                use crate::dbcrust_pass::encrypt_all_passwords;
-
-                match encrypt_all_passwords() {
-                    Ok(0) => Ok(CommandResult::Output(
-                        "No plaintext passwords found to encrypt.".to_string(),
+                    ));
+                };
+                match entry.delete() {
+                    Ok(true) => Ok(CommandResult::Output(format!(
+                        "Password deleted: {selection}"
+                    ))),
+                    Ok(false) => Ok(CommandResult::Output(
+                        "No matching password found to delete.".to_string(),
                     )),
-                    Ok(count) => Ok(CommandResult::Output(format!(
-                        "Encrypted {count} password(s) in .dbcrust file."
-                    ))),
                     Err(e) => Ok(CommandResult::Error(format!(
-                        "Failed to encrypt passwords: {e}"
+                        "Failed to delete password: {e}"
                     ))),
                 }
             }
+
+            Command::EncryptPasswords => Ok(CommandResult::Output(
+                "DBCrust no longer encrypts ~/.dbcrust: its machine-derived key protected nothing from other processes of your user.\n\
+                 Saved passwords now live in the secure store (OS keychain, or a passphrase-encrypted file on Linux).\n\
+                 Run `dbcrust secrets migrate` to move existing entries; `dbcrust secrets status` shows where secrets are kept."
+                    .to_string(),
+            )),
 
             Command::ShowPoolStats => {
                 let db = database.lock().unwrap();
@@ -3228,10 +3156,10 @@ impl CommandExecutor for Command {
             Command::VaultCacheRefresh { .. } => "Refresh vault credential cache",
             Command::VaultCacheExpired => "Show expired vault credentials",
             // Password management commands
-            Command::SavePassword { .. } => "Save password to .dbcrust file (interactive)",
+            Command::SavePassword { .. } => "Save password to the secure store (interactive)",
             Command::ListPasswords => "List stored passwords (without showing passwords)",
             Command::DeletePassword { .. } => "Delete stored password (interactive)",
-            Command::EncryptPasswords => "Encrypt all plaintext passwords in .dbcrust",
+            Command::EncryptPasswords => "Deprecated: explains `dbcrust secrets migrate`",
             // MongoDB-specific commands
             Command::ListCollections => "List collections in current database",
             Command::DescribeCollection { .. } => "Describe collection structure",
@@ -3461,6 +3389,115 @@ fn generate_help_text() -> String {
     }
 
     help
+}
+
+/// One saved password as listed by `\listpass` / `\deletepass`: a secure
+/// store record, or a legacy `~/.dbcrust` entry.
+struct SavedPasswordEntry {
+    /// Store record id (non-legacy) or the `.dbcrust` coordinates.
+    kind: SavedPasswordKind,
+    description: String,
+    legacy: bool,
+}
+
+enum SavedPasswordKind {
+    Store {
+        id: String,
+    },
+    Legacy {
+        db_type: crate::dbcrust_pass::DatabaseType,
+        host: String,
+        port: u16,
+        database: String,
+        username: String,
+    },
+}
+
+impl SavedPasswordEntry {
+    fn label(&self) -> String {
+        if self.legacy {
+            format!("{} (legacy)", self.description)
+        } else {
+            self.description.clone()
+        }
+    }
+
+    fn delete(&self) -> Result<bool, String> {
+        match &self.kind {
+            SavedPasswordKind::Store { id } => crate::secrets::default_store()
+                .delete(id)
+                .map_err(|e| e.to_string()),
+            SavedPasswordKind::Legacy {
+                db_type,
+                host,
+                port,
+                database,
+                username,
+            } => crate::dbcrust_pass::delete_password(
+                db_type.clone(),
+                host,
+                *port,
+                database,
+                username,
+            )
+            .map_err(|e| e.to_string()),
+        }
+    }
+}
+
+fn saved_password_entries() -> Vec<SavedPasswordEntry> {
+    use crate::secrets::RecordKind;
+    let mut entries = Vec::new();
+    for record in crate::secrets::default_store().indexed().records {
+        if record.kind != RecordKind::Connection {
+            continue;
+        }
+        entries.push(SavedPasswordEntry {
+            description: format!(
+                "{}:{}@{}:{}/{}",
+                record.engine.as_deref().unwrap_or("?"),
+                record.user.as_deref().unwrap_or(""),
+                record.host.as_deref().unwrap_or(""),
+                record
+                    .port
+                    .map_or_else(|| "-".to_string(), |p| p.to_string()),
+                record.database.as_deref().unwrap_or("")
+            ),
+            kind: SavedPasswordKind::Store { id: record.id },
+            legacy: false,
+        });
+    }
+    if let Ok(legacy) = crate::dbcrust_pass::list_entries() {
+        for (db_type, host, port_str, database, username) in legacy {
+            // A `*` port is a wildcard entry: deletion matches it with any port
+            let port = if port_str == "*" {
+                0
+            } else if let Ok(port) = port_str.parse::<u16>() {
+                port
+            } else {
+                continue;
+            };
+            entries.push(SavedPasswordEntry {
+                description: format!(
+                    "{}:{}@{}:{}/{}",
+                    db_type.as_str(),
+                    username,
+                    host,
+                    port_str,
+                    database
+                ),
+                kind: SavedPasswordKind::Legacy {
+                    db_type,
+                    host,
+                    port,
+                    database,
+                    username,
+                },
+                legacy: true,
+            });
+        }
+    }
+    entries
 }
 
 #[cfg(test)]

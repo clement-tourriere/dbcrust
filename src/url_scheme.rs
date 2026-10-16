@@ -11,9 +11,9 @@ use crate::docker::DockerClient;
 /// Error types for URL scheme operations
 #[derive(Debug, thiserror::Error)]
 pub enum UrlSchemeError {
-    #[error("Unsupported URL scheme: {0}")]
+    #[error("Unsupported URL scheme: {}", crate::password_sanitizer::redact_text(.0))]
     UnsupportedScheme(String),
-    #[error("Invalid URL format: {0}")]
+    #[error("Invalid URL format: {}", crate::password_sanitizer::redact_text(.0))]
     InvalidUrl(String),
     #[error("URL parsing error: {0}")]
     ParseError(#[from] url::ParseError),
@@ -145,7 +145,10 @@ impl UrlScheme {
 
         // Extract scheme from URL
         let scheme_end = full_url.find("://").ok_or_else(|| {
-            UrlSchemeError::InvalidUrl(format!("No scheme found in URL: {full_url}"))
+            UrlSchemeError::InvalidUrl(format!(
+                "No scheme found in URL: {}",
+                crate::password_sanitizer::redact_url(&full_url)
+            ))
         })?;
         let scheme_str = &full_url[..scheme_end];
 

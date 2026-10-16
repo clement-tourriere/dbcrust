@@ -5,6 +5,41 @@ Elasticsearch, and data files (Parquet/CSV/JSON) — with a one-shot mode built
 for programmatic callers: structured output, stable exit codes, and a
 read-only guard. No server to run, no wrapper needed: shell out to the CLI.
 
+## Protected connections (preferred for production)
+
+If `dbcrust-agent list` (or an MCP server named `dbcrust`) shows aliases, use
+those — not a URL. A credential broker holds the password, forces read-only
+access, caps rows/time and audits every request. You never need, and must
+never ask for, a password, URL, host or key.
+
+    dbcrust-agent list                                  # aliases, engine, access, limits
+    dbcrust-agent tables prod
+    dbcrust-agent describe prod public.users
+    dbcrust-agent query prod -c "SELECT …" -o json      # one statement per call
+    dbcrust-agent explain prod -c "SELECT …"
+
+MCP tools of the same server: `list_connections`, `list_tables`,
+`describe_table`, `query`, `explain` — pass the alias, never credentials.
+Results use the envelope below (`-o json`, NULL is `null`); errors are
+`{"error":{"code","message"}}` on stderr.
+
+| Exit | Code | What to do |
+|---|---|---|
+| 0 | | success |
+| 1 | `query_error` | fix the SQL and retry |
+| 3 | `connection_error`, `broker_locked` | the broker is down or locked; tell the user, don't retry in a loop |
+| 4 | `read_only_violation`, `ddl_refused`, `multi_statement_refused` | final: the alias is read-only / DDL is never allowed / send one statement. Don't rewrite to sneak it past; ask the user |
+| 5 | `denied`, `unknown_alias`, `limit_exceeded` | policy says no or the alias doesn't exist; check `list`, then ask the user |
+| 124 | `timeout` | narrow the query (filters, fewer columns, an index-friendly predicate) |
+
+Results are truncated at the alias's row/byte ceiling (`truncated: true`);
+ask for aggregates or add filters instead of paging blindly. "Cannot find the
+broker socket" or "permission denied" means the user must start the broker or
+join the `dbcrust-agents` group — report it, don't work around it.
+
+Everything below is for **direct connections** (URLs, `session://`), where the
+agent runs as the user and the password path is the user's own.
+
 ## Connect
 
     dbcrust <url> [flags] -c "<sql>"
@@ -14,7 +49,7 @@ read-only guard. No server to run, no wrapper needed: shell out to the CLI.
 | `postgres://user:pass@host:5432/db` | PostgreSQL (`mysql://`, `clickhouse://`, `mongodb://`, `elasticsearch://` likewise) |
 | `sqlite:///path/to.db` or `./file.db` | SQLite |
 | `./data.csv` `./data.parquet` `./data.json` | SQL over files via DataFusion (globs: `'parquet:///data/*.parquet'`) |
-| `session://name` | saved session — credentials come from the keystore; best option for agents |
+| `session://name` | saved session — the password comes from the secret store (OS keychain, or a passphrase-encrypted file on Linux; locked = fails fast, never prompts); best option for agents |
 | `docker://container/db` | database running in a Docker container |
 | `vault://role@mount/db` | HashiCorp Vault dynamic credentials |
 | `recent://`, bare `file://` | interactive pickers — do NOT use non-interactively |

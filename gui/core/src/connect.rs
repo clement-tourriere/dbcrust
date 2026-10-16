@@ -99,7 +99,11 @@ fn connection_error(error: Box<dyn std::error::Error>, prefix: &str) -> ConnectE
             error: GuiError::Connection(failure.message.clone()),
             docker: Some(Box::new(failure)),
         },
-        None => GuiError::Connection(format!("{prefix}{error}")).into(),
+        None => GuiError::Connection(format!(
+            "{prefix}{}",
+            dbcrust::password_sanitizer::redact_error(&error)
+        ))
+        .into(),
     }
 }
 
@@ -565,8 +569,12 @@ async fn resolve_vault(
 ) -> GuiResult<VaultLogin> {
     use dbcrust::vault_client as vault;
 
-    let (role, mount, database) = vault::parse_vault_url(url)
-        .ok_or_else(|| GuiError::Vault(format!("Invalid Vault URL: {url}")))?;
+    let (role, mount, database) = vault::parse_vault_url(url).ok_or_else(|| {
+        GuiError::Vault(format!(
+            "Invalid Vault URL: {}",
+            dbcrust::password_sanitizer::redact_url(url)
+        ))
+    })?;
     let database = database.ok_or_else(|| {
         GuiError::Vault("Vault connections need a database: vault://role@mount/database".into())
     })?;

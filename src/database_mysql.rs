@@ -625,11 +625,41 @@ impl MySqlClient {
         );
 
         // Configure connection pool with MySQL-specific optimizations
-        let pool = MySqlPoolOptions::new()
+        let mut pool_options = MySqlPoolOptions::new()
             .max_connections(10) // Same as PostgreSQL for consistency
             .min_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(10))
-            .idle_timeout(std::time::Duration::from_secs(600)) // Keep connections alive longer
+            .idle_timeout(std::time::Duration::from_secs(600)); // Keep connections alive longer
+
+        // Per-connection hardening (credential broker / --read-only): runs
+        // on EVERY pooled connection, unlike a one-off post-connect SET
+        let read_only = crate::database::connection_read_only(&connection_info.options);
+        let timeout_secs = crate::database::connection_timeout_secs(&connection_info.options);
+        if read_only || timeout_secs.is_some() {
+            pool_options = pool_options.after_connect(move |conn, _meta| {
+                Box::pin(async move {
+                    use sqlx::Executor;
+                    if read_only {
+                        conn.execute("SET SESSION TRANSACTION READ ONLY").await?;
+                    }
+                    if let Some(secs) = timeout_secs {
+                        // MySQL: milliseconds, SELECT only; MariaDB: seconds
+                        // under another name. Each is best effort.
+                        let _ = conn
+                            .execute(&*format!(
+                                "SET SESSION max_execution_time = {}",
+                                secs * 1000
+                            ))
+                            .await;
+                        let _ = conn
+                            .execute(&*format!("SET SESSION max_statement_time = {secs}"))
+                            .await;
+                    }
+                    Ok(())
+                })
+            });
+        }
+        let pool = pool_options
             .connect(&database_url)
             .await
             .map_err(|e| DatabaseError::ConnectionError(e.to_string()))?;

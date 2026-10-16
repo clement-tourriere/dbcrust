@@ -30,7 +30,10 @@ pub fn is_password_command_option_key(key: &str) -> bool {
 
 /// Return true for DBCrust-only options that must not be forwarded to database drivers.
 pub fn is_dbcrust_internal_connection_option(key: &str) -> bool {
-    is_vault_option_key(key) || is_password_command_option_key(key)
+    is_vault_option_key(key)
+        || is_password_command_option_key(key)
+        || key.eq_ignore_ascii_case(crate::database::OPT_HARDEN_READ_ONLY)
+        || key.eq_ignore_ascii_case(crate::database::OPT_HARDEN_TIMEOUT_SECS)
 }
 
 fn append_connection_options(url: &str, options: &HashMap<String, String>) -> String {
@@ -117,8 +120,12 @@ pub fn resolve_password_command(command_str: &str) -> Result<String, String> {
 
 /// Remove password command control options from a connection URL before driver use.
 pub fn strip_password_command_options_from_url(url: &str) -> Result<String, String> {
-    let mut parsed_url =
-        Url::parse(url).map_err(|e| format!("Failed to parse connection URL '{url}': {e}"))?;
+    let mut parsed_url = Url::parse(url).map_err(|e| {
+        format!(
+            "Failed to parse connection URL '{}': {e}",
+            crate::password_sanitizer::redact_url(url)
+        )
+    })?;
 
     let mut removed_password_command = false;
     let retained_query_pairs: Vec<(String, String)> = parsed_url
@@ -148,79 +155,192 @@ pub fn strip_password_command_options_from_url(url: &str) -> Result<String, Stri
     Ok(parsed_url.to_string())
 }
 
-fn lookup_connection_password(
-    database_type: &DatabaseType,
-    host: &str,
-    port: u16,
-    dbname: &str,
-    user: &str,
-) -> Option<String> {
-    let dbcrust_password = match database_type {
-        DatabaseType::PostgreSQL => crate::dbcrust_pass::lookup_password(
-            crate::dbcrust_pass::DatabaseType::PostgreSQL,
-            host,
-            port,
-            dbname,
-            user,
-        )
-        .ok()
-        .flatten(),
-        DatabaseType::MySQL => crate::dbcrust_pass::lookup_password(
-            crate::dbcrust_pass::DatabaseType::MySQL,
-            host,
-            port,
-            dbname,
-            user,
-        )
-        .ok()
-        .flatten(),
-        DatabaseType::MongoDB => crate::dbcrust_pass::lookup_password(
-            crate::dbcrust_pass::DatabaseType::MongoDB,
-            host,
-            port,
-            dbname,
-            user,
-        )
-        .ok()
-        .flatten(),
-        DatabaseType::Elasticsearch => crate::dbcrust_pass::lookup_password(
-            crate::dbcrust_pass::DatabaseType::Elasticsearch,
-            host,
-            port,
-            dbname,
-            user,
-        )
-        .ok()
-        .flatten(),
-        DatabaseType::ClickHouse => crate::dbcrust_pass::lookup_password(
-            crate::dbcrust_pass::DatabaseType::ClickHouse,
-            host,
-            port,
-            dbname,
-            user,
-        )
-        .ok()
-        .flatten(),
+/// Option key under which a saved session's SSH password is kept in the
+/// store record (`secret_options`).
+pub(crate) const SSH_PASSWORD_SECRET_OPTION: &str = "ssh_password";
+
+/// The `.dbcrust`-file database type of a network engine; `None` for
+/// file-based and keyless engines (no password to store or look up).
+fn legacy_database_type(database_type: &DatabaseType) -> Option<crate::dbcrust_pass::DatabaseType> {
+    use crate::dbcrust_pass::DatabaseType as Legacy;
+    match database_type {
+        DatabaseType::PostgreSQL => Some(Legacy::PostgreSQL),
+        DatabaseType::MySQL => Some(Legacy::MySQL),
+        DatabaseType::MongoDB => Some(Legacy::MongoDB),
+        DatabaseType::Elasticsearch => Some(Legacy::Elasticsearch),
+        DatabaseType::ClickHouse => Some(Legacy::ClickHouse),
         DatabaseType::SQLite
         | DatabaseType::Parquet
         | DatabaseType::CSV
         | DatabaseType::JSON
         | DatabaseType::DuckDB
         | DatabaseType::WhiteDragon => None,
-    };
-
-    if dbcrust_password.is_some() {
-        return dbcrust_password;
-    }
-
-    match database_type {
-        DatabaseType::PostgreSQL => crate::pgpass::lookup_password(host, port, dbname, user),
-        DatabaseType::MySQL => crate::myconf::lookup_mysql_password(host, port, dbname, user),
-        _ => None,
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+/// The store binding of a connection target (`None` for engines without a
+/// password).
+pub(crate) fn connection_binding(
+    database_type: &DatabaseType,
+    host: &str,
+    port: u16,
+    dbname: &str,
+    user: &str,
+    tls_mode: Option<&str>,
+) -> Option<crate::secrets::TargetBinding> {
+    let engine = legacy_database_type(database_type)?.as_str();
+    Some(crate::secrets::TargetBinding::new(
+        engine,
+        host,
+        (port != 0).then_some(port),
+        dbname,
+        user,
+        tls_mode,
+    ))
+}
+
+/// TLS mode named by connection options (`sslmode`, `ssl`, `tls`, `secure`).
+pub(crate) fn tls_mode_from_options(options: &HashMap<String, String>) -> Option<String> {
+    ["sslmode", "ssl", "tls", "secure"].iter().find_map(|key| {
+        options
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(key))
+            .map(|(_, value)| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+/// What was found for a connection target.
+#[derive(Default)]
+struct ConnectionLookup {
+    password: Option<String>,
+    /// Secret connection options saved with the session (`sslpassword`…).
+    secret_options: Vec<(String, String)>,
+}
+
+static STORE_NOTICE_SHOWN: AtomicBool = AtomicBool::new(false);
+static LEGACY_HINT_SHOWN: AtomicBool = AtomicBool::new(false);
+
+/// Tell the user (once per run, on stderr) why the store could not answer.
+fn warn_store_problem(error: &crate::secrets::SecretError) {
+    if !STORE_NOTICE_SHOWN.swap(true, Ordering::Relaxed) {
+        eprintln!("Saved credentials are not available: {error}");
+    }
+}
+
+/// Suggest `dbcrust secrets migrate` once per run, interactive sessions only
+/// (stderr; never in one-shot output).
+pub(crate) fn hint_legacy_secret_used() {
+    if crate::database::one_shot_mode() || !crate::secrets::is_interactive() {
+        return;
+    }
+    if !LEGACY_HINT_SHOWN.swap(true, Ordering::Relaxed) {
+        eprintln!(
+            "Note: a password came from a legacy file (~/.dbcrust, ai_keys.enc or the old keychain entry). \
+             Run `dbcrust secrets migrate` to move it into the secure store."
+        );
+    }
+}
+
+/// Resolve credentials for a connection target.
+///
+/// Order: the secret store (by target binding) → the legacy `.dbcrust`
+/// file (read-only; `enc:` values via the legacy reader) → `.pgpass` /
+/// `.my.cnf` (unchanged, read-only). A record bound to a different target
+/// is never used (fail closed). A locked or unavailable store is reported
+/// once and does not stop the read-only fallbacks above.
+fn lookup_connection_credentials(
+    database_type: &DatabaseType,
+    host: &str,
+    port: u16,
+    dbname: &str,
+    user: &str,
+    tls_mode: Option<&str>,
+) -> ConnectionLookup {
+    let mut found = ConnectionLookup::default();
+
+    if let Some(binding) = connection_binding(database_type, host, port, dbname, user, tls_mode) {
+        match crate::secrets::default_store().get_connection_secret(&binding) {
+            Ok(Some(record)) => {
+                if !record.secret.is_empty() {
+                    found.password = Some(record.secret.to_string());
+                }
+                found.secret_options = record
+                    .secret_options
+                    .iter()
+                    .map(|(key, value)| (key.clone(), value.to_string()))
+                    .collect();
+            }
+            Ok(None) => {}
+            Err(crate::secrets::SecretError::TargetMismatch(detail)) => {
+                eprintln!(
+                    "Refusing to use a stored credential for {host}:{port}: {detail}. \
+                     Save the password again to rebind it."
+                );
+                return ConnectionLookup::default();
+            }
+            Err(e) => warn_store_problem(&e),
+        }
+    }
+
+    if found.password.is_some() {
+        return found;
+    }
+
+    if let Some(legacy_type) = legacy_database_type(database_type) {
+        if let Ok(Some(password)) =
+            crate::dbcrust_pass::lookup_password(legacy_type, host, port, dbname, user)
+        {
+            hint_legacy_secret_used();
+            found.password = Some(password);
+            return found;
+        }
+    }
+
+    found.password = match database_type {
+        DatabaseType::PostgreSQL => crate::pgpass::lookup_password(host, port, dbname, user),
+        DatabaseType::MySQL => crate::myconf::lookup_mysql_password(host, port, dbname, user),
+        _ => None,
+    };
+    found
+}
+
+/// Password only (kept for callers that need nothing else).
+pub(crate) fn lookup_connection_password(
+    database_type: &DatabaseType,
+    host: &str,
+    port: u16,
+    dbname: &str,
+    user: &str,
+    tls_mode: Option<&str>,
+) -> Option<String> {
+    lookup_connection_credentials(database_type, host, port, dbname, user, tls_mode).password
+}
+
+/// Save a password for a target into the secret store (never to
+/// `.dbcrust`). Existing secret options of the record are kept.
+pub fn save_connection_password(
+    database_type: &DatabaseType,
+    host: &str,
+    port: u16,
+    dbname: &str,
+    user: &str,
+    tls_mode: Option<&str>,
+    password: &str,
+) -> Result<(), crate::secrets::SecretError> {
+    let binding = connection_binding(database_type, host, port, dbname, user, tls_mode)
+        .ok_or_else(|| {
+            crate::secrets::SecretError::Io(format!(
+                "{} connections have no password to store",
+                database_type.display_name()
+            ))
+        })?;
+    crate::secrets::default_store()
+        .put_connection_secret(&binding, password, Default::default())
+        .map(|_| ())
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SSHTunnelConfig {
     pub enabled: bool,
     pub ssh_host: String,
@@ -228,6 +348,22 @@ pub struct SSHTunnelConfig {
     pub ssh_username: Option<String>,
     pub ssh_password: Option<String>,
     pub ssh_key_path: Option<String>,
+}
+
+impl std::fmt::Debug for SSHTunnelConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SSHTunnelConfig")
+            .field("enabled", &self.enabled)
+            .field("ssh_host", &self.ssh_host)
+            .field("ssh_port", &self.ssh_port)
+            .field("ssh_username", &self.ssh_username)
+            .field(
+                "ssh_password",
+                &crate::password_sanitizer::mask_secret(&self.ssh_password),
+            )
+            .field("ssh_key_path", &self.ssh_key_path)
+            .finish()
+    }
 }
 
 impl Default for SSHTunnelConfig {
@@ -243,7 +379,7 @@ impl Default for SSHTunnelConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RecentConnection {
     pub connection_url: String, // Full URL with all details except password
     pub display_name: String,   // Human-readable description for selection
@@ -255,7 +391,39 @@ pub struct RecentConnection {
     pub options: HashMap<String, String>,
 }
 
+impl std::fmt::Debug for RecentConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RecentConnection")
+            .field(
+                "connection_url",
+                &crate::password_sanitizer::redact_url(&self.connection_url),
+            )
+            .field("display_name", &self.display_name)
+            .field("timestamp", &self.timestamp)
+            .field("database_type", &self.database_type)
+            .field("success", &self.success)
+            .field(
+                "options",
+                &crate::password_sanitizer::redact_options(&self.options),
+            )
+            .finish()
+    }
+}
+
 impl RecentConnection {
+    /// A copy that is safe to persist: no URL password, no secret-looking
+    /// query value or option, whatever the caller passed in.
+    fn scrubbed(&self) -> Self {
+        use crate::password_sanitizer::{
+            redact_text, scrub_options_for_storage, strip_url_secrets,
+        };
+        let mut scrubbed = self.clone();
+        scrubbed.connection_url = strip_url_secrets(&self.connection_url);
+        scrubbed.display_name = redact_text(&self.display_name);
+        scrub_options_for_storage(&mut scrubbed.options);
+        scrubbed
+    }
+
     pub fn reconstruct_connection_url(&self) -> Result<String, String> {
         let original_url = &self.connection_url;
 
@@ -290,8 +458,12 @@ impl RecentConnection {
             return Ok(original_url.clone());
         }
 
-        let mut parsed_url = Url::parse(original_url)
-            .map_err(|e| format!("Failed to parse recent connection URL '{original_url}': {e}"))?;
+        let mut parsed_url = Url::parse(original_url).map_err(|e| {
+            format!(
+                "Failed to parse recent connection URL '{}': {e}",
+                crate::password_sanitizer::redact_url(original_url)
+            )
+        })?;
 
         let host = parsed_url.host_str().unwrap_or("localhost").to_string();
         let port = match parsed_url
@@ -317,16 +489,36 @@ impl RecentConnection {
         let password = if let Some(command) = password_command {
             Some(resolve_password_command(&command)?)
         } else {
-            lookup_connection_password(&self.database_type, &host, port, &database, &username)
+            lookup_connection_password(
+                &self.database_type,
+                &host,
+                port,
+                &database,
+                &username,
+                tls_mode_from_options(&self.options)
+                    .or_else(|| {
+                        parsed_url
+                            .query_pairs()
+                            .find(|(key, _)| key.eq_ignore_ascii_case("sslmode"))
+                            .map(|(_, value)| value.to_lowercase())
+                    })
+                    .as_deref(),
+            )
         };
 
         if let Some(password) = password {
-            parsed_url
-                .set_password(Some(&password))
-                .map_err(|_| format!("Failed to reconstruct credentials for '{original_url}'"))?;
+            parsed_url.set_password(Some(&password)).map_err(|_| {
+                format!(
+                    "Failed to reconstruct credentials for '{}'",
+                    crate::password_sanitizer::redact_url(original_url)
+                )
+            })?;
         } else if parsed_url.password().is_some() {
             parsed_url.set_password(None).map_err(|_| {
-                format!("Failed to sanitize reconstructed URL for '{original_url}'")
+                format!(
+                    "Failed to sanitize reconstructed URL for '{}'",
+                    crate::password_sanitizer::redact_url(original_url)
+                )
             })?;
         }
 
@@ -349,7 +541,7 @@ pub struct SavedSessionsStorage {
 }
 
 /// Cached Vault credentials - stored in encrypted file
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct CachedVaultCredentials {
     pub username: String,
     pub password: String, // Encrypted at rest in the file
@@ -361,6 +553,23 @@ pub struct CachedVaultCredentials {
     pub mount_path: String,
     pub database_name: String,
     pub role_name: String,
+}
+
+impl std::fmt::Debug for CachedVaultCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CachedVaultCredentials")
+            .field("username", &self.username)
+            .field("password", &"***")
+            .field("lease_id", &self.lease_id)
+            .field("lease_duration", &self.lease_duration)
+            .field("issue_time", &self.issue_time)
+            .field("expire_time", &self.expire_time)
+            .field("renewable", &self.renewable)
+            .field("mount_path", &self.mount_path)
+            .field("database_name", &self.database_name)
+            .field("role_name", &self.role_name)
+            .finish()
+    }
 }
 
 /// Vault credential storage - stored in a separate encrypted file
@@ -381,7 +590,7 @@ impl VaultCredentialStorage {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SavedSession {
     pub host: String,
     pub port: u16,
@@ -404,7 +613,80 @@ pub struct SavedSession {
     pub options: HashMap<String, String>,
 }
 
+impl std::fmt::Debug for SavedSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SavedSession")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("dbname", &self.dbname)
+            .field("ssh_tunnel", &self.ssh_tunnel)
+            .field("database_type", &self.database_type)
+            .field("file_path", &self.file_path)
+            .field(
+                "options",
+                &crate::password_sanitizer::redact_options(&self.options),
+            )
+            .finish()
+    }
+}
+
 impl SavedSession {
+    /// A copy that is safe to persist: no secret-looking option and no SSH
+    /// password (the tunnel authenticates with keys, never with it).
+    /// Move the secret-looking options (and an SSH password, if present)
+    /// of this session into the secret store, bound to the session's
+    /// target. A store that cannot be written is reported on stderr; the
+    /// session itself is still saved without them.
+    pub(crate) fn store_secret_options(&self) {
+        use zeroize::Zeroizing;
+        let mut secrets: std::collections::BTreeMap<String, Zeroizing<String>> = self
+            .options
+            .iter()
+            .filter(|(key, value)| {
+                crate::password_sanitizer::is_secret_option_key(key) && !value.is_empty()
+            })
+            .map(|(key, value)| (key.clone(), Zeroizing::new(value.clone())))
+            .collect();
+        if let Some(password) = self
+            .ssh_tunnel
+            .as_ref()
+            .and_then(|tunnel| tunnel.ssh_password.as_ref())
+            .filter(|password| !password.is_empty())
+        {
+            secrets.insert(
+                SSH_PASSWORD_SECRET_OPTION.to_string(),
+                Zeroizing::new(password.clone()),
+            );
+        }
+        if secrets.is_empty() || self.host.starts_with("DOCKER:") {
+            return;
+        }
+        let Some(binding) = connection_binding(
+            &self.database_type,
+            &self.host,
+            self.port,
+            &self.dbname,
+            &self.user,
+            tls_mode_from_options(&self.options).as_deref(),
+        ) else {
+            return;
+        };
+        if let Err(e) = crate::secrets::default_store().merge_connection_options(&binding, secrets)
+        {
+            eprintln!("Warning: the session was saved without its secret connection options: {e}");
+        }
+    }
+
+    pub(crate) fn scrubbed(&self) -> Self {
+        let mut scrubbed = self.clone();
+        crate::password_sanitizer::scrub_options_for_storage(&mut scrubbed.options);
+        if let Some(tunnel) = scrubbed.ssh_tunnel.as_mut() {
+            tunnel.ssh_password = None;
+        }
+        scrubbed
+    }
+
     pub fn reconnect_target(&self) -> String {
         if self.host.starts_with("DOCKER:") {
             let container_name = self.host.strip_prefix("DOCKER:").unwrap_or(&self.host);
@@ -479,17 +761,28 @@ impl SavedSession {
         }
 
         let url_scheme = self.database_type.url_scheme();
+        let credentials = lookup_connection_credentials(
+            &self.database_type,
+            &self.host,
+            self.port,
+            &self.dbname,
+            &self.user,
+            tls_mode_from_options(&self.options).as_deref(),
+        );
         let password = if let Some(command) = password_command_from_options(&self.options) {
             Some(resolve_password_command(command)?)
         } else {
-            lookup_connection_password(
-                &self.database_type,
-                &self.host,
-                self.port,
-                &self.dbname,
-                &self.user,
-            )
+            credentials.password
         };
+
+        // Secret options saved with the session (sslpassword…) come back
+        // from the store; options stored in the session itself win.
+        let mut options = self.options.clone();
+        for (key, value) in credentials.secret_options {
+            if key != SSH_PASSWORD_SECRET_OPTION {
+                options.entry(key).or_insert(value);
+            }
+        }
 
         let mut parsed_url = Url::parse(&format!("{url_scheme}://{}:{}/", self.host, self.port))
             .map_err(|e| format!("Failed to build session URL: {e}"))?;
@@ -507,10 +800,7 @@ impl SavedSession {
             parsed_url.set_path(&self.dbname);
         }
 
-        Ok(append_connection_options(
-            parsed_url.as_str(),
-            &self.options,
-        ))
+        Ok(append_connection_options(parsed_url.as_str(), &options))
     }
 }
 
@@ -893,6 +1183,10 @@ pub struct Config {
     #[serde(default)]
     pub history: HistoryConfig,
 
+    /// Where DBCrust keeps saved passwords, API keys and tokens.
+    #[serde(default)]
+    pub secrets: crate::secrets::SecretsConfig,
+
     #[serde(default = "default_show_banner")]
     pub show_banner: bool,
 
@@ -979,6 +1273,7 @@ impl Config {
             pager_threshold_lines: default_pager_threshold_lines(),
             logging: LoggingConfig::default(),
             history: HistoryConfig::default(),
+            secrets: crate::secrets::SecretsConfig::default(),
             show_banner: default_show_banner(),
             show_server_info: default_show_server_info(),
             multiline_prompt_indicator: default_multiline_prompt_indicator(),
@@ -1213,7 +1508,10 @@ impl Config {
                         Ok(content) => match toml::from_str(&content) {
                             Ok(storage) => storage,
                             Err(e) => {
-                                eprintln!("Error parsing recent connections file: {e}");
+                                eprintln!(
+                                    "Error parsing recent connections file: {}",
+                                    crate::password_sanitizer::redact_error(&e)
+                                );
                                 RecentConnectionsStorage::default()
                             }
                         },
@@ -1256,10 +1554,24 @@ impl Config {
         storage
     }
 
+    /// What `recent.toml` holds: every entry scrubbed of credentials, no
+    /// matter what a caller put in the in-memory list.
+    fn recent_connections_toml(&self) -> Result<String, Box<dyn Error>> {
+        let storage = RecentConnectionsStorage {
+            connections: self
+                .recent_connections_storage
+                .connections
+                .iter()
+                .map(RecentConnection::scrubbed)
+                .collect(),
+        };
+        Ok(toml::to_string_pretty(&storage)?)
+    }
+
     /// Save recent connections to separate file
     fn save_recent_connections(&self) -> Result<(), Box<dyn Error>> {
         let path = Self::get_recent_connections_path()?;
-        let content = toml::to_string_pretty(&self.recent_connections_storage)?;
+        let content = self.recent_connections_toml()?;
         write_file_atomically(&path, content.as_bytes())?;
         Ok(())
     }
@@ -1273,7 +1585,10 @@ impl Config {
                         Ok(content) => match toml::from_str(&content) {
                             Ok(storage) => storage,
                             Err(e) => {
-                                eprintln!("Error parsing saved sessions file: {e}");
+                                eprintln!(
+                                    "Error parsing saved sessions file: {}",
+                                    crate::password_sanitizer::redact_error(&e)
+                                );
                                 SavedSessionsStorage::default()
                             }
                         },
@@ -1308,10 +1623,23 @@ impl Config {
         }
     }
 
+    /// What `sessions.toml` holds: every session scrubbed of credentials.
+    fn saved_sessions_toml(&self) -> Result<String, Box<dyn Error>> {
+        let storage = SavedSessionsStorage {
+            sessions: self
+                .saved_sessions_storage
+                .sessions
+                .iter()
+                .map(|(name, session)| (name.clone(), session.scrubbed()))
+                .collect(),
+        };
+        Ok(toml::to_string_pretty(&storage)?)
+    }
+
     /// Save saved sessions to separate file
     fn save_saved_sessions(&self) -> Result<(), Box<dyn Error>> {
         let path = Self::get_saved_sessions_path()?;
-        let content = toml::to_string_pretty(&self.saved_sessions_storage)?;
+        let content = self.saved_sessions_toml()?;
         write_file_atomically(&path, content.as_bytes())?;
         Ok(())
     }
@@ -1359,7 +1687,10 @@ impl Config {
             Ok(data) => match toml::from_slice::<VaultCredentialStorage>(&data) {
                 Ok(storage) => storage,
                 Err(e) => {
-                    eprintln!("Error parsing vault credentials file: {e}");
+                    eprintln!(
+                        "Error parsing vault credentials file: {}",
+                        crate::password_sanitizer::redact_error(&e)
+                    );
                     VaultCredentialStorage::default()
                 }
             },
@@ -1377,7 +1708,10 @@ impl Config {
                 // Any other failure means the cache is malformed or was
                 // encrypted with different key material.
                 if let Err(remove_err) = fs::remove_file(path) {
-                    eprintln!("Error decrypting vault credentials file: {e}");
+                    eprintln!(
+                        "Error decrypting vault credentials file: {}",
+                        crate::password_sanitizer::redact_error(&e)
+                    );
                     eprintln!("Failed to remove corrupted vault credentials file: {remove_err}");
                 } else {
                     debug!("Removed unreadable Vault credential cache: {e}");
@@ -1556,7 +1890,7 @@ impl Config {
                     // Debug: If parsing fails, show detailed information about the error
                     if let Err(ref e) = config_result {
                         eprintln!("TOML parsing error details:");
-                        eprintln!("  Error: {e}");
+                        eprintln!("  Error: {}", crate::password_sanitizer::redact_error(&e));
 
                         // Check if it's specifically about autocomplete_enabled
                         if e.to_string().contains("autocomplete_enabled") {
@@ -1572,7 +1906,11 @@ impl Config {
                                 .and_then(|l| l.parse::<usize>().ok())
                             {
                                 if let Some(line) = content.lines().nth(line_num - 1) {
-                                    eprintln!("  Problem line {}: {}", line_num, line.trim());
+                                    eprintln!(
+                                        "  Problem line {}: {}",
+                                        line_num,
+                                        crate::password_sanitizer::redact_text(line.trim())
+                                    );
                                 }
                             }
                         }
@@ -1609,7 +1947,8 @@ impl Config {
                         Err(e) => {
                             if retry_count == 0 {
                                 eprintln!(
-                                    "Error parsing config file ({e}), backing up and creating fresh config"
+                                    "Error parsing config file ({}), backing up and creating fresh config",
+                                    crate::password_sanitizer::redact_error(&e)
                                 );
 
                                 // Backup corrupted file and extract SSH tunnel patterns safely
@@ -1666,11 +2005,17 @@ impl Config {
                                                 tunnel_config.to_string(),
                                             );
                                             println!(
-                                                "Preserved SSH tunnel pattern: {pattern} -> {tunnel_config}"
+                                                "Preserved SSH tunnel pattern: {pattern} -> {}",
+                                                crate::password_sanitizer::sanitize_ssh_tunnel_string(
+                                                    tunnel_config
+                                                )
                                             );
                                         } else {
                                             eprintln!(
-                                                "Skipping invalid SSH tunnel pattern: {pattern} -> {tunnel_config}"
+                                                "Skipping invalid SSH tunnel pattern: {pattern} -> {}",
+                                                crate::password_sanitizer::sanitize_ssh_tunnel_string(
+                                                    tunnel_config
+                                                )
                                             );
                                         }
                                     }
@@ -1704,7 +2049,8 @@ impl Config {
                             } else {
                                 // On subsequent retries, show detailed error and fail
                                 eprintln!(
-                                    "Config parsing failed again on retry {retry_count}: {e}"
+                                    "Config parsing failed again on retry {retry_count}: {}",
+                                    crate::password_sanitizer::redact_error(&e)
                                 );
                                 eprintln!(
                                     "This suggests a persistent issue with the config structure."
@@ -2277,6 +2623,34 @@ impl Config {
                 self.history.cleanup_after_days
             ));
 
+            // Secret storage
+            content.push_str("# ================================================================================\n");
+            content.push_str("# SECRET STORAGE\n");
+            content.push_str("# Where saved passwords, AI API keys and OAuth tokens are kept.\n");
+            content.push_str("# Inspect with `dbcrust secrets status`; move old data with `dbcrust secrets migrate`.\n");
+            content.push_str("# ================================================================================\n\n");
+            content.push_str("[secrets]\n");
+            content.push_str(
+                "# Backend: \"auto\" (OS keychain on macOS/Windows, passphrase-encrypted file on\n",
+            );
+            content.push_str("# Linux), \"keychain\" or \"file\". A locked or unavailable backend is an error,\n");
+            content.push_str("# never a silent fallback to a weaker store. (default: auto)\n");
+            content.push_str(&format!(
+                "backend = \"{}\"\n\n",
+                self.secrets.backend.as_str()
+            ));
+            content.push_str(
+                "# Remember the unlocked file key for the login session (Linux keyutils session\n",
+            );
+            content.push_str(
+                "# keyring) so the passphrase is asked once; `dbcrust secrets lock` clears it.\n",
+            );
+            content.push_str("# Only used by the \"file\" backend. (default: true)\n");
+            content.push_str(&format!(
+                "file_unlock_cache = {}\n\n",
+                self.secrets.file_unlock_cache
+            ));
+
             // Legacy unscoped saved queries move to named_queries.toml when
             // the config loads. If that write failed they are still in
             // memory: keep them here so saving settings never drops them.
@@ -2323,6 +2697,8 @@ impl Config {
             "max_recent_connections",
             "[logging]",
             "[history]",
+            "[secrets]",
+            "file_unlock_cache",
             "per_session_enabled",
             "max_history_files",
             "cleanup_after_days",
@@ -2670,6 +3046,10 @@ impl Config {
             file_path: normalized_file_path,
             options,
         };
+        // Secret-looking options (sslpassword…) move into the secret store,
+        // bound to this target, instead of being dropped by the scrub below.
+        session.store_secret_options();
+        let session = session.scrubbed();
 
         self.saved_sessions_storage
             .sessions
@@ -2820,7 +3200,10 @@ impl Config {
                         match self.resolve_command_in_tunnel_config(tunnel_config) {
                             Ok(resolved) => resolved,
                             Err(e) => {
-                                eprintln!("Error executing command in SSH tunnel pattern: {e}");
+                                eprintln!(
+                                    "Error executing command in SSH tunnel pattern: {}",
+                                    crate::password_sanitizer::redact_text(&e.to_string())
+                                );
                                 return None;
                             }
                         }
@@ -2952,7 +3335,9 @@ impl Config {
             database_type: database_type.clone(),
             success,
             options: HashMap::new(),
-        };
+        }
+        .scrubbed();
+        let normalized_url = connection.connection_url.clone();
 
         // Remove existing entries with the same URL to avoid duplicates.
         // Different users on the same host have different URLs so they are preserved.
@@ -3020,7 +3405,9 @@ impl Config {
             database_type,
             success,
             options,
-        };
+        }
+        .scrubbed();
+        let connection_url = connection.connection_url.clone();
 
         // Remove existing entries with the same URL to avoid duplicates
         self.recent_connections_storage
@@ -3362,7 +3749,7 @@ pub fn write_file_atomically(path: &Path, contents: &[u8]) -> io::Result<()> {
     result
 }
 
-fn is_test_mode() -> bool {
+pub(crate) fn is_test_mode() -> bool {
     // Detect test mode using multiple strategies since cfg!(test) doesn't work
     // across crate boundaries, while the env/thread-name checks cover Python and
     // integration-test harnesses.
@@ -3633,9 +4020,15 @@ mod tests {
 
     #[test]
     fn test_config_dir_override_pins_every_user_file_for_the_process() {
-        // The same directory the test heuristic picks, so other tests in
-        // this process are unaffected
-        let dir = std::env::temp_dir().join(format!("dbcrust_test_{}", std::process::id()));
+        // The directory the other tests in this process already use (an
+        // explicit DBCRUST_CONFIG_DIR, else the one the test heuristic picks),
+        // so they are unaffected
+        let dir = std::env::var_os(DBCRUST_CONFIG_DIR_ENV)
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join(format!("dbcrust_test_{}", std::process::id()))
+            });
         assert!(set_config_dir_override(dir.clone()));
         assert!(
             !set_config_dir_override(dir.join("elsewhere")),
@@ -4708,25 +5101,8 @@ mod tests {
         );
     }
 
-    #[rstest]
-    fn test_saved_session_reconstructs_with_dbcrust_password() {
-        let _env_lock = env_lock().lock().unwrap();
-        let temp_dir = tempfile::tempdir().unwrap();
-        let dbcrust_pass_path = temp_dir.path().join("dbcrust-pass");
-        let _dbcrust_pass = ScopedEnvVar::set_path("DBCRUST_PASSFILE", &dbcrust_pass_path);
-
-        crate::dbcrust_pass::save_password(
-            crate::dbcrust_pass::DatabaseType::MySQL,
-            "mysql.example.com",
-            3306,
-            "analytics",
-            "dbuser",
-            "mysql-secret",
-            false,
-        )
-        .unwrap();
-
-        let session = SavedSession {
+    fn mysql_session() -> SavedSession {
+        SavedSession {
             host: "mysql.example.com".to_string(),
             port: 3306,
             user: "dbuser".to_string(),
@@ -4735,12 +5111,126 @@ mod tests {
             database_type: DatabaseType::MySQL,
             file_path: None,
             options: HashMap::new(),
-        };
+        }
+    }
 
-        assert_eq!(
-            session.reconstruct_connection_url().unwrap(),
-            "mysql://dbuser:mysql-secret@mysql.example.com:3306/analytics"
-        );
+    #[rstest]
+    fn test_saved_session_reconstructs_with_legacy_dbcrust_password() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dbcrust_pass_path = temp_dir.path().join("dbcrust-pass");
+        let _dbcrust_pass = ScopedEnvVar::set_path("DBCRUST_PASSFILE", &dbcrust_pass_path);
+        fs::write(
+            &dbcrust_pass_path,
+            "mysql:mysql.example.com:3306:analytics:dbuser:mysql-secret\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dbcrust_pass_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        // A fresh in-memory store (nothing saved) falls through to the
+        // read-only legacy file.
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            assert_eq!(
+                mysql_session().reconstruct_connection_url().unwrap(),
+                "mysql://dbuser:mysql-secret@mysql.example.com:3306/analytics"
+            );
+        });
+    }
+
+    #[rstest]
+    fn test_store_wins_over_legacy_and_secret_options_come_back() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dbcrust_pass_path = temp_dir.path().join("dbcrust-pass");
+        let _dbcrust_pass = ScopedEnvVar::set_path("DBCRUST_PASSFILE", &dbcrust_pass_path);
+        fs::write(
+            &dbcrust_pass_path,
+            "mysql:mysql.example.com:3306:analytics:dbuser:legacy-secret\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dbcrust_pass_path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
+        crate::secrets::with_store_override(store, || {
+            save_connection_password(
+                &DatabaseType::MySQL,
+                "mysql.example.com",
+                3306,
+                "analytics",
+                "dbuser",
+                None,
+                "store-secret",
+            )
+            .unwrap();
+
+            // A session saved with a secret option moves it into the store
+            let mut session = mysql_session();
+            session
+                .options
+                .insert("sslpassword".to_string(), "cert-pass".to_string());
+            session.store_secret_options();
+            let scrubbed = session.scrubbed();
+            assert!(!scrubbed.options.contains_key("sslpassword"));
+
+            let url = scrubbed.reconstruct_connection_url().unwrap();
+            assert!(url.contains("dbuser:store-secret@"), "{url}");
+            assert!(!url.contains("legacy-secret"));
+            assert!(url.contains("sslpassword=cert-pass"), "{url}");
+        });
+    }
+
+    #[rstest]
+    fn test_session_is_not_given_a_password_bound_to_another_target() {
+        let _env_lock = env_lock().lock().unwrap();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let _dbcrust_pass =
+            ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
+        let backend = std::sync::Arc::new(crate::secrets::MemoryBackend::new());
+        let store = std::sync::Arc::new(crate::secrets::SecretStore::with_backend(
+            backend.clone(),
+            None,
+        ));
+        // A record for evil.example.com planted under the id of the real target
+        let real = connection_binding(
+            &DatabaseType::MySQL,
+            "mysql.example.com",
+            3306,
+            "analytics",
+            "dbuser",
+            None,
+        )
+        .unwrap();
+        let evil = connection_binding(
+            &DatabaseType::MySQL,
+            "evil.example.com",
+            3306,
+            "analytics",
+            "dbuser",
+            None,
+        )
+        .unwrap();
+        let planted = crate::secrets::SecretRecord::new("evil-pw", Default::default(), evil);
+        crate::secrets::SecretBackend::put(
+            backend.as_ref(),
+            &real.record_id(),
+            &planted.to_json().unwrap(),
+        )
+        .unwrap();
+
+        crate::secrets::with_store_override(store, || {
+            let url = mysql_session().reconstruct_connection_url().unwrap();
+            assert!(!url.contains("evil-pw"), "{url}");
+            assert!(!url.contains("dbuser:"), "{url}");
+        });
     }
 
     #[rstest]
@@ -5498,5 +5988,210 @@ mod tests {
                 "Credential db{i}/role{i} should not be retrievable after clear"
             );
         }
+    }
+
+    const CANARY: &str = "Cnry-7f3a9";
+
+    #[test]
+    fn debug_output_of_credential_types_never_contains_a_password() {
+        let options: HashMap<String, String> = [
+            ("sslmode", "require"),
+            ("password", CANARY),
+            ("sslpassword", CANARY),
+            ("password_command", CANARY),
+            ("endpoint", "https://u:Cnry-7f3a9@h/x"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let tunnel = SSHTunnelConfig {
+            enabled: true,
+            ssh_host: "jump".to_string(),
+            ssh_port: 22,
+            ssh_username: Some("me".to_string()),
+            ssh_password: Some(CANARY.to_string()),
+            ssh_key_path: None,
+        };
+        let session = SavedSession {
+            host: "h".to_string(),
+            port: 5432,
+            user: "u".to_string(),
+            dbname: "db".to_string(),
+            ssh_tunnel: Some(tunnel.clone()),
+            database_type: DatabaseType::PostgreSQL,
+            file_path: None,
+            options: options.clone(),
+        };
+        let recent = RecentConnection {
+            connection_url: format!("postgres://u:{CANARY}@h/db?token={CANARY}"),
+            display_name: "u@h/db".to_string(),
+            timestamp: Utc::now(),
+            database_type: DatabaseType::PostgreSQL,
+            success: true,
+            options: options.clone(),
+        };
+        let cached = CachedVaultCredentials {
+            username: "v-user".to_string(),
+            password: CANARY.to_string(),
+            lease_id: "lease".to_string(),
+            lease_duration: 60,
+            issue_time: Utc::now(),
+            expire_time: Utc::now(),
+            renewable: true,
+            mount_path: "database".to_string(),
+            database_name: "db".to_string(),
+            role_name: "role".to_string(),
+        };
+        let mut storage = VaultCredentialStorage::default();
+        storage
+            .cached_credentials
+            .insert("database/db/role".to_string(), cached.clone());
+        let info = ConnectionInfo {
+            database_type: DatabaseType::PostgreSQL,
+            host: Some("h".to_string()),
+            port: Some(5432),
+            username: Some("u".to_string()),
+            password: Some(CANARY.to_string()),
+            database: Some("db".to_string()),
+            file_path: None,
+            options,
+            docker_container: None,
+            use_tls: false,
+        };
+        let docker_target = crate::docker::DockerTarget::parse(&format!(
+            "docker://u:{CANARY}@pg/db?sslpassword={CANARY}"
+        ))
+        .unwrap();
+        let docker_connection = crate::docker::DockerDatabaseConnection {
+            container_name: "pg".to_string(),
+            database_type: DatabaseType::PostgreSQL,
+            host: "127.0.0.1".to_string(),
+            port: 5432,
+            username: Some("u".to_string()),
+            password: Some(CANARY.to_string()),
+            database_name: None,
+        };
+
+        for (name, shown) in [
+            ("SSHTunnelConfig", format!("{tunnel:?} {tunnel:#?}")),
+            ("SavedSession", format!("{session:?} {session:#?}")),
+            ("RecentConnection", format!("{recent:?} {recent:#?}")),
+            ("CachedVaultCredentials", format!("{cached:?} {cached:#?}")),
+            ("VaultCredentialStorage", format!("{storage:?}")),
+            ("ConnectionInfo", format!("{info:?} {info:#?}")),
+            (
+                "DockerTarget",
+                format!("{docker_target:?} {docker_target:#?}"),
+            ),
+            ("DockerDatabaseConnection", format!("{docker_connection:?}")),
+        ] {
+            assert!(!shown.contains(CANARY), "{name} leaks: {shown}");
+        }
+        // Passwords print as Some("***"), absence as None
+        assert!(format!("{tunnel:?}").contains(r#"ssh_password: Some("***")"#));
+        assert!(format!("{info:?}").contains(r#"password: Some("***")"#));
+        let no_password = ConnectionInfo {
+            password: None,
+            ..info
+        };
+        assert!(format!("{no_password:?}").contains("password: None"));
+        // …and what is not secret is still there
+        assert!(format!("{session:?}").contains("sslmode"));
+    }
+
+    #[test]
+    fn recent_and_session_saves_never_persist_a_password() {
+        // Tests run against an isolated config dir (never the real one)
+        let mut config = get_test_config();
+        config
+            .add_recent_connection(
+                format!(
+                    "postgres://u:{CANARY}@h:5432/db?sslmode=require&password={CANARY}&application_name=app"
+                ),
+                format!("u:{CANARY}@h:5432/db"),
+                DatabaseType::PostgreSQL,
+                true,
+            )
+            .unwrap();
+        let options: HashMap<String, String> = [
+            ("vault_role", "ro"),
+            ("token", CANARY),
+            ("sslpassword", CANARY),
+            ("password_command", "pass show db"),
+            ("endpoint", &format!("https://u:{CANARY}@h/x")),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        config
+            .add_recent_connection_with_options(
+                format!("mysql://u:{CANARY}@h:3306/db?secret={CANARY}"),
+                DatabaseType::MySQL,
+                true,
+                options.clone(),
+            )
+            .unwrap();
+        let info = ConnectionInfo {
+            database_type: DatabaseType::PostgreSQL,
+            host: Some("h".to_string()),
+            port: Some(5432),
+            username: Some("u".to_string()),
+            password: Some(CANARY.to_string()),
+            database: Some("db".to_string()),
+            file_path: None,
+            options,
+            docker_container: None,
+            use_tls: false,
+        };
+        config
+            .save_session_from_connection_info("canary", &info)
+            .unwrap();
+        // A session handed in with an SSH password is stripped on write too
+        config.saved_sessions_storage.sessions.insert(
+            "tunnel".to_string(),
+            SavedSession {
+                host: "h".to_string(),
+                port: 5432,
+                user: "u".to_string(),
+                dbname: "db".to_string(),
+                ssh_tunnel: Some(SSHTunnelConfig {
+                    enabled: true,
+                    ssh_host: "jump".to_string(),
+                    ssh_password: Some(CANARY.to_string()),
+                    ..Default::default()
+                }),
+                database_type: DatabaseType::PostgreSQL,
+                file_path: None,
+                options: HashMap::new(),
+            },
+        );
+
+        let recent_toml = config.recent_connections_toml().unwrap();
+        let sessions_toml = config.saved_sessions_toml().unwrap();
+        for (name, content) in [
+            ("recent.toml", &recent_toml),
+            ("sessions.toml", &sessions_toml),
+        ] {
+            assert!(
+                !content.contains(CANARY),
+                "{name} stores the canary:\n{content}"
+            );
+        }
+        // Non-secret data and the password command survive
+        assert!(recent_toml.contains("sslmode=require"), "{recent_toml}");
+        assert!(
+            recent_toml.contains("application_name=app"),
+            "{recent_toml}"
+        );
+        assert!(recent_toml.contains("pass show db"), "{recent_toml}");
+        assert!(sessions_toml.contains("vault_role"), "{sessions_toml}");
+        assert!(sessions_toml.contains("pass show db"), "{sessions_toml}");
+        // In-memory entries are scrubbed too
+        for recent in config.get_recent_connections() {
+            assert!(!recent.connection_url.contains(CANARY));
+            assert!(!recent.options.contains_key("token"));
+        }
+        let session = config.get_session("canary").unwrap();
+        assert!(!session.options.contains_key("sslpassword"));
     }
 }

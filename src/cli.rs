@@ -15,6 +15,7 @@ const ROOT_EXAMPLES: &str = "Examples:
   dbcrust file://                   # pick a compatible file from the current directory
   dbcrust config                    # interactive configuration menu (no connection)
   dbcrust config set logging.level debug
+  dbcrust secrets status            # where saved passwords live (never values)
   dbcrust agents                    # print the guide for AI coding agents
   dbcrust --update                  # update dbcrust to the latest release";
 
@@ -332,11 +333,277 @@ pub enum CliCommand {
         #[usage(subcommand)]
         action: Option<ConfigAction>,
     },
+    /// Inspect and manage stored secrets: passwords, API keys, tokens
+    ///
+    /// No database connection needed. Output never contains secret values.
+    #[usage(after_help = "Examples:
+  dbcrust secrets status
+  dbcrust secrets audit -o json     # exit 1 when high-severity findings exist
+  dbcrust secrets migrate --dry-run
+  dbcrust secrets migrate
+  dbcrust secrets unlock            # Linux file backend: ask for the passphrase once
+  dbcrust secrets lock
+  dbcrust secrets delete ai:openai")]
+    Secrets {
+        #[usage(subcommand)]
+        action: Option<SecretsAction>,
+    },
+    /// Credential broker for AI agents: enroll connections, serve them over a socket
+    ///
+    /// The broker holds the database credentials; agents talk to it through
+    /// `dbcrust-agent` and never see a password. No database connection is
+    /// needed to run these commands.
+    #[usage(after_help = "Examples:
+  dbcrust broker enroll prod postgres://agent@db.internal:5432/app --description \"read replica\"
+  dbcrust broker enroll scratch sqlite:///tmp/scratch.db --allow-writes
+  dbcrust broker serve                       # same-user mode (local development)
+  sudo dbcrust broker install-service        # recommended: run the broker as its own OS user
+  sudo dbcrust broker install-service --dry-run   # show every action first
+  sudo /usr/local/libexec/dbcrust-broker broker enroll prod postgres://agent@db/app --mode service
+  dbcrust broker list
+  dbcrust broker policy prod --max-rows 100 --timeout 10
+  dbcrust broker revoke prod
+  dbcrust broker status -o json")]
+    Broker {
+        #[usage(subcommand)]
+        action: Option<BrokerAction>,
+    },
     /// Print the guide for AI coding agents
     ///
     /// URL schemes, one-shot flags, output formats, exit codes, safety rails.
     #[usage(after_help = "")]
     Agents,
+}
+
+/// Where a broker keeps its state and secrets.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, ValueEnum)]
+pub enum BrokerModeArg {
+    /// Same-user broker: state in the DBCrust config dir, secrets in your keychain
+    #[default]
+    User,
+    /// Separate service user: state under /var/lib/dbcrust-broker (or the macOS equivalent)
+    Service,
+}
+
+#[derive(Subcommands, Clone, Debug)]
+pub enum BrokerAction {
+    /// Listen on the broker socket and answer agent requests (runs until SIGINT/SIGTERM)
+    ///
+    /// In service mode the broker refuses to run as root (unless it was
+    /// started as root with --drop-to), refuses to start when its state
+    /// directory, key file or store are readable by other users, and refuses
+    /// to run from a binary that is not root-owned (use the copy that
+    /// `install-service` puts in /usr/local/libexec).
+    Serve {
+        /// `user` (default) or `service`
+        #[usage(long, value_enum, value_name = "MODE")]
+        mode: Option<BrokerModeArg>,
+        /// State directory (default depends on the mode)
+        #[usage(long, value_name = "PATH")]
+        state_dir: Option<String>,
+        /// Socket path (default: $XDG_RUNTIME_DIR/dbcrust/broker.sock, or <state>/broker.sock)
+        #[usage(long, value_name = "PATH")]
+        socket: Option<String>,
+        /// Service mode, started as root: bind the socket, then drop to this user
+        #[usage(long, value_name = "USER")]
+        drop_to: Option<String>,
+        /// Allow running as root (debugging only)
+        #[usage(long)]
+        allow_root: bool,
+        /// Do not block debugger attach (development only)
+        #[usage(long)]
+        allow_debugger: bool,
+        /// Service mode only: run even though the binary is not root-owned (development only)
+        #[usage(long)]
+        allow_untrusted_binary: bool,
+    },
+    /// Make a connection available to agents under an alias
+    ///
+    /// The URL must not contain a password: it is asked for interactively and
+    /// handed to the broker's store. Agents get read-only access unless
+    /// --allow-writes is given; DDL/DCL/admin statements are always refused.
+    /// Re-enrolling an alias needs the password again.
+    Enroll {
+        /// Lowercase letters, digits, `_` and `-` (1-63 characters)
+        alias: String,
+        /// Connection URL without a password: postgres://user@host:5432/db, mysql://, sqlite:///path, clickhouse://
+        url: String,
+        /// Let agents run INSERT/UPDATE/DELETE (never DDL)
+        #[usage(long)]
+        allow_writes: bool,
+        /// Most rows a query may return (default 500, hard cap 10000)
+        #[usage(long, value_name = "N")]
+        max_rows: Option<u32>,
+        /// Statement timeout in seconds (default 30, hard cap 600)
+        #[usage(long, value_name = "SECS")]
+        timeout: Option<u32>,
+        /// Largest result payload in bytes (default 8 MiB, hard cap 64 MiB)
+        #[usage(long, value_name = "N")]
+        max_bytes: Option<u64>,
+        /// Shown to agents next to the alias
+        #[usage(long, value_name = "TEXT")]
+        description: Option<String>,
+        /// `user` (default) or `service`
+        #[usage(long, value_enum, value_name = "MODE")]
+        mode: Option<BrokerModeArg>,
+        /// State directory (default depends on the mode)
+        #[usage(long, value_name = "PATH")]
+        state_dir: Option<String>,
+        /// Service mode only: run even though the binary is not root-owned (development only)
+        #[usage(long)]
+        allow_untrusted_binary: bool,
+    },
+    /// List enrolled aliases with their policy (never credentials)
+    List {
+        /// Output format (`json` for machines)
+        #[usage(short = 'o', long = "format", value_enum, value_name = "FORMAT")]
+        format: Option<OutputFormat>,
+        /// `user` (default) or `service`
+        #[usage(long, value_enum, value_name = "MODE")]
+        mode: Option<BrokerModeArg>,
+        /// State directory (default depends on the mode)
+        #[usage(long, value_name = "PATH")]
+        state_dir: Option<String>,
+        /// Service mode only: run even though the binary is not root-owned (development only)
+        #[usage(long)]
+        allow_untrusted_binary: bool,
+    },
+    /// Remove an alias and its stored credential
+    Revoke {
+        alias: String,
+        /// `user` (default) or `service`
+        #[usage(long, value_enum, value_name = "MODE")]
+        mode: Option<BrokerModeArg>,
+        /// State directory (default depends on the mode)
+        #[usage(long, value_name = "PATH")]
+        state_dir: Option<String>,
+        /// Service mode only: run even though the binary is not root-owned (development only)
+        #[usage(long)]
+        allow_untrusted_binary: bool,
+    },
+    /// Tighten an alias's limits or make it read-only (loosening needs `enroll` again)
+    Policy {
+        alias: String,
+        /// Lower the row limit
+        #[usage(long, value_name = "N")]
+        max_rows: Option<u32>,
+        /// Lower the statement timeout (seconds)
+        #[usage(long, value_name = "SECS")]
+        timeout: Option<u32>,
+        /// Lower the result byte budget
+        #[usage(long, value_name = "N")]
+        max_bytes: Option<u64>,
+        /// Downgrade to read-only
+        #[usage(long)]
+        read_only: bool,
+        /// Refused: granting writes needs a re-enrollment
+        #[usage(long)]
+        allow_writes: bool,
+        /// `user` (default) or `service`
+        #[usage(long, value_enum, value_name = "MODE")]
+        mode: Option<BrokerModeArg>,
+        /// State directory (default depends on the mode)
+        #[usage(long, value_name = "PATH")]
+        state_dir: Option<String>,
+        /// Service mode only: run even though the binary is not root-owned (development only)
+        #[usage(long)]
+        allow_untrusted_binary: bool,
+    },
+    /// Show the mode, state, socket and whether a broker is answering
+    Status {
+        /// Output format (`json` for machines)
+        #[usage(short = 'o', long = "format", value_enum, value_name = "FORMAT")]
+        format: Option<OutputFormat>,
+        /// `user` (default) or `service`
+        #[usage(long, value_enum, value_name = "MODE")]
+        mode: Option<BrokerModeArg>,
+        /// State directory (default depends on the mode)
+        #[usage(long, value_name = "PATH")]
+        state_dir: Option<String>,
+        /// Socket path to probe
+        #[usage(long, value_name = "PATH")]
+        socket: Option<String>,
+    },
+    /// Install the broker as a system service (launchd on macOS, systemd on Linux)
+    ///
+    /// Creates the hidden service user and the `dbcrust-agents` group, copies
+    /// this binary to /usr/local/libexec/dbcrust-broker (root-owned, so a
+    /// user-writable binary can never run as the service) and starts the
+    /// daemon. Needs root; --dry-run prints every action instead and needs
+    /// none. Safe to re-run: it upgrades the binary and service definition
+    /// and never touches the store.
+    InstallService {
+        /// Print every command and file without executing anything
+        #[usage(long)]
+        dry_run: bool,
+        /// Add this user to the dbcrust-agents group (default: ask for $SUDO_USER)
+        #[usage(long, value_name = "NAME")]
+        add_user: Option<String>,
+        /// Do not add any user to the dbcrust-agents group
+        #[usage(long)]
+        no_add_user: bool,
+        /// Render the plan for another platform: `macos` or `linux` (needs --dry-run)
+        #[usage(long, hide, value_name = "OS")]
+        target_os: Option<String>,
+    },
+    /// Stop and remove the broker service (keeps the secrets unless --purge)
+    ///
+    /// Removes the daemon definition and the installed binary. With --purge
+    /// (and an extra confirmation) it also deletes the state directory — the
+    /// stored database credentials — and the service user and group.
+    UninstallService {
+        /// Also delete the state directory (credentials!) and the service user/group
+        #[usage(long)]
+        purge: bool,
+        /// Print every command and file without executing anything
+        #[usage(long)]
+        dry_run: bool,
+        /// Render the plan for another platform: `macos` or `linux` (needs --dry-run)
+        #[usage(long, hide, value_name = "OS")]
+        target_os: Option<String>,
+    },
+}
+
+#[derive(Subcommands, Clone, Debug)]
+pub enum SecretsAction {
+    /// Show the backend, lock state and record counts (never values)
+    Status {
+        /// Output format (`json` for machines)
+        #[usage(short = 'o', long = "format", value_enum, value_name = "FORMAT")]
+        format: Option<OutputFormat>,
+    },
+    /// Unlock the encrypted secrets file for this login session (asks for the passphrase)
+    Unlock,
+    /// Forget the cached unlock key
+    Lock,
+    /// Scan known locations for credentials left behind (never prints values)
+    ///
+    /// Exits 1 when a high-severity finding exists, 0 otherwise.
+    Audit {
+        /// Output format (`json` for machines)
+        #[usage(short = 'o', long = "format", value_enum, value_name = "FORMAT")]
+        format: Option<OutputFormat>,
+    },
+    /// Move legacy passwords, AI keys and session secrets into the secure store
+    ///
+    /// Interactive by default. Wildcard entries are never bound automatically;
+    /// `.pgpass` and `.my.cnf` are reported, never edited. Safe to re-run.
+    Migrate {
+        /// Print the plan and change nothing
+        #[usage(long)]
+        dry_run: bool,
+        /// Migrate every non-wildcard DBCrust-owned item without asking
+        #[usage(long)]
+        yes: bool,
+    },
+    /// Delete one stored secret by id (see `dbcrust secrets status -o json`)
+    Delete {
+        /// Record id, e.g. `ai:openai` or `conn:postgresql:alice@db:5432/app`
+        id: String,
+        /// Do not ask for confirmation
+        #[usage(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommands, Clone, Debug)]
@@ -363,6 +630,24 @@ pub enum ConfigAction {
     Edit,
 }
 
+/// The `Debug` rendering of a value with credential-looking text scrubbed,
+/// printed as-is (no second layer of quoting).
+struct RedactedDebug(String);
+
+impl RedactedDebug {
+    fn of(value: &impl std::fmt::Debug) -> Self {
+        Self(crate::password_sanitizer::redact_text(&format!(
+            "{value:?}"
+        )))
+    }
+}
+
+impl std::fmt::Debug for RedactedDebug {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 impl std::fmt::Debug for Args {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Args")
@@ -381,7 +666,8 @@ impl std::fmt::Debug for Args {
                     .map(|tunnel| sanitize_ssh_tunnel_string(tunnel)),
             )
             .field("completions", &self.completions)
-            .field("command", &self.command)
+            // SQL and `config set` values can quote credentials
+            .field("command", &RedactedDebug::of(&self.command))
             .field("file", &self.file)
             .field("update", &self.update)
             .field("format", &self.format)
@@ -389,7 +675,7 @@ impl std::fmt::Debug for Args {
             .field("timeout", &self.timeout)
             .field("max_rows", &self.max_rows)
             .field("no_input", &self.no_input)
-            .field("subcommand", &self.subcommand)
+            .field("subcommand", &RedactedDebug::of(&self.subcommand))
             .finish()
     }
 }
@@ -505,6 +791,72 @@ mod tests {
         let args = Args::parse_from_argv(["dbcrust", "agents"]).unwrap();
         assert!(matches!(args.subcommand, Some(CliCommand::Agents)));
         assert!(args.connection_url.is_none());
+    }
+
+    #[test]
+    fn test_secrets_subcommands() {
+        let args = Args::parse_from_argv(["dbcrust", "secrets"]).unwrap();
+        assert!(matches!(
+            args.subcommand,
+            Some(CliCommand::Secrets { action: None })
+        ));
+        assert!(args.connection_url.is_none());
+
+        let args = Args::parse_from_argv(["dbcrust", "secrets", "status", "-o", "json"]).unwrap();
+        let Some(CliCommand::Secrets {
+            action: Some(SecretsAction::Status { format }),
+        }) = args.subcommand
+        else {
+            panic!("expected secrets status");
+        };
+        assert_eq!(format, Some(OutputFormat::Json));
+
+        let args = Args::parse_from_argv(["dbcrust", "secrets", "audit"]).unwrap();
+        assert!(matches!(
+            args.subcommand,
+            Some(CliCommand::Secrets {
+                action: Some(SecretsAction::Audit { format: None })
+            })
+        ));
+
+        let args =
+            Args::parse_from_argv(["dbcrust", "secrets", "migrate", "--dry-run", "--yes"]).unwrap();
+        assert!(matches!(
+            args.subcommand,
+            Some(CliCommand::Secrets {
+                action: Some(SecretsAction::Migrate {
+                    dry_run: true,
+                    yes: true
+                })
+            })
+        ));
+
+        let args = Args::parse_from_argv(["dbcrust", "secrets", "delete", "ai:openai"]).unwrap();
+        let Some(CliCommand::Secrets {
+            action: Some(SecretsAction::Delete { id, yes }),
+        }) = args.subcommand
+        else {
+            panic!("expected secrets delete");
+        };
+        assert_eq!(id, "ai:openai");
+        assert!(!yes);
+
+        assert!(matches!(
+            Args::parse_from_argv(["dbcrust", "secrets", "unlock"])
+                .unwrap()
+                .subcommand,
+            Some(CliCommand::Secrets {
+                action: Some(SecretsAction::Unlock)
+            })
+        ));
+        assert!(matches!(
+            Args::parse_from_argv(["dbcrust", "secrets", "lock"])
+                .unwrap()
+                .subcommand,
+            Some(CliCommand::Secrets {
+                action: Some(SecretsAction::Lock)
+            })
+        ));
     }
 
     #[test]

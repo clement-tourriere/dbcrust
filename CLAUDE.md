@@ -42,11 +42,15 @@ mise run cache:gc         # reclaim disk space (`-- --dry-run` to preview)
 | `src/commands.rs` | **Enum-based command system** — all `\cmd` logic lives here |
 | `src/cli.rs` | Arg parsing via `usage-rs` derive (jdx/usage) — private `Root` wraps public `Args`; one-shot flags (`-c`/`-f`, `-o/--format`, `--read-only`, `--no-input`); `OutputFormat`/`OneShotSource`/`ParseExit` live here; hidden `__complete_word__`/`__usage_spec__` endpoints answered in `parse_from_argv` |
 | `src/shell_completion.rs` | Rust-side URL completer (`complete_connection_url`: schemes, sessions, docker, files) + completion-script generation (usage scripts call the binary back at Tab time) |
-| `src/safety.rs` | Read-only statement classification — `--read-only` guard + AI agent guard share it |
+| `src/safety.rs` | Read-only statement classification — `--read-only` guard + AI agent guard share it; `classify_for_broker` is the broker's lexer-based classifier (default-deny) |
 | `src/agent_guide.md` | Embedded `dbcrust agents` guide (the one-shot contract for AI coding agents) |
 | `src/ai/` | AI assistant (`??` text-to-SQL, `\ai`) — multi-provider via `genai` |
 | `src/update.rs` | `--update`: install-channel detection + GitHub release check |
 | `src/config.rs` | TOML config, `save_with_documentation` must be updated for new fields |
+| `src/secrets/` | Secret store (will become `dbcrust-secrets`): `SecretBackend` trait, `KeychainBackend`, Argon2id `PassphraseFileBackend` (`secrets.enc`), `SecretStore` facade, target-bound `SecretRecord`/`AgentPolicy`, non-secret `secrets_index.toml`. No CLI/driver deps; tests get an in-memory store |
+| `src/secrets_cli/` | `dbcrust secrets status\|audit\|migrate\|unlock\|lock\|delete` (no connection needed) |
+| `src/broker/` | Credential broker for AI agents (Unix): `paths` (user/service modes, state dir, permission checks), `registry` (`aliases.toml` descriptors + authoritative `SecretRecord`s), `admin` (enroll/revoke/policy), `gateway` (the only execution path: resolve → bind → classify → limit → audit → run), `audit` (`audit.jsonl`, fail closed), `server` (Unix socket + handshake), `hardening` (umask/core/dumpable/env scrub; applied after any privilege drop), `privileges` (**trusted-binary rule**: service-mode `serve` and root admin commands refuse a binary that is not root-owned with root-owned, non-group/world-writable ancestors — `--allow-untrusted-binary` is dev-only; verified privilege drops), `service` (`dbcrust broker install-service`/`uninstall-service`: pure plan/plist/unit generators + dry-run, launchd `_dbcrust` / systemd `dbcrust`, root-owned copy at `/usr/local/libexec/dbcrust-broker`), `cli` (`dbcrust broker …`). Wire contract: `crates/agent-protocol`; user guide: `docs/src/content/docs/user-guide/agent-connections.md` |
+| `src/dbcrust_pass.rs`, `src/password_encryption.rs` | Legacy `~/.dbcrust` reader/migration source and decrypt-only `enc:` reader — never write new passwords here |
 | `src/config_editor.rs` | Schema-driven `\config` menu/get/set + SSH tunnel manager (`dbcrust config` CLI) |
 | `src/prompt.rs` | Reedline interactive REPL |
 | `src/completion.rs` | SQL autocomplete with metadata caching |
@@ -118,11 +122,13 @@ User data lives in dedicated files, not mixed into `config.toml`:
 | Recent connections | `~/.config/dbcrust/recent.toml` |
 | Named queries | `~/.config/dbcrust/named_queries.toml` |
 | Vault credentials | `~/.config/dbcrust/vault_credentials.enc` |
-| Universal passwords | `~/.dbcrust` (format: `db_type:host:port:db:user:pass`) |
+| Saved passwords, AI keys, tokens | OS keychain (service `dbcrust.store`) or `~/.config/dbcrust/secrets.enc` (Argon2id passphrase file); non-secret inventory in `secrets_index.toml` |
+| Legacy passwords (read-only; `dbcrust secrets migrate`) | `~/.dbcrust` (format: `db_type:host:port:db:user:pass`), `ai_keys.enc` |
 
 ### 5. Testing
 
 - Use `rstest` for parameterized tests.
+- Tests never touch the real keychain/keyutils/`$HOME`: in test mode `secrets::default_store()` is an in-memory store; inject others with `secrets::with_store_override`. Real-keychain tests only behind `DBCRUST_TEST_KEYCHAIN=1`.
 - All Rust tests are inline `#[cfg(test)]` modules — there is no `tests/` directory.
 - Tests auto-isolate config to `/tmp/dbcrust_test_{pid}/` (heuristic: thread name contains "test" or `RUST_TEST_MODE` is set — `cargo test -- --test-threads=1` runs on the main thread and escapes it; export `RUST_TEST_MODE=1` in that case).
 - PostgreSQL integration tests gate on `DATABASE_URL` env var and skip gracefully; other backends have no DB-gated tests yet.

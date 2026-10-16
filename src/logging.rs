@@ -113,7 +113,12 @@ fn log_message(message: &str) -> io::Result<()> {
         if let Some(log_file) = &*log_file_ptr {
             if let Ok(mut file_guard) = log_file.lock() {
                 if let Some((file, _)) = &mut *file_guard {
-                    let log_entry = format!("[{}] {}\n", timestamp(), message);
+                    // Last line of defence: never let a URL's password hit disk
+                    let log_entry = format!(
+                        "[{}] {}\n",
+                        timestamp(),
+                        crate::password_sanitizer::redact_text(message)
+                    );
                     file.write_all(log_entry.as_bytes())?;
                     file.flush()?;
                 }

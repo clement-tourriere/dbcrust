@@ -176,7 +176,7 @@ DBCrust intelligently caches Vault credentials to improve performance and reduce
 ### How Caching Works
 
 1. **First connection**: DBCrust fetches credentials from Vault
-2. **Encryption**: Credentials encrypted with AES-256-GCM using your Vault token
+2. **Encryption**: Credentials encrypted with AES-256-GCM using a key derived from your Vault token (the cache is only as strong as the protection of that token)
 3. **Storage**: Cached in `~/.config/dbcrust/vault_credentials.enc`
 4. **Reuse**: Subsequent connections use cached credentials if still valid
 5. **Renewal**: Automatically refreshes when approaching expiration

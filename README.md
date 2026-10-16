@@ -24,6 +24,7 @@ dbc postgres://user:pass@localhost/mydb
 - **DBCrust for Django** — catch N+1 queries, missing `select_related` / `prefetch_related`, slow views, and index opportunities before production.
 - **Production-friendly plumbing** — SSH tunnels (with auto-tunnel patterns), HashiCorp Vault dynamic credentials, Docker container auto-discovery, encrypted password storage.
 - **A REPL that helps** — context-aware autocompletion, syntax highlighting, history search, external editor, EXPLAIN visualization (including an interactive TUI), named queries, saved sessions.
+- **Agent-safe connections** — a credential broker (`dbcrust broker`, `dbcrust-agent`, MCP) keeps database passwords out of AI agents' reach: enrolled aliases, forced read-only, row/time limits and an audit log; it can run as its own OS user. See [Agent connections](https://clement-tourriere.github.io/dbcrust/user-guide/agent-connections/).
 - **Scriptable, embeddable, agent-ready** — `-c`/`-f`/stdin one-shots with `-o json|csv` output, stable exit codes, a `--read-only` guard, and a Python API powered by the same Rust core.
 
 ## Install
@@ -89,9 +90,11 @@ dbcrust session://prod --read-only --no-input -o json \
 echo "SELECT count(*) FROM logs" | dbcrust ./logs.parquet   # stdin scripts; files are databases too
 ```
 
-The contract is built for programmatic callers: results-only stdout (status goes to stderr, the pager never engages), JSON errors on stderr under `-o json`, stable exit codes (`0` ok · `1` SQL error · `2` usage · `3` connection · `4` blocked by `--read-only`), `--timeout`/`--max-rows` limits, and `--no-input` so no prompt can ever hang an agent. The binary documents itself: run **`dbcrust agents`** for the full ~100-line contract, and paste the ready-made snippet into your project's `CLAUDE.md`/`AGENTS.md` from the [agent quickstart](https://clement-tourriere.github.io/dbcrust/ai-agents/quickstart/).
+The contract is built for programmatic callers: results-only stdout (status goes to stderr, the pager never engages), JSON errors on stderr under `-o json`, stable exit codes (`0` ok · `1` SQL error · `2` usage · `3` connection · `4` blocked by `--read-only`), `--timeout`/`--max-rows` limits, and `--no-input` so no prompt can ever hang an agent. The binary documents itself: run **`dbcrust agents`** for the full ~130-line contract, and paste the ready-made snippet into your project's `CLAUDE.md`/`AGENTS.md` from the [agent quickstart](https://clement-tourriere.github.io/dbcrust/ai-agents/quickstart/).
 
 `--read-only` is a best-effort statement guard backed by connect-level hardening (SQLite `query_only`, PostgreSQL `default_transaction_read_only`); for hard guarantees use a read-only database role — details in [safety & guardrails](https://clement-tourriere.github.io/dbcrust/ai-agents/safety/).
+
+For databases that matter, don't hand the agent a password at all: enroll the connection with the **credential broker** (`sudo dbcrust broker install-service`, then `dbcrust broker enroll …`) and give the agent the credential-free `dbcrust-agent` client (CLI or MCP server). See [Agent connections](https://clement-tourriere.github.io/dbcrust/user-guide/agent-connections/).
 
 ## SQL over local files
 
@@ -144,7 +147,7 @@ Turn natural language into SQL without leaving your session. The assistant uses 
 ```
 
 - **Providers**: Anthropic, OpenAI, Gemini, Ollama, Groq, DeepSeek, xAI, OpenRouter, and more — 25+ via [genai](https://crates.io/crates/genai), including any OpenAI-compatible endpoint for self-hosted models.
-- **Privacy controls**: AI is opt-in. `??` sends schema metadata and your prompt/history; query results stay local. `???` and Django "Investigate with AI" can send bounded result rows, query plans, captured SQL, and source context. API keys live in your OS keychain, an encrypted file, or environment variables.
+- **Privacy controls**: AI is opt-in. `??` sends schema metadata and your prompt/history; query results stay local. `???` and Django "Investigate with AI" can send bounded result rows, query plans, captured SQL, and source context. API keys live in the secret store (OS keychain, or a passphrase-encrypted file on Linux) or environment variables.
 
 More in the [AI assistant guide](https://clement-tourriere.github.io/dbcrust/user-guide/ai-assistant/) and [privacy notes](https://clement-tourriere.github.io/dbcrust/user-guide/ai-assistant/#privacy-notes).
 

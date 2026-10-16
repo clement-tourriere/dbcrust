@@ -33,21 +33,21 @@ use self::config::{AiAuthMethod, AiConfig};
 pub enum AiError {
     #[error("Missing API key for {0}. Run \\ai setup to configure.")]
     MissingApiKey(String),
-    #[error("Request failed: {0}")]
+    #[error("Request failed: {}", crate::password_sanitizer::redact_text(.0))]
     RequestFailed(String),
     #[error("AI not configured. Run \\ai setup to get started.")]
     NotConfigured,
-    #[error("Key storage error: {0}")]
+    #[error("Key storage error: {}", crate::password_sanitizer::redact_text(.0))]
     KeyStorageError(String),
     #[error("generation cancelled")]
     Cancelled,
-    #[error("OAuth error: {0}")]
+    #[error("OAuth error: {}", crate::password_sanitizer::redact_text(.0))]
     OAuth(String),
     #[error(
         "Not signed in to ChatGPT. Run \\ai login first, or make ~/.codex/auth.json available to this process."
     )]
     NotLoggedIn,
-    #[error("ChatGPT token refresh failed: {0} Run \\ai login again.")]
+    #[error("ChatGPT token refresh failed: {} Run \\ai login again.", crate::password_sanitizer::redact_text(.0))]
     TokenRefreshFailed(String),
 }
 
@@ -207,6 +207,9 @@ pub fn build_client(ai_config: &AiConfig, mode: &ResolvedAuthMode) -> Result<Cli
     if !ai_config.enabled {
         return Err(AiError::NotConfigured);
     }
+
+    // genai's reqwest ships without a bundled rustls provider
+    crate::tls::install_default_crypto_provider();
 
     if let ResolvedAuthMode::ChatGptSubscription { access_token, .. } = mode {
         // No API-key preflight: auth is the OAuth bearer, and endpoint + adapter
