@@ -276,7 +276,7 @@ default-members = [
 [workspace.package]
 # Single source of truth for the version: members inherit it with
 # `version.workspace = true`; Commitizen (.cz.toml) bumps this line.
-version = "0.38.0"
+version = "0.39.0"
 edition = "2024"
 # usage-rs 6 requires Rust >= 1.91 (edition 2024 alone needs 1.85) — declared
 # so `cargo install` on older toolchains fails with a clear message instead of

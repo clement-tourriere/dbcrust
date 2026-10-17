@@ -1,3 +1,23 @@
+## v0.39.0 (2026-10-17)
+
+### Feat
+
+- **connectors**: opt-in AWS (S3, DynamoDB, CloudWatch Logs) and DuckDB
+- **connectors**: Redis, SQL Server, Redshift, libSQL/Turso and InfluxDB
+- **agents**: agent-safe connections through a credential broker
+- **gui**: manage the whole config from Settings and remove UI lag
+
+### Fix
+
+- **broker**: raise the recursion limit for the CloudWatch-only build
+- **mssql**: build the vendored tiberius for 32-bit targets
+- **secrets**: build the process unlock cache only where it is used
+- **gui**: silence tray dead-code lints on Linux
+
+### Refactor
+
+- split DBCrust into workspace crates with per-engine features
+
 ## v0.38.0 (2026-10-11)
 
 ### Feat
