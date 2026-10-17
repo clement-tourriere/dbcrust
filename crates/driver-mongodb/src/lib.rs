@@ -1776,7 +1776,11 @@ fn parse_regex_condition(condition: &str) -> Option<Document> {
         // BSON regex patterns are C strings: a pattern with a NUL byte cannot
         // be sent, so it is not a regex condition
         let pattern = pattern.try_into().ok()?;
-        let options = if case_insensitive { cstr!("i") } else { cstr!("") };
+        let options = if case_insensitive {
+            cstr!("i")
+        } else {
+            cstr!("")
+        };
         doc! {
             field: {
                 "$not": Bson::RegularExpression(bson::Regex {
