@@ -51,30 +51,34 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
+    # Plain cargo, one target directory: Mr Boxington cannot cache
+    # libduckdb-sys's build script, and restoring the other crates makes cargo
+    # re-run it, so under `mbx` every step below recompiled the C++ engine
+    # (over 60 minutes on ubuntu-latest). Here it is compiled once per job.
+    # No debuginfo: it multiplies the C++ objects' size and link time.
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: Set up Mr Boxington
-        uses: jdx/mr-boxington-action@adc5c234c02592f7edd008bf81d5bc0e9584dc03 # v1.2.0
-        with:
-          version: "1.4.1"
       - name: clippy (driver, registry, broker)
         run: |
-          mbx clippy --locked -p dbcrust-driver-duckdb --all-targets -- -D warnings
-          mbx clippy --locked -p dbcrust-broker --features duckdb --all-targets -- -D warnings
+          cargo clippy --locked -p dbcrust-driver-duckdb --all-targets -- -D warnings
+          cargo clippy --locked -p dbcrust-broker --features duckdb --all-targets -- -D warnings
       - name: driver tests (real in-process engine, no network)
-        run: mbx test --locked -p dbcrust-driver-duckdb
+        run: cargo test --locked -p dbcrust-driver-duckdb
       - name: broker tests with DuckDB aliases
-        run: mbx test --locked -p dbcrust-broker --features duckdb
+        run: cargo test --locked -p dbcrust-broker --features duckdb
       - name: the CLI with the connector (standard preset + duckdb)
         env:
           PYO3_NO_PYTHON: "1"
         run: |
-          mbx clippy --locked -p dbcrust --no-default-features --features standard,duckdb --all-targets -- -D warnings
-          mbx test --locked -p dbcrust --no-default-features --features standard,duckdb
+          cargo clippy --locked -p dbcrust --no-default-features --features standard,duckdb --all-targets -- -D warnings
+          cargo test --locked -p dbcrust --no-default-features --features standard,duckdb
       - name: still one TLS stack
         run: |
           for crate in aws-lc-rs aws-lc-sys openssl native-tls; do
