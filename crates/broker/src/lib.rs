@@ -41,6 +41,11 @@
 //! Unix only: the modules are `#[cfg(unix)]`; the root crate reports that the
 //! broker is not supported on Windows.
 
+// The connection task's future (server.rs) nests the drivers' futures; with
+// CloudWatch Logs as the only engine, the AWS SDK's nesting takes rustc's
+// layout query past the default 128 ("queries overflow the depth limit").
+#![recursion_limit = "256"]
+
 use dbcrust_secrets::SecretError;
 use thiserror::Error;
 
