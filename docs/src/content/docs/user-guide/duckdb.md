@@ -222,10 +222,6 @@ the extension): `DUCKLAKE_TEST=1 cargo test -p dbcrust-driver-duckdb ducklake_ro
 - **CI** has a dedicated `DuckDB` workflow (manual, weekly, and on changes to the connector)
   rather than a slot in the per-pull-request feature matrix, because even `cargo check` runs the
   C++ build script.
-- **The `zip` build dependency**: every `zip` release `libduckdb-sys` can use has been yanked
-  upstream, and the cooldown/audit policy refuses yanked crates. A tiny stand-in crate replaces it
-  (`third_party/zip-stub/DBCRUST_PATCH.md`); it only matters for the unsupported non-bundled
-  download mode.
 
 ## Not supported yet
 

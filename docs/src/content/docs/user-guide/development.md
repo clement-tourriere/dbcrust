@@ -107,7 +107,7 @@ The root crate (`dbcrust`) is split into Cargo features so a build only contains
 | `cloudwatch` | Amazon CloudWatch Logs (`cloudwatch://`, `cloudwatch+http://`, `cwlogs://`) — **opt-in: not in `bundled`, not in `standard`; needs Rust ≥ 1.94.1** | AWS SDK (`aws-config`, `aws-sdk-cloudwatchlogs`, `aws-smithy-http-client`), rustls on ring only |
 | `aws` | the AWS connectors as a group (`s3`, `dynamodb`, `cloudwatch`) — **opt-in, Rust ≥ 1.94.1** | the three above on one shared base |
 | `files` | Parquet, CSV and JSON files | Apache DataFusion / Arrow / Parquet |
-| `duckdb` | DuckDB database files, `:memory:` and DuckLake (`duckdb://`) — **opt-in: not in `bundled`, not in `standard`** (a C++ engine, see below) | `duckdb` =1.10506.0 (engine 1.5.6) with `bundled`, Parquet and JSON; a `zip` stand-in (`third_party/zip-stub`) |
+| `duckdb` | DuckDB database files, `:memory:` and DuckLake (`duckdb://`) — **opt-in: not in `bundled`, not in `standard`** (a C++ engine, see below) | `duckdb` =1.10506.1 (engine 1.5.6) with `bundled`, Parquet and JSON; a `zip` stand-in (`third_party/zip-stub`) |
 | `docker` | `docker://` URLs, `\docker`, container completion | bollard |
 | `ai` | `??`, `???`, `\ai`, the Python AI functions | genai, reqwest 0.13 |
 | `explain-tui` | `\x` plan TUI and the `\sv` schema browser | ratatui, textwrap |
@@ -163,9 +163,9 @@ TLS is **rustls on ring only**. The SDK's defaults enable `aws-smithy-runtime/de
 | Cold dev build of the DuckDB crates (no debuginfo) | 4 min 12 s wall, 917 s of user CPU (about 15 CPU-minutes); the figures of the release probe were 2 min 40 s wall / 18 CPU-minutes. Mr Boxington cannot cache the engine's build script, so repeat builds in a shared target directory can redo it: use a dedicated `CARGO_TARGET_DIR` (the CI workflow does) |
 | Dev binary, `standard` → `standard,duckdb` | 58.0 MiB → 165.2 MiB unstripped (+107 MiB), 54.3 MiB → 131.1 MiB stripped (+77 MiB): the dev profile compiles the C++ unoptimised. The release probe measured **+19 MB** stripped (+22.5 MB with Parquet and JSON) |
 | Crates in the normal tree | `bundled` 490 → 496 (`duckdb`, `libduckdb-sys`, `dbcrust-driver-duckdb`, `cast`, `fallible-iterator`, `fallible-streaming-iterator`); `standard` 272 → 300, because `standard` carries no Arrow |
-| Lockfile | +15 registry packages: `duckdb`, `libduckdb-sys`, `cast` and the two `fallible-*`; a second `crossterm` (two versions: one for Windows), `rustix` and `linux-raw-sys` (through `comfy-table`, which `duckdb` enables with its terminal feature); and the build-script-only `ureq`, `ureq-proto`, `utf8-zero`, `tar`, `filetime`, `xattr` (used by the non-bundled download mode) |
+| Lockfile | +19 registry packages: `duckdb`, `libduckdb-sys`, `cast` and the two `fallible-*`; a second `crossterm` (two versions: one for Windows), `rustix` and `linux-raw-sys` (through `comfy-table`, which `duckdb` enables with its terminal feature); and the build-script-only `ureq`, `ureq-proto`, `utf8-zero`, `tar`, `filetime`, `xattr`, `zip`, `nix`, `typed-path`, `zopfli` (used by the non-bundled download mode) |
 
-`libduckdb-sys` also declares `zip = "^6"` as a build dependency, and **every `zip` release that range accepts is yanked**, which the cooldown check and `cargo audit` refuse. A 40-line stand-in crate named `zip` is patched in (`[patch.crates-io]`, `third_party/zip-stub/DBCRUST_PATCH.md`); only the unsupported non-bundled download mode ever calls it. `cargo tree --locked --workspace -i aws-lc-rs` must keep reporting nothing with the connector in the tree, and DuckDB is excluded from the 32-bit Python check and from the release binaries and wheels (`bundled` does not contain it).
+Until 1.10506.1, `libduckdb-sys` depended on `zip = "^6"`, whose releases are all yanked, and DBCrust patched in a stand-in crate; 1.10506.1 moved to `zip` 9 and the stand-in is gone. `cargo tree --locked --workspace -i aws-lc-rs` must keep reporting nothing with the connector in the tree, and DuckDB is excluded from the 32-bit Python check and from the release binaries and wheels (`bundled` does not contain it).
 
 A disabled engine is still a `DatabaseType`: config files, sessions and `recent.toml` written by a full build keep parsing. Connecting to it fails with a message that names the feature, e.g. *"MongoDB support is not compiled into this build (enable the `mongodb` cargo feature, or install a full build)"*; `dbcrust-drivers` exposes `is_compiled`, `compiled_engines` and `required_feature` for code that has to adapt. URL-scheme completion only offers the schemes the build can serve, and the credential broker refuses to enrol an engine the build does not contain (`unsupported_engine`, same hint).
 
@@ -251,6 +251,22 @@ For committed changes use `--base origin/main` (fetch that ref first). Use
 `--locked` when validating/building so Cargo cannot silently resolve newer,
 unreviewed versions. Both workspace members share the root lockfile. The guard
 does not replace review or constrain arbitrary local `cargo update` commands.
+
+### Review snapshot — 2026-10-17
+
+- `duckdb`/`libduckdb-sys` **1.10506.1** (same DuckDB 1.5.6 engine) moved its
+  build dependency to `zip` 9, so the stand-in `zip` 6.0.0 crate DBCrust had
+  patched in is gone: `cargo audit` matched it against RUSTSEC-2026-0367/0368/0369
+  (archive extraction in the real `zip` 6, code the stand-in never had). The bump
+  adds `zip` 9.0.4, `nix`, `typed-path` and `zopfli` 0.8.3 (build-script only,
+  `zopfli` held at 0.8.3 so `bumpalo`/`crc32fast`/`simd-adler32` stay put) and
+  moves `libc` to 0.2.186, the minimum `nix` accepts.
+- `cargo audit` passes with **8 informational warnings**, all "unmaintained":
+  `instant`, `paste`, `rustls-pemfile`, `rustybuzz`, `ttf-parser` and, new on
+  2026-10-16, `zvariant`, `zvariant_derive` and `zbus_names`. All but `paste`
+  come only from the desktop app's GPUI Kit stack (the last three through its
+  Linux accessibility layer, `accesskit` → `atspi`); `paste` (a proc-macro) also
+  reaches the CLI through the ClickHouse and DataFusion drivers.
 
 ### Review snapshot — 2026-09-08
 

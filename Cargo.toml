@@ -246,7 +246,7 @@ resolver = "3"
 members = ["crates/*", "gui", "gui/core"]
 # Vendored upstream crates are path dependencies, not workspace members: they
 # keep their own manifest and are exempt from the workspace lints
-exclude = ["third_party/tiberius", "third_party/zip-stub"]
+exclude = ["third_party/tiberius"]
 # `dbcrust-agent` is the credential-free thin client shipped next to the CLI;
 # the library crates are listed so `cargo test`/`clippy` at the root cover them
 default-members = [
@@ -352,9 +352,9 @@ async-trait = { version = "0.1", default-features = false }
 sqlx = { version = "0.8", default-features = false }
 pgvector = { version = "0.4", default-features = false }
 reqwest = { version = "0.12.28", default-features = false }
-# DuckDB's engine version is encoded in the crate version (1.10506.0 = DuckDB
+# DuckDB's engine version is encoded in the crate version (1.10506.x = DuckDB
 # 1.5.6); exact pin, features chosen by `dbcrust-driver-duckdb`
-duckdb = { version = "=1.10506.0", default-features = false }
+duckdb = { version = "=1.10506.1", default-features = false }
 mongodb = { version = "3.9", default-features = false, features = ["rustls-tls", "compat-3-3-0", "bson-3"] }
 bson = { version = "3.1", default-features = false }
 elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
@@ -408,9 +408,3 @@ type_complexity = "allow"
 enum_variant_names = "allow"
 too_many_arguments = "allow"
 should_implement_trait = "allow"
-
-# `libduckdb-sys` (feature `duckdb`) has a build dependency on `zip = "^6"`, every
-# release of which is yanked. Only its non-bundled download mode uses it, so a
-# stand-in crate replaces it: third_party/zip-stub/DBCRUST_PATCH.md
-[patch.crates-io]
-zip = { path = "third_party/zip-stub" }
