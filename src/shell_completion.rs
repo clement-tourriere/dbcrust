@@ -242,6 +242,7 @@ mod tests {
     fn test_bare_prefix_offers_schemes_and_compatible_files() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("data.csv"), "a,b\n").unwrap();
+        std::fs::write(dir.path().join("app.sqlite"), "").unwrap();
         std::fs::write(dir.path().join("notes.txt"), "").unwrap();
         std::fs::write(dir.path().join(".hidden.csv"), "").unwrap();
         std::fs::create_dir(dir.path().join("sub")).unwrap();
@@ -251,7 +252,17 @@ mod tests {
             .into_iter()
             .map(|c| c.value)
             .collect();
-        assert!(values.contains(&format!("{typed}data.csv")), "{values:?}");
+        // A file is offered only when the engine that opens it is compiled in
+        assert_eq!(
+            values.contains(&format!("{typed}data.csv")),
+            cfg!(feature = "files"),
+            "{values:?}"
+        );
+        assert_eq!(
+            values.contains(&format!("{typed}app.sqlite")),
+            cfg!(feature = "sqlite"),
+            "{values:?}"
+        );
         assert!(values.contains(&format!("{typed}sub/")), "{values:?}");
         assert!(
             !values.iter().any(|v| v.ends_with("notes.txt")),
@@ -262,7 +273,10 @@ mod tests {
             "{values:?}"
         );
         // Schemes are always offered for a bare word (the caller filters by prefix)
-        assert!(values.contains(&"postgres://".to_string()));
+        assert_eq!(
+            values.contains(&"postgres://".to_string()),
+            cfg!(feature = "postgres")
+        );
 
         let values: Vec<String> = url_candidates(&format!("sqlite://{typed}"))
             .into_iter()
