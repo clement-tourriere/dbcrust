@@ -25,7 +25,7 @@ use aes_gcm::{
 };
 use argon2::{Algorithm, Argon2, Params, Version};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use zeroize::Zeroizing;
@@ -226,11 +226,15 @@ pub trait UnlockCache: Send + Sync {
 }
 
 /// Process-memory cache: lasts as long as the process (an interactive REPL).
+/// Not built on Linux outside tests: there only the keyutils session keyring
+/// caches (see [`platform_unlock_cache`]).
+#[cfg(any(test, not(target_os = "linux")))]
 #[derive(Default)]
 pub struct ProcessUnlockCache {
-    keys: Mutex<HashMap<String, Zeroizing<Vec<u8>>>>,
+    keys: Mutex<std::collections::HashMap<String, Zeroizing<Vec<u8>>>>,
 }
 
+#[cfg(not(target_os = "linux"))]
 impl ProcessUnlockCache {
     /// The cache shared by every store opened in this process.
     pub fn global() -> Arc<dyn UnlockCache> {
@@ -239,6 +243,7 @@ impl ProcessUnlockCache {
     }
 }
 
+#[cfg(any(test, not(target_os = "linux")))]
 impl UnlockCache for ProcessUnlockCache {
     fn load(&self, store_id: &str) -> Option<Zeroizing<Vec<u8>>> {
         self.keys
