@@ -1,3 +1,10 @@
+## v0.39.1 (2026-10-17)
+
+### Fix
+
+- **build**: ship the dbcrust-agent crate in the source distribution
+- **build**: let the PyPI source distribution package the vendored tiberius
+
 ## v0.39.0 (2026-10-17)
 
 ### Feat
