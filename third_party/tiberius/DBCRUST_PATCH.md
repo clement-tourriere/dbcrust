@@ -12,7 +12,7 @@ dependency of `crates/driver-mssql`; it is excluded from the workspace
 | Upstream version | `tiberius 0.13.0` (published 2026-09-25, not yanked) |
 | Original archive | `https://static.crates.io/crates/tiberius/tiberius-0.13.0.crate` |
 | sha256 of the original `.crate` | `e07324791de2bdaed058af4aa433a0b5ec5c0beac407a9797419c19805df2415` (identical to the `cksum` of the 0.13.0 line in `https://index.crates.io/ti/be/tiberius` and to `checksum` in the crates.io API) |
-| Upstream commit | `7fd75bb7070fe6ea41374698abf78928bb983bda` (`.cargo_vcs_info.json`, flagged `dirty` upstream) |
+| Upstream commit | `7fd75bb7070fe6ea41374698abf78928bb983bda` (from the archive's `.cargo_vcs_info.json`: `"dirty": true`, `"path_in_vcs": ""`; the file itself is not kept, see below) |
 | License files | `LICENSE-MIT.txt`, `LICENSE-APACHE.txt` (unchanged) |
 
 ## Why
@@ -93,9 +93,12 @@ aws-lc dependency and makes the fallback provider ring.
    `[dev-dependencies.*]` tables are removed from `Cargo.toml` because their
    sources are not vendored. The following upstream files are **not** copied:
    `tests/`, `examples/`, `docs/`, `docker/` (it contains a test TLS private key),
-   `Cargo.lock`, `Cargo.toml.orig`, CI/Nix/editor config. Only `src/`, the two
-   license files, `README.md`, `CHANGELOG.md`, `.cargo_vcs_info.json` and the
-   manifest are kept.
+   `Cargo.lock`, `Cargo.toml.orig`, CI/Nix/editor config, and `.cargo_vcs_info.json`:
+   cargo reserves that name for the packages it generates and refuses to
+   package a crate that contains one, which broke `maturin sdist` (the PyPI
+   source distribution packages every path dependency); its content is in the
+   table above. Only `src/`, the two license files, `README.md`, `CHANGELOG.md`
+   and the manifest are kept.
 
 DBCrust enables only: `rustls`, `tds73`, `tds80` (default), `sql-browser-tokio`,
 `chrono`, `rust_decimal`. `native-tls`, `winauth`, `sspi-rs` and
@@ -107,8 +110,9 @@ DBCrust enables only: `rustls`, `tds73`, `tds80` (default), `sql-browser-tokio`,
    directory and verify its sha256 against the `cksum` field of
    `https://index.crates.io/ti/be/tiberius`; check the version is not yanked and
    at least 24 hours old (crates.io API, generic `User-Agent`).
-2. Extract it, replace `src/`, `Cargo.toml`, the license files, `README.md`,
-   `CHANGELOG.md` and `.cargo_vcs_info.json`; re-apply the four changes above.
+2. Extract it, replace `src/`, `Cargo.toml`, the license files, `README.md` and
+   `CHANGELOG.md` (record the commit from `.cargo_vcs_info.json` in the table,
+   do not copy the file); re-apply the four changes above.
    If upstream added a ring option by then (see below), drop the patch and the
    whole `third_party/tiberius` directory and depend on the registry crate.
 3. Update the version and sha256 in this file and the path dependency's version
