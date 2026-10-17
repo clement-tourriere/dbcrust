@@ -2,7 +2,8 @@
 
 This directory is a vendored copy of [`tiberius`](https://github.com/prisma/tiberius)
 (TDS / SQL Server client, MIT OR Apache-2.0, by the Prisma team and contributors)
-with **one change: rustls uses `ring` instead of `aws-lc-rs`**. It is a path
+with **two changes: rustls uses `ring` instead of `aws-lc-rs`, and the crate
+builds on 32-bit targets** (DBCrust ships i686 Python wheels). It is a path
 dependency of `crates/driver-mssql`; it is excluded from the workspace
 (`exclude = ["third_party/tiberius"]`) and from the formatting/lint hooks (`hk.pkl`).
 
@@ -68,7 +69,27 @@ aws-lc dependency and makes the fallback provider ring.
          SignatureScheme,
 ```
 
-3. Packaging only (no behaviour change): the `[[example]]`, `[[test]]` and
+3. `src/tds/codec/type_info.rs`: the XML column size (the PLP "unknown length"
+   marker) is written `usize::MAX - 1` instead of the literal
+   `0xfffffffffffffffe_usize`, which overflows `usize` on 32-bit targets and is a
+   hard error there (`overflowing_literals`), so upstream 0.13.0 does not compile
+   for `i686`. On 64-bit the value is the same; on 32-bit it is `0xfffffffe`.
+   The size only feeds `plp::decode`, which treats anything `>= 0xffff` as a PLP
+   stream, so XML decoding is unchanged. One line in the decoder and two in its
+   `round_trip` test:
+
+```diff
+--- a/src/tds/codec/type_info.rs
++++ b/src/tds/codec/type_info.rs
+@@ -372,7 +372,7 @@
+                 Ok(TypeInfo::Xml {
+                     schema,
+-                    size: 0xfffffffffffffffe_usize,
++                    size: usize::MAX - 1,
+                 })
+```
+
+4. Packaging only (no behaviour change): the `[[example]]`, `[[test]]` and
    `[dev-dependencies.*]` tables are removed from `Cargo.toml` because their
    sources are not vendored. The following upstream files are **not** copied:
    `tests/`, `examples/`, `docs/`, `docker/` (it contains a test TLS private key),
@@ -87,7 +108,7 @@ DBCrust enables only: `rustls`, `tds73`, `tds80` (default), `sql-browser-tokio`,
    `https://index.crates.io/ti/be/tiberius`; check the version is not yanked and
    at least 24 hours old (crates.io API, generic `User-Agent`).
 2. Extract it, replace `src/`, `Cargo.toml`, the license files, `README.md`,
-   `CHANGELOG.md` and `.cargo_vcs_info.json`; re-apply the three changes above.
+   `CHANGELOG.md` and `.cargo_vcs_info.json`; re-apply the four changes above.
    If upstream added a ring option by then (see below), drop the patch and the
    whole `third_party/tiberius` directory and depend on the registry crate.
 3. Update the version and sha256 in this file and the path dependency's version
@@ -139,3 +160,16 @@ DBCrust enables only: `rustls`, `tds73`, `tds80` (default), `sql-browser-tokio`,
 >
 > Related: staying on 0.12.3 is not an option for us because it pins rustls 0.21
 > (RUSTSEC-2026-0104, -0098, -0099).
+
+A second, independent report (32-bit build):
+
+**Title:** 0.13.0 does not compile for 32-bit targets (`overflowing_literals`)
+
+**Body:**
+
+> `src/tds/codec/type_info.rs` sets the XML column size to
+> `0xfffffffffffffffe_usize`, which does not fit a 32-bit `usize`, so
+> `cargo check --target i686-unknown-linux-gnu` fails with
+> `error: literal out of range for usize`. `usize::MAX - 1` is the same value on
+> 64-bit and still `>= 0xffff` (the PLP path of `plp::decode`) on 32-bit; happy
+> to send it as a PR.

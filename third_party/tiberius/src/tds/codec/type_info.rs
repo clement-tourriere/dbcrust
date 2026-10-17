@@ -372,7 +372,7 @@ impl TypeInfo {
 
                 Ok(TypeInfo::Xml {
                     schema,
-                    size: 0xfffffffffffffffe_usize,
+                    size: usize::MAX - 1,
                 })
             }
             Ok(VarLenType::Udt) => {
@@ -487,11 +487,11 @@ mod tests {
                 schema: Some(
                     XmlSchema::new("fake-db-name", "fake-owner", "fake-collection").into(),
                 ),
-                size: 0xfffffffffffffffe_usize,
+                size: usize::MAX - 1,
             },
             TypeInfo::Xml {
                 schema: None,
-                size: 0xfffffffffffffffe_usize,
+                size: usize::MAX - 1,
             },
             TypeInfo::FixedLen(FixedLenType::Int4),
             TypeInfo::VarLenSized(VarLenContext::new(
