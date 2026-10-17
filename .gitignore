@@ -1,4 +1,6 @@
 /target
+# `maturin sdist` runs `cargo package --list` in the vendored crate
+/third_party/tiberius/target
 .cargo/*
 !.cargo/audit.toml
 dist/

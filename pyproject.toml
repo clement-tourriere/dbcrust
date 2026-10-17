@@ -81,6 +81,10 @@ exclude = [
     "python/dbcrust/django/troubleshoot_logging.py",
     "python/example.py",
 ]
+# The source distribution keeps the workspace manifest, whose `default-members`
+# lists the `dbcrust-agent` client; maturin only copies the CLI's own path
+# dependencies, so ship that crate too or `cargo metadata` rejects the sdist
+include = [{ path = "crates/agent/**/*", format = "sdist" }]
 
 [project.scripts]
 dbc = "dbcrust.__main__:main"
