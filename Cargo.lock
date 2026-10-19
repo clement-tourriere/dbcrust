@@ -3374,6 +3374,7 @@ dependencies = [
  "crossterm 0.29.0",
  "dbcrust-agent-protocol",
  "dbcrust-ai",
+ "dbcrust-app",
  "dbcrust-broker",
  "dbcrust-core",
  "dbcrust-docker",
@@ -3456,6 +3457,35 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "dbcrust-app"
+version = "0.39.1"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "dbcrust-ai",
+ "dbcrust-core",
+ "dbcrust-docker",
+ "dbcrust-drivers",
+ "dbcrust-secrets",
+ "dirs 6.0.0",
+ "futures-util",
+ "rand 0.9.5",
+ "regex",
+ "reqwest 0.12.28",
+ "rstest",
+ "serde",
+ "serde_json",
+ "strum 0.28.0",
+ "tempfile",
+ "thiserror 2.0.20",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -3836,7 +3866,10 @@ name = "dbcrust-gui-core"
 version = "0.39.1"
 dependencies = [
  "chrono",
- "dbcrust",
+ "dbcrust-app",
+ "dbcrust-core",
+ "dbcrust-docker",
+ "dbcrust-drivers",
  "dbcrust-secrets",
  "futures-util",
  "rstest",

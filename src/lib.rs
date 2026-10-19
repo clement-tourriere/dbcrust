@@ -1,8 +1,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(non_local_definitions)]
 
-#[cfg(feature = "ai")]
-mod ai_session_impl; // `impl ai::AiSession for db::Database`
 pub mod broker; // Credential broker for AI agents (`dbcrust broker …`)
 pub mod cli;
 pub mod cli_core; // New unified CLI core
@@ -10,20 +8,15 @@ pub mod command_completion; // Trait-based command completion system
 pub mod commands; // New type-safe enum-based command system
 pub mod completion;
 pub mod completion_provider; // Database-agnostic completion trait
-pub mod config;
-pub mod config_editor; // Schema-driven \config menu, get/set, tunnel manager
-pub mod db;
+pub mod config_editor; // `\config` menu, tunnel manager, $EDITOR (schema: `dbcrust_app`)
 pub mod drivers; // Driver registry: engine -> client factory, compiled-in connectors
 #[cfg(feature = "explain-tui")]
 pub mod explain_tui;
-pub mod features; // Add-ons a build may leave out + their "not compiled in" error
 pub mod highlighter;
 pub mod history_manager; // Per-session command history management
 pub mod logging;
-pub mod myconf; // MySQL configuration file support
 pub mod named_queries;
 pub mod pager;
-pub mod pgpass;
 pub mod prompt;
 #[cfg(feature = "explain-tui")]
 pub mod schema_tui;
@@ -37,10 +30,14 @@ pub mod sql_parser_postgresql; // PostgreSQL-specific SQL parser
 pub mod sql_parser_sqlite; // SQLite-specific SQL parser
 pub mod sql_parser_trait; // Database-specific SQL parser trait system
 pub mod sql_validator; // Reedline validator (Enter submits or continues) for the REPL
-pub mod ssh_tunnel; // Add the SSH tunnel module
+pub mod terminal_ui; // `inquire`/ratatui front end of `Database` prompts and viewers
 pub mod update; // Self-update (--update): release check + channel-aware upgrade
 pub mod url_scheme; // URL scheme autocompletion support
-pub mod vault_client; // Add backslash commands module
+
+// The application layer shared with the desktop app (configuration, credential
+// lookups, SSH tunnels, `Database`) lives in `dbcrust-app`; re-exported under
+// the historical paths so `crate::config::…`, `dbcrust::db::…` keep resolving.
+pub use dbcrust_app::{config, db, features, myconf, pgpass, ssh_tunnel, vault_client};
 
 // Modules that moved to `dbcrust-core` (the bottom layer of the crate split),
 // re-exported under their historical paths so `crate::database::…`,

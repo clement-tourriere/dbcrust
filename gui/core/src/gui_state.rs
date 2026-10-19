@@ -69,7 +69,7 @@ pub enum DraftTarget {
         name: String,
         /// The engine the query is saved for; `None` for every connection.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        engine: Option<dbcrust::database::DatabaseType>,
+        engine: Option<dbcrust_core::database::DatabaseType>,
     },
     /// A saved query of any scope (sessions included), by its storage key.
     SavedQueryKey {
@@ -157,7 +157,7 @@ impl GuiState {
 
     /// `<config dir>/gui_state.toml`.
     pub fn path() -> GuiResult<PathBuf> {
-        dbcrust::config::Config::get_config_directory()
+        dbcrust_app::config::Config::get_config_directory()
             .map(|dir| dir.join(FILE_NAME))
             .map_err(|e| GuiError::Storage(format!("Could not locate the config directory: {e}")))
     }
@@ -211,7 +211,7 @@ impl GuiState {
         }
         // Atomic, and private (drafts can contain sensitive SQL): DBCrust's
         // writer creates the temp file 0600 before writing
-        dbcrust::config::write_file_atomically(path, format!("{HEADER}{body}").as_bytes())
+        dbcrust_app::config::write_file_atomically(path, format!("{HEADER}{body}").as_bytes())
             .map_err(|e| storage("write", &e))
     }
 
@@ -287,7 +287,7 @@ mod tests {
                     connection_key: Some("postgres://app@db.internal:5432/shop".into()),
                     target: Some(DraftTarget::SavedQuery {
                         name: "daily".into(),
-                        engine: Some(dbcrust::database::DatabaseType::PostgreSQL),
+                        engine: Some(dbcrust_core::database::DatabaseType::PostgreSQL),
                     }),
                 },
                 Draft {

@@ -2,7 +2,7 @@
 //!
 //! Pure functions, no I/O: the form turns its fields into a URL
 //! ([`build_url`]) and a URL back into fields ([`parse_target`]). Every value
-//! is percent-encoded the way `dbcrust::database::ConnectionInfo::parse_url`
+//! is percent-encoded the way `dbcrust_core::database::ConnectionInfo::parse_url`
 //! decodes it, so a password like `p@ss:/?#%` or a database called `a/b` survives
 //! the round trip (the tests below check this against DBCrust's own parser).
 //!
@@ -11,7 +11,7 @@
 //! becomes a `scheme:///…` URL, what to call a saved session, and how old a
 //! recent connection is.
 
-use dbcrust::database::{DatabaseType, DatabaseTypeExt};
+use dbcrust_core::database::{DatabaseType, DatabaseTypeExt};
 
 /// Shown instead of a password wherever a URL is displayed.
 pub const PASSWORD_MASK: &str = "••••••••";
@@ -83,10 +83,10 @@ fn masked_options(options: &[(String, String)]) -> Vec<(&str, String)> {
     options
         .iter()
         .map(|(key, value)| {
-            let value = if dbcrust::password_sanitizer::is_secret_key(key) {
+            let value = if dbcrust_core::password_sanitizer::is_secret_key(key) {
                 "***".to_string()
             } else {
-                dbcrust::password_sanitizer::redact_text(value)
+                dbcrust_core::password_sanitizer::redact_text(value)
             };
             (key.as_str(), value)
         })
@@ -276,9 +276,9 @@ impl std::fmt::Debug for DockerSpec {
 impl DockerSpec {
     /// The same connection as `dbcrust`'s canonical Docker target (the parser
     /// and renderer of `docker://` URLs).
-    pub fn to_target(&self) -> dbcrust::docker::DockerTarget {
+    pub fn to_target(&self) -> dbcrust_docker::docker::DockerTarget {
         let some = |text: &str| Some(text.trim().to_string()).filter(|text| !text.is_empty());
-        dbcrust::docker::DockerTarget {
+        dbcrust_docker::docker::DockerTarget {
             user: some(&self.user),
             password: Some(self.password.clone()).filter(|password| !password.is_empty()),
             container: self.container.trim().to_string(),
@@ -288,7 +288,7 @@ impl DockerSpec {
         }
     }
 
-    pub fn from_target(target: dbcrust::docker::DockerTarget) -> Self {
+    pub fn from_target(target: dbcrust_docker::docker::DockerTarget) -> Self {
         Self {
             user: target.user.unwrap_or_default(),
             password: target.password.unwrap_or_default(),
@@ -727,12 +727,12 @@ pub fn parse_docker_url(url: &str) -> Option<DockerSpec> {
         }
         _ => url,
     };
-    dbcrust::docker::DockerTarget::parse(url).map(DockerSpec::from_target)
+    dbcrust_docker::docker::DockerTarget::parse(url).map(DockerSpec::from_target)
 }
 
 /// Parse `vault://[role@][mount][/database]`.
 pub fn parse_vault_url(url: &str) -> Option<VaultSpec> {
-    let (role, mount, database) = dbcrust::vault_client::parse_vault_url(url.trim())?;
+    let (role, mount, database) = dbcrust_app::vault_client::parse_vault_url(url.trim())?;
     Some(VaultSpec {
         role: role.unwrap_or_default(),
         mount,
@@ -1129,7 +1129,7 @@ pub struct FormDefaults {
 pub fn connectable_engines() -> Vec<DatabaseType> {
     DatabaseType::supported_types()
         .into_iter()
-        .filter(dbcrust::drivers::is_compiled)
+        .filter(dbcrust_drivers::is_compiled)
         .collect()
 }
 
@@ -1286,7 +1286,7 @@ pub fn tls_summary(spec: &ConnectionSpec) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbcrust::database::ConnectionInfo;
+    use dbcrust_core::database::ConnectionInfo;
     use rstest::rstest;
 
     /// The connect form lists the engines compiled into the build, and the
@@ -1297,7 +1297,7 @@ mod tests {
     fn the_desktop_build_compiles_every_engine_it_offers() {
         let offered = connectable_engines();
         for engine in DatabaseType::supported_types() {
-            let compiled = dbcrust::drivers::is_compiled(&engine);
+            let compiled = dbcrust_drivers::is_compiled(&engine);
             assert_eq!(offered.contains(&engine), compiled, "{engine}");
             let opt_in = matches!(
                 engine,

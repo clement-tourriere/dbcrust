@@ -6,10 +6,10 @@
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum GuiError {
     /// Connecting failed (bad URL, unreachable host, auth, tunnel, …).
-    #[error("{}", dbcrust::password_sanitizer::redact_text(.0))]
+    #[error("{}", dbcrust_core::password_sanitizer::redact_text(.0))]
     Connection(String),
     /// The database rejected or failed the statement.
-    #[error("{}", dbcrust::password_sanitizer::redact_text(.0))]
+    #[error("{}", dbcrust_core::password_sanitizer::redact_text(.0))]
     Query(String),
     /// The read-only guard refused a statement classified as a write.
     #[error("{0}")]
@@ -27,13 +27,13 @@ pub enum GuiError {
     #[error("This connection is closed")]
     Disconnected,
     /// Reading or writing DBCrust's config/storage files failed.
-    #[error("{}", dbcrust::password_sanitizer::redact_text(.0))]
+    #[error("{}", dbcrust_core::password_sanitizer::redact_text(.0))]
     Storage(String),
     /// Docker discovery failed.
-    #[error("{}", dbcrust::password_sanitizer::redact_text(.0))]
+    #[error("{}", dbcrust_core::password_sanitizer::redact_text(.0))]
     Docker(String),
     /// Vault discovery or credential issuance failed.
-    #[error("{}", dbcrust::password_sanitizer::redact_text(.0))]
+    #[error("{}", dbcrust_core::password_sanitizer::redact_text(.0))]
     Vault(String),
     /// The operation is not available for this database engine.
     #[error("{0}")]

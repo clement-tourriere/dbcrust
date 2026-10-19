@@ -11,7 +11,9 @@ use super::provenance::Executed;
 use super::results::ResultsContent;
 use super::{ActiveRun, QueryStatus, QueryTab, QueryTabEvent};
 use dbcrust_gui_core::completion::leading_keyword;
-use dbcrust_gui_core::dbcrust::sql_buffer::{has_blank_line_separator, parses_as_single_statement};
+use dbcrust_gui_core::dbcrust_core::sql_buffer::{
+    has_blank_line_separator, parses_as_single_statement,
+};
 use dbcrust_gui_core::history::{HistoryEntry, HistoryOutcome};
 use dbcrust_gui_core::statements::{Execution, SqlDialect, StatementIndex, TargetKind, dialect_of};
 use dbcrust_gui_core::{

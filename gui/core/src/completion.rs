@@ -25,7 +25,7 @@ use crate::gui_state::StatementSeparators;
 use crate::schema::{is_default_schema, is_system_object, quote_identifier, table_reference};
 use crate::statements::{Boundary, SplitConfig, StatementIndex};
 use crate::types::{TableEntry, TableKind};
-use dbcrust::database::DatabaseType;
+use dbcrust_core::database::DatabaseType;
 use std::collections::HashMap;
 use std::ops::Range;
 

@@ -14,7 +14,7 @@
 
 use crate::completion::{Token, TokenKind, tokenize};
 use crate::statements::{Boundary, SplitConfig, StatementIndex};
-use dbcrust::sql_buffer;
+use dbcrust_core::sql_buffer;
 
 const INDENT: &str = "  ";
 

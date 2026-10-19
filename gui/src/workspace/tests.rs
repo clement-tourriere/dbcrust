@@ -4,7 +4,7 @@ use super::{Workspace, tabs::TabKind};
 use crate::RestoredState;
 use crate::actions as act;
 use dbcrust_gui_core::ConfigStore;
-use dbcrust_gui_core::dbcrust::config::Config;
+use dbcrust_gui_core::dbcrust_app::config::Config;
 use dbcrust_gui_core::gui_state::{DraftTarget, GuiState};
 use gpui_kit::component::{Theme, WindowExt as _};
 use gpui_kit::{Action, AnyWindowHandle, AppContext as _, Entity, TestAppContext, WindowOptions};

@@ -2,7 +2,7 @@
 //! one Settings page, rendered from its [`FieldKind`].
 
 use super::*;
-use dbcrust_gui_core::dbcrust::config_editor::{ConfigSection, FieldKind, FieldSpec};
+use dbcrust_gui_core::dbcrust_app::config_editor::{ConfigSection, FieldKind, FieldSpec};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use storage::{Edit, read_value, write_value};
 

@@ -10,7 +10,7 @@
 //! Commands are processed one at a time (one active operation per
 //! connection). Cancellation is out-of-band: every request gets a fresh
 //! cancel token, installed as the worker thread's interrupt flag while it
-//! runs (see `dbcrust::database::set_thread_interrupt_flag`). PostgreSQL
+//! runs (see `dbcrust_core::database::set_thread_interrupt_flag`). PostgreSQL
 //! polls it to cancel server-side; other engines stop waiting for the
 //! statement. A request cancelled while still queued never starts, and a
 //! late cancel can never hit the next request (its token is different).
@@ -24,7 +24,7 @@ use crate::store::ConfigStore;
 use crate::types::{
     ConnectRequest, ConnectionSummary, ExplainRaw, ResultSet, TableDetails, TableEntry,
 };
-use dbcrust::db::Database;
+use dbcrust_app::db::Database;
 use futures_util::FutureExt;
 use std::collections::HashSet;
 use std::future::Future;
@@ -63,7 +63,7 @@ enum Command {
     },
     SiblingInfo {
         database: String,
-        reply: Reply<dbcrust::database::ConnectionInfo>,
+        reply: Reply<dbcrust_core::database::ConnectionInfo>,
     },
     SetReadOnly {
         enabled: bool,
@@ -537,7 +537,7 @@ fn run_worker(
         }
     };
     // Until a request installs its own token, nothing can cancel this thread
-    dbcrust::database::set_thread_interrupt_flag(Some(Arc::new(AtomicBool::new(false))));
+    dbcrust_core::database::set_thread_interrupt_flag(Some(Arc::new(AtomicBool::new(false))));
     let local = tokio::task::LocalSet::new();
     local.block_on(&runtime, async move {
         let report = |phase: ConnectPhase| {
@@ -623,7 +623,9 @@ fn run_worker(
                 .is_err();
             // A cancelled request's token must not leak into the next
             // command (metadata commands do not install their own)
-            dbcrust::database::set_thread_interrupt_flag(Some(Arc::new(AtomicBool::new(false))));
+            dbcrust_core::database::set_thread_interrupt_flag(Some(Arc::new(AtomicBool::new(
+                false,
+            ))));
             {
                 let mut cancellation = worker.control.cancellation();
                 cancellation.running = None;
@@ -728,7 +730,7 @@ impl Worker {
             return Err(GuiError::Cancelled { abandoned: false });
         }
         let token = Arc::new(AtomicBool::new(false));
-        dbcrust::database::set_thread_interrupt_flag(Some(token.clone()));
+        dbcrust_core::database::set_thread_interrupt_flag(Some(token.clone()));
         cancellation.running = Some((request, token.clone()));
         Ok(token)
     }
@@ -790,7 +792,7 @@ impl Worker {
                 .trim()
                 .trim_end_matches(';')
                 .to_string();
-            dbcrust::safety::check_read_only(&statement, &db_type).map_err(|e| {
+            dbcrust_core::safety::check_read_only(&statement, &db_type).map_err(|e| {
                 GuiError::ReadOnly(format!(
                     "EXPLAIN ANALYZE runs the statement, so it is only offered for read-only statements. {e}"
                 ))
@@ -856,7 +858,7 @@ impl Worker {
     /// Connection details for `database` on this server: credentials, TLS
     /// and other options are kept (a URL round-trip would drop some).
     /// Never leaves the backend except to open the sibling connection.
-    fn sibling_info(&self, database: &str) -> GuiResult<dbcrust::database::ConnectionInfo> {
+    fn sibling_info(&self, database: &str) -> GuiResult<dbcrust_core::database::ConnectionInfo> {
         if !self.summary.supports_database_switch() {
             return Err(GuiError::Unsupported(format!(
                 "{} connections have a single database",
@@ -877,7 +879,7 @@ impl Worker {
         // not go to a same-named container on another daemon.
         if let Some(pin) = self.database.docker_daemon_pin() {
             info.options.insert(
-                dbcrust::docker::PINNED_DAEMON_OPTION.to_string(),
+                dbcrust_docker::docker::PINNED_DAEMON_OPTION.to_string(),
                 pin.to_string(),
             );
         }
@@ -897,7 +899,8 @@ impl Worker {
                 GuiError::Storage("This connection cannot be saved as a session".into())
             })?;
         // Routing information, not part of what a session is
-        info.options.remove(dbcrust::docker::PINNED_DAEMON_OPTION);
+        info.options
+            .remove(dbcrust_docker::docker::PINNED_DAEMON_OPTION);
         self.store
             .update_sessions(|config| config.save_session_from_connection_info(name, &info))
             .map_err(|e| GuiError::Storage(format!("Could not save session \"{name}\": {e}")))?;
@@ -949,7 +952,7 @@ mod tests {
         // Connections record recents from their worker thread: keep every
         // thread out of the real config directory, not only named ones
         crate::test_support::isolate();
-        ConfigStore::from_config(dbcrust::config::Config::default())
+        ConfigStore::from_config(dbcrust_app::config::Config::default())
     }
 
     fn sqlite_url(dir: &tempfile::TempDir) -> String {
@@ -970,7 +973,10 @@ mod tests {
             let (handle, summary) = ConnectionHandle::connect(request, test_store())
                 .await
                 .unwrap();
-            assert_eq!(summary.db_type, dbcrust::database::DatabaseType::SQLite);
+            assert_eq!(
+                summary.db_type,
+                dbcrust_core::database::DatabaseType::SQLite
+            );
 
             handle
                 .execute(
@@ -1093,7 +1099,7 @@ mod tests {
             assert!(matches!(error, GuiError::ReadOnly(_)), "{error:?}");
         });
         assert!(
-            !dbcrust::database::read_only_requested(),
+            !dbcrust_core::database::read_only_requested(),
             "global flag is reset"
         );
     }
@@ -1190,7 +1196,7 @@ mod tests {
             assert!(connected.handle.is_none(), "a test keeps no connection");
             assert_eq!(
                 connected.summary.db_type,
-                dbcrust::database::DatabaseType::SQLite
+                dbcrust_core::database::DatabaseType::SQLite
             );
             assert!(connected.route.is_none());
             assert_eq!(*phases.borrow(), ConnectPhase::Authenticating);

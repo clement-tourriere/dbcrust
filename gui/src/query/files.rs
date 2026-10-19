@@ -55,9 +55,9 @@ fn save_in_order<E>(
 /// key saves into the global query of the same name.
 fn query_order_key(storage_key: &str) -> String {
     let key = match storage_key.strip_prefix("legacy::") {
-        Some(name) => dbcrust_gui_core::dbcrust::config::NamedQueriesStorage::generate_key(
+        Some(name) => dbcrust_gui_core::dbcrust_app::config::NamedQueriesStorage::generate_key(
             name,
-            &dbcrust_gui_core::dbcrust::config::NamedQueryScope::Global,
+            &dbcrust_gui_core::dbcrust_app::config::NamedQueryScope::Global,
         ),
         None => storage_key.to_string(),
     };
@@ -67,7 +67,7 @@ fn query_order_key(storage_key: &str) -> String {
 /// [`query_order_key`] of the query `name` saved for `scope` (`None`:
 /// every connection).
 fn named_order_key(name: &str, scope: Option<&DatabaseType>) -> String {
-    use dbcrust_gui_core::dbcrust::config::{NamedQueriesStorage, NamedQueryScope};
+    use dbcrust_gui_core::dbcrust_app::config::{NamedQueriesStorage, NamedQueryScope};
     let scope = scope.map_or(NamedQueryScope::Global, |engine| {
         NamedQueryScope::DatabaseType(engine.clone())
     });
@@ -755,7 +755,7 @@ mod tests {
 
     use super::SaveTarget;
     use dbcrust_gui_core::ConfigStore;
-    use dbcrust_gui_core::dbcrust::config::Config;
+    use dbcrust_gui_core::dbcrust_app::config::Config;
     use gpui_kit::{AppContext as _, TestAppContext, WindowOptions};
     use std::path::PathBuf;
 

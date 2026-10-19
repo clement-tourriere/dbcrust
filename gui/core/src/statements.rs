@@ -19,9 +19,9 @@
 //! belongs to the first, and trailing comments of the document to the last.
 
 use crate::gui_state::StatementSeparators;
-use dbcrust::database::DatabaseType;
-pub use dbcrust::sql_buffer::{Boundary, SplitMode, SqlDialect, StatementSpan};
-use dbcrust::sql_buffer::{has_blank_line_separator, split_statement_spans_with};
+use dbcrust_core::database::DatabaseType;
+pub use dbcrust_core::sql_buffer::{Boundary, SplitMode, SqlDialect, StatementSpan};
+use dbcrust_core::sql_buffer::{has_blank_line_separator, split_statement_spans_with};
 use std::ops::Range;
 use std::sync::Arc;
 

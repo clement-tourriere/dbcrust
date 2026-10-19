@@ -3,7 +3,7 @@
 use super::*;
 use crate::RestoredState;
 use crate::workspace::Workspace;
-use dbcrust_gui_core::dbcrust::config::Config;
+use dbcrust_gui_core::dbcrust_app::config::Config;
 use dbcrust_gui_core::docker::DockerDaemon;
 use dbcrust_gui_core::gui_state::GuiState;
 use dbcrust_gui_core::launcher::docker_key;
@@ -158,7 +158,7 @@ fn the_filters_split_the_list(cx: &mut TestAppContext) {
             url: "sqlite:///tmp/shop.db".into(),
             db_type: DatabaseType::SQLite,
             timestamp,
-            connection: dbcrust_gui_core::dbcrust::config::RecentConnection {
+            connection: dbcrust_gui_core::dbcrust_app::config::RecentConnection {
                 connection_url: "sqlite:///tmp/shop.db".into(),
                 display_name: "shop.db".into(),
                 timestamp,
@@ -695,7 +695,7 @@ fn entry_of(cx: &mut TestAppContext, home: &Entity<HomeView>, key: &str) -> Entr
 }
 
 fn daemon_at(socket: &str) -> DockerDaemon {
-    use dbcrust_gui_core::dbcrust::docker::DockerEndpoint;
+    use dbcrust_gui_core::dbcrust_docker::docker::DockerEndpoint;
     DockerDaemon::of(&DockerEndpoint::explicit(socket).expect("endpoint"))
 }
 
@@ -861,7 +861,9 @@ fn import(cx: &mut TestAppContext, window: AnyWindowHandle, home: &Entity<HomeVi
     .expect("import");
 }
 
-fn info_of(request: &ConnectRequest) -> Box<dbcrust_gui_core::dbcrust::database::ConnectionInfo> {
+fn info_of(
+    request: &ConnectRequest,
+) -> Box<dbcrust_gui_core::dbcrust_core::database::ConnectionInfo> {
     match &request.target {
         dbcrust_gui_core::ConnectTarget::Info(info) => info.clone(),
         other => panic!("expected resolved connection details, got {other:?}"),

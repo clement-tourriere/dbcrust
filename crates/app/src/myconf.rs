@@ -30,7 +30,7 @@ impl std::fmt::Debug for MySQLConfig {
             .field("user", &self.user)
             .field(
                 "password",
-                &crate::password_sanitizer::mask_secret(&self.password),
+                &dbcrust_core::password_sanitizer::mask_secret(&self.password),
             )
             .field("database", &self.database)
             .field("socket", &self.socket)

@@ -1,24 +1,24 @@
 use crate::config::SSHTunnelConfig;
-use crate::database::{ConnectionInfo, DatabaseClient, DatabaseType, DatabaseTypeExt};
-#[cfg(feature = "docker")]
-use crate::docker::DockerPhase;
-#[cfg(feature = "docker")]
-use crate::docker_route::DockerRoute;
-#[cfg(feature = "docker")]
-use crate::docker_tunnel::DockerTunnel;
-use crate::drivers::create_database_client;
 use crate::pgpass;
+use crate::terminal_ui::{self, TerminalUi};
+use dbcrust_core::database::{ConnectionInfo, DatabaseClient, DatabaseType, DatabaseTypeExt};
+#[cfg(feature = "docker")]
+use dbcrust_docker::docker::DockerPhase;
+#[cfg(feature = "docker")]
+use dbcrust_docker::docker_route::DockerRoute;
+#[cfg(feature = "docker")]
+use dbcrust_docker::docker_tunnel::DockerTunnel;
+use dbcrust_drivers::create_database_client;
 
-use inquire::MultiSelect;
 use std::collections::HashMap;
 use std::error::Error as StdError;
 #[cfg(feature = "docker")]
 use std::sync::Arc;
 use tracing::{debug, info};
 
-// Metadata DTOs live in `crate::model`; re-exported so `crate::db::TableDetails`
-// (and `dbcrust::db::TableDetails` for the GUI) keep resolving.
-pub use crate::model::*;
+// Metadata DTOs live in `dbcrust_core::model`; re-exported so `db::TableDetails`
+// (`dbcrust::db::…` in the CLI, `dbcrust_app::db::…` in the GUI) keeps resolving.
+pub use dbcrust_core::model::*;
 
 #[derive(Debug)]
 pub struct ColumnSelectionAborted;
@@ -55,8 +55,13 @@ pub enum FrontendMode {
 }
 
 impl FrontendMode {
-    fn allows_interactive_terminal_ui(self) -> bool {
-        matches!(self, Self::Cli)
+    /// The prompts and viewers the CLI installed ([`terminal_ui::install`]);
+    /// `None` in GUI mode, or when no front end installed any.
+    fn terminal_ui(self) -> Option<&'static dyn TerminalUi> {
+        match self {
+            Self::Cli => terminal_ui::installed(),
+            Self::Gui => None,
+        }
     }
 
     fn allows_stdout_status(self) -> bool {
@@ -80,7 +85,7 @@ pub struct Database {
     database_client: Option<Box<dyn DatabaseClient>>,
 
     // Connection info override for special cases like Vault connections
-    connection_info_override: Option<crate::database::ConnectionInfo>,
+    connection_info_override: Option<dbcrust_core::database::ConnectionInfo>,
 
     // SSH tunnel management
     ssh_tunnel: Option<crate::ssh_tunnel::SSHTunnel>,
@@ -99,7 +104,7 @@ pub struct Database {
 
     // Application settings and state
     expanded_display: bool,
-    output_format: crate::cli::OutputFormat,
+    output_format: dbcrust_core::output_format::OutputFormat,
     read_only: bool,
     default_limit: usize,
     autocomplete_enabled: bool,
@@ -293,7 +298,7 @@ impl Database {
         debug!("[Database::from_docker_url] Creating database from Docker URL");
 
         // Parse Docker URL (container, credentials, database, options)
-        let mut template = crate::docker_target::DockerTarget::parse(url)
+        let mut template = dbcrust_core::docker_target::DockerTarget::parse(url)
             .ok_or("Invalid Docker URL format")?
             .to_connection_info();
 
@@ -303,10 +308,10 @@ impl Database {
             .clone()
             .ok_or("Docker container name not found in URL")?;
         if container_name.is_empty() {
-            if !frontend_mode.allows_interactive_terminal_ui() {
+            let Some(ui) = frontend_mode.terminal_ui() else {
                 return Err("Interactive Docker container selection is not available in GUI mode. Provide an explicit container name.".into());
-            }
-            template.docker_container = Some(Self::select_docker_container().await?);
+            };
+            template.docker_container = Some(Self::select_docker_container(ui).await?);
         }
 
         let connected = Self::connect_docker_container(
@@ -326,7 +331,7 @@ impl Database {
 
         if connected.route.is_forwarded()
             && frontend_mode.allows_stdout_status()
-            && !crate::database::one_shot_mode()
+            && !dbcrust_core::database::one_shot_mode()
         {
             println!(
                 "🐳 '{}' is not reachable from this machine directly: connected through a `docker exec` relay ({}).",
@@ -338,7 +343,7 @@ impl Database {
     }
 
     /// Connect to a database container by the first route that works (see
-    /// [`crate::docker::DockerClient::connect_via_routes`]).
+    /// [`dbcrust_docker::docker::DockerClient::connect_via_routes`]).
     ///
     /// `template` is the parsed `docker://` target: the container name plus
     /// any credentials/database/options given explicitly (they win over the
@@ -351,7 +356,7 @@ impl Database {
     /// and so does dropping this future.
     ///
     /// Which daemon: the current one, unless `template.options` carries
-    /// [`crate::docker_target::PINNED_DAEMON_OPTION`] (as the siblings of an open
+    /// [`dbcrust_core::docker_target::PINNED_DAEMON_OPTION`] (as the siblings of an open
     /// Docker connection do: see [`Database::docker_daemon_pin`]), in which
     /// case that very daemon is used, whatever context is current by now.
     pub async fn connect_docker_container<P, B, Fut>(
@@ -374,12 +379,12 @@ impl Database {
         let mut template = template.clone();
         let pinned = template
             .options
-            .remove(crate::docker_target::PINNED_DAEMON_OPTION);
+            .remove(dbcrust_core::docker_target::PINNED_DAEMON_OPTION);
         let docker_client = match pinned {
-            Some(pin) => crate::docker::DockerClient::with_endpoint(
-                crate::docker::DockerEndpoint::from_pinned(&pin)?,
+            Some(pin) => dbcrust_docker::docker::DockerClient::with_endpoint(
+                dbcrust_docker::docker::DockerEndpoint::from_pinned(&pin)?,
             )?,
-            None => crate::docker::DockerClient::new()?,
+            None => dbcrust_docker::docker::DockerClient::new()?,
         };
 
         let connected = docker_client
@@ -421,7 +426,7 @@ impl Database {
     }
 
     /// For a Docker connection: the identity of the daemon it was made
-    /// through. Put it under [`crate::docker_target::PINNED_DAEMON_OPTION`] in the
+    /// through. Put it under [`dbcrust_core::docker_target::PINNED_DAEMON_OPTION`] in the
     /// options of a follow-up request (another database of the same
     /// container) so it reaches the same daemon even if the user switched
     /// docker contexts meanwhile.
@@ -433,7 +438,7 @@ impl Database {
     /// for the container: explicit values from the URL win.
     fn resolve_docker_connection_info(
         template: &ConnectionInfo,
-        docker_connection: crate::docker::DockerDatabaseConnection,
+        docker_connection: dbcrust_docker::docker::DockerDatabaseConnection,
     ) -> ConnectionInfo {
         ConnectionInfo {
             database_type: docker_connection.database_type,
@@ -467,11 +472,13 @@ impl Database {
     }
 
     /// Interactive Docker container selection
-    async fn select_docker_container() -> std::result::Result<String, Box<dyn StdError>> {
+    async fn select_docker_container(
+        ui: &dyn TerminalUi,
+    ) -> std::result::Result<String, Box<dyn StdError>> {
         println!("🐳 Discovering Docker database containers...");
 
         // Create Docker client
-        let docker_client = crate::docker::DockerClient::new()
+        let docker_client = dbcrust_docker::docker::DockerClient::new()
             .map_err(|e| format!("Failed to create Docker client: {e}"))?;
 
         // List all database containers
@@ -548,18 +555,14 @@ impl Database {
         }
 
         // Show interactive selection and get the index
-        let selected_index = inquire::Select::new("Select a database container:", options.clone())
-            .prompt()
+        let container_index = ui
+            .select_one("Select a database container:", &options)
             .map_err(|e| format!("Selection cancelled: {e}"))?;
 
-        // Find the index of the selected option
-        let container_index = options
-            .iter()
-            .position(|option| option == &selected_index)
-            .ok_or("Invalid selection")?;
-
         // Get the selected container by index (from running containers only)
-        let selected_container = running_containers[container_index];
+        let selected_container = *running_containers
+            .get(container_index)
+            .ok_or("Invalid selection")?;
 
         println!(
             "📦 Selected container: {} ({})",
@@ -704,10 +707,10 @@ impl Database {
             #[cfg(feature = "docker")]
             docker_daemon: None,
             expanded_display: expanded_display_default.unwrap_or(false),
-            output_format: crate::cli::OutputFormat::Table,
+            output_format: dbcrust_core::output_format::OutputFormat::Table,
             // Every construction path (direct URL, docker, vault, session)
             // picks up --read-only from the process-wide request
-            read_only: crate::database::read_only_requested(),
+            read_only: dbcrust_core::database::read_only_requested(),
             default_limit: default_limit.unwrap_or(100),
             autocomplete_enabled: config.autocomplete_enabled,
             explain_mode: config.explain_mode_default,
@@ -730,7 +733,7 @@ impl Database {
         // frontend — never in one-shot mode, where stdout must stay parseable.
         if config.show_server_info
             && frontend_mode.allows_stdout_status()
-            && !crate::database::one_shot_mode()
+            && !dbcrust_core::database::one_shot_mode()
         {
             db.display_server_info().await;
         }
@@ -824,19 +827,19 @@ impl Database {
                 ])
             } else {
                 match connection_info.database_type {
-                    crate::database::DatabaseType::MySQL => self
+                    dbcrust_core::database::DatabaseType::MySQL => self
                         .execute_query(
                             "SELECT User, Host, account_locked FROM mysql.user ORDER BY User",
                         )
                         .await
                         .map_err(|e| format!("Error listing MySQL users: {e}").into()),
-                    crate::database::DatabaseType::PostgreSQL => self
+                    dbcrust_core::database::DatabaseType::PostgreSQL => self
                         .execute_query(
                             "SELECT usename, usesuper, usecreatedb FROM pg_user ORDER BY usename",
                         )
                         .await
                         .map_err(|e| format!("Error listing PostgreSQL users: {e}").into()),
-                    crate::database::DatabaseType::SqlServer => self
+                    dbcrust_core::database::DatabaseType::SqlServer => self
                         .execute_query(
                             "SELECT name, type_desc AS type, is_disabled \
                              FROM sys.server_principals \
@@ -868,7 +871,7 @@ impl Database {
 
             let connection_info = database_client.get_connection_info();
 
-            if connection_info.database_type == crate::database::DatabaseType::DuckDB {
+            if connection_info.database_type == dbcrust_core::database::DatabaseType::DuckDB {
                 let query = r#"
                     SELECT
                         index_name AS "Index Name",
@@ -902,21 +905,21 @@ impl Database {
                 }
             } else {
                 match connection_info.database_type {
-                    crate::database::DatabaseType::MySQL => {
+                    dbcrust_core::database::DatabaseType::MySQL => {
                         return Ok(vec![
                             vec!["Note".to_string()],
                             vec!["Use MySQL's SHOW INDEX FROM <table> command".to_string()],
                             vec!["Or query INFORMATION_SCHEMA.STATISTICS".to_string()],
                         ]);
                     }
-                    crate::database::DatabaseType::PostgreSQL => {
+                    dbcrust_core::database::DatabaseType::PostgreSQL => {
                         return Ok(vec![
                             vec!["Note".to_string()],
                             vec!["Use PostgreSQL's \\di command or".to_string()],
                             vec!["Query pg_indexes system view".to_string()],
                         ]);
                     }
-                    crate::database::DatabaseType::SqlServer => {
+                    dbcrust_core::database::DatabaseType::SqlServer => {
                         return self
                             .execute_query(
                                 "SELECT s.name AS [Schema], t.name AS [Table], i.name AS [Index], \
@@ -962,7 +965,7 @@ impl Database {
             let connection_info = database_client.get_connection_info();
 
             match connection_info.database_type {
-                crate::database::DatabaseType::SQLite => {
+                dbcrust_core::database::DatabaseType::SQLite => {
                     // Get common SQLite pragma values
                     let mut results = Vec::new();
                     results.push(vec!["Pragma".to_string(), "Value".to_string()]);
@@ -1021,7 +1024,7 @@ impl Database {
             let connection_info = database_client.get_connection_info();
 
             match connection_info.database_type {
-                crate::database::DatabaseType::MongoDB => {
+                dbcrust_core::database::DatabaseType::MongoDB => {
                     // Use MongoDB-specific query to list collections
                     let query = r#"
                         SELECT
@@ -1067,7 +1070,7 @@ impl Database {
             let connection_info = database_client.get_connection_info();
 
             match connection_info.database_type {
-                crate::database::DatabaseType::MongoDB => {
+                dbcrust_core::database::DatabaseType::MongoDB => {
                     // Get collection metadata from MongoDB
                     database_client
                         .get_metadata_provider()
@@ -1092,7 +1095,7 @@ impl Database {
             let connection_info = database_client.get_connection_info();
 
             match connection_info.database_type {
-                crate::database::DatabaseType::MongoDB => {
+                dbcrust_core::database::DatabaseType::MongoDB => {
                     // Query MongoDB system.indexes collection
                     let query = r#"
                         SELECT
@@ -1134,7 +1137,7 @@ impl Database {
             let connection_info = database_client.get_connection_info();
 
             match connection_info.database_type {
-                crate::database::DatabaseType::MongoDB => {
+                dbcrust_core::database::DatabaseType::MongoDB => {
                     // Create index using MongoDB command
                     let index_spec = match index_type {
                         Some("text") => format!("{{ \"{field}\": \"text\" }}"),
@@ -1175,7 +1178,7 @@ impl Database {
             let connection_info = database_client.get_connection_info();
 
             match connection_info.database_type {
-                crate::database::DatabaseType::MongoDB => {
+                dbcrust_core::database::DatabaseType::MongoDB => {
                     // Drop index using MongoDB command
                     let query = format!(
                         "db.runCommand({{ dropIndexes: \"{collection}\", index: \"{index_name}\" }})"
@@ -1204,7 +1207,7 @@ impl Database {
             let connection_info = database_client.get_connection_info();
 
             match connection_info.database_type {
-                crate::database::DatabaseType::MongoDB => {
+                dbcrust_core::database::DatabaseType::MongoDB => {
                     // Get database statistics using MongoDB command
                     let query = "db.runCommand({ dbStats: 1 })";
 
@@ -1239,7 +1242,7 @@ impl Database {
             let connection_info = database_client.get_connection_info();
 
             match connection_info.database_type {
-                crate::database::DatabaseType::MongoDB => {
+                dbcrust_core::database::DatabaseType::MongoDB => {
                     // Build MongoDB find query
                     let filter_str = filter.unwrap_or("{}");
                     let projection_str = projection.map(|p| format!(", {p}")).unwrap_or_default();
@@ -1277,7 +1280,7 @@ impl Database {
             let connection_info = database_client.get_connection_info();
 
             match connection_info.database_type {
-                crate::database::DatabaseType::MongoDB => {
+                dbcrust_core::database::DatabaseType::MongoDB => {
                     // Execute aggregation pipeline
                     let query = format!("db.{collection}.aggregate({pipeline})");
 
@@ -1308,7 +1311,7 @@ impl Database {
         if let Some(ref database_client) = self.database_client {
             let connection_info = database_client.get_connection_info();
             match connection_info.database_type {
-                crate::database::DatabaseType::MongoDB => {
+                dbcrust_core::database::DatabaseType::MongoDB => {
                     // Execute MongoDB text search using $text operator
                     let filter = format!(r#"{{"$text": {{"$search": "{search_term}"}}}}"#);
                     self.mongo_find(collection, Some(&filter), None, Some(10))
@@ -1397,20 +1400,20 @@ impl Database {
     fn check_read_only_query(
         &self,
         query: &str,
-    ) -> std::result::Result<(), crate::safety::ReadOnlyViolation> {
+    ) -> std::result::Result<(), dbcrust_core::safety::ReadOnlyViolation> {
         let database_type = self.get_database_type();
-        if database_type == crate::database::DatabaseType::InfluxDB
+        if database_type == dbcrust_core::database::DatabaseType::InfluxDB
             && let Some(info) = self.get_connection_info()
         {
-            return crate::safety::check_influxdb_read_only(
+            return dbcrust_core::safety::check_influxdb_read_only(
                 query,
-                crate::database::InfluxLanguage::from_options(&info.options),
+                dbcrust_core::database::InfluxLanguage::from_options(&info.options),
             );
         }
-        crate::safety::check_read_only(query, &database_type)
+        dbcrust_core::safety::check_read_only(query, &database_type)
     }
 
-    pub fn get_connection_info(&self) -> Option<&crate::database::ConnectionInfo> {
+    pub fn get_connection_info(&self) -> Option<&dbcrust_core::database::ConnectionInfo> {
         // Check override first (for Vault connections), then fall back to database client
         if let Some(ref override_info) = self.connection_info_override {
             Some(override_info)
@@ -1433,7 +1436,7 @@ impl Database {
     /// needs to be set after database creation
     pub fn set_connection_info_override(
         &mut self,
-        connection_info: crate::database::ConnectionInfo,
+        connection_info: dbcrust_core::database::ConnectionInfo,
     ) {
         self.connection_info_override = Some(connection_info);
     }
@@ -1472,17 +1475,17 @@ impl Database {
                 let conn_info = database_client.get_connection_info();
                 let (explicit_schema, table) = if matches!(
                     conn_info.database_type,
-                    crate::database::DatabaseType::PostgreSQL
-                        | crate::database::DatabaseType::SqlServer
-                        | crate::database::DatabaseType::Redshift
+                    dbcrust_core::database::DatabaseType::PostgreSQL
+                        | dbcrust_core::database::DatabaseType::SqlServer
+                        | dbcrust_core::database::DatabaseType::Redshift
                 ) {
                     metadata_table_parts(&table_reference, &conn_info.database_type)
                 } else if matches!(
                     conn_info.database_type,
-                    crate::database::DatabaseType::Redis
-                        | crate::database::DatabaseType::S3
-                        | crate::database::DatabaseType::DynamoDB
-                        | crate::database::DatabaseType::CloudWatchLogs
+                    dbcrust_core::database::DatabaseType::Redis
+                        | dbcrust_core::database::DatabaseType::S3
+                        | dbcrust_core::database::DatabaseType::DynamoDB
+                        | dbcrust_core::database::DatabaseType::CloudWatchLogs
                 ) {
                     // A key name is not an identifier: keep quotes and brackets
                     (None, table_reference.clone())
@@ -1490,7 +1493,7 @@ impl Database {
                     (None, unquote_metadata_identifier(&table_reference))
                 };
                 let schema_name =
-                    if conn_info.database_type == crate::database::DatabaseType::MongoDB {
+                    if conn_info.database_type == dbcrust_core::database::DatabaseType::MongoDB {
                         "".to_string() // MongoDB doesn't have schemas
                     } else {
                         explicit_schema.unwrap_or_else(|| {
@@ -1503,11 +1506,12 @@ impl Database {
 
                 let object_type = if let Some(kind) = kinds.get(&table_reference) {
                     kind.clone()
-                } else if conn_info.database_type == crate::database::DatabaseType::MongoDB {
+                } else if conn_info.database_type == dbcrust_core::database::DatabaseType::MongoDB {
                     "collection".to_string()
                 } else if matches!(
                     conn_info.database_type,
-                    crate::database::DatabaseType::Redis | crate::database::DatabaseType::S3
+                    dbcrust_core::database::DatabaseType::Redis
+                        | dbcrust_core::database::DatabaseType::S3
                 ) {
                     "key".to_string()
                 } else {
@@ -1541,16 +1545,14 @@ impl Database {
     pub async fn execute_query_structured(
         &mut self,
         query: &str,
-    ) -> std::result::Result<crate::database::StructuredQueryResult, Box<dyn StdError>> {
+    ) -> std::result::Result<dbcrust_core::database::StructuredQueryResult, Box<dyn StdError>> {
         if self.read_only {
             self.check_read_only_query(query)?;
         }
 
         if self.explain_mode && is_query_explainable(query) {
             let results = self.execute_explain_query(query).await?;
-            return Ok(crate::database::StructuredQueryResult::from_display_rows(
-                results,
-            ));
+            return Ok(dbcrust_core::database::StructuredQueryResult::from_display_rows(results));
         }
 
         if let Some(ref database_client) = self.database_client {
@@ -1672,11 +1674,15 @@ impl Database {
         if self.explain_mode && is_query_explainable(query) {
             debug!("EXPLAIN mode is enabled, executing EXPLAIN query");
 
-            // Check if TUI mode is enabled (PostgreSQL only for now)
-            #[cfg(feature = "explain-tui")]
-            if self.explain_tui_mode && self.get_database_type() == DatabaseType::PostgreSQL {
+            // Check if TUI mode is enabled (PostgreSQL only for now) and the
+            // front end has a plan viewer
+            if self.explain_tui_mode
+                && self.get_database_type() == DatabaseType::PostgreSQL
+                && let Some(ui) = self.frontend_mode.terminal_ui()
+                && ui.has_plan_viewer()
+            {
                 debug!("TUI mode is enabled, launching visualizer");
-                return self.execute_explain_with_tui(query).await;
+                return self.execute_explain_with_tui(ui, query).await;
             }
 
             let results = self.execute_explain_query(query).await?;
@@ -1714,7 +1720,7 @@ impl Database {
         let column_count = results[0].len();
 
         // Check if we should apply column selection
-        let should_apply = self.frontend_mode.allows_interactive_terminal_ui()
+        let should_apply = self.frontend_mode.terminal_ui().is_some()
             && (self.column_select_mode || self.should_auto_enable_column_selection(column_count));
 
         if should_apply {
@@ -1746,9 +1752,9 @@ impl Database {
     }
 
     /// Execute an EXPLAIN query and display in the TUI visualizer
-    #[cfg(feature = "explain-tui")]
     async fn execute_explain_with_tui(
         &mut self,
+        ui: &dyn TerminalUi,
         query: &str,
     ) -> std::result::Result<QueryResultsWithInfo, Box<dyn StdError>> {
         if let Some(ref database_client) = self.database_client {
@@ -1769,7 +1775,7 @@ impl Database {
                     .map_err(|e| format!("Failed to parse EXPLAIN JSON: {e}"))?;
 
                 // Run the TUI visualizer
-                match crate::explain_tui::run_explain_tui(&plan_json) {
+                match ui.show_plan(&plan_json) {
                     Ok(_) => {
                         // TUI exited normally, return empty result to indicate success
                         Ok(QueryResultsWithInfo {
@@ -1976,11 +1982,11 @@ impl Database {
         self.expanded_display = enabled;
     }
 
-    pub fn output_format(&self) -> crate::cli::OutputFormat {
+    pub fn output_format(&self) -> dbcrust_core::output_format::OutputFormat {
         self.output_format
     }
 
-    pub fn set_output_format(&mut self, format: crate::cli::OutputFormat) {
+    pub fn set_output_format(&mut self, format: dbcrust_core::output_format::OutputFormat) {
         self.output_format = format;
     }
 
@@ -2199,7 +2205,7 @@ impl Database {
             #[cfg(feature = "docker")]
             docker_daemon: None,
             expanded_display: false,
-            output_format: crate::cli::OutputFormat::Table,
+            output_format: dbcrust_core::output_format::OutputFormat::Table,
             read_only: false,
             default_limit: 100,
             autocomplete_enabled: config.autocomplete_enabled,
@@ -2436,19 +2442,19 @@ impl Database {
         let selected_columns = if let Some(saved_columns) = self.get_column_view(&view_key) {
             saved_columns.clone()
         } else {
-            // Create options for the multi-select
-            let options: Vec<String> = headers.clone();
+            // Without a terminal front end there is nobody to ask: show all
+            let Some(ui) = self.frontend_mode.terminal_ui() else {
+                return Ok(QueryResultsWithInfo {
+                    data: data.to_vec(),
+                    column_info: None,
+                });
+            };
 
             // Build the prompt
             let prompt_message = format!(
                 "Select columns to display ({} columns available):",
                 headers.len()
             );
-
-            // Create the multi-select
-            let mut selector = MultiSelect::new(&prompt_message, options.clone())
-                .with_help_message("Use arrow keys to navigate, Space to select/deselect, Enter to confirm, Ctrl-C to cancel")
-                .with_vim_mode(false);
 
             // Pre-select columns based on configuration
             let all_indices: Vec<usize> = if self.column_selection_default_all {
@@ -2459,16 +2465,8 @@ impl Database {
                 Vec::new()
             };
 
-            if !all_indices.is_empty() {
-                selector = selector.with_default(&all_indices);
-            }
-
-            // Handle the selection with interrupt support
-            let selection_result =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| selector.prompt()));
-
-            match selection_result {
-                Ok(Ok(selected)) => {
+            match ui.select_columns(&prompt_message, headers, &all_indices) {
+                Some(selected) => {
                     if selected.is_empty() {
                         // If no columns selected, show all columns
                         headers.clone()
@@ -2476,7 +2474,7 @@ impl Database {
                         selected
                     }
                 }
-                Ok(Err(_)) | Err(_) => {
+                None => {
                     // User cancelled with Ctrl-C or error occurred
                     if interrupt_flag.load(std::sync::atomic::Ordering::Relaxed) {
                         return Err(Box::new(ColumnSelectionAborted));
@@ -2566,19 +2564,21 @@ fn leading_sql_keyword(query: &str) -> Option<String> {
 
 /// The auto-LIMIT of an engine's dialect.
 fn add_engine_default_limit(
-    db_type: &crate::database::DatabaseType,
+    db_type: &dbcrust_core::database::DatabaseType,
     query: &str,
     default_limit: usize,
 ) -> String {
     match db_type {
-        crate::database::DatabaseType::SqlServer => add_default_top(query, default_limit),
-        crate::database::DatabaseType::InfluxDB => add_default_limit_influxql(query, default_limit),
+        dbcrust_core::database::DatabaseType::SqlServer => add_default_top(query, default_limit),
+        dbcrust_core::database::DatabaseType::InfluxDB => {
+            add_default_limit_influxql(query, default_limit)
+        }
         // PartiQL for DynamoDB has no LIMIT clause (the service rejects it): the
         // driver bounds every read itself (`max_rows`, `max_pages`)
-        crate::database::DatabaseType::DynamoDB => query.to_string(),
+        dbcrust_core::database::DatabaseType::DynamoDB => query.to_string(),
         // Logs Insights queries are not SQL: they carry their own `limit` command
         // and the driver passes `max_rows` as the query's result limit
-        crate::database::DatabaseType::CloudWatchLogs => query.to_string(),
+        dbcrust_core::database::DatabaseType::CloudWatchLogs => query.to_string(),
         _ => add_default_limit(query, default_limit),
     }
 }
@@ -2690,7 +2690,7 @@ fn add_default_top(query: &str, default_limit: usize) -> String {
 /// The catalog lookups `\ddl` (and the AI assistant, through its own
 /// adapter) use to list tables across schemas.
 #[async_trait::async_trait(?Send)]
-impl crate::ddl::TableCatalog for Database {
+impl dbcrust_core::ddl::TableCatalog for Database {
     async fn catalog_schemas(&mut self) -> std::result::Result<Vec<String>, Box<dyn StdError>> {
         self.get_schemas().await
     }
@@ -2737,9 +2737,12 @@ mod tests {
         assert!(error.to_string().contains("`docker` cargo feature"));
     }
 
-    #[cfg(not(feature = "mongodb"))]
     #[tokio::test]
     async fn a_disabled_engine_says_which_feature_provides_it() {
+        // Engines are features of `dbcrust-drivers`, unified across the build
+        if dbcrust_drivers::is_compiled(&DatabaseType::MongoDB) {
+            return;
+        }
         let error = Database::from_url("mongodb://localhost:27017/app", None, None)
             .await
             .err()
@@ -2752,9 +2755,11 @@ mod tests {
         assert!(text.contains("`mongodb` cargo feature"), "{text}");
     }
 
-    #[cfg(not(feature = "files"))]
     #[tokio::test]
     async fn file_formats_name_the_files_feature() {
+        if dbcrust_drivers::is_compiled(&DatabaseType::CSV) {
+            return;
+        }
         let error = Database::from_url("csv:///tmp/does-not-matter.csv", None, None)
             .await
             .err()
@@ -2770,11 +2775,12 @@ mod tests {
     async fn a_pinned_daemon_is_used_whatever_the_current_context_is() {
         // The current daemon (whatever it is here) is not consulted: the
         // pin names a socket that doesn't exist, and that is what fails.
-        let mut template = crate::docker_target::DockerTarget::parse("docker://some-container")
-            .unwrap()
-            .to_connection_info();
+        let mut template =
+            dbcrust_core::docker_target::DockerTarget::parse("docker://some-container")
+                .unwrap()
+                .to_connection_info();
         template.options.insert(
-            crate::docker_target::PINNED_DAEMON_OPTION.to_string(),
+            dbcrust_core::docker_target::PINNED_DAEMON_OPTION.to_string(),
             "unix:///nonexistent/dbcrust-pinned.sock".to_string(),
         );
         let error = match Database::connect_docker_container(
@@ -2790,19 +2796,19 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("dbcrust-pinned.sock"), "{text}");
         assert!(matches!(
-            error.downcast_ref::<crate::docker::DockerError>(),
-            Some(crate::docker::DockerError::DaemonUnavailable { .. })
+            error.downcast_ref::<dbcrust_docker::docker::DockerError>(),
+            Some(dbcrust_docker::docker::DockerError::DaemonUnavailable { .. })
         ));
     }
 
     #[cfg(feature = "docker")]
     #[test]
     fn a_pin_that_cannot_be_used_is_an_error_not_a_fallback() {
-        let mut template = crate::docker_target::DockerTarget::parse("docker://c")
+        let mut template = dbcrust_core::docker_target::DockerTarget::parse("docker://c")
             .unwrap()
             .to_connection_info();
         template.options.insert(
-            crate::docker_target::PINNED_DAEMON_OPTION.to_string(),
+            dbcrust_core::docker_target::PINNED_DAEMON_OPTION.to_string(),
             "ssh://me@host".to_string(),
         );
         let error = futures_util::FutureExt::now_or_never(Database::connect_docker_container(
@@ -2814,8 +2820,8 @@ mod tests {
         .err()
         .expect("error");
         assert!(matches!(
-            error.downcast_ref::<crate::docker::DockerError>(),
-            Some(crate::docker::DockerError::Endpoint(_))
+            error.downcast_ref::<dbcrust_docker::docker::DockerError>(),
+            Some(dbcrust_docker::docker::DockerError::Endpoint(_))
         ));
     }
 
@@ -2920,7 +2926,7 @@ mod tests {
 
     #[test]
     fn test_dynamodb_partiql_gets_no_auto_limit() {
-        use crate::database::DatabaseType;
+        use dbcrust_core::database::DatabaseType;
         let sql = "SELECT * FROM \"Orders\" WHERE customer = 'a'";
         assert_eq!(
             add_engine_default_limit(&DatabaseType::DynamoDB, sql, 100),

@@ -2,7 +2,7 @@
 //! something a tree view can draw.
 //!
 //! - PostgreSQL `EXPLAIN (FORMAT JSON)`: a full tree (costs, estimated vs
-//!   actual rows, timings, buffers) built on `dbcrust::explain_tui`.
+//!   actual rows, timings, buffers) built on `dbcrust_core::explain_plan`.
 //! - SQLite `EXPLAIN QUERY PLAN`: a tree from parent ids, with scans,
 //!   searches and temporary B-trees classified.
 //! - MySQL: `FORMAT=JSON` blocks as a tree, the classic table as flat nodes.
@@ -12,9 +12,9 @@
 //! Everything here is pure and unit-tested; the GPUI view only draws it.
 
 use crate::types::ExplainRaw;
-use dbcrust::database::DatabaseType;
-use dbcrust::explain_tui::{PlanNode, PlanStatistics, parse_postgresql_plan};
-use dbcrust::performance_analyzer::PerformanceLevel;
+use dbcrust_core::database::DatabaseType;
+use dbcrust_core::explain_plan::{PlanNode, PlanStatistics, parse_postgresql_plan};
+use dbcrust_core::performance_analyzer::PerformanceLevel;
 use serde_json::Value;
 
 /// A row estimate this many times off (either way) is flagged.

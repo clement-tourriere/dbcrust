@@ -4,7 +4,7 @@ use dbcrust_gui_core::ConfigStore;
 use dbcrust_gui_core::gui_state::GuiState;
 
 fn main() {
-    dbcrust_gui_core::dbcrust::tls::install_default_crypto_provider();
+    dbcrust_gui_core::dbcrust_core::tls::install_default_crypto_provider();
 
     // Import the login shell's PATH (Finder/Dock launches get a minimal
     // one). The shell runs its profile while the settings are read; its
@@ -12,11 +12,11 @@ fn main() {
     let login_path = dbcrust_gui_core::env::start_login_shell_path();
     // A GUI never prompts for the secrets passphrase on a terminal it may
     // have been launched from: a locked store is reported as locked instead
-    dbcrust_gui_core::dbcrust::secrets::set_interactive(false);
+    dbcrust_gui_core::dbcrust_secrets::set_interactive(false);
     let store = ConfigStore::load();
     let gui_state = GuiState::load();
     login_path.apply();
-    dbcrust_gui_core::dbcrust::database::set_query_timeout_seconds(
+    dbcrust_gui_core::dbcrust_core::database::set_query_timeout_seconds(
         store.read(|config| config.query_timeout_seconds),
     );
 

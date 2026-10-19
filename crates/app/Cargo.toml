@@ -1,0 +1,57 @@
+[package]
+name = "dbcrust-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+description = "DBCrust application layer shared by the CLI and the desktop app: configuration and its storage, credential lookups, SSH tunnels and the Database connection orchestrator"
+
+# Layer 2 of the crate split: core, secrets, the driver registry and, behind
+# features, Docker and the AI assistant. Never the root crate, and no terminal
+# stack (reedline, inquire, ratatui, usage): `Database` asks the front end for
+# prompts through `terminal_ui::TerminalUi`. No engine is enabled here; the
+# front end picks them on `dbcrust-drivers` and feature unification applies.
+[dependencies]
+dbcrust-core = { workspace = true }
+dbcrust-secrets = { workspace = true }
+dbcrust-drivers = { workspace = true }
+dbcrust-docker = { workspace = true, optional = true }
+dbcrust-ai = { workspace = true, optional = true }
+async-trait = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }
+dirs = { workspace = true }
+futures-util = { workspace = true }
+rand = { workspace = true, features = ["std", "std_rng", "thread_rng"] }
+regex = { version = "1.12", default-features = false, features = ["unicode-perl", "std"] }
+reqwest = { workspace = true, features = ["json", "rustls-tls", "stream"] }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+strum = { workspace = true, features = ["derive", "std"] }
+thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+toml = { workspace = true, features = ["display", "parse", "serde"] }
+tracing = { workspace = true, features = ["std"] }
+url = { workspace = true }
+zeroize = { workspace = true, features = ["alloc", "serde"] }
+
+[features]
+default = []
+# Docker discovery, routes and the `docker exec` relay (`docker://` URLs)
+docker = ["dep:dbcrust-docker"]
+# `impl AiSession for Database` and the AI provider check of `\config set`
+ai = ["dep:dbcrust-ai"]
+
+[dev-dependencies]
+# Enables the secrets crate's `test-mode` switch for this crate's tests: the
+# `cfg!(test)` heuristic is only true inside the crate that owns the code, so
+# threads a test spawns would otherwise reach the real config dir and keychain.
+dbcrust-secrets = { workspace = true, features = ["test-mode", "test-support"] }
+rstest = { workspace = true }
+tempfile = { workspace = true, features = ["getrandom"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[lints]
+workspace = true

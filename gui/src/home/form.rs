@@ -14,7 +14,7 @@ use super::ui::{
 use super::vault;
 use crate::app_state::AppState;
 use crate::widgets::{engine_badge, env_swatch};
-use dbcrust_gui_core::dbcrust::config::SavedSession;
+use dbcrust_gui_core::dbcrust_app::config::SavedSession;
 use dbcrust_gui_core::docker::{DockerContainer, DockerDaemon};
 use dbcrust_gui_core::launcher::{
     self, ConnectionMeta, ENVIRONMENT_PRESETS, EnvColor, EnvTag, FORM_KEY_PREFIX, TargetIdentity,
@@ -26,7 +26,7 @@ use dbcrust_gui_core::url_builder::{
 };
 use dbcrust_gui_core::{
     ConfigStore, ConnectRequest, ConnectTarget, DatabaseType, DatabaseTypeExt, GuiError, GuiResult,
-    dbcrust::database::ConnectionInfo,
+    dbcrust_core::database::ConnectionInfo,
 };
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
@@ -1095,7 +1095,7 @@ impl ConnectionForm {
             ),
             _ => (
                 ConnectRequest::url(url.clone()),
-                dbcrust_gui_core::dbcrust::password_sanitizer::sanitize_connection_url(&url),
+                dbcrust_gui_core::dbcrust_core::password_sanitizer::sanitize_connection_url(&url),
             ),
         };
         Ok(Submission {
@@ -1263,7 +1263,7 @@ pub(super) fn save_session(
     url: &str,
     renamed_from: Option<String>,
 ) -> GuiResult<()> {
-    let info = match dbcrust_gui_core::dbcrust::docker::DockerTarget::parse(url) {
+    let info = match dbcrust_gui_core::dbcrust_docker::docker::DockerTarget::parse(url) {
         // A container keeps its user, database, options and TLS, but no password
         Some(target) => {
             let mut info = target.to_connection_info();
@@ -2024,7 +2024,8 @@ mod tests {
 
     #[test]
     fn a_session_is_saved_without_connecting() {
-        let store = ConfigStore::from_config(dbcrust_gui_core::dbcrust::config::Config::default());
+        let store =
+            ConfigStore::from_config(dbcrust_gui_core::dbcrust_app::config::Config::default());
         // The config directory of tests is isolated by DBCrust itself
         let result = save_session(
             &store,
@@ -2054,7 +2055,8 @@ mod tests {
 
     #[test]
     fn saving_refuses_what_dbcrust_cannot_parse() {
-        let store = ConfigStore::from_config(dbcrust_gui_core::dbcrust::config::Config::default());
+        let store =
+            ConfigStore::from_config(dbcrust_gui_core::dbcrust_app::config::Config::default());
         assert!(save_session(&store, "x", "not a url", None).is_err());
         assert!(store.sessions().is_empty());
     }

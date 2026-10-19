@@ -122,7 +122,7 @@ fn main() {
         .is_some_and(|only| only.starts_with("settings-"))
     {
         use dbcrust_gui_core::DatabaseType;
-        use dbcrust_gui_core::dbcrust::config::NamedQueryScope;
+        use dbcrust_gui_core::dbcrust_app::config::NamedQueryScope;
         let postgres = || NamedQueryScope::DatabaseType(DatabaseType::PostgreSQL);
         let sqlite = || NamedQueryScope::DatabaseType(DatabaseType::SQLite);
         for (name, sql, scope, description) in [

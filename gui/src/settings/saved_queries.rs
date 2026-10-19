@@ -9,7 +9,7 @@
 use super::*;
 use crate::actions::SaveNamedQuery;
 use crate::preferences;
-use dbcrust_gui_core::dbcrust::config::{NamedQueriesStorage, NamedQueryScope};
+use dbcrust_gui_core::dbcrust_app::config::{NamedQueriesStorage, NamedQueryScope};
 use dbcrust_gui_core::store::SavedQuery;
 use dbcrust_gui_core::{DatabaseType, DatabaseTypeExt};
 use gpui_kit::component::{

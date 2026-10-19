@@ -580,7 +580,7 @@ impl Workspace {
                 let connection = {
                     let state = AppState::global(cx).read(cx);
                     match &entry.scope {
-                        dbcrust_gui_core::dbcrust::config::NamedQueryScope::DatabaseType(
+                        dbcrust_gui_core::dbcrust_app::config::NamedQueryScope::DatabaseType(
                             engine,
                         ) => state
                             .active()

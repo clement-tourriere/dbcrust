@@ -1,7 +1,7 @@
 [tools]
 bun = "1.2.10"
 hk = "latest"
-mr-boxington = "1.4.1"
+mr-boxington = "1.24.1"
 "pipx:commitizen" = "latest"
 pkl = "latest"
 ruff = "latest"

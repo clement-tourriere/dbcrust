@@ -19,7 +19,7 @@
 //!
 //! Nothing here touches GPUI.
 
-use dbcrust_gui_core::dbcrust::sql_buffer::{Boundary, SplitMode, split_statement_spans_with};
+use dbcrust_gui_core::dbcrust_core::sql_buffer::{Boundary, SplitMode, split_statement_spans_with};
 use dbcrust_gui_core::statements::StatementIndex;
 use std::collections::HashSet;
 use std::ops::Range;

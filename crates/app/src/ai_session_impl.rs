@@ -1,6 +1,6 @@
 //! `Database` as an [`AiSession`]: forwards to the inherent methods of the
-//! same name. Lives next to the session type's crate (root) so the assistant
-//! itself never has to name `Database`.
+//! same name. Lives next to the session type (this crate, feature `ai`) so the
+//! assistant itself never has to name `Database`.
 
 use std::error::Error as StdError;
 use std::sync::Arc;
@@ -8,9 +8,9 @@ use std::sync::atomic::AtomicBool;
 
 use async_trait::async_trait;
 
-use crate::ai::AiSession;
-use crate::database::{DatabaseClient, DatabaseType};
 use crate::db::{Database, TableDetails};
+use dbcrust_ai::AiSession;
+use dbcrust_core::database::{DatabaseClient, DatabaseType};
 
 // Inherent methods take precedence over trait methods of the same name, so
 // every `Database::x(self, ..)` below calls the real implementation.

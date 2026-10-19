@@ -17,7 +17,7 @@ pub(crate) fn isolate() {
     ONCE.call_once(|| {
         let dir =
             std::env::temp_dir().join(format!("dbcrust_gui_test_config_{}", std::process::id()));
-        dbcrust_gui_core::dbcrust::config::set_config_dir_override(dir);
+        dbcrust_gui_core::dbcrust_app::config::set_config_dir_override(dir);
         docker::set_discovery_override(DockerDiscovery::Unavailable(
             "Docker is disabled in tests".into(),
         ));

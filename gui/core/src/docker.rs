@@ -21,14 +21,14 @@
 use crate::error::{GuiError, GuiResult};
 use crate::rt::run_detached;
 use crate::types::ConnectRequest;
-use dbcrust::database::{ConnectionInfo, DatabaseType};
-use dbcrust::docker::{
+use dbcrust_core::database::{ConnectionInfo, DatabaseType};
+use dbcrust_docker::docker::{
     DockerClient, DockerEndpoint, DockerError, PINNED_DAEMON_OPTION, Unreachable,
 };
 use std::future::Future;
 use std::sync::OnceLock;
 
-pub use dbcrust::docker::{DockerPhase, DockerRoute, RouteAttempt, RouteKind};
+pub use dbcrust_docker::docker::{DockerPhase, DockerRoute, RouteAttempt, RouteKind};
 
 static DISCOVERY_OVERRIDE: OnceLock<DockerDiscovery> = OnceLock::new();
 
@@ -127,8 +127,8 @@ pub fn endpoint_label() -> Option<String> {
 
 fn endpoint_label_of(endpoint: &DockerEndpoint) -> Option<String> {
     match &endpoint.source {
-        dbcrust::docker::EndpointSource::Context(name) => Some(name.clone()),
-        dbcrust::docker::EndpointSource::DockerHostEnv => Some("DOCKER_HOST".to_string()),
+        dbcrust_docker::docker::EndpointSource::Context(name) => Some(name.clone()),
+        dbcrust_docker::docker::EndpointSource::DockerHostEnv => Some("DOCKER_HOST".to_string()),
         _ => None,
     }
 }

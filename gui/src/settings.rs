@@ -4,7 +4,7 @@
 //! recent connections).
 //!
 //! DBCrust settings are edited through the same schema as the CLI's
-//! `\config` (`dbcrust::config_editor`), so labels, ranges and validation
+//! `\config` (`dbcrust_app::config_editor`), so labels, ranges and validation
 //! are shared; [`schema`] puts each field on one page. Controls read a
 //! cached snapshot and changes are saved in the background, keeping the
 //! documentation comments of `config.toml` ([`storage`]). Desktop
@@ -24,8 +24,8 @@ use crate::preferences::Preferences;
 use crate::theme;
 use crate::tray::{self, Availability, Wording};
 use dbcrust_gui_core::ConfigStore;
-use dbcrust_gui_core::dbcrust::config::Config;
-use dbcrust_gui_core::dbcrust::config_editor;
+use dbcrust_gui_core::dbcrust_app::config::Config;
+use dbcrust_gui_core::dbcrust_app::config_editor;
 use dbcrust_gui_core::gui_state::{GuiState, StatementSeparators, ThemeModeSetting};
 use dbcrust_gui_core::store::VaultCache;
 use gpui_kit::assets::IconName;

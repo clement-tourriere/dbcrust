@@ -11,7 +11,7 @@ use super::tabs::{TabBinding, TabConnection};
 use crate::RestoredState;
 use crate::app_state::AppState;
 use crate::preferences::Preferences;
-use dbcrust_gui_core::dbcrust::config::Config;
+use dbcrust_gui_core::dbcrust_app::config::Config;
 use dbcrust_gui_core::gui_state::GuiState;
 use dbcrust_gui_core::{ConfigStore, ConnectRequest, ConnectionId, TabId};
 use gpui_kit::{AnyWindowHandle, Context, Entity, HeadlessAppContext, NoopTextSystem, Window};

@@ -84,7 +84,7 @@ pip install -e ./python  # alternative: pip editable install
 
 ### Build features
 
-The root crate (`dbcrust`) is split into Cargo features so a build only contains the engines and add-ons it needs. **The default build is `bundled`**: every engine and add-on DBCrust has shipped so far. Release binaries, Python wheels and the desktop app all use `bundled`.
+The root crate (`dbcrust`) is split into Cargo features so a build only contains the engines and add-ons it needs. **The default build is `bundled`**: every engine and add-on DBCrust has shipped so far. Release binaries and Python wheels use `bundled`; the desktop app enables the same engines on `dbcrust-drivers`.
 
 | Feature | What it enables | Pulls in |
 |---------|-----------------|----------|
@@ -355,17 +355,15 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 ## Project layout
 
 ```
-├── src/                       # `dbcrust` (root crate): CLI, REPL, config, PyO3 bindings
+├── src/                       # `dbcrust` (root crate): CLI, REPL, terminal UI, PyO3 bindings
 │   ├── main.rs                # tokio entry point
 │   ├── lib.rs                 # public API (re-exports the crates below under their old paths) + PyO3 bindings
 │   ├── cli.rs                 # argument parsing (usage-rs derive)
 │   ├── cli_core.rs            # REPL loop, one-shot mode and command dispatch
 │   ├── commands.rs            # backslash command enum (strum-driven)
-│   ├── config.rs              # TOML config + session + named query storage
-│   ├── config_editor.rs       # schema-driven `\config` menu / get / set
-│   ├── db.rs                  # `Database` session: connect flow, docker/SSH tunnels, EXPLAIN
+│   ├── config_editor.rs       # interactive `\config` menu + tunnel manager (schema: dbcrust-app)
+│   ├── terminal_ui.rs         # inquire / ratatui prompts and viewers `Database` asks for
 │   ├── drivers.rs             # facade over dbcrust-drivers
-│   ├── ai_session_impl.rs     # `impl AiSession for Database` (the assistant lives in dbcrust-ai)
 │   ├── completion.rs          # SQL autocompletion engine
 │   ├── command_completion.rs  # backslash command completion
 │   ├── shell_completion.rs    # shell completion generation (bash/zsh/fish/powershell)
@@ -374,21 +372,18 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 │   ├── sql_validator.rs       # reedline validator (Enter submits or continues)
 │   ├── sql_parser_*.rs        # per-engine parsers used by completion
 │   ├── url_scheme.rs          # URL scheme parsing and normalization
-│   ├── ssh_tunnel.rs          # SSH tunnel management
-│   ├── vault_client.rs        # Vault HTTP client
 │   ├── named_queries.rs       # named query parameter substitution
-│   ├── pgpass.rs, myconf.rs   # .pgpass / .my.cnf support
 │   ├── history_manager.rs     # per-session history
 │   ├── script.rs, pager.rs    # external editor integration, output paging
 │   ├── logging.rs             # tracing setup
 │   ├── update.rs              # `--update`
 │   ├── secrets_cli/           # `dbcrust secrets` status / audit / migrate
 │   ├── broker/                # `dbcrust broker …` front end (prompts, arguments, e2e tests)
-│   ├── features.rs            # `FeatureNotCompiled`: the error of an add-on the build leaves out
 │   ├── explain_tui/           # interactive EXPLAIN TUI (ratatui + crossterm; feature `explain-tui`)
 │   └── schema_tui/            # interactive schema browser TUI (feature `explain-tui`)
 ├── crates/
 │   ├── core/                  # dbcrust-core: client traits, model DTOs, SQL/format/display, safety, password sanitizer
+│   ├── app/                   # dbcrust-app: config + storage, `\config` schema, `Database`, SSH/Vault/pgpass (shared by CLI and GUI)
 │   ├── secrets/               # dbcrust-secrets: keychain / Argon2id file store, legacy readers, config-dir/test-mode paths
 │   ├── drivers/               # dbcrust-drivers: engine registry, `create_database_client`, one cargo feature per engine
 │   ├── driver-postgres/       # one crate per engine: -mysql, -sqlite, -mongodb, -clickhouse,
@@ -416,7 +411,7 @@ All tasks are defined in `mise.toml`. Run `mise tasks` to list them.
 - **Command system**: All backslash commands are variants of a `Command` enum. The `CommandShortcut` enum (with `strum::EnumIter`) auto-generates help text, completion, and dispatch. Never use hardcoded arrays for command lists.
 - **Database abstraction**: The `DatabaseClient` and `MetadataProvider` traits in `database.rs` define the interface. Each database has its own implementation file.
 - **Async**: Database operations use `tokio` + `async-trait`. Shared state uses `Arc<Mutex<T>>`.
-- **Desktop app**: `gui/core` (`dbcrust-gui-core`) runs each connection on its own thread with a current-thread runtime + `LocalSet` (DBCrust futures are `!Send` and sqlx pools must stay on their runtime); the GPUI views in `gui/src` await its `Send` futures. Cancellation is per request via `dbcrust::database::set_thread_interrupt_flag`.
+- **Desktop app**: `gui/core` (`dbcrust-gui-core`) runs each connection on its own thread with a current-thread runtime + `LocalSet` (DBCrust futures are `!Send` and sqlx pools must stay on their runtime); the GPUI views in `gui/src` await its `Send` futures. Cancellation is per request via `dbcrust_core::database::set_thread_interrupt_flag`. The app depends on the shared crates (`dbcrust-app`, `dbcrust-core`, `dbcrust-drivers`, `dbcrust-docker`, `dbcrust-secrets`), never on the CLI crate: logic both front ends need goes in those crates.
 - **Error handling**: `thiserror` for custom error types. User-facing prompts use `inquire`.
 - **Config**: `serde` with `#[serde(default)]` for backward compatibility. Separate TOML files for settings, sessions, named queries, and recent connections.
 

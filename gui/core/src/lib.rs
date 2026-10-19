@@ -32,9 +32,14 @@ pub mod url_builder;
 pub mod vault;
 pub mod worker;
 
-/// The DBCrust core crate, re-exported so the app needs one backend dependency.
-pub use dbcrust;
-pub use dbcrust::database::{DatabaseType, DatabaseTypeExt};
+// The shared DBCrust layers (the same ones the CLI is built on), re-exported
+// so the app needs one backend dependency. The CLI crate itself (`dbcrust`:
+// REPL, `inquire`, TUIs, broker) is not part of the desktop app.
+pub use dbcrust_app;
+pub use dbcrust_core;
+pub use dbcrust_core::database::{DatabaseType, DatabaseTypeExt};
+pub use dbcrust_docker;
+pub use dbcrust_secrets;
 pub use error::{GuiError, GuiResult};
 pub use ids::{ConnectionId, RequestId, TabId};
 pub use store::ConfigStore;

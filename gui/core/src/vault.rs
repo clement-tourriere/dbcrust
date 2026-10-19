@@ -4,7 +4,7 @@
 use crate::error::{GuiError, GuiResult};
 use crate::rt::run_detached;
 use crate::store::ConfigStore;
-use dbcrust::vault_client as vault;
+use dbcrust_app::vault_client as vault;
 use std::future::Future;
 use std::process::Command;
 use std::time::Duration;

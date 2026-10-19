@@ -7,7 +7,7 @@
 
 use super::storage::{Edit, cache, enqueue};
 use super::*;
-use dbcrust_gui_core::dbcrust::password_sanitizer::sanitize_ssh_tunnel_string;
+use dbcrust_gui_core::dbcrust_core::password_sanitizer::sanitize_ssh_tunnel_string;
 use gpui_kit::component::{
     button::ButtonVariant,
     input::{Input, InputEvent, InputState},

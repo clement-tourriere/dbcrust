@@ -8,7 +8,7 @@ use crate::RestoredState;
 use crate::preferences::Preferences;
 use crate::tray;
 use dbcrust_gui_core::ConfigStore;
-use dbcrust_gui_core::dbcrust::config::Config;
+use dbcrust_gui_core::dbcrust_app::config::Config;
 use dbcrust_gui_core::gui_state::{Draft, GuiState};
 use gpui_kit::component::WindowExt as _;
 use gpui_kit::test::TestWindowExt as _;

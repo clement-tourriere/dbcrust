@@ -166,7 +166,7 @@ impl SSHTunnel {
 
         debug!(
             "Executing SSH command: {}",
-            crate::password_sanitizer::sanitize_ssh_command(&ssh_command_str)
+            dbcrust_core::password_sanitizer::sanitize_ssh_command(&ssh_command_str)
         );
 
         let child = cmd.spawn().map_err(|e| {

@@ -687,7 +687,7 @@ mod snapshot_tests {
     use super::Workspace;
     use crate::RestoredState;
     use dbcrust_gui_core::ConfigStore;
-    use dbcrust_gui_core::dbcrust::config::Config;
+    use dbcrust_gui_core::dbcrust_app::config::Config;
     use dbcrust_gui_core::gui_state::GuiState;
     use gpui_kit::{AnyWindowHandle, AppContext as _, Entity, TestAppContext, WindowOptions};
 

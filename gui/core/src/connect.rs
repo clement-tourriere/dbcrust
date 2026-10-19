@@ -8,11 +8,11 @@ use crate::ids::ConnectionId;
 use crate::store::ConfigStore;
 use crate::types::{ConnectRequest, ConnectTarget, ConnectionSummary};
 use crate::vault::format_vault_error;
-use dbcrust::config::Config;
-use dbcrust::database::{ConnectionInfo, DatabaseType, DatabaseTypeExt};
-use dbcrust::db::{Database, FrontendMode};
-use dbcrust::docker::DockerTarget;
-use dbcrust::password_sanitizer::sanitize_connection_url;
+use dbcrust_app::config::Config;
+use dbcrust_app::db::{Database, FrontendMode};
+use dbcrust_core::database::{ConnectionInfo, DatabaseType, DatabaseTypeExt};
+use dbcrust_core::password_sanitizer::sanitize_connection_url;
+use dbcrust_docker::docker::DockerTarget;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -101,7 +101,7 @@ fn connection_error(error: Box<dyn std::error::Error>, prefix: &str) -> ConnectE
         },
         None => GuiError::Connection(format!(
             "{prefix}{}",
-            dbcrust::password_sanitizer::redact_error(&error)
+            dbcrust_core::password_sanitizer::redact_error(&error)
         ))
         .into(),
     }
@@ -389,14 +389,14 @@ struct ReadOnlyRequest;
 
 impl ReadOnlyRequest {
     fn set(read_only: bool) -> Self {
-        dbcrust::database::set_read_only_requested(read_only);
+        dbcrust_core::database::set_read_only_requested(read_only);
         Self
     }
 }
 
 impl Drop for ReadOnlyRequest {
     fn drop(&mut self) {
-        dbcrust::database::set_read_only_requested(false);
+        dbcrust_core::database::set_read_only_requested(false);
     }
 }
 
@@ -567,12 +567,12 @@ async fn resolve_vault(
     store: &ConfigStore,
     mode: ConnectMode,
 ) -> GuiResult<VaultLogin> {
-    use dbcrust::vault_client as vault;
+    use dbcrust_app::vault_client as vault;
 
     let (role, mount, database) = vault::parse_vault_url(url).ok_or_else(|| {
         GuiError::Vault(format!(
             "Invalid Vault URL: {}",
-            dbcrust::password_sanitizer::redact_url(url)
+            dbcrust_core::password_sanitizer::redact_url(url)
         ))
     })?;
     let database = database.ok_or_else(|| {
@@ -709,7 +709,7 @@ mod tests {
     fn a_sibling_of_a_container_connection_resolves_the_container_again() {
         let mut info = docker_info("tt2-postgres-1", "analytics");
         info.options.insert(
-            dbcrust::docker::PINNED_DAEMON_OPTION.into(),
+            dbcrust_docker::docker::PINNED_DAEMON_OPTION.into(),
             "unix:///a.sock".into(),
         );
         let target = ConnectTarget::Info(Box::new(info.clone()));
@@ -723,7 +723,7 @@ mod tests {
         assert_eq!(
             template
                 .options
-                .get(dbcrust::docker::PINNED_DAEMON_OPTION)
+                .get(dbcrust_docker::docker::PINNED_DAEMON_OPTION)
                 .map(String::as_str),
             Some("unix:///a.sock")
         );
@@ -814,7 +814,7 @@ mod tests {
 
     #[test]
     fn docker_sessions_reconstruct_with_their_user_and_database() {
-        let session = dbcrust::config::SavedSession {
+        let session = dbcrust_app::config::SavedSession {
             host: "DOCKER:tt2-postgres-1".into(),
             port: 0,
             user: "app".into(),
@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn a_no_route_failure_keeps_its_own_text_and_typed_details() {
-        use dbcrust::docker::{DockerError, RouteAttempt, RouteKind, Unreachable};
+        use dbcrust_docker::docker::{DockerError, RouteAttempt, RouteKind, Unreachable};
         let error: Box<dyn std::error::Error> = DockerError::Unreachable(Unreachable {
             container: "db".into(),
             port: 5432,

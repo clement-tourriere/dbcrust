@@ -1,6 +1,6 @@
 //! Single owner of DBCrust's config and user-data files for the desktop app.
 //!
-//! `dbcrust::config::Config::load()` is not safe to run concurrently: a load
+//! `dbcrust_app::config::Config::load()` is not safe to run concurrently: a load
 //! that overlaps another one silently returns default settings
 //! (`config.rs`, `CONFIG_LOADING_IN_PROGRESS`), so every load runs under
 //! [`config_load_lock`]. The CLI's `Database` constructors call it
@@ -12,10 +12,10 @@
 
 use crate::error::{GuiError, GuiResult};
 use chrono::{DateTime, Utc};
-use dbcrust::config::{
+use dbcrust_app::config::{
     Config, NamedQueriesStorage, NamedQuery, NamedQueryScope, RecentConnection, StorageFile,
 };
-use dbcrust::database::{DatabaseType, DatabaseTypeExt};
+use dbcrust_core::database::{DatabaseType, DatabaseTypeExt};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 

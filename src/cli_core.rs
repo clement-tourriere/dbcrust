@@ -412,6 +412,10 @@ impl CliCore {
         }
         debug!("DbCrust CLI Core started");
 
+        // Column picker, Docker container picker and EXPLAIN viewer for the
+        // shared `Database`
+        crate::terminal_ui::install();
+
         let mut cli_core = Self::new();
 
         // Database clients are constructed without Config access — publish the

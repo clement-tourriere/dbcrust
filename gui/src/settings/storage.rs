@@ -13,7 +13,7 @@
 //! save in progress.
 
 use super::*;
-use dbcrust_gui_core::dbcrust::config_editor::FieldSpec;
+use dbcrust_gui_core::dbcrust_app::config_editor::FieldSpec;
 use dbcrust_gui_core::store::VaultCache;
 use gpui_kit::component::button::ButtonVariant;
 use std::time::Duration;

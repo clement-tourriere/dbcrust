@@ -8,7 +8,7 @@ use super::results::Stale;
 use super::{QueryStatus, QueryTab, history};
 use crate::app_state::{AppState, SchemaState};
 use crate::preferences::Preferences;
-use dbcrust_gui_core::dbcrust::config::Config;
+use dbcrust_gui_core::dbcrust_app::config::Config;
 use dbcrust_gui_core::gui_state::StatementSeparators;
 use dbcrust_gui_core::{ConfigStore, ConnectRequest, ConnectionHandle, ConnectionId, RequestId};
 use gpui_kit::component::input::EditorState;

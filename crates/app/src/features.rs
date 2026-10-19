@@ -2,7 +2,7 @@
 //!
 //! Engines are gated in `dbcrust-drivers` (`DatabaseError::ConnectorNotBuilt`).
 //! The add-ons that are not engines — Docker discovery, the AI assistant, the
-//! plan/schema TUIs and the clipboard — are cargo features of this crate
+//! plan/schema TUIs and the clipboard — are cargo features of the `dbcrust` crate
 //! (`docker`, `ai`, `explain-tui`, `clipboard`); this error is what their entry
 //! points report when the feature is off. The `\ai`, `??`, `\docker` … commands
 //! still parse, so the REPL can say what is missing instead of "unknown command".

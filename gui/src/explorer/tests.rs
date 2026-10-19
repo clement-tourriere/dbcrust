@@ -7,7 +7,7 @@
 use super::Explorer;
 use super::rows::RowKind;
 use crate::app_state::{AppState, SchemaState};
-use dbcrust_gui_core::dbcrust::config::Config;
+use dbcrust_gui_core::dbcrust_app::config::Config;
 use dbcrust_gui_core::{ConfigStore, ConnectRequest, ConnectionHandle, ConnectionId, RequestId};
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, Entity, HeadlessAppContext, NoopTextSystem, Point,

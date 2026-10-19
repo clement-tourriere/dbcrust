@@ -1,7 +1,10 @@
 # DBCrust desktop app — architecture
 
 A native, GPU-rendered database workbench built with [GPUI Kit](https://gpui-kit.com)
-(`gpui-kit = "=0.7.1"`) on top of the `dbcrust` core crate.
+(`gpui-kit = "=0.7.1"`) on top of the shared DBCrust crates the CLI is built on
+(`dbcrust-app`, `dbcrust-core`, `dbcrust-drivers`, `dbcrust-docker`,
+`dbcrust-secrets`). It never depends on the CLI crate (`dbcrust`: REPL,
+`inquire`, TUIs, broker): logic both front ends need belongs in those crates.
 
 ```
 gui/
@@ -16,11 +19,11 @@ gui/
 | `worker.rs` | `ConnectionHandle`: one OS thread + current-thread tokio runtime + `LocalSet` per live connection. Owns the `Database` (and its Docker relay) for its whole life; commands are serialized; cancellation is out-of-band with a fresh token per request (installed as the thread's DBCrust interrupt flag). `start_connect` / `start_test` return a `ConnectAttempt` (phases as a `watch` channel, a cancel handle, the outcome with the Docker route or a `DockerFailure`). |
 | `connect.rs` | URL / session / recent / Docker / Vault resolution and `Database` construction from a snapshot of the store's config (no config file reads while connecting). Docker routes are probed outside every lock; only the read-only process flag is gated (async, cancellable). Tests never write recents or the Vault credential cache. |
 | `store.rs` | `ConfigStore`: the single in-process owner of DBCrust's `Config` (settings, sessions, recents, named queries). `save_settings()` keeps documentation comments. Saved queries (every scope) are changed in memory under the store lock and `named_queries.toml` is written after it is released, one change at a time; a failed write is rolled back, and a legacy `config.toml` entry is dropped only once its replacement is written; readers (`all_named_queries`, `named_queries`, `saved_query`) use a catalogue republished after each change and never wait for the lock. `update_named_query` creates, edits, renames and re-scopes in one mutation, refusing to overwrite and keeping `created_at`. Sessions, recents and the Vault cache are changed by their `Config` helpers on a copy, outside the lock (`update_sessions`, `update_recents`; one lock per file), then published, so the lock is never held for file I/O. `vault_cache()` lists the Vault credential cache without secrets and never changes it. |
-| `statements.rs` | What "Run" executes: `StatementIndex` (built from `dbcrust::sql_buffer::split_statement_spans_with`, cached per revision) gives the selection, the statement that owns the caret, or everything. Smart mode also splits at blank lines between plain read queries (parsed with sqlparser; anything else needs `;`). Shared by run, highlight, provenance, Format and completion; the CLI keeps `;`-only splitting. |
+| `statements.rs` | What "Run" executes: `StatementIndex` (built from `dbcrust_core::sql_buffer::split_statement_spans_with`, cached per revision) gives the selection, the statement that owns the caret, or everything. Smart mode also splits at blank lines between plain read queries (parsed with sqlparser; anything else needs `;`). Shared by run, highlight, provenance, Format and completion; the CLI keeps `;`-only splitting. |
 | `schema.rs` | Parsing metadata output, identifier quoting, table references. |
 | `export.rs` | CSV / TSV / JSON / Markdown rendering of result sets. |
 | `completion.rs` | SQL completion candidates (keywords, functions, tables, columns, aliases). |
-| `explain.rs` | Plan view model (PostgreSQL JSON → tree via `dbcrust::explain_tui`, SQLite/MySQL/DataFusion tabular plans). |
+| `explain.rs` | Plan view model (PostgreSQL JSON → tree via `dbcrust_core::explain_plan`, SQLite/MySQL/DataFusion tabular plans). |
 | `history.rs` | In-memory query history per connection. |
 | `gui_state.rs` | Desktop-only persisted state (`~/.config/dbcrust/gui_state.toml`): open drafts (with the file or saved query they save to), theme, sizes, menu bar / tray behaviour, Connections page metadata. |
 | `docker.rs`, `vault.rs` | Discovery for the Connections page (each on a short-lived runtime thread). `docker::discover_snapshot()` returns the containers with the daemon that listed them; `DockerDaemon::connect_request` pins a connect to it. How a container is reached (published port → OrbStack domain → container address → relay through `docker exec`) lives in the `dbcrust-docker` crate: `crates/docker/src/docker_route.rs`, `crates/docker/src/docker_tunnel.rs`. |

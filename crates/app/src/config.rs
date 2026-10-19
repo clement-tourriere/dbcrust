@@ -1,5 +1,5 @@
-use crate::database::{DatabaseType, DatabaseTypeExt};
 use chrono::{DateTime, Utc};
+use dbcrust_core::database::{DatabaseType, DatabaseTypeExt};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -11,10 +11,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::debug;
 use url::Url;
 
-// Option-key helpers live in `crate::options`; re-exported for the paths that
+// Option-key helpers live in `dbcrust_core::options`; re-exported for the paths that
 // predate the split (`crate::config::is_dbcrust_internal_connection_option`).
-use crate::options::PASSWORD_COMMAND_OPTION_KEYS;
-pub use crate::options::{is_dbcrust_internal_connection_option, is_password_command_option_key};
+use dbcrust_core::options::PASSWORD_COMMAND_OPTION_KEYS;
+pub use dbcrust_core::options::{
+    is_dbcrust_internal_connection_option, is_password_command_option_key,
+};
 
 fn append_connection_options(url: &str, options: &HashMap<String, String>) -> String {
     let filtered_options: Vec<_> = options
@@ -103,7 +105,7 @@ pub fn strip_password_command_options_from_url(url: &str) -> Result<String, Stri
     let mut parsed_url = Url::parse(url).map_err(|e| {
         format!(
             "Failed to parse connection URL '{}': {e}",
-            crate::password_sanitizer::redact_url(url)
+            dbcrust_core::password_sanitizer::redact_url(url)
         )
     })?;
 
@@ -153,7 +155,7 @@ fn aws_url_with_credentials(
     let use_tls = options
         .get("tls")
         .is_none_or(|value| !value.eq_ignore_ascii_case("false"));
-    let info = crate::database::ConnectionInfo {
+    let info = dbcrust_core::database::ConnectionInfo {
         database_type: database_type.clone(),
         host: host.map(str::to_string),
         port,
@@ -163,7 +165,7 @@ fn aws_url_with_credentials(
         file_path: prefix.filter(|p| !p.is_empty()).map(str::to_string),
         options: options
             .iter()
-            .filter(|(key, _)| !crate::password_sanitizer::is_secret_option_key(key))
+            .filter(|(key, _)| !dbcrust_core::password_sanitizer::is_secret_option_key(key))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect(),
         ..Default::default()
@@ -177,7 +179,7 @@ fn aws_url_with_credentials(
     {
         let mut query = url.query_pairs_mut();
         for (key, value) in options {
-            if crate::password_sanitizer::is_secret_option_key(key) && !value.is_empty() {
+            if dbcrust_core::password_sanitizer::is_secret_option_key(key) && !value.is_empty() {
                 query.append_pair(key, value);
             }
         }
@@ -187,12 +189,14 @@ fn aws_url_with_credentials(
 
 /// Option key under which a saved session's SSH password is kept in the
 /// store record (`secret_options`).
-pub(crate) const SSH_PASSWORD_SECRET_OPTION: &str = "ssh_password";
+pub const SSH_PASSWORD_SECRET_OPTION: &str = "ssh_password";
 
 /// The `.dbcrust`-file database type of a network engine; `None` for
 /// file-based and keyless engines (no password to store or look up).
-fn legacy_database_type(database_type: &DatabaseType) -> Option<crate::dbcrust_pass::DatabaseType> {
-    use crate::dbcrust_pass::DatabaseType as Legacy;
+fn legacy_database_type(
+    database_type: &DatabaseType,
+) -> Option<dbcrust_secrets::legacy::dbcrust_pass::DatabaseType> {
+    use dbcrust_secrets::legacy::dbcrust_pass::DatabaseType as Legacy;
     match database_type {
         DatabaseType::PostgreSQL => Some(Legacy::PostgreSQL),
         DatabaseType::MySQL => Some(Legacy::MySQL),
@@ -237,16 +241,16 @@ fn binding_engine(database_type: &DatabaseType) -> Option<&'static str> {
 
 /// The store binding of a connection target (`None` for engines without a
 /// password).
-pub(crate) fn connection_binding(
+pub fn connection_binding(
     database_type: &DatabaseType,
     host: &str,
     port: u16,
     dbname: &str,
     user: &str,
     tls_mode: Option<&str>,
-) -> Option<crate::secrets::TargetBinding> {
+) -> Option<dbcrust_secrets::TargetBinding> {
     let engine = binding_engine(database_type)?;
-    Some(crate::secrets::TargetBinding::new(
+    Some(dbcrust_secrets::TargetBinding::new(
         engine,
         host,
         (port != 0).then_some(port),
@@ -264,7 +268,7 @@ pub(crate) fn connection_binding(
 /// password is therefore never handed to another instance of the same host,
 /// nor to a connection that stopped verifying the certificate. InfluxDB does
 /// the same with its API generation, TLS, certificate opt-out and `org`.
-pub(crate) fn tls_mode_from_options(options: &HashMap<String, String>) -> Option<String> {
+pub fn tls_mode_from_options(options: &HashMap<String, String>) -> Option<String> {
     let find = |key: &str| {
         options
             .iter()
@@ -274,7 +278,7 @@ pub(crate) fn tls_mode_from_options(options: &HashMap<String, String>) -> Option
     };
     if let Some(encrypt) = find("encrypt") {
         let mut mode = encrypt;
-        if crate::database::sqlserver_trusts_any_certificate(options) {
+        if dbcrust_core::database::sqlserver_trusts_any_certificate(options) {
             mode.push_str("+trust-cert");
         }
         if let Some(instance) = find("instance") {
@@ -290,7 +294,7 @@ pub(crate) fn tls_mode_from_options(options: &HashMap<String, String>) -> Option
         if find("tls").is_some_and(|tls| matches!(tls.as_str(), "true" | "1" | "yes" | "on")) {
             mode.push_str("+tls");
         }
-        if crate::database::influxdb_skips_certificate_verification(options) {
+        if dbcrust_core::database::influxdb_skips_certificate_verification(options) {
             mode.push_str("+insecure");
         }
         if let Some(org) = find("org") {
@@ -339,7 +343,7 @@ fn lookup_connection_credentials(
     let mut found = ConnectionLookup::default();
 
     if let Some(binding) = connection_binding(database_type, host, port, dbname, user, tls_mode) {
-        match crate::secrets::default_store().get_connection_secret(&binding) {
+        match dbcrust_secrets::default_store().get_connection_secret(&binding) {
             Ok(Some(record)) => {
                 if !record.secret.is_empty() {
                     found.password = Some(record.secret.to_string());
@@ -351,14 +355,14 @@ fn lookup_connection_credentials(
                     .collect();
             }
             Ok(None) => {}
-            Err(crate::secrets::SecretError::TargetMismatch(detail)) => {
+            Err(dbcrust_secrets::SecretError::TargetMismatch(detail)) => {
                 eprintln!(
                     "Refusing to use a stored credential for {host}:{port}: {detail}. \
                      Save the password again to rebind it."
                 );
                 return ConnectionLookup::default();
             }
-            Err(e) => crate::secrets::hints::warn_store_problem(&e),
+            Err(e) => dbcrust_secrets::hints::warn_store_problem(&e),
         }
     }
 
@@ -367,10 +371,14 @@ fn lookup_connection_credentials(
     }
 
     if let Some(legacy_type) = legacy_database_type(database_type) {
-        if let Ok(Some(password)) =
-            crate::dbcrust_pass::lookup_password(legacy_type, host, port, dbname, user)
-        {
-            crate::secrets::hints::hint_legacy_secret_used();
+        if let Ok(Some(password)) = dbcrust_secrets::legacy::dbcrust_pass::lookup_password(
+            legacy_type,
+            host,
+            port,
+            dbname,
+            user,
+        ) {
+            dbcrust_secrets::hints::hint_legacy_secret_used();
             found.password = Some(password);
             return found;
         }
@@ -385,7 +393,7 @@ fn lookup_connection_credentials(
 }
 
 /// Password only (kept for callers that need nothing else).
-pub(crate) fn lookup_connection_password(
+pub fn lookup_connection_password(
     database_type: &DatabaseType,
     host: &str,
     port: u16,
@@ -406,15 +414,15 @@ pub fn save_connection_password(
     user: &str,
     tls_mode: Option<&str>,
     password: &str,
-) -> Result<(), crate::secrets::SecretError> {
+) -> Result<(), dbcrust_secrets::SecretError> {
     let binding = connection_binding(database_type, host, port, dbname, user, tls_mode)
         .ok_or_else(|| {
-            crate::secrets::SecretError::Io(format!(
+            dbcrust_secrets::SecretError::Io(format!(
                 "{} connections have no password to store",
                 database_type.display_name()
             ))
         })?;
-    crate::secrets::default_store()
+    dbcrust_secrets::default_store()
         .put_connection_secret(&binding, password, Default::default())
         .map(|_| ())
 }
@@ -438,7 +446,7 @@ impl std::fmt::Debug for SSHTunnelConfig {
             .field("ssh_username", &self.ssh_username)
             .field(
                 "ssh_password",
-                &crate::password_sanitizer::mask_secret(&self.ssh_password),
+                &dbcrust_core::password_sanitizer::mask_secret(&self.ssh_password),
             )
             .field("ssh_key_path", &self.ssh_key_path)
             .finish()
@@ -475,7 +483,7 @@ impl std::fmt::Debug for RecentConnection {
         f.debug_struct("RecentConnection")
             .field(
                 "connection_url",
-                &crate::password_sanitizer::redact_url(&self.connection_url),
+                &dbcrust_core::password_sanitizer::redact_url(&self.connection_url),
             )
             .field("display_name", &self.display_name)
             .field("timestamp", &self.timestamp)
@@ -483,7 +491,7 @@ impl std::fmt::Debug for RecentConnection {
             .field("success", &self.success)
             .field(
                 "options",
-                &crate::password_sanitizer::redact_options(&self.options),
+                &dbcrust_core::password_sanitizer::redact_options(&self.options),
             )
             .finish()
     }
@@ -493,7 +501,7 @@ impl RecentConnection {
     /// A copy that is safe to persist: no URL password, no secret-looking
     /// query value or option, whatever the caller passed in.
     fn scrubbed(&self) -> Self {
-        use crate::password_sanitizer::{
+        use dbcrust_core::password_sanitizer::{
             redact_text, scrub_options_for_storage, strip_url_secrets,
         };
         let mut scrubbed = self.clone();
@@ -540,12 +548,13 @@ impl RecentConnection {
         // S3, DynamoDB: the host of the URL is the bucket or the region, so the
         // generic lookup below would bind the secret to the wrong target
         if self.database_type.is_aws() {
-            let info = crate::database::ConnectionInfo::parse_url(original_url).map_err(|e| {
-                format!(
-                    "Failed to parse recent connection URL '{}': {e}",
-                    crate::password_sanitizer::redact_url(original_url)
-                )
-            })?;
+            let info =
+                dbcrust_core::database::ConnectionInfo::parse_url(original_url).map_err(|e| {
+                    format!(
+                        "Failed to parse recent connection URL '{}': {e}",
+                        dbcrust_core::password_sanitizer::redact_url(original_url)
+                    )
+                })?;
             let user = info.username.clone().unwrap_or_default();
             let bucket = info.database.clone().unwrap_or_default();
             let credentials = lookup_connection_credentials(
@@ -575,7 +584,7 @@ impl RecentConnection {
         let mut parsed_url = Url::parse(original_url).map_err(|e| {
             format!(
                 "Failed to parse recent connection URL '{}': {e}",
-                crate::password_sanitizer::redact_url(original_url)
+                dbcrust_core::password_sanitizer::redact_url(original_url)
             )
         })?;
 
@@ -624,14 +633,14 @@ impl RecentConnection {
             parsed_url.set_password(Some(&password)).map_err(|_| {
                 format!(
                     "Failed to reconstruct credentials for '{}'",
-                    crate::password_sanitizer::redact_url(original_url)
+                    dbcrust_core::password_sanitizer::redact_url(original_url)
                 )
             })?;
         } else if parsed_url.password().is_some() {
             parsed_url.set_password(None).map_err(|_| {
                 format!(
                     "Failed to sanitize reconstructed URL for '{}'",
-                    crate::password_sanitizer::redact_url(original_url)
+                    dbcrust_core::password_sanitizer::redact_url(original_url)
                 )
             })?;
         }
@@ -739,7 +748,7 @@ impl std::fmt::Debug for SavedSession {
             .field("file_path", &self.file_path)
             .field(
                 "options",
-                &crate::password_sanitizer::redact_options(&self.options),
+                &dbcrust_core::password_sanitizer::redact_options(&self.options),
             )
             .finish()
     }
@@ -758,7 +767,7 @@ impl SavedSession {
             .options
             .iter()
             .filter(|(key, value)| {
-                crate::password_sanitizer::is_secret_option_key(key) && !value.is_empty()
+                dbcrust_core::password_sanitizer::is_secret_option_key(key) && !value.is_empty()
             })
             .map(|(key, value)| (key.clone(), Zeroizing::new(value.clone())))
             .collect();
@@ -786,15 +795,16 @@ impl SavedSession {
         ) else {
             return;
         };
-        if let Err(e) = crate::secrets::default_store().merge_connection_options(&binding, secrets)
+        if let Err(e) = dbcrust_secrets::default_store().merge_connection_options(&binding, secrets)
         {
             eprintln!("Warning: the session was saved without its secret connection options: {e}");
         }
     }
 
-    pub(crate) fn scrubbed(&self) -> Self {
+    /// A copy fit for `sessions.toml`: secret options and the SSH password removed.
+    pub fn scrubbed(&self) -> Self {
         let mut scrubbed = self.clone();
-        crate::password_sanitizer::scrub_options_for_storage(&mut scrubbed.options);
+        dbcrust_core::password_sanitizer::scrub_options_for_storage(&mut scrubbed.options);
         if let Some(tunnel) = scrubbed.ssh_tunnel.as_mut() {
             tunnel.ssh_password = None;
         }
@@ -869,7 +879,7 @@ impl SavedSession {
             let use_tls = options
                 .remove("ssl")
                 .is_some_and(|value| value.eq_ignore_ascii_case("true"));
-            let target = crate::docker_target::DockerTarget {
+            let target = dbcrust_core::docker_target::DockerTarget {
                 user: Some(self.user.clone()).filter(|user| !user.is_empty()),
                 container: container.to_string(),
                 database: Some(self.dbname.clone()).filter(|db| !db.is_empty()),
@@ -1395,7 +1405,7 @@ pub struct Config {
 
     /// Where DBCrust keeps saved passwords, API keys and tokens.
     #[serde(default)]
-    pub secrets: crate::secrets::SecretsConfig,
+    pub secrets: dbcrust_secrets::SecretsConfig,
 
     #[serde(default = "default_show_banner")]
     pub show_banner: bool,
@@ -1426,15 +1436,15 @@ pub struct Config {
 
     // Vector display configuration
     #[serde(default)]
-    pub vector_display: crate::vector_display::VectorDisplayConfig,
+    pub vector_display: dbcrust_core::vector_display::VectorDisplayConfig,
 
     // Complex data display configuration
     #[serde(default)]
-    pub complex_display: crate::complex_display::ComplexDisplayConfig,
+    pub complex_display: dbcrust_core::complex_display::ComplexDisplayConfig,
 
     // AI assistant configuration
     #[serde(default)]
-    pub ai: crate::ai_config::AiConfig,
+    pub ai: dbcrust_core::ai_config::AiConfig,
 
     // Recent connections - not serialized with main config, stored separately
     #[serde(skip)]
@@ -1483,7 +1493,7 @@ impl Config {
             pager_threshold_lines: default_pager_threshold_lines(),
             logging: LoggingConfig::default(),
             history: HistoryConfig::default(),
-            secrets: crate::secrets::SecretsConfig::default(),
+            secrets: dbcrust_secrets::SecretsConfig::default(),
             show_banner: default_show_banner(),
             show_server_info: default_show_server_info(),
             multiline_prompt_indicator: default_multiline_prompt_indicator(),
@@ -1493,9 +1503,9 @@ impl Config {
             vault_credential_process: String::new(),
             query_timeout_seconds: default_query_timeout(),
             metadata_timeout_seconds: default_metadata_timeout(),
-            vector_display: crate::vector_display::VectorDisplayConfig::default(),
-            complex_display: crate::complex_display::ComplexDisplayConfig::default(),
-            ai: crate::ai_config::AiConfig::default(),
+            vector_display: dbcrust_core::vector_display::VectorDisplayConfig::default(),
+            complex_display: dbcrust_core::complex_display::ComplexDisplayConfig::default(),
+            ai: dbcrust_core::ai_config::AiConfig::default(),
             recent_connections_storage: if load_storage {
                 Self::load_recent_connections()
             } else {
@@ -1656,7 +1666,7 @@ impl Config {
     /// different `HOME`, such as Docker, systemd, or IDE-launched servers).
     /// Tests still use an isolated temp directory unless explicitly overridden.
     pub fn get_config_directory() -> Result<PathBuf, Box<dyn Error>> {
-        crate::secrets::paths::config_directory()
+        dbcrust_secrets::paths::config_directory()
     }
 
     /// Get the path to the main configuration file.
@@ -1699,7 +1709,7 @@ impl Config {
                             Err(e) => {
                                 eprintln!(
                                     "Error parsing recent connections file: {}",
-                                    crate::password_sanitizer::redact_error(&e)
+                                    dbcrust_core::password_sanitizer::redact_error(&e)
                                 );
                                 RecentConnectionsStorage::default()
                             }
@@ -1776,7 +1786,7 @@ impl Config {
                             Err(e) => {
                                 eprintln!(
                                     "Error parsing saved sessions file: {}",
-                                    crate::password_sanitizer::redact_error(&e)
+                                    dbcrust_core::password_sanitizer::redact_error(&e)
                                 );
                                 SavedSessionsStorage::default()
                             }
@@ -1868,8 +1878,11 @@ impl Config {
             }
         };
         let decrypted = match vault_token {
-            Some(token) => crate::vault_encryption::decrypt_data_with_token(&encrypted_data, token),
-            None => crate::vault_encryption::decrypt_data(&encrypted_data),
+            Some(token) => dbcrust_secrets::legacy::vault_encryption::decrypt_data_with_token(
+                &encrypted_data,
+                token,
+            ),
+            None => dbcrust_secrets::legacy::vault_encryption::decrypt_data(&encrypted_data),
         };
 
         match decrypted {
@@ -1878,7 +1891,7 @@ impl Config {
                 Err(e) => {
                     eprintln!(
                         "Error parsing vault credentials file: {}",
-                        crate::password_sanitizer::redact_error(&e)
+                        dbcrust_core::password_sanitizer::redact_error(&e)
                     );
                     VaultCredentialStorage::default()
                 }
@@ -1886,7 +1899,7 @@ impl Config {
             // A missing ambient token is expected when a lazy credential
             // process is configured. Keep the encrypted cache so it can be
             // unlocked after the process returns a token.
-            Err(crate::vault_encryption::EncryptionError::NoVaultToken) => {
+            Err(dbcrust_secrets::legacy::vault_encryption::EncryptionError::NoVaultToken) => {
                 debug!("Vault credential cache remains locked until authentication");
                 VaultCredentialStorage {
                     locked: true,
@@ -1899,7 +1912,7 @@ impl Config {
                 if let Err(remove_err) = fs::remove_file(path) {
                     eprintln!(
                         "Error decrypting vault credentials file: {}",
-                        crate::password_sanitizer::redact_error(&e)
+                        dbcrust_core::password_sanitizer::redact_error(&e)
                     );
                     eprintln!("Failed to remove corrupted vault credentials file: {remove_err}");
                 } else {
@@ -1921,10 +1934,11 @@ impl Config {
 
         let content = toml::to_string_pretty(&self.vault_credential_storage)?;
         let encrypted_data = match vault_token {
-            Some(token) => {
-                crate::vault_encryption::encrypt_data_with_token(content.as_bytes(), token)
-            }
-            None => crate::vault_encryption::encrypt_data(content.as_bytes()),
+            Some(token) => dbcrust_secrets::legacy::vault_encryption::encrypt_data_with_token(
+                content.as_bytes(),
+                token,
+            ),
+            None => dbcrust_secrets::legacy::vault_encryption::encrypt_data(content.as_bytes()),
         }
         .map_err(|e| Box::new(e) as Box<dyn Error>)?;
         fs::write(&path, encrypted_data)?;
@@ -2079,7 +2093,10 @@ impl Config {
                     // Debug: If parsing fails, show detailed information about the error
                     if let Err(ref e) = config_result {
                         eprintln!("TOML parsing error details:");
-                        eprintln!("  Error: {}", crate::password_sanitizer::redact_error(&e));
+                        eprintln!(
+                            "  Error: {}",
+                            dbcrust_core::password_sanitizer::redact_error(&e)
+                        );
 
                         // Check if it's specifically about autocomplete_enabled
                         if e.to_string().contains("autocomplete_enabled") {
@@ -2098,7 +2115,7 @@ impl Config {
                                     eprintln!(
                                         "  Problem line {}: {}",
                                         line_num,
-                                        crate::password_sanitizer::redact_text(line.trim())
+                                        dbcrust_core::password_sanitizer::redact_text(line.trim())
                                     );
                                 }
                             }
@@ -2137,7 +2154,7 @@ impl Config {
                             if retry_count == 0 {
                                 eprintln!(
                                     "Error parsing config file ({}), backing up and creating fresh config",
-                                    crate::password_sanitizer::redact_error(&e)
+                                    dbcrust_core::password_sanitizer::redact_error(&e)
                                 );
 
                                 // Backup corrupted file and extract SSH tunnel patterns safely
@@ -2195,14 +2212,14 @@ impl Config {
                                             );
                                             println!(
                                                 "Preserved SSH tunnel pattern: {pattern} -> {}",
-                                                crate::password_sanitizer::sanitize_ssh_tunnel_string(
+                                                dbcrust_core::password_sanitizer::sanitize_ssh_tunnel_string(
                                                     tunnel_config
                                                 )
                                             );
                                         } else {
                                             eprintln!(
                                                 "Skipping invalid SSH tunnel pattern: {pattern} -> {}",
-                                                crate::password_sanitizer::sanitize_ssh_tunnel_string(
+                                                dbcrust_core::password_sanitizer::sanitize_ssh_tunnel_string(
                                                     tunnel_config
                                                 )
                                             );
@@ -2239,7 +2256,7 @@ impl Config {
                                 // On subsequent retries, show detailed error and fail
                                 eprintln!(
                                     "Config parsing failed again on retry {retry_count}: {}",
-                                    crate::password_sanitizer::redact_error(&e)
+                                    dbcrust_core::password_sanitizer::redact_error(&e)
                                 );
                                 eprintln!(
                                     "This suggests a persistent issue with the config structure."
@@ -3141,7 +3158,7 @@ impl Config {
     pub fn save_session_from_connection_info(
         &mut self,
         name: &str,
-        connection_info: &crate::database::ConnectionInfo,
+        connection_info: &dbcrust_core::database::ConnectionInfo,
     ) -> Result<(), Box<dyn Error>> {
         self.save_session_from_connection_info_with_password_command(name, connection_info, None)
     }
@@ -3150,7 +3167,7 @@ impl Config {
     pub fn save_session_from_connection_info_with_password_command(
         &mut self,
         name: &str,
-        connection_info: &crate::database::ConnectionInfo,
+        connection_info: &dbcrust_core::database::ConnectionInfo,
         password_command: Option<&str>,
     ) -> Result<(), Box<dyn Error>> {
         // For Docker connections, we want to save a special marker that can be re-resolved
@@ -3222,7 +3239,7 @@ impl Config {
         if connection_info.is_docker_connection() {
             // The daemon pin belongs to one live connection; TLS is part of
             // the saved target (`ssl=true`, like in `docker://` URLs)
-            options.remove(crate::docker_target::PINNED_DAEMON_OPTION);
+            options.remove(dbcrust_core::docker_target::PINNED_DAEMON_OPTION);
             if connection_info.use_tls {
                 options.insert("ssl".to_string(), "true".to_string());
             }
@@ -3401,7 +3418,7 @@ impl Config {
                             Err(e) => {
                                 eprintln!(
                                     "Error executing command in SSH tunnel pattern: {}",
-                                    crate::password_sanitizer::redact_text(&e.to_string())
+                                    dbcrust_core::password_sanitizer::redact_text(&e.to_string())
                                 );
                                 return None;
                             }
@@ -3420,7 +3437,7 @@ impl Config {
     // This function expects relative paths (from sqlite:/// URLs) and converts them to absolute
     fn normalize_sqlite_path(file_path: &str) -> Result<String, Box<dyn Error>> {
         // The in-memory database (`duckdb://:memory:`) is not a path
-        if file_path == crate::database::DUCKDB_MEMORY_PATH {
+        if file_path == dbcrust_core::database::DUCKDB_MEMORY_PATH {
             return Ok(file_path.to_string());
         }
         let path = Path::new(file_path);
@@ -3867,8 +3884,10 @@ impl Config {
             Err(_) => return locked,
         };
         match vault_token {
-            Some(token) => crate::vault_encryption::decrypt_data_with_token(&encrypted, token),
-            None => crate::vault_encryption::decrypt_data(&encrypted),
+            Some(token) => dbcrust_secrets::legacy::vault_encryption::decrypt_data_with_token(
+                &encrypted, token,
+            ),
+            None => dbcrust_secrets::legacy::vault_encryption::decrypt_data(&encrypted),
         }
         .ok()
         .and_then(|data| toml::from_slice::<VaultCredentialStorage>(&data).ok())
@@ -3904,7 +3923,7 @@ impl Config {
 // The config-directory resolution, test-mode detection and atomic writer live
 // in `secrets::paths` (they must be shared with the secret store, which has no
 // dependency on this module); these re-exports keep the historical paths.
-pub use crate::secrets::paths::{is_test_mode, set_config_dir_override, write_file_atomically};
+pub use dbcrust_secrets::paths::{is_test_mode, set_config_dir_override, write_file_atomically};
 
 fn get_config_path() -> Option<PathBuf> {
     Config::get_config_file_path().ok()
@@ -3922,7 +3941,7 @@ fn ensure_config_dir(config_path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::ConnectionInfo;
+    use dbcrust_core::database::ConnectionInfo;
     use rstest::rstest;
     use std::env;
 
@@ -4075,7 +4094,7 @@ mod tests {
         // The directory the other tests in this process already use (an
         // explicit DBCRUST_CONFIG_DIR, else the one the test heuristic picks),
         // so they are unaffected
-        let dir = std::env::var_os(crate::secrets::paths::CONFIG_DIR_ENV)
+        let dir = std::env::var_os(dbcrust_secrets::paths::CONFIG_DIR_ENV)
             .filter(|dir| !dir.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| {
@@ -4169,9 +4188,11 @@ mod tests {
             },
         );
         let plaintext = toml::to_string_pretty(&cache).unwrap();
-        let encrypted =
-            crate::vault_encryption::encrypt_data_with_token(plaintext.as_bytes(), "token-A")
-                .unwrap();
+        let encrypted = dbcrust_secrets::legacy::vault_encryption::encrypt_data_with_token(
+            plaintext.as_bytes(),
+            "token-A",
+        )
+        .unwrap();
         fs::write(&path, &encrypted).unwrap();
 
         // Settings looks at it while token B is the one available
@@ -4296,8 +4317,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             // rediss:// carries its TLS in the scheme: the session must too
             let connection_info =
@@ -4350,8 +4371,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             save_connection_password(
                 &DatabaseType::Redis,
                 "cache.example",
@@ -4396,8 +4417,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             let connection_info = ConnectionInfo::parse_url(
                 "mssql://app@srv%5CSQLEXPRESS/Sales?trustServerCertificate=true",
@@ -4450,7 +4471,7 @@ mod tests {
                 reparsed.options.get("instance").map(String::as_str),
                 Some("SQLEXPRESS")
             );
-            assert!(crate::database::sqlserver_trusts_any_certificate(
+            assert!(dbcrust_core::database::sqlserver_trusts_any_certificate(
                 &reparsed.options
             ));
             assert!(reparsed.use_tls);
@@ -4467,8 +4488,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mode = |url: &str| {
                 tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
             };
@@ -4544,8 +4565,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             let connection_info = ConnectionInfo::parse_url(
                 "redshift://awsuser@c.abc.eu-west-1.redshift.amazonaws.com/dev?sslmode=verify-full",
@@ -4602,8 +4623,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mode = |url: &str| {
                 tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
             };
@@ -4675,8 +4696,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             // The token typed into the URL: it is the connection's password
             let connection_info = ConnectionInfo::parse_url(
@@ -4736,8 +4757,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mode = |url: &str| {
                 tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
             };
@@ -4776,8 +4797,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             let connection_info = ConnectionInfo::parse_url(
                 "s3://AKIAEXAMPLE:SECRET-canary-123@data-bucket/logs/2026/?region=eu-west-1\
@@ -4846,8 +4867,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             let connection_info =
                 ConnectionInfo::parse_url("s3://prod-bucket?region=us-east-2&profile=prod-ro")
@@ -4878,8 +4899,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mode = |url: &str| {
                 tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
             };
@@ -4932,8 +4953,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let connection_info = ConnectionInfo::parse_url(
                 "minio://AKIAEXAMPLE:SECRET-canary-123@localhost:9000/media/img/?tls=false",
             )
@@ -4979,8 +5000,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             let connection_info = ConnectionInfo::parse_url(
                 "dynamodb://AKIAEXAMPLE:SECRET-canary-123@eu-west-1/Orders\
@@ -5048,8 +5069,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             let connection_info =
                 ConnectionInfo::parse_url("dynamodb://us-east-2?profile=prod-ro").unwrap();
@@ -5084,8 +5105,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mode = |url: &str| {
                 tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
             };
@@ -5163,8 +5184,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let connection_info = ConnectionInfo::parse_url(
                 "dynamodb+http://AKIAEXAMPLE:SECRET-canary-123@localhost:8000/Orders?region=local",
             )
@@ -5211,8 +5232,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             let connection_info = ConnectionInfo::parse_url(
                 "cloudwatch://AKIAEXAMPLE:SECRET-canary-123@eu-west-1/aws/lambda/orders\
@@ -5278,8 +5299,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             save_connection_password(
                 &DatabaseType::CloudWatchLogs,
                 "",
@@ -5339,8 +5360,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let connection_info = ConnectionInfo::parse_url(
                 "cloudwatch+http://AKIAEXAMPLE:SECRET-canary-123@localhost:4566/my-app?region=us-east-1",
             )
@@ -5385,8 +5406,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             let info =
                 ConnectionInfo::parse_url("redis+unix:///run/redis.sock?db=3&user=app").unwrap();
@@ -5409,8 +5430,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mut config = get_test_config();
             // The token typed in the URL never reaches the session file
             let connection_info = ConnectionInfo::parse_url(
@@ -5457,7 +5478,10 @@ mod tests {
             assert_eq!(reparsed.port, Some(8087));
             assert_eq!(reparsed.database.as_deref(), Some("telemetry"));
             assert!(reparsed.use_tls, "TLS survives the session: {url}");
-            assert_eq!(crate::database::influxdb_version(&reparsed.options), 2);
+            assert_eq!(
+                dbcrust_core::database::influxdb_version(&reparsed.options),
+                2
+            );
             assert_eq!(
                 reparsed.options.get("org").map(String::as_str),
                 Some("acme")
@@ -5471,8 +5495,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             let mode = |url: &str| {
                 tls_mode_from_options(&ConnectionInfo::parse_url(url).unwrap().options).unwrap()
             };
@@ -5546,7 +5570,7 @@ mod tests {
             options: HashMap::from([
                 ("sslmode".to_string(), "verify-full".to_string()),
                 (
-                    crate::docker_target::PINNED_DAEMON_OPTION.to_string(),
+                    dbcrust_core::docker_target::PINNED_DAEMON_OPTION.to_string(),
                     "unix:///var/run/docker.sock".to_string(),
                 ),
             ]),
@@ -5562,12 +5586,12 @@ mod tests {
         assert!(
             !session
                 .options
-                .contains_key(crate::docker_target::PINNED_DAEMON_OPTION)
+                .contains_key(dbcrust_core::docker_target::PINNED_DAEMON_OPTION)
         );
         let url = session.reconstruct_connection_url().unwrap();
         // The relay port, the daemon and the password never come back
         assert_eq!(url, "docker://app@pg/shop?ssl=true&sslmode=verify-full");
-        let target = crate::docker_target::DockerTarget::parse(&url).unwrap();
+        let target = dbcrust_core::docker_target::DockerTarget::parse(&url).unwrap();
         assert!(target.use_tls);
         assert_eq!(
             target.options.get("sslmode").map(String::as_str),
@@ -6375,8 +6399,8 @@ mod tests {
 
         // A fresh in-memory store (nothing saved) falls through to the
         // read-only legacy file.
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             assert_eq!(
                 mysql_session().reconstruct_connection_url().unwrap(),
                 "mysql://dbuser:mysql-secret@mysql.example.com:3306/analytics"
@@ -6401,8 +6425,8 @@ mod tests {
             fs::set_permissions(&dbcrust_pass_path, fs::Permissions::from_mode(0o600)).unwrap();
         }
 
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::in_memory());
-        crate::secrets::with_store_override(store, || {
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::in_memory());
+        dbcrust_secrets::with_store_override(store, || {
             save_connection_password(
                 &DatabaseType::MySQL,
                 "mysql.example.com",
@@ -6436,8 +6460,8 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let _dbcrust_pass =
             ScopedEnvVar::set_path("DBCRUST_PASSFILE", &temp_dir.path().join("none"));
-        let backend = std::sync::Arc::new(crate::secrets::MemoryBackend::new());
-        let store = std::sync::Arc::new(crate::secrets::SecretStore::with_backend(
+        let backend = std::sync::Arc::new(dbcrust_secrets::MemoryBackend::new());
+        let store = std::sync::Arc::new(dbcrust_secrets::SecretStore::with_backend(
             backend.clone(),
             None,
         ));
@@ -6460,15 +6484,15 @@ mod tests {
             None,
         )
         .unwrap();
-        let planted = crate::secrets::SecretRecord::new("evil-pw", Default::default(), evil);
-        crate::secrets::SecretBackend::put(
+        let planted = dbcrust_secrets::SecretRecord::new("evil-pw", Default::default(), evil);
+        dbcrust_secrets::SecretBackend::put(
             backend.as_ref(),
             &real.record_id(),
             &planted.to_json().unwrap(),
         )
         .unwrap();
 
-        crate::secrets::with_store_override(store, || {
+        dbcrust_secrets::with_store_override(store, || {
             let url = mysql_session().reconstruct_connection_url().unwrap();
             assert!(!url.contains("evil-pw"), "{url}");
             assert!(!url.contains("dbuser:"), "{url}");
@@ -7310,7 +7334,7 @@ mod tests {
             options,
             ..Default::default()
         };
-        let docker_target = crate::docker_target::DockerTarget::parse(&format!(
+        let docker_target = dbcrust_core::docker_target::DockerTarget::parse(&format!(
             "docker://u:{CANARY}@pg/db?sslpassword={CANARY}"
         ))
         .unwrap();
@@ -7329,7 +7353,7 @@ mod tests {
         ];
         #[cfg(feature = "docker")]
         {
-            let docker_connection = crate::docker::DockerDatabaseConnection {
+            let docker_connection = dbcrust_docker::docker::DockerDatabaseConnection {
                 container_name: "pg".to_string(),
                 database_type: DatabaseType::PostgreSQL,
                 host: "127.0.0.1".to_string(),

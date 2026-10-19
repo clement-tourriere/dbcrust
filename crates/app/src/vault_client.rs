@@ -81,7 +81,7 @@ pub enum VaultError {
     TokenError,
     #[error("Failed to read token file ~/.vault-token: {0}")]
     TokenFileError(String),
-    #[error("Vault API error: {}", crate::password_sanitizer::redact_text(.0))]
+    #[error("Vault API error: {}", dbcrust_core::password_sanitizer::redact_text(.0))]
     ApiError(String),
     #[error("Connection URL parsing error: {0}")]
     UrlParseError(#[from] url::ParseError),
@@ -99,7 +99,7 @@ pub enum VaultError {
     RequestError(#[from] reqwest::Error),
     #[error("JSON parsing error: {0}")]
     JsonError(#[from] serde_json::Error),
-    #[error("Vault credential process failed: {}", crate::password_sanitizer::redact_text(.0))]
+    #[error("Vault credential process failed: {}", dbcrust_core::password_sanitizer::redact_text(.0))]
     CredentialProcessError(String),
 }
 
@@ -161,7 +161,7 @@ impl std::fmt::Debug for VaultDbConfigConnectionDetails {
                 &self
                     .connection_url
                     .as_deref()
-                    .map(crate::password_sanitizer::redact_url),
+                    .map(dbcrust_core::password_sanitizer::redact_url),
             )
             .finish()
     }

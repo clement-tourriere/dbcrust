@@ -90,9 +90,14 @@ zeroize = { workspace = true, features = ["alloc", "serde"] }
 # `[workspace.dependencies]`. No engine is enabled here: the engine features of
 # this crate (`postgres`, `mysql`, …, see [features]) forward to the registry.
 dbcrust-drivers = { workspace = true }
+# Application layer shared with the desktop app (`dbcrust-app`): config and
+# its storage, the `\config` schema, credential lookups, SSH tunnels and
+# `Database`, re-exported under their historical paths (`dbcrust::config`,
+# `dbcrust::db`, …). The CLI adds the terminal front end (`terminal_ui`).
+dbcrust-app = { workspace = true }
 # AI assistant (`dbcrust-ai`, re-exported as `dbcrust::ai`): genai, ChatGPT
 # sign-in and provider key storage live there; `AiSession` is implemented for
-# `Database` in `src/ai_session_impl.rs` (feature `ai`)
+# `Database` in `dbcrust-app` (its feature `ai`)
 dbcrust-ai = { workspace = true, optional = true }
 # Credential broker core (`dbcrust-broker`, re-exported as `dbcrust::broker`);
 # the `dbcrust broker …` front end is `src/broker/`
@@ -169,8 +174,8 @@ files = ["dbcrust-drivers/files"]
 # `bundled`/`standard`
 duckdb = ["dbcrust-drivers/duckdb"]
 # Add-ons
-docker = ["dep:dbcrust-docker"]
-ai = ["dep:dbcrust-ai"]
+docker = ["dep:dbcrust-docker", "dbcrust-app/docker"]
+ai = ["dep:dbcrust-ai", "dbcrust-app/ai"]
 # Explain-plan TUI and schema browser TUI
 explain-tui = ["dep:ratatui", "dep:textwrap"]
 clipboard = ["dep:arboard"]
@@ -253,6 +258,7 @@ default-members = [
     ".",
     "crates/agent",
     "crates/core",
+    "crates/app",
     "crates/secrets",
     "crates/drivers",
     "crates/docker",
@@ -318,6 +324,8 @@ dbcrust-core = { path = "crates/core", default-features = false }
 dbcrust-docker = { path = "crates/docker" }
 dbcrust-ai = { path = "crates/ai" }
 dbcrust-broker = { path = "crates/broker", default-features = false }
+# Application layer shared by the CLI and the desktop app (`crates/app`)
+dbcrust-app = { path = "crates/app", default-features = false }
 bollard = { version = "0.21", default-features = false, features = ["http", "pipe"] }
 
 # Engine registry and one crate per connector (`crates/drivers`,

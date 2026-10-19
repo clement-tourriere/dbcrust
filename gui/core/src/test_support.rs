@@ -21,13 +21,13 @@ pub(crate) fn config_dir() -> PathBuf {
 /// on every thread. Idempotent. `ConfigStore::from_config` / `load` call it
 /// in test builds; tests that write user files call it first anyway.
 pub(crate) fn isolate() {
-    dbcrust::config::set_config_dir_override(config_dir());
+    dbcrust_app::config::set_config_dir_override(config_dir());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dbcrust::config::Config;
+    use dbcrust_app::config::Config;
     use std::process::Command;
 
     /// Set in the subprocess that runs the guard's checks.

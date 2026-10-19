@@ -11,7 +11,7 @@ use crate::app_state::AppState;
 use crate::preferences::Preferences;
 use crate::query::QueryStatus;
 use crate::tray::{self, TrayCommand};
-use dbcrust_gui_core::dbcrust::config::Config;
+use dbcrust_gui_core::dbcrust_app::config::Config;
 use dbcrust_gui_core::gui_state::GuiState;
 use dbcrust_gui_core::{ConfigStore, ConnectRequest, ConnectionId};
 use gpui_kit::component::WindowExt as _;

@@ -10,8 +10,29 @@ publish = false
 description = "GPUI-free backend of the DBCrust desktop app: per-connection database workers, config/storage ownership, and pure query/result/schema models"
 
 [dependencies]
-# `bundled`: the desktop app offers every engine and the Docker picker
-dbcrust = { path = "../..", default-features = false, features = ["bundled"] }
+# The shared layers the CLI is built on, never the CLI crate itself (`dbcrust`:
+# REPL, `inquire`, TUIs, broker, AI). `dbcrust-app` holds config, storage and
+# `Database`; `docker` adds the container picker and the `docker://` routes.
+dbcrust-app = { workspace = true, features = ["docker"] }
+dbcrust-core = { workspace = true, features = ["tls"] }
+dbcrust-docker = { workspace = true }
+dbcrust-secrets = { workspace = true }
+# Every engine of the CLI's `bundled` preset (DuckDB and AWS stay opt-in)
+dbcrust-drivers = { workspace = true, features = [
+    "postgres",
+    "mysql",
+    "sqlite",
+    "mongodb",
+    "clickhouse",
+    "elasticsearch",
+    "white-dragon",
+    "redis",
+    "mssql",
+    "redshift",
+    "libsql",
+    "influxdb",
+    "files",
+] }
 tokio = { workspace = true, features = ["rt", "macros", "sync", "time"] }
 futures-util = { workspace = true }
 serde = { workspace = true, features = ["derive", "std"] }
@@ -24,7 +45,7 @@ chrono = { workspace = true }
 [features]
 default = []
 # The opt-in DuckDB engine (a C++ build, +20 MB): `cargo build -p dbcrust-gui --features duckdb`
-duckdb = ["dbcrust/duckdb"]
+duckdb = ["dbcrust-drivers/duckdb"]
 
 [dev-dependencies]
 # Enables the secrets crate's `test-mode` switch for this crate's tests: the
@@ -33,10 +54,6 @@ duckdb = ["dbcrust/duckdb"]
 dbcrust-secrets = { workspace = true, features = ["test-mode"] }
 rstest = { workspace = true }
 tempfile = { workspace = true, features = ["getrandom"] }
-
-[package.metadata.cargo-machete]
-# Feature-only dev-dependency (see [dev-dependencies])
-ignored = ["dbcrust-secrets"]
 
 [lints]
 workspace = true

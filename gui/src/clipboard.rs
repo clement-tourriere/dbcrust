@@ -131,7 +131,7 @@ mod tests {
     use super::{reserve, write};
     use crate::RestoredState;
     use dbcrust_gui_core::ConfigStore;
-    use dbcrust_gui_core::dbcrust::config::Config;
+    use dbcrust_gui_core::dbcrust_app::config::Config;
     use dbcrust_gui_core::gui_state::GuiState;
     use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext, WindowOptions};
 

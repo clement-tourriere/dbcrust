@@ -11,9 +11,9 @@ use crate::docker::{DockerContainer, DockerDaemon, ReachHint};
 use crate::store::{RecentEntry, SessionEntry};
 use crate::types::{ConnectRequest, ConnectTarget};
 use crate::url_builder::{self as urls, Target};
-use dbcrust::config::SavedSession;
-use dbcrust::database::{DatabaseType, DatabaseTypeExt};
-use dbcrust::docker::PINNED_DAEMON_OPTION;
+use dbcrust_app::config::SavedSession;
+use dbcrust_core::database::{DatabaseType, DatabaseTypeExt};
+use dbcrust_docker::docker::PINNED_DAEMON_OPTION;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -392,7 +392,7 @@ impl TargetIdentity {
 /// [`daemon_pin`]. Reads the Docker configuration files (no daemon, no
 /// probing); `None` when the endpoint cannot be resolved.
 pub fn current_docker_pin() -> Option<String> {
-    dbcrust::docker::DockerEndpoint::from_environment()
+    dbcrust_docker::docker::DockerEndpoint::from_environment()
         .ok()
         .map(|endpoint| endpoint.pinned_value())
 }
@@ -1038,7 +1038,7 @@ mod tests {
             url: url.into(),
             db_type: db_type.clone(),
             timestamp,
-            connection: dbcrust::config::RecentConnection {
+            connection: dbcrust_app::config::RecentConnection {
                 connection_url: url.into(),
                 display_name: display.into(),
                 timestamp,
@@ -1675,7 +1675,8 @@ mod tests {
     fn daemon_pins_come_from_requests() {
         assert_eq!(daemon_pin_of(&ConnectRequest::url("docker://pg")), None);
         assert_eq!(daemon_pin_of(&ConnectRequest::session("prod")), None);
-        let mut info = dbcrust::database::ConnectionInfo::parse_url("docker://pg").expect("info");
+        let mut info =
+            dbcrust_core::database::ConnectionInfo::parse_url("docker://pg").expect("info");
         info.options
             .insert(PINNED_DAEMON_OPTION.to_string(), "context:orbstack".into());
         assert_eq!(

@@ -2,8 +2,8 @@
 //! building safe identifiers for generated SQL.
 
 use crate::types::{TableDetails, TableEntry, TableKind};
-use dbcrust::database::DatabaseType;
-use dbcrust::db::{ColumnInfo, IndexInfo};
+use dbcrust_app::db::{ColumnInfo, IndexInfo};
+use dbcrust_core::database::DatabaseType;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
@@ -1485,7 +1485,7 @@ mod tests {
 
     // --- generated SQL, constraints, DDL and explorer model ---
 
-    use dbcrust::db::{
+    use dbcrust_app::db::{
         CheckConstraintInfo, ColumnInfo, ForeignKeyInfo, IndexInfo, ReferencedByInfo,
     };
     use rstest::rstest;

@@ -6,7 +6,7 @@ use super::{CountState, DataState, Section, TableInspector};
 use crate::app_state::AppState;
 use crate::explorer::copy_text;
 use crate::theme::{self, Surfaces};
-use dbcrust_gui_core::dbcrust::db::CheckConstraintInfo;
+use dbcrust_gui_core::dbcrust_app::db::CheckConstraintInfo;
 use dbcrust_gui_core::schema::{self, ColumnOutline, IndexOutline};
 use dbcrust_gui_core::{ConnectionId, DatabaseType, TableEntry};
 use gpui_kit::assets::IconName;

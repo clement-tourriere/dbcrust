@@ -2,7 +2,7 @@
 
 use crate::ids::ConnectionId;
 use crate::store::RecentEntry;
-use dbcrust::database::{DatabaseType, DatabaseTypeExt};
+use dbcrust_core::database::{DatabaseType, DatabaseTypeExt};
 use std::time::Duration;
 
 /// What to connect to.
@@ -18,7 +18,7 @@ pub enum ConnectTarget {
     Recent(Box<RecentEntry>),
     /// Fully resolved connection details (credentials and options included),
     /// e.g. another database of an open connection's server.
-    Info(Box<dbcrust::database::ConnectionInfo>),
+    Info(Box<dbcrust_core::database::ConnectionInfo>),
 }
 
 // A URL target can carry a password: `Debug` shows it redacted.
@@ -27,7 +27,7 @@ impl std::fmt::Debug for ConnectTarget {
         match self {
             Self::Url(url) => f
                 .debug_tuple("Url")
-                .field(&dbcrust::password_sanitizer::redact_url(url))
+                .field(&dbcrust_core::password_sanitizer::redact_url(url))
                 .finish(),
             Self::Session(name) => f.debug_tuple("Session").field(name).finish(),
             Self::Recent(entry) => f.debug_tuple("Recent").field(entry).finish(),
@@ -65,7 +65,7 @@ impl ConnectRequest {
         }
     }
 
-    pub fn info(info: dbcrust::database::ConnectionInfo) -> Self {
+    pub fn info(info: dbcrust_core::database::ConnectionInfo) -> Self {
         Self {
             target: ConnectTarget::Info(Box::new(info)),
             read_only: false,
@@ -281,7 +281,7 @@ impl TableEntry {
 }
 
 /// Full description of a table, as returned by DBCrust core.
-pub type TableDetails = dbcrust::db::TableDetails;
+pub type TableDetails = dbcrust_app::db::TableDetails;
 
 #[cfg(test)]
 mod tests {
