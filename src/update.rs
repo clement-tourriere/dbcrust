@@ -1,7 +1,7 @@
 //! Self-update support (`dbcrust --update`).
 //!
-//! dbcrust ships through several channels (uv tool, pipx, pip, cargo,
-//! standalone binaries via the install script). The running executable's
+//! dbcrust ships through several channels (uv tool, pipx, pip, Homebrew,
+//! cargo, standalone binaries via the install script). The running executable's
 //! path identifies the channel; the latest release tag comes from the GitHub
 //! API. Package-manager installs are upgraded in place after confirmation;
 //! for the other channels the exact command is printed instead of executed
@@ -17,6 +17,7 @@ pub enum InstallChannel {
     UvTool,
     Pipx,
     Pip,
+    Homebrew,
     Cargo,
     Binary,
 }
@@ -27,6 +28,7 @@ impl std::fmt::Display for InstallChannel {
             InstallChannel::UvTool => "uv tool",
             InstallChannel::Pipx => "pipx",
             InstallChannel::Pip => "pip",
+            InstallChannel::Homebrew => "Homebrew",
             InstallChannel::Cargo => "cargo (source build)",
             InstallChannel::Binary => "standalone binary",
         };
@@ -70,10 +72,30 @@ pub fn detect_install_channel(exe: &Path) -> InstallChannel {
     if file_name.starts_with("python") || has("site-packages") || has(".venv") || has("venv") {
         return InstallChannel::Pip;
     }
+    // /opt/homebrew/bin (Apple silicon), …/Cellar/dbcrust/<version>/bin
+    // (Intel Macs link it into /usr/local/bin: see `resolve_install_channel`),
+    // /home/linuxbrew/.linuxbrew/bin
+    if has("cellar") || has_pair("opt", "homebrew") || has(".linuxbrew") {
+        return InstallChannel::Homebrew;
+    }
     if has_pair(".cargo", "bin") {
         return InstallChannel::Cargo;
     }
     InstallChannel::Binary
+}
+
+/// The channel of the running executable. Homebrew links its binaries into a
+/// shared `bin/` (`/usr/local/bin` on Intel Macs), so a path that looks like a
+/// standalone install is classified again once symlinks are resolved. Only
+/// then: resolving a virtualenv's `python` would lose the environment that
+/// identifies the Python channels.
+pub fn resolve_install_channel(exe: &Path) -> InstallChannel {
+    match detect_install_channel(exe) {
+        InstallChannel::Binary => std::fs::canonicalize(exe)
+            .map(|resolved| detect_install_channel(&resolved))
+            .unwrap_or(InstallChannel::Binary),
+        channel => channel,
+    }
 }
 
 /// The upgrade for a channel. `exe` is the running executable — for pip
@@ -84,6 +106,7 @@ pub fn upgrade_action(channel: &InstallChannel, exe: &Path, repo_url: &str) -> U
     match channel {
         InstallChannel::UvTool => UpgradeAction::Run(argv(&["uv", "tool", "upgrade", "dbcrust"])),
         InstallChannel::Pipx => UpgradeAction::Run(argv(&["pipx", "upgrade", "dbcrust"])),
+        InstallChannel::Homebrew => UpgradeAction::Run(argv(&["brew", "upgrade", "dbcrust"])),
         InstallChannel::Pip => {
             let file_name = exe
                 .file_name()
@@ -192,7 +215,7 @@ pub async fn run_update() -> i32 {
             return 1;
         }
     };
-    let channel = detect_install_channel(&exe);
+    let channel = resolve_install_channel(&exe);
     println!("Detected install method: {channel}");
 
     match upgrade_action(&channel, &exe, repo_url()) {
@@ -253,6 +276,18 @@ mod tests {
     #[case("/home/me/.cargo/bin/dbcrust", InstallChannel::Cargo)]
     #[case("/home/me/.local/bin/dbcrust", InstallChannel::Binary)]
     #[case("/usr/local/bin/dbc", InstallChannel::Binary)]
+    #[case("/opt/homebrew/bin/dbcrust", InstallChannel::Homebrew)]
+    #[case(
+        "/opt/homebrew/Cellar/dbcrust/0.40.0/bin/dbc",
+        InstallChannel::Homebrew
+    )]
+    #[case(
+        "/usr/local/Cellar/dbcrust/0.40.0/bin/dbcrust",
+        InstallChannel::Homebrew
+    )]
+    #[case("/home/linuxbrew/.linuxbrew/bin/dbcrust", InstallChannel::Homebrew)]
+    // Homebrew's Python is still a pip install
+    #[case("/opt/homebrew/opt/python@3.13/bin/python3.13", InstallChannel::Pip)]
     fn test_detect_install_channel(#[case] path: &str, #[case] expected: InstallChannel) {
         assert_eq!(detect_install_channel(Path::new(path)), expected);
     }
@@ -290,6 +325,46 @@ mod tests {
             UpgradeAction::Run(vec![
                 "uv".to_string(),
                 "tool".to_string(),
+                "upgrade".to_string(),
+                "dbcrust".to_string()
+            ])
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_resolve_install_channel_follows_homebrew_links() {
+        // An Intel Mac: /usr/local/bin/dbcrust → /usr/local/Cellar/dbcrust/<version>/bin/dbcrust
+        let prefix = tempfile::tempdir().unwrap();
+        let cellar_bin = prefix.path().join("Cellar/dbcrust/0.40.0/bin");
+        std::fs::create_dir_all(&cellar_bin).unwrap();
+        std::fs::write(cellar_bin.join("dbcrust"), b"").unwrap();
+        std::fs::create_dir_all(prefix.path().join("bin")).unwrap();
+        let link = prefix.path().join("bin/dbcrust");
+        std::os::unix::fs::symlink(cellar_bin.join("dbcrust"), &link).unwrap();
+
+        assert_eq!(detect_install_channel(&link), InstallChannel::Binary);
+        assert_eq!(resolve_install_channel(&link), InstallChannel::Homebrew);
+        // A standalone install (even a dangling path) stays one
+        let standalone = prefix.path().join("bin/dbc");
+        std::fs::write(&standalone, b"").unwrap();
+        assert_eq!(resolve_install_channel(&standalone), InstallChannel::Binary);
+        assert_eq!(
+            resolve_install_channel(&prefix.path().join("bin/missing")),
+            InstallChannel::Binary
+        );
+    }
+
+    #[test]
+    fn test_homebrew_upgrade_command() {
+        assert_eq!(
+            upgrade_action(
+                &InstallChannel::Homebrew,
+                Path::new("/opt/homebrew/bin/dbcrust"),
+                "https://github.com/x/y"
+            ),
+            UpgradeAction::Run(vec![
+                "brew".to_string(),
                 "upgrade".to_string(),
                 "dbcrust".to_string()
             ])
