@@ -36,6 +36,9 @@ curl -fsSL https://clement-tourriere.github.io/dbcrust/install.sh | sh
 # Pre-built binary — Windows (PowerShell)
 irm https://clement-tourriere.github.io/dbcrust/install.ps1 | iex
 
+# Homebrew — macOS & Linux
+brew install clement-tourriere/tap/dbcrust
+
 # Python 3.10+ (ships the same native binary)
 uv tool install dbcrust          # or: pipx install dbcrust / pip install dbcrust
 uvx dbcrust <url>                # run without installing
@@ -47,7 +50,7 @@ cargo install --path .
 Two binaries are installed: `dbcrust` and the short alias `dbc`.
 
 ```bash
-dbcrust --update                 # self-update (detects uv / pipx / pip / cargo / binary installs)
+dbcrust --update                 # self-update (detects uv / pipx / pip / Homebrew / cargo / binary installs)
 dbcrust --completions zsh        # shell completions (bash, zsh, fish, powershell, ...)
 ```
 
@@ -215,7 +218,7 @@ Guides: [Python API](https://clement-tourriere.github.io/dbcrust/python-api/over
 
 ## Desktop GUI
 
-A native, GPU-accelerated desktop app built with [GPUI Kit](https://gpui-kit.com), pure Rust on the same core as the CLI (built from source for now). See the [GUI guide](https://clement-tourriere.github.io/dbcrust/user-guide/gui/).
+A native, GPU-accelerated desktop app built with [GPUI Kit](https://gpui-kit.com), pure Rust on the same core as the CLI. On macOS, download the signed and notarized [DBCrust-macos-universal.dmg](https://github.com/clement-tourriere/dbcrust/releases/latest/download/DBCrust-macos-universal.dmg) or run `brew install --cask clement-tourriere/tap/dbcrust-gui`; on Linux and Windows, build it from source. See the [GUI guide](https://clement-tourriere.github.io/dbcrust/user-guide/gui/).
 
 ![DBCrust desktop app](docs/public/screenshots/gui-query.png)
 
@@ -236,6 +239,7 @@ A native, GPU-accelerated desktop app built with [GPUI Kit](https://gpui-kit.com
 mise run gui:dev                       # run the app
 mise run gui:build                     # optimised build (target/gui-release/dbcrust-gui)
 mise run gui:bundle                    # macOS DBCrust.app
+mise run macos:package                 # macOS release packages: CLI archive + DMG
 ```
 
 ## Configuration

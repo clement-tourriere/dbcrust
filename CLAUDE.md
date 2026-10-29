@@ -26,6 +26,7 @@ mise run gui:dev          # run it
 mise run gui:test         # backend tests (dbcrust-gui-core, no GPUI)
 mise run gui:lint         # clippy on both GUI crates (--no-deps)
 mise run gui:screenshots  # regenerate docs/README screenshots headlessly
+mise run macos:package    # this Mac's CLI archive + DMG like a release (ad-hoc unless MACOS_SIGNING_IDENTITY)
 
 # Build cache — Mr Boxington (mbx), the `[wrappers.cargo]` entry in mise.toml
 mise run cache:stats      # savings + disk use
@@ -95,6 +96,9 @@ mise run cache:gc         # reclaim disk space (`-- --dry-run` to preview)
 | `src/named_queries.rs` | Parameterized queries (`$1`, `$*`, `$@`) |
 | `gui/core/` | `dbcrust-gui-core`: desktop app backend without GPUI — per-connection workers, `ConfigStore`, query/result/plan models. Depends on the shared layers only (`dbcrust-app` [`docker`], `dbcrust-core` [`tls`], `dbcrust-drivers` with the `bundled` engines, `dbcrust-docker`, `dbcrust-secrets`), **never the root `dbcrust` crate**, and re-exports them for `gui/src` (`dbcrust_gui_core::dbcrust_app::…`). Shared logic belongs in those crates, not in the GUI |
 | `gui/src/` | `dbcrust-gui`: GPUI Kit desktop app (views, workspace, `AppCommand` catalogue); module map in `gui/ARCHITECTURE.md` |
+| `gui/bundle/macos/` | `DBCrust.app` template: `Info.plist` (bundle id `com.dbcrust.gui`, `NSLocalNetworkUsageDescription`: macOS 15+ asks before the app opens a LAN connection), icon, `bundle.sh` (`--binary` wraps a prebuilt/universal binary and leaves signing to the caller) |
+| `packaging/macos/` | `package.sh`: signs (Developer ID or ad-hoc, hardened runtime, never picks a keychain identity itself), notarizes and staples, and builds the macOS release assets (`dbcrust-<target>.tar.gz`, `DBCrust-macos-universal.dmg`); run by `mise run macos:package` and the `package-macos` / `package-macos-signed` jobs of `build-binaries.yml` (signed = release runs with repo variable `MACOS_SIGNING=on`, secrets in the `macos-signing` environment). `README.md` is the maintainer runbook (Apple account, certificate, notarization key, GitHub setup) |
+| `packaging/homebrew/render.py` | Renders the tap's `Formula/dbcrust.rb` (CLI, macOS + Linux) and `Casks/dbcrust-gui.rb` (only when the release has the notarized DMG) from a release's `.sha256` files; pushed by `release.yml` `update-homebrew-tap` when repo variable `HOMEBREW_TAP_REPO` is set |
 
 ## Connection URL Types
 

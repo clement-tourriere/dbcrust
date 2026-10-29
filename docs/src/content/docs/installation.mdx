@@ -37,6 +37,35 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 This installs two binaries: `dbcrust` (full name) and `dbc` (short alias).
 
+The macOS binaries are signed with a Developer ID and notarized by Apple, so they run even when downloaded with a browser.
+
+## Homebrew (macOS, Linux)
+
+```bash
+brew install clement-tourriere/tap/dbcrust
+```
+
+This installs `dbcrust`, `dbc` and `dbcrust-agent` with their shell completions. `brew upgrade dbcrust` (or `dbcrust --update`) keeps it current.
+
+## Desktop app
+
+<Tabs>
+  <TabItem label="macOS">
+    Download [DBCrust-macos-universal.dmg](https://github.com/clement-tourriere/dbcrust/releases/latest/download/DBCrust-macos-universal.dmg) (Apple silicon and Intel, macOS 12 or later), open it and drag **DBCrust** to **Applications**. The app is signed and notarized: it opens with a double-click.
+
+    Or with Homebrew:
+
+    ```bash
+    brew install --cask clement-tourriere/tap/dbcrust-gui
+    ```
+  </TabItem>
+  <TabItem label="Linux / Windows">
+    Build it from source for now: see [Building the desktop app](#building-the-desktop-app).
+  </TabItem>
+</Tabs>
+
+The first time it connects to a database on your local network (or to a Docker container's address), macOS asks whether DBCrust may access the local network: allow it. You can change this later in System Settings → Privacy & Security → Local Network. See [Desktop GUI](/dbcrust/user-guide/gui/).
+
 ## Python package managers
 
 ### uv (recommended)
@@ -95,6 +124,7 @@ mise run gui:dev          # run the app (dev build, optimised dependencies)
 mise run gui:build        # optimised build → target/gui-release/dbcrust-gui
 mise run gui:install      # install dbcrust-gui into ~/.cargo/bin
 mise run gui:bundle       # macOS: target/gui-release/bundle/DBCrust.app
+mise run macos:package    # macOS: CLI archive + DMG like a release → target/macos-dist/
 
 # no mise installed: the committed wrapper
 ./bin/mise run gui:dev

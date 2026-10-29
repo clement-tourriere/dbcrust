@@ -7,15 +7,28 @@ DBCrust ships a native desktop app built with [GPUI Kit](https://gpui-kit.com) �
 
 ![The DBCrust desktop app: schema explorer, SQL editor and results grid](/dbcrust/screenshots/gui-query.png)
 
+## Install
+
+On macOS, download [DBCrust-macos-universal.dmg](https://github.com/clement-tourriere/dbcrust/releases/latest/download/DBCrust-macos-universal.dmg) (Apple silicon and Intel, macOS 12 or later) and drag **DBCrust** to **Applications**, or install it with Homebrew:
+
+```bash
+brew install --cask clement-tourriere/tap/dbcrust-gui
+```
+
+The app is signed and notarized by Apple. macOS asks once whether DBCrust may access your local network: this covers databases on your LAN and Docker containers reached by their address (allowed or not in System Settings → Privacy & Security → Local Network). Databases on `localhost` or a published port don't need it.
+
+On Linux and Windows, build it from source (below).
+
 ## Build and run
 
-The app is built from source for now. mise installs the Rust toolchain (1.85+) for you — on Linux you also need the usual GPUI system libraries (`libxkbcommon-x11`, `libwayland`, `libfontconfig`, Vulkan). Without mise installed, run the same tasks with the repository's `./bin/mise` wrapper, e.g. `./bin/mise run gui:dev`.
+mise installs the Rust toolchain (1.85+) for you — on Linux you also need the usual GPUI system libraries (`libxkbcommon-x11`, `libwayland`, `libfontconfig`, Vulkan). Without mise installed, run the same tasks with the repository's `./bin/mise` wrapper, e.g. `./bin/mise run gui:dev`.
 
 ```bash
 mise run gui:dev        # run the app (dev build, optimised dependencies)
 mise run gui:build      # optimised build → target/gui-release/dbcrust-gui
 mise run gui:install    # install dbcrust-gui into ~/.cargo/bin
 mise run gui:bundle     # macOS: target/gui-release/bundle/DBCrust.app
+mise run macos:package  # macOS: the release packages (CLI archive + DMG) → target/macos-dist/
 ```
 
 Builds run through [Mr Boxington](https://mr-boxington.jdx.dev/), so rebuilds — and builds in other worktrees and branches — restore cached crates instead of compiling them again. Without mise: `cargo run -p dbcrust-gui` from the repository root (uncached).
