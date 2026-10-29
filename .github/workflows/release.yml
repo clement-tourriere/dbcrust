@@ -50,6 +50,9 @@ jobs:
     uses: ./.github/workflows/build-binaries.yml
     with:
       plan: ${{ needs.plan.outputs.plan }}
+    # A called workflow sees no secret the caller does not pass, not even the
+    # environment secrets of its own `environment:` job (package-macos-signed)
+    secrets: inherit
 
   create-release:
     if: ${{ needs.plan.outputs.should_create_release == 'true' }}
@@ -72,6 +75,9 @@ jobs:
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
 
       - name: Generate release notes
+        env:
+          MACOS_SIGNING: ${{ vars.MACOS_SIGNING }}
+          HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
         run: |
           VERSION="${{ steps.extract_version.outputs.version }}"
           TAG_NAME="${{ steps.extract_version.outputs.tag_name }}"
@@ -104,6 +110,26 @@ jobs:
             echo "dbc postgres://user:pass@localhost/mydb"
             echo '```'
             echo ""
+            # owner/homebrew-tap is tapped as owner/tap
+            TAP="${HOMEBREW_TAP_REPO%%/*}/${HOMEBREW_TAP_REPO#*/homebrew-}"
+            if [ "$MACOS_SIGNING" = "on" ]; then
+              echo "### Desktop app (macOS)"
+              echo ""
+              echo "[DBCrust-macos-universal.dmg](https://github.com/${REPO}/releases/download/${TAG_NAME}/DBCrust-macos-universal.dmg): signed and notarized, Apple silicon and Intel."
+              if [ -n "$HOMEBREW_TAP_REPO" ]; then
+                echo '```bash'
+                echo "brew install --cask ${TAP}/dbcrust-gui"
+                echo '```'
+              fi
+              echo ""
+            fi
+            if [ -n "$HOMEBREW_TAP_REPO" ]; then
+              echo "### Homebrew (macOS, Linux)"
+              echo '```bash'
+              echo "brew install ${TAP}/dbcrust"
+              echo '```'
+              echo ""
+            fi
             echo "### Python/PyPI"
             echo '```bash'
             echo "# Quick run (no installation needed)"
@@ -170,7 +196,57 @@ jobs:
             artifacts/wheels_*/*.tar.gz
             artifacts/binaries_*/*.tar.gz
             artifacts/binaries_*/*.zip
+            artifacts/binaries_*/*.dmg
             artifacts/binaries_*/*.sha256
           tag_name: ${{ fromJson(needs.plan.outputs.plan).tag }}
           draft: false
           prerelease: ${{ contains(fromJson(needs.plan.outputs.plan).tag, '-') }}
+
+  # Once the repository variable HOMEBREW_TAP_REPO names the tap (e.g.
+  # clement-tourriere/homebrew-tap) and the secret HOMEBREW_TAP_TOKEN can push
+  # to it: the formula (CLI) and, when the release has the notarized DMG, the
+  # cask (desktop app), rendered from the published checksums.
+  update-homebrew-tap:
+    if: ${{ always() && needs.upload-release-artifacts.result == 'success' && !contains(fromJson(needs.plan.outputs.plan).tag, '-') && vars.HOMEBREW_TAP_REPO != '' }}
+    needs: [plan, upload-release-artifacts]
+    runs-on: ubuntu-latest
+    # One tap update at a time across releases (render.py never downgrades)
+    concurrency:
+      group: homebrew-tap
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: dbcrust
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.HOMEBREW_TAP_REPO }}
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries_*
+          path: assets
+          merge-multiple: true
+
+      - name: "Render the formula and the cask"
+        env:
+          TAG: ${{ fromJson(needs.plan.outputs.plan).tag }}
+        run: python3 dbcrust/packaging/homebrew/render.py --version "${TAG#v}" --assets assets --tap tap
+
+      - name: "Push to the tap"
+        working-directory: tap
+        env:
+          TAG: ${{ fromJson(needs.plan.outputs.plan).tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A Formula Casks 2>/dev/null || git add -A Formula
+          if git diff --cached --quiet; then
+            echo "The tap already has ${TAG}"
+            exit 0
+          fi
+          git commit -m "dbcrust ${TAG#v}"
+          git push
