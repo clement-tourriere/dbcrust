@@ -91,6 +91,21 @@ run = "cargo install --path gui --bin dbcrust-gui --profile gui-release --locked
 description = "Build a macOS DBCrust.app bundle into target/gui-release/bundle/"
 run = "bash gui/bundle/macos/bundle.sh"
 
+[tasks."macos:package"]
+description = "Build this Mac's CLI and desktop app and package them like a release (ad-hoc signed; set MACOS_SIGNING_IDENTITY and NOTARY_PROFILE to sign and notarize, see packaging/macos/README.md) into target/macos-dist/"
+run = '''
+set -e
+cargo build --release --locked --bin dbcrust --bin dbc --bin dbcrust-agent
+cargo build --locked -p dbcrust-gui --profile gui-release
+host=$(rustc -vV | sed -n 's/^host: //p')
+input=$(mktemp -d)
+mkdir -p "$input/macos-cli-$host" "$input/macos-gui-$host"
+cp target/release/dbcrust target/release/dbc target/release/dbcrust-agent "$input/macos-cli-$host/"
+cp target/gui-release/dbcrust-gui "$input/macos-gui-$host/"
+bash packaging/macos/package.sh --input "$input" --out target/macos-dist
+rm -rf "$input"
+'''
+
 [tasks."gui:test"]
 description = "Run the desktop app backend tests (no GPUI needed)"
 run = "cargo test -p dbcrust-gui-core"

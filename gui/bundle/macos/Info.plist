@@ -2,6 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
     <key>CFBundleName</key>
     <string>DBCrust</string>
     <key>CFBundleDisplayName</key>
@@ -18,6 +20,8 @@
     <string>__VERSION__</string>
     <key>CFBundleVersion</key>
     <string>__VERSION__</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © DBCrust Authors. MIT License.</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>LSApplicationCategoryType</key>
@@ -26,5 +30,16 @@
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
     <true/>
+    <!-- macOS 15+ asks before an app opens a TCP connection to a local network
+         address (a database on the LAN, a Docker container's address); this is
+         the explanation shown in that prompt (TN3179). -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>DBCrust connects to the databases you open, including databases and Docker containers on your local network.</string>
+    <key>NSDocumentsFolderUsageDescription</key>
+    <string>DBCrust opens the database files and SQL scripts you choose.</string>
+    <key>NSDesktopFolderUsageDescription</key>
+    <string>DBCrust opens the database files and SQL scripts you choose.</string>
+    <key>NSDownloadsFolderUsageDescription</key>
+    <string>DBCrust opens the database files and SQL scripts you choose.</string>
 </dict>
 </plist>

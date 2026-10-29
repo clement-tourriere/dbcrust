@@ -15,6 +15,8 @@ on:
       - pyproject.toml
       - src/**
       - python/**
+      - gui/**
+      - packaging/**
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.pull_request.number || github.sha }}
@@ -96,7 +98,7 @@ jobs:
           path: dist
 
   macos-aarch64:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -406,15 +408,16 @@ jobs:
           name: binaries_${{ env.PACKAGE_NAME }}-${{ matrix.target }}
           path: dist
 
+  # macOS: the CLI and the desktop app are built per architecture, then one
+  # packaging job signs them, notarizes them and builds the archives and the
+  # DMG (packaging/macos/package.sh), so signing secrets reach a single job.
   native-binaries-macos:
     strategy:
       matrix:
-        include:
-          - os: macos-15
-            target: x86_64-apple-darwin
-          - os: macos-14
-            target: aarch64-apple-darwin
-    runs-on: ${{ matrix.os }}
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -431,18 +434,178 @@ jobs:
 
       - name: "Build native binaries"
         run: |
-          cargo build --release --target ${{ matrix.target }} --features bundled --bin dbcrust --bin dbc --bin dbcrust-agent
-          mkdir -p dist
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../dist/dbcrust-${{ matrix.target }}.tar.gz dbcrust dbc dbcrust-agent
-          cd ../../../dist
-          shasum -a 256 dbcrust-${{ matrix.target }}.tar.gz > dbcrust-${{ matrix.target }}.tar.gz.sha256
+          cargo build --release --locked --target ${{ matrix.target }} --features bundled --bin dbcrust --bin dbc --bin dbcrust-agent
+          mkdir -p stage
+          cp target/${{ matrix.target }}/release/{dbcrust,dbc,dbcrust-agent} stage/
 
-      - name: "Upload binary artifacts"
+      - name: "Upload unsigned binaries"
         uses: actions/upload-artifact@v4
         with:
-          name: binaries_${{ env.PACKAGE_NAME }}-${{ matrix.target }}
+          name: macos-cli-${{ matrix.target }}
+          path: stage
+          retention-days: 3
+
+  gui-macos:
+    strategy:
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    runs-on: macos-15
+    env:
+      # Same floor as LSMinimumSystemVersion in gui/bundle/macos/Info.plist
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "Setup Rust"
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: "Setup Rust cache"
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: gui-macos-${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') }}
+
+      - name: "Build the desktop app"
+        run: |
+          cargo build --locked -p dbcrust-gui --profile gui-release --target ${{ matrix.target }}
+          mkdir -p stage
+          cp target/${{ matrix.target }}/gui-release/dbcrust-gui stage/
+
+      - name: "Upload unsigned binary"
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-gui-${{ matrix.target }}
+          path: stage
+          retention-days: 3
+
+  # Pull requests, manual runs, and releases while the repository variable
+  # MACOS_SIGNING is not `on`: ad-hoc signatures. The CLI archives are
+  # published as before; the DMG stays a workflow artifact, because
+  # Gatekeeper blocks an ad-hoc signed app downloaded from a release page.
+  package-macos:
+    name: "macOS packages (ad-hoc signed)"
+    if: ${{ !inputs.plan || vars.MACOS_SIGNING != 'on' }}
+    needs: [native-binaries-macos, gui-macos]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-cli-*
+          path: macos-input
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-gui-*
+          path: macos-input
+
+      - name: "Package"
+        run: bash packaging/macos/package.sh --input macos-input --out dist
+
+      - name: "Upload CLI archives"
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries_${{ env.PACKAGE_NAME }}-macos
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+
+      - name: "Upload the unsigned app (testing only)"
+        uses: actions/upload-artifact@v4
+        with:
+          name: DBCrust-macos-unsigned
+          path: dist/*.dmg
+          retention-days: 7
+
+  # Release runs once MACOS_SIGNING is `on`: Developer ID signatures and
+  # notarization, with the secrets of the protected `macos-signing`
+  # environment (packaging/macos/README.md). Any failure fails the release:
+  # an un-notarized app is never published.
+  package-macos-signed:
+    name: "macOS packages (Developer ID, notarized)"
+    if: ${{ inputs.plan && vars.MACOS_SIGNING == 'on' }}
+    needs: [native-binaries-macos, gui-macos]
+    runs-on: macos-15
+    environment: macos-signing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-cli-*
+          path: macos-input
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-gui-*
+          path: macos-input
+
+      - name: "Import the Developer ID certificate"
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/dbcrust-signing.keychain-db"
+          keychain_password=$(openssl rand -base64 32)
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          # The intermediate CA a Developer ID certificate chains to
+          curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$RUNNER_TEMP/DeveloperIDG2CA.cer"
+          security import "$RUNNER_TEMP/DeveloperIDG2CA.cer" -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          # shellcheck disable=SC2046 # one keychain path per word
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          # The SHA-1 hash, not the name: no quoting or accent issues
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk '/"Developer ID Application: / { print $2; exit }')
+          if [ -z "$identity" ]; then
+            security find-identity -v -p codesigning "$keychain"
+            echo "::error::MACOS_CERTIFICATE_P12 holds no valid Developer ID Application identity"
+            exit 1
+          fi
+          echo "MACOS_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+          echo "MACOS_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+      - name: "Write the notarization key"
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/notary/AuthKey.p8"
+          mkdir -p "$(dirname "$key")"
+          # The .p8 file as is (`gh secret set APPLE_API_KEY_P8 < AuthKey_….p8`), or base64-encoded
+          case "$APPLE_API_KEY_P8" in
+            -----BEGIN*) printf '%s\n' "$APPLE_API_KEY_P8" > "$key" ;;
+            *) printf '%s' "$APPLE_API_KEY_P8" | base64 --decode > "$key" ;;
+          esac
+          chmod 600 "$key"
+          echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
+
+      - name: "Sign, notarize and package"
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+          MACOS_REQUIRE_NOTARIZATION: "1"
+        run: bash packaging/macos/package.sh --input macos-input --out dist
+
+      - name: "Upload release assets"
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries_${{ env.PACKAGE_NAME }}-macos
           path: dist
+
+      - name: "Remove the signing material"
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/dbcrust-signing.keychain-db" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/notary"
 
   windows:
     runs-on: windows-latest
