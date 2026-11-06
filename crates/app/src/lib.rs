@@ -10,6 +10,12 @@
 //! [`terminal_ui::TerminalUi`], which the CLI installs and the desktop app
 //! leaves empty.
 
+// `Database::from_url` (db.rs) nests every compiled driver's connect future;
+// with the AWS connectors on top of the bundled engines (`--features aws`),
+// rustc 1.94's layout query goes past the default 128 ("queries overflow the
+// depth limit").
+#![recursion_limit = "256"]
+
 #[cfg(feature = "ai")]
 mod ai_session_impl; // `impl dbcrust_ai::AiSession for db::Database`
 pub mod config;
