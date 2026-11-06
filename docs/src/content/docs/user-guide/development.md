@@ -252,6 +252,74 @@ For committed changes use `--base origin/main` (fetch that ref first). Use
 unreviewed versions. Both workspace members share the root lockfile. The guard
 does not replace review or constrain arbitrary local `cargo update` commands.
 
+### Review snapshot — 2026-11-06
+
+`cargo audit` (cargo-audit 0.22.1, 1422 advisories) failed on `main` with
+**9 vulnerabilities** published between 2026-10-16 and 2026-11-02, plus 12
+unsoundness warnings and 2 yanked versions. Every one was fixed by a targeted
+`cargo update -p CRATE --precise VERSION` inside the ranges the manifests already
+allow. No manifest changed and no new crate entered the lockfile: there are 27
+new registry versions, all of them more than 24 hours old, with matching
+checksums, and none yanked.
+
+| Crate | Old → new | Advisories fixed |
+|-------|-----------|------------------|
+| `rustls-webpki` | 0.103.15 → 0.103.16 | RUSTSEC-2026-0382 (distrusted emSign intermediates accepted) |
+| `webpki-roots` | 1.0.2 → 1.0.10 | RUSTSEC-2026-0381 (same emSign distrust) |
+| `webpki-root-certs` | 1.0.7 → 1.0.10 | RUSTSEC-2026-0383 (same emSign distrust; AI client's platform verifier) |
+| `ctutils` | 0.4.2 → 0.4.4 | RUSTSEC-2026-0385 (non-constant-time masks; via `digest` 0.11 → hmac/sha2/pbkdf2/md-5/sha1 in MongoDB and the AWS SDK) |
+| `zstd` | 0.13.3 → 0.13.4 | RUSTSEC-2026-0391 |
+| `zstd-safe` | 7.2.4 → 7.4.0 | RUSTSEC-2026-0398, -0403; unsound -0395 to -0397, -0399 to -0402, -0404 to -0406 |
+| `zstd-sys` | 2.0.16 → 2.1.2 (zstd 1.5.7) | RUSTSEC-2026-0410 (wasm32 allocator shim) |
+| `parquet` + all 14 `arrow*` crates | 58.1.0 → 58.4.1 | `arrow-data`: RUSTSEC-2026-0442 (unsound RunEndEncoded validation) |
+| `thrift` (via `parquet` 58.4.1) | 0.17.0 → 0.23.0 | RUSTSEC-2026-0435 (unbounded allocation in `read_bytes`) |
+| `tokio` | 1.53.1 → 1.53.3 | RUSTSEC-2026-0386 (unsound `AsyncFd` constructors) |
+| `async-executor` | 1.14.0 → 1.14.1 | 1.14.0 yanked (GPUI / `zbus` stack) |
+| `clipboard-win` | 5.4.1 → 5.4.2 | 5.4.1 yanked (`arboard`, Windows only) |
+
+Notes on the choices:
+
+- **Arrow/Parquet stay on 58.** `parquet` 58.4.1 already requires `thrift` 0.23
+  and `arrow` 58.4.1, so the fix is a minor update. The arrow crates were moved
+  together because arrow-rs releases them in lockstep. DataFusion stays at
+  **53.1.0** (it requires `^58.0.0`), and DuckDB's `arrow ^58` shares the same
+  crates. No DataFusion/Arrow major migration was needed. `thrift` 0.23 swaps
+  `ordered-float` 2.10.1 for 3.9.2, and it was published by the Apache Thrift
+  release manager (Jens-G), not the 0.17 publisher.
+- **`zstd-sys` 2.1.2, not 2.0.17.** 2.0.17 has the same wasm shim fix in its
+  source, but the advisory lists only `>= 2.1.2` as patched. `zstd-safe` 7.4.0
+  accepts `^2.0.17`, so 2.1.2 fits under it. 2.1.2 ships byte-identical zstd
+  1.5.7 C sources and the same default build (bundled, `cc`, hidden symbols).
+  Its pre-generated bindings differ only in doc comments. Its new optional
+  `cmake`/`vendored` features, and `bindgen` (no longer a default), are not
+  enabled. `zstd` 0.14 / `zstd-safe` 8 would need `parquet` 60, which no
+  DataFusion release uses yet.
+- **License change:** `zstd` 0.13.4, `zstd-safe` 7.4.0 and `zstd-sys` 2.1.2 moved
+  from MIT / MIT-or-Apache-2.0 to **BSD-3-Clause**, the bundled C library's
+  license. It is permissive and compatible with DBCrust's MIT license.
+- Smallest patched version everywhere: `tokio` 1.53.3 rather than 1.54.x,
+  `ctutils` 0.4.4 (0.4.5 to 0.4.8 only add APIs and harden Thumb-1/RISC-V 32),
+  and `clipboard-win` 5.4.2 (5.4.1's code with doc fixes; 5.4.3 changes the retry
+  sleep).
+- `cargo tree --locked --workspace --target all -i aws-lc-rs` stays empty. The
+  ClickHouse `=0.15.1` pin and the vendored `tiberius` are untouched.
+
+`cargo audit` passes again. The only exception is still RUSTSEC-2023-0071, and
+**9 informational "unmaintained" warnings** remain, with no replacement crate
+needed:
+
+- `pin-utils` (RUSTSEC-2026-0441, new on 2026-11-02) reaches the CLI through
+  `hyper` 1.7.0 and the opt-in AWS connectors through `aws-smithy-http`,
+  `-runtime` and `-types`. `hyper` 1.9+ no longer uses it, but the AWS crates
+  would keep it in the lockfile, so it was not bumped for this.
+- `paste` (proc-macro) comes from DataFusion/`parquet`, genai and ClickHouse
+  0.15.1 (pinned; through `polonius-the-crab` → `higher-kinded-types`), plus
+  the desktop app (`gpui-component`, `metal`, and `image` → `exr` → `pulp`).
+- `instant`, `rustls-pemfile`, `rustybuzz` and `ttf-parser` come only from the
+  desktop app's GPUI Kit stack.
+- `zvariant`, `zvariant_derive` and `zbus_names` come from GPUI's Linux
+  accessibility and portal layer (`accesskit` → `atspi`, `ashpd`, `zbus`).
+
 ### Review snapshot — 2026-10-17
 
 - `duckdb`/`libduckdb-sys` **1.10506.1** (same DuckDB 1.5.6 engine) moved its
