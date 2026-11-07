@@ -1,3 +1,16 @@
+## v0.39.2 (2026-11-07)
+
+### Fix
+
+- **app**: raise the recursion limit for the AWS build
+- **deps**: move Arrow and Parquet to 58.4.1 for the thrift and arrow-data advisories
+- **deps**: patch the zstd crates (RUSTSEC-2026-0391/0398/0403/0410)
+- **deps**: patch rustls-webpki, webpki roots, ctutils and tokio advisories
+
+### Refactor
+
+- share the application layer between the CLI and the desktop app
+
 ## v0.39.1 (2026-10-17)
 
 ### Fix

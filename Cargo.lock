@@ -3367,7 +3367,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "arboard",
  "async-trait",
@@ -3414,7 +3414,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-agent"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "dbcrust-agent-protocol",
  "rstest",
@@ -3427,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-agent-protocol"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "rstest",
  "serde",
@@ -3437,7 +3437,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-ai"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3462,7 +3462,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-app"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3491,7 +3491,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-aws"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "aws-config",
  "aws-credential-types",
@@ -3508,7 +3508,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-broker"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "chrono",
  "dbcrust-agent-protocol",
@@ -3532,7 +3532,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-core"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3556,7 +3556,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-docker"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "bollard",
  "dbcrust-core",
@@ -3574,7 +3574,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-clickhouse"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "clickhouse",
@@ -3587,7 +3587,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-cloudwatch"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "aws-sdk-cloudwatchlogs",
@@ -3602,7 +3602,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-duckdb"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3617,7 +3617,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-dynamodb"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "aws-sdk-dynamodb",
@@ -3632,7 +3632,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-elasticsearch"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "dbcrust-core",
@@ -3645,7 +3645,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-files"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "datafusion",
@@ -3659,7 +3659,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-influxdb"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "csv-core",
@@ -3673,7 +3673,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-libsql"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3688,7 +3688,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-mongodb"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "bson",
@@ -3703,7 +3703,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-mssql"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3718,7 +3718,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-mysql"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3733,7 +3733,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-postgres"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3748,7 +3748,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-redis"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "dbcrust-core",
@@ -3761,7 +3761,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-redshift"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "dbcrust-core",
@@ -3774,7 +3774,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-s3"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "aws-sdk-s3",
@@ -3788,7 +3788,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-sqlite"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "dbcrust-core",
@@ -3800,7 +3800,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-driver-white-dragon"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-trait",
  "dbcrust-core",
@@ -3813,7 +3813,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-drivers"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "dbcrust-core",
  "dbcrust-driver-clickhouse",
@@ -3839,7 +3839,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-gui"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "async-channel",
  "chrono",
@@ -3864,7 +3864,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-gui-core"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "chrono",
  "dbcrust-app",
@@ -3885,7 +3885,7 @@ dependencies = [
 
 [[package]]
 name = "dbcrust-secrets"
-version = "0.39.1"
+version = "0.39.2"
 dependencies = [
  "aes-gcm",
  "argon2",
