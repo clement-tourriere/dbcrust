@@ -133,7 +133,13 @@ jobs:
           path: dist
 
   linux:
-    runs-on: ubuntu-latest
+    # Pinned: on the Ubuntu 26.04 runners (ubuntu-latest since early November
+    # 2026) the 32-bit manylinux2014_i686 container fails to resolve
+    # vault.centos.org, so maturin-action's `yum install libatomic` fails before
+    # the build starts (v0.39.2); the 64-bit containers resolve hosts fine and
+    # the same i686 job worked on 24.04 (v0.39.1). Move back to
+    # ubuntu-latest once an i686 wheel builds there again.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         target:
