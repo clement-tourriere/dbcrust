@@ -24,7 +24,7 @@ futures-util = { workspace = true }
 # hardcode providers or model lists. Its default `rustls-tls` feature makes
 # reqwest 0.13 pull in rustls' aws-lc-rs provider (a large C/asm build), so it
 # is disabled and TLS is enabled below without a bundled provider.
-genai = { version = "=0.7.0-rc.4", default-features = false }
+genai = { version = "=0.7.0-rc.8", default-features = false }
 # genai's own reqwest (0.13, a different semver line from the 0.12 below): the
 # alias exists only to turn on `rustls-no-provider` — same rustls + platform
 # verifier as genai's `rustls-tls`, minus the aws-lc-rs provider. Never used
