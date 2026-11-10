@@ -313,7 +313,7 @@ dbcrust-agent-protocol = { path = "crates/agent-protocol" }
 dbcrust-secrets = { path = "crates/secrets" }
 dirs = { version = "6.0", default-features = false }
 hex = { version = "0.4", default-features = false }
-rand = { version = "0.9.4", default-features = false }
+rand = { version = "0.10.2", default-features = false }
 inquire = { version = "0.9.4", default-features = false }
 percent-encoding = { version = "2.3", default-features = false }
 url = { version = "2.5.8", default-features = false }
